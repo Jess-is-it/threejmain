@@ -1,0 +1,99 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum CustomerType {
+  RESIDENTIAL
+  BUSINESS
+  ENTERPRISE
+}
+
+enum CustomerStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  PENDING
+}
+
+enum AssignmentStatus {
+  ACTIVE
+  PAUSED
+  TERMINATED
+  PENDING
+}
+
+model Customer {
+  id              String           @id @default(uuid()) @db.Uuid
+  accountNumber   String           @unique
+  firstName       String
+  lastName        String
+  middleName      String?
+  contactNumber   String
+  alternateMobileNumber String?
+  facebookAccountName String?
+  facebookProfileLink String?
+  secondaryContacts Json?
+  secondaryContactName String?
+  secondaryContactNumber String?
+  secondaryContactFacebookAccount String?
+  secondaryContactRelationship String?
+  email           String?
+  addressLine1    String
+  addressLine2    String?
+  barangay        String
+  city            String
+  province        String
+  latitude        Decimal?         @db.Decimal(10, 7)
+  longitude       Decimal?         @db.Decimal(10, 7)
+  customerType    CustomerType
+  status          CustomerStatus?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  deletedAt       DateTime?
+  createdByUserId String?
+  updatedByUserId String?
+  services        CustomerService[]
+
+  @@map("customers")
+}
+
+model CustomerService {
+  id        String           @id @default(uuid()) @db.Uuid
+  customerId String          @db.Uuid
+  planId    String?
+  serviceId String?
+  startDate DateTime
+  endDate   DateTime?
+  status    AssignmentStatus
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+  customer  Customer         @relation(fields: [customerId], references: [id])
+
+  @@index([customerId])
+  @@map("customer_services")
+}
+
+model AuditLog {
+  id            String   @id @default(uuid()) @db.Uuid
+  timestamp     DateTime @default(now())
+  moduleName    String
+  actorUserId   String
+  actorUsername String?
+  actionType    String
+  entityType    String
+  entityId      String
+  beforeJson    Json?
+  afterJson     Json?
+  ipAddress     String?
+  userAgent     String?
+  correlationId String?
+
+  @@index([timestamp])
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
