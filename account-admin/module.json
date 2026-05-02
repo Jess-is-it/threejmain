@@ -1,0 +1,8 @@
+{
+  "slug": "account-admin",
+  "name": "Account Admin",
+  "status": "planned",
+  "owner": "threejmain",
+  "description": "Admin users, staff access, roles, permissions, account security, and audit controls.",
+  "app_shell_route": "/account-admin"
+}

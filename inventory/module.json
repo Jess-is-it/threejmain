@@ -1,0 +1,8 @@
+{
+  "slug": "inventory",
+  "name": "Inventory",
+  "status": "planned",
+  "owner": "threejmain",
+  "description": "Routers, ONUs/CPEs, cables, installation materials, stock movements, and reorder alerts.",
+  "app_shell_route": "/inventory"
+}

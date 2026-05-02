@@ -1,0 +1,20 @@
+{
+  "slug": "customer-profiling",
+  "name": "Customer Profiling",
+  "status": "functional-shell",
+  "owner": "threejmain",
+  "description": "Customer records, account identity, service plans, addresses, contacts, account lifecycle, bulk upload workflow, and service assignments.",
+  "app_shell_route": "/customer-profiling",
+  "api_prefix": "/api/customer-profiling",
+  "frontend_entry": "customer-profiling/web/CustomerProfilingPage.jsx",
+  "api_entry": "customer-profiling/api/customer_profiling/router.py",
+  "restored_features": [
+    "overview",
+    "list_search_filter",
+    "create_update_soft_delete",
+    "secondary_contacts",
+    "location_validation_lists",
+    "service_assignments",
+    "bulk_upload_template"
+  ]
+}

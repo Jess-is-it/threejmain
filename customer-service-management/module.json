@@ -1,0 +1,8 @@
+{
+  "slug": "customer-service-management",
+  "name": "Customer Service Management",
+  "status": "planned",
+  "owner": "threejmain",
+  "description": "Customer interactions, service requests, follow-ups, callbacks, and care workflows.",
+  "app_shell_route": "/customer-service-management"
+}

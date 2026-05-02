@@ -1,0 +1,8 @@
+{
+  "slug": "ticketing",
+  "name": "Ticketing",
+  "status": "planned",
+  "owner": "threejmain",
+  "description": "Trouble tickets, field jobs, outage tracking, dispatch, notes, and resolution history.",
+  "app_shell_route": "/ticketing"
+}

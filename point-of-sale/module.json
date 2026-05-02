@@ -1,0 +1,8 @@
+{
+  "slug": "point-of-sale",
+  "name": "Point of Sale",
+  "status": "planned",
+  "owner": "threejmain",
+  "description": "Counter sales, receipts, payment capture, daily cashier sessions, and sales reports.",
+  "app_shell_route": "/point-of-sale"
+}
