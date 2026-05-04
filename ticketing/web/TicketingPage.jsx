@@ -110,6 +110,7 @@ const blankTicket = {
 };
 
 const defaultStatuses = ['OPEN', 'IN_PROGRESS', 'WAITING_CUSTOMER', 'WAITING_INTERNAL', 'RESOLVED', 'CLOSED', 'CANCELLED'];
+const defaultCategories = ['CONNECTIVITY', 'BILLING', 'INSTALLATION', 'EQUIPMENT', 'OUTAGE', 'GENERAL'];
 
 const priorityCopy = {
   URGENT: 'Urgent',
@@ -133,24 +134,38 @@ export default function TicketingPage({ refreshShell = () => {} }) {
   const [selectedId, setSelectedId] = useState('');
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [draggingTicketId, setDraggingTicketId] = useState('');
+  const [notesTicketId, setNotesTicketId] = useState('');
   const [noteBody, setNoteBody] = useState('');
   const [noteVisibility, setNoteVisibility] = useState('INTERNAL');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
-  const selectedTicket = useMemo(() => tickets.find((ticket) => ticket.id === selectedId) || null, [selectedId, tickets]);
   const statuses = meta.statuses.length ? meta.statuses : defaultStatuses;
+  const categories = meta.categories.length ? meta.categories : defaultCategories;
+  const activeCategory = filters.category || categories[0] || '';
+  const boardTickets = useMemo(() => {
+    return activeCategory ? tickets.filter((ticket) => ticket.category === activeCategory) : tickets;
+  }, [activeCategory, tickets]);
+  const categoryCounts = useMemo(() => {
+    return categories.reduce((counts, category) => {
+      counts[category] = tickets.filter((ticket) => ticket.category === category).length;
+      return counts;
+    }, {});
+  }, [categories, tickets]);
   const ticketsByStatus = useMemo(() => {
     return statuses.reduce((groups, status) => {
-      groups[status] = tickets.filter((ticket) => ticket.status === status);
+      groups[status] = boardTickets.filter((ticket) => ticket.status === status);
       return groups;
     }, {});
-  }, [statuses, tickets]);
+  }, [statuses, boardTickets]);
+  const notesTicket = useMemo(() => tickets.find((ticket) => ticket.id === notesTicketId) || null, [notesTicketId, tickets]);
 
   async function load(nextFilters = filters, nextCustomerSearch = customerSearch) {
     setError('');
     const params = new URLSearchParams();
-    Object.entries(nextFilters).forEach(([key, value]) => { if (value) params.set(key, value); });
+    Object.entries(nextFilters).forEach(([key, value]) => {
+      if (value && key !== 'category') params.set(key, value);
+    });
     try {
       const [nextMeta, nextOverview, nextCustomers, nextTickets] = await Promise.all([
         request('/ticketing/meta'),
@@ -181,6 +196,16 @@ export default function TicketingPage({ refreshShell = () => {} }) {
   function closeTicketModal() {
     setIsFormOpen(false);
     setForm(blankTicket);
+  }
+
+  function openNotes(ticket) {
+    setSelectedId(ticket.id);
+    setNotesTicketId(ticket.id);
+  }
+
+  function closeNotes() {
+    setNotesTicketId('');
+    setNoteBody('');
   }
 
   function editTicket(ticket) {
@@ -269,10 +294,10 @@ export default function TicketingPage({ refreshShell = () => {} }) {
 
   async function addNote(event) {
     event.preventDefault();
-    if (!selectedTicket) return;
+    if (!notesTicket) return;
     setError('');
     try {
-      const updated = await request(`/ticketing/tickets/${selectedTicket.id}/notes`, {
+      const updated = await request(`/ticketing/tickets/${notesTicket.id}/notes`, {
         method: 'POST',
         body: JSON.stringify({ body: noteBody, visibility: noteVisibility })
       });
@@ -328,17 +353,27 @@ export default function TicketingPage({ refreshShell = () => {} }) {
               {meta.priorities.map((priority) => <option key={priority} value={priority}>{label(priority)}</option>)}
             </select>
           </div>
-          <div className="col-md-2">
-            <select className="form-select" value={filters.category} onChange={(event) => setFilters({ ...filters, category: event.target.value })}>
-              <option value="">All categories</option>
-              {meta.categories.map((category) => <option key={category} value={category}>{label(category)}</option>)}
-            </select>
-          </div>
-          <div className="col-md-2 d-flex gap-2">
+          <div className="col-md-4 d-flex gap-2">
             <button className="btn btn-outline-primary flex-fill" type="submit"><IconSearch size={16} /></button>
             <button className="btn btn-outline-secondary" type="button" onClick={() => load()}><IconRefresh size={16} /></button>
           </div>
         </form>
+
+        <div className="ticketing-category-tabs" role="tablist" aria-label="Ticket categories">
+          {categories.map((category) => (
+            <button
+              className={`ticketing-category-tab ${activeCategory === category ? 'active' : ''}`}
+              key={category}
+              onClick={() => setFilters({ ...filters, category })}
+              role="tab"
+              type="button"
+              aria-selected={activeCategory === category}
+            >
+              <span>{label(category)}</span>
+              <span className="badge bg-blue-lt text-blue">{categoryCounts[category] || 0}</span>
+            </button>
+          ))}
+        </div>
 
         <div className="ticketing-board" aria-label="Ticket status board">
           {statuses.map((status) => (
@@ -421,6 +456,10 @@ export default function TicketingPage({ refreshShell = () => {} }) {
                         {statuses.map((option) => <option key={option} value={option}>{label(option)}</option>)}
                       </select>
                       <div className="btn-list flex-nowrap">
+                        <button className="btn btn-icon btn-outline-secondary" type="button" onClick={(event) => { event.stopPropagation(); openNotes(ticket); }} title="Notes">
+                          <IconMessage2 size={16} />
+                          {!!(ticket.notes || []).length && <span className="ticketing-note-count">{ticket.notes.length}</span>}
+                        </button>
                         <button className="btn btn-icon btn-outline-primary" type="button" onClick={(event) => { event.stopPropagation(); editTicket(ticket); }} title="Edit ticket"><IconEdit size={16} /></button>
                         <button className="btn btn-icon btn-outline-danger" type="button" onClick={(event) => { event.stopPropagation(); deleteTicket(ticket); }} title="Delete ticket"><IconTrash size={16} /></button>
                       </div>
@@ -432,52 +471,59 @@ export default function TicketingPage({ refreshShell = () => {} }) {
             </section>
           ))}
         </div>
-        {!tickets.length && <div className="empty mt-3">No tickets match the current filters.</div>}
+        {!boardTickets.length && <div className="empty mt-3">No tickets match the current category and filters.</div>}
       </Card>
 
-      <div className="mt-3">
-        <Card title="Notes" icon={IconMessage2}>
-          {selectedTicket ? (
-            <>
+      {notesTicket && (
+        <div className="ticketing-drawer-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeNotes(); }}>
+          <aside className="ticketing-notes-drawer" role="dialog" aria-modal="true" aria-labelledby="ticketing-notes-title">
+            <div className="ticketing-drawer-header">
+              <div>
+                <div className="text-muted small">Ticket notes</div>
+                <h3 id="ticketing-notes-title">{notesTicket.ticketNumber}</h3>
+                <div className="text-muted">{notesTicket.subject}</div>
+              </div>
+              <button className="btn btn-icon btn-outline-secondary" type="button" onClick={closeNotes} title="Close notes"><IconX size={18} /></button>
+            </div>
+
+            <div className="ticketing-drawer-body">
               <div className="ticketing-note-target mb-3">
                 <div>
-                  <div className="fw-bold">{selectedTicket.ticketNumber}</div>
-                  <div className="text-muted">{selectedTicket.subject}</div>
+                  <div className="fw-bold">{customerLabel(notesTicket.customer)}</div>
+                  <div className="text-muted small">{notesTicket.requestorName || 'Manual requestor'} / {notesTicket.contactNumber || 'No contact'}</div>
                 </div>
-                <span className={`ticketing-priority ${priorityClass(selectedTicket.priority)}`}>
+                <span className={`ticketing-priority ${priorityClass(notesTicket.priority)}`}>
                   <IconAlertTriangle size={14} />
-                  {priorityCopy[selectedTicket.priority] || label(selectedTicket.priority)}
+                  {priorityCopy[notesTicket.priority] || label(notesTicket.priority)}
                 </span>
               </div>
-              <form className="row g-2 mb-3" onSubmit={addNote}>
-                <div className="col-12">
-                  <textarea className="form-control" rows="2" placeholder="Add note" value={noteBody} onChange={(event) => setNoteBody(event.target.value)} />
-                </div>
-                <div className="col-md-7">
+
+              <form className="ticketing-note-form" onSubmit={addNote}>
+                <textarea className="form-control" rows="4" placeholder="Add note" value={noteBody} onChange={(event) => setNoteBody(event.target.value)} />
+                <div className="ticketing-note-form-row">
                   <select className="form-select" value={noteVisibility} onChange={(event) => setNoteVisibility(event.target.value)}>
                     {meta.noteVisibilities.map((visibility) => <option key={visibility} value={visibility}>{label(visibility)}</option>)}
                   </select>
-                </div>
-                <div className="col-md-5">
-                  <button className="btn btn-outline-primary w-100" type="submit"><IconPlus size={16} /> Add Note</button>
+                  <button className="btn btn-primary" type="submit"><IconPlus size={16} /> Add</button>
                 </div>
               </form>
+
               <div className="ticketing-notes">
-                {(selectedTicket.notes || []).map((note) => (
+                {(notesTicket.notes || []).map((note) => (
                   <div className="ticketing-note mb-2" key={note.id}>
-                    <div className="d-flex justify-content-between">
+                    <div className="d-flex justify-content-between gap-3">
                       <span className={`badge ${note.visibility === 'INTERNAL' ? 'bg-purple-lt text-purple' : 'bg-green-lt text-green'}`}>{label(note.visibility)}</span>
                       <span className="text-muted small">{note.createdBy} / {new Date(note.createdAt).toLocaleString()}</span>
                     </div>
                     <div className="mt-2">{note.body}</div>
                   </div>
                 ))}
-                {!(selectedTicket.notes || []).length && <div className="text-muted">No notes yet.</div>}
+                {!(notesTicket.notes || []).length && <div className="empty">No notes yet.</div>}
               </div>
-            </>
-          ) : <div className="empty">Select a ticket to manage notes.</div>}
-        </Card>
-      </div>
+            </div>
+          </aside>
+        </div>
+      )}
 
       {isFormOpen && (
         <div className="ticketing-modal-backdrop" role="presentation">

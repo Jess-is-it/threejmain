@@ -23,12 +23,13 @@ Implemented in this module:
 
 - Ticket create, search/filter, detail, update, and soft-delete workflows.
 - Status-based Kanban board where ticket cards can be moved between status columns.
+- Category tabs for connectivity, billing, installation, equipment, outage, and general queues with badge counters.
 - Modal-based create/edit ticket form instead of a persistent side panel.
 - Ticket number, status, priority, category, source, due date, service ID, outage ID, assignment, and resolution fields.
 - Priority-coded ticket cards for urgent, high, normal, and low tickets.
 - Customer Profiling lookup hooks with manual requestor/contact fallback.
 - Free-text assignee placeholder until Account Admin staff records are integrated.
-- Ticket notes with internal/customer-visible visibility.
+- Ticket notes with internal/customer-visible visibility in a right-side notes drawer opened from ticket cards.
 - Metrics for total tickets, open tickets, urgent tickets, field jobs, and SLA risks.
 
 See `PROJECT_MODULE_CONTEXT.md` for API routes, integration notes, dependencies, and risks.

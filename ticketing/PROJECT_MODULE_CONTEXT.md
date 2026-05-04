@@ -49,11 +49,12 @@ The first pass is in-memory only and supports:
 ## Frontend
 
 - `ticketing/web/TicketingPage.jsx` renders a Kanban-style board where ticket status values are the column titles.
+- Category filtering is displayed as tabs with per-category ticket counters instead of a category select field.
 - Ticket cards expose priority, ticket number, subject, customer, requestor, contact, assignee, due date, category, source, service ID, outage ID, and a short description.
 - Priority is visually encoded on each card for `URGENT`, `HIGH`, `NORMAL`, and `LOW` so urgent/high work is immediately identifiable.
 - Users can move tickets between statuses by dragging cards to another status column or by using the status selector on each card.
 - Ticket create/edit now uses a modal form instead of a persistent side panel, leaving the board as the primary working surface.
-- Notes remain available for the selected ticket below the board.
+- Notes are opened from a ticket-card notes icon and displayed in a right-side drawer where users can view existing notes and add new notes.
 
 ## Dependencies
 
