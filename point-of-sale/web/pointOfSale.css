@@ -1,0 +1,43 @@
+.pos-page .status-card .card-body {
+  min-height: 132px;
+}
+
+.pos-dependency-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.pos-dependency {
+  border: 1px solid var(--tblr-border-color);
+  border-radius: 8px;
+  padding: 0.75rem;
+}
+
+.pos-line-stack {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.pos-line {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.1fr) minmax(160px, 1fr) 82px 112px 112px 40px;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.pos-qty,
+.pos-price {
+  min-width: 0;
+}
+
+@media (max-width: 992px) {
+  .pos-line {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 576px) {
+  .pos-line {
+    grid-template-columns: 1fr;
+  }
+}
