@@ -19,3 +19,5 @@ Prerequisites and placeholders:
 - Billing settlement and invoice handoff are intentionally deferred until the POS CRUD surface is stable.
 
 Current API prefix: `/api/point-of-sale`.
+
+See `PROJECT_MODULE_CONTEXT.md` for local routes, CRUD scope, dependencies, risks, and integration notes.
