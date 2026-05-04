@@ -1,0 +1,24 @@
+{
+  "slug": "account-admin",
+  "name": "Account Admin",
+  "status": "functional-shell",
+  "owner": "threejmain",
+  "description": "Admin account CRUD, active/inactive lifecycle, account security, and future audit controls. Roles and permissions are deferred.",
+  "app_shell_route": "/account-admin",
+  "api_prefix": "/api/account-admin",
+  "frontend_entry": "account-admin/web/AccountAdminPage.jsx",
+  "api_entry": "account-admin/api/account_admin/router.py",
+  "features": [
+    "overview",
+    "list_search_filter",
+    "create_update_soft_archive",
+    "activate_deactivate",
+    "active_inactive_lifecycle"
+  ],
+  "deferred_features": [
+    "roles",
+    "permissions",
+    "password_reset",
+    "session_administration"
+  ]
+}
