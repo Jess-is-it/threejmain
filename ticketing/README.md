@@ -1,0 +1,34 @@
+# Ticketing
+
+Ticketing owns trouble tickets, field dispatch, outage tracking, ticket notes, assignments, priorities, and resolution history.
+
+The first module-local shell exposes in-memory Customer Ticketing CRUD for later registration in the shared app shell.
+
+Current module files:
+
+```text
+ticketing/
+  api/ticketing/__init__.py
+  api/ticketing/router.py
+  web/TicketingPage.jsx
+  web/ticketing.css
+  README.md
+  module.json
+  PROJECT_MODULE_CONTEXT.md
+```
+
+Current API prefix: `/api/ticketing`.
+
+Implemented in this module:
+
+- Ticket create, search/filter, detail, update, and soft-delete workflows.
+- Status-based Kanban board where ticket cards can be moved between status columns.
+- Modal-based create/edit ticket form instead of a persistent side panel.
+- Ticket number, status, priority, category, source, due date, service ID, outage ID, assignment, and resolution fields.
+- Priority-coded ticket cards for urgent, high, normal, and low tickets.
+- Customer Profiling lookup hooks with manual requestor/contact fallback.
+- Free-text assignee placeholder until Account Admin staff records are integrated.
+- Ticket notes with internal/customer-visible visibility.
+- Metrics for total tickets, open tickets, urgent tickets, field jobs, and SLA risks.
+
+See `PROJECT_MODULE_CONTEXT.md` for API routes, integration notes, dependencies, and risks.

@@ -1,0 +1,26 @@
+.system-settings-module .form-control-color {
+  min-width: 4rem;
+}
+
+.system-settings-kpi-icon {
+  align-items: center;
+  display: inline-flex;
+  height: 2.25rem;
+  justify-content: center;
+  width: 2.25rem;
+}
+
+.system-settings-location-address {
+  max-width: 26rem;
+  white-space: normal;
+}
+
+.system-settings-locations .table th,
+.system-settings-locations .table td {
+  vertical-align: middle;
+}
+
+.system-settings-modal .modal-body {
+  max-height: min(74vh, 680px);
+  overflow-y: auto;
+}

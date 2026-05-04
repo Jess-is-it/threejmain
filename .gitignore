@@ -8,6 +8,8 @@
 
 # Dependencies
 node_modules/
+.venv/
+__pycache__/
 
 # Build outputs
 dist/
@@ -24,3 +26,5 @@ yarn-error.log*
 .DS_Store
 .vscode/
 .idea/
+*.swp
+.codex_session_prompt.txt
