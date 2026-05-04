@@ -17,7 +17,8 @@ export default defineConfig({
       allow: [
         path.resolve(__dirname),
         path.resolve(__dirname, '../../customer-profiling'),
-        path.resolve(__dirname, '../../billing')
+        path.resolve(__dirname, '../../billing'),
+        path.resolve(__dirname, '../../account-admin')
       ]
     },
     proxy: {

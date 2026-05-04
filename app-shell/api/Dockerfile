@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app-shell/api/app ./app
 COPY customer-profiling/api/customer_profiling ./customer_profiling
 COPY billing/api/billing ./billing
+COPY account-admin/api/account_admin ./account_admin
 
 EXPOSE 8100
 

@@ -1,0 +1,28 @@
+.account-admin-module .status-card {
+  min-height: 132px;
+}
+
+.account-admin-filters {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(150px, 190px) auto;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.account-admin-table td {
+  vertical-align: middle;
+}
+
+.account-admin-table .btn-list {
+  min-width: max-content;
+}
+
+@media (max-width: 768px) {
+  .account-admin-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .account-admin-table .btn-list {
+    flex-wrap: wrap;
+  }
+}

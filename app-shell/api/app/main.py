@@ -17,6 +17,7 @@ for parent in Path(__file__).resolve().parents:
     local_module_api_roots = [
         parent / "customer-profiling" / "api",
         parent / "billing" / "api",
+        parent / "account-admin" / "api",
     ]
     if any(module_api_root.exists() for module_api_root in local_module_api_roots):
         for module_api_root in local_module_api_roots:
@@ -27,6 +28,14 @@ for parent in Path(__file__).resolve().parents:
 from customer_profiling import configure_customer_profiling, customer_metrics, router as customer_profiling_router, seed_customer_data
 from customer_profiling.router import customer_summary, find_customer, visible_customers
 from billing import billing_metrics, configure_billing, router as billing_router, seed_billing_data
+from account_admin import (
+    account_admin_metrics,
+    authenticate_account,
+    configure_account_admin,
+    get_account_for_auth,
+    router as account_admin_router,
+    seed_account_admin_data,
+)
 
 
 APP_STARTED_AT = time.time()
@@ -106,9 +115,9 @@ modules = [
         "slug": "account-admin",
         "name": "Account Admin",
         "folder": "account-admin",
-        "status": "planned",
-        "description": "Admin users, staff access, roles, permissions, account security, and audit controls.",
-        "metrics": {"admins": 1, "roles": 1, "locked_accounts": 0},
+        "status": "functional-shell",
+        "description": "Admin account CRUD, active/inactive lifecycle, account security, and future audit controls. Roles and permissions are deferred.",
+        "metrics": {"accounts": 1, "active": 1, "inactive": 0},
     },
     {
         "slug": "customer-service-management",
@@ -192,13 +201,25 @@ def current_admin(authorization: str | None = Header(default=None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Authentication required")
     token = authorization.removeprefix("Bearer ").strip()
-    if active_tokens.get(token) != admin_user["id"]:
+    account_id = active_tokens.get(token)
+    account = get_account_for_auth(account_id) if account_id else None
+    if account is None:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-    return admin_user
+    if account["status"] != "ACTIVE":
+        active_tokens.pop(token, None)
+        raise HTTPException(status_code=401, detail="Account is inactive")
+    return account
 
 
 def public_user(user: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in user.items() if key != "password"}
+    result = {key: value for key, value in user.items() if key != "password"}
+    if "fullName" in result:
+        result["full_name"] = result["fullName"]
+    if "full_name" in result:
+        result["fullName"] = result["full_name"]
+    result.setdefault("role", "admin")
+    result["status"] = str(result.get("status") or "ACTIVE").lower()
+    return result
 
 
 def sync_module_metrics() -> None:
@@ -209,6 +230,9 @@ def sync_module_metrics() -> None:
         if module["slug"] == "billing":
             module["status"] = "functional-shell"
             module["metrics"] = billing_metrics()
+        if module["slug"] == "account-admin":
+            module["status"] = "functional-shell"
+            module["metrics"] = account_admin_metrics()
 
 
 def billing_customer_search(search: str = "") -> list[dict[str, Any]]:
@@ -321,14 +345,17 @@ def port_registry() -> list[dict[str, Any]]:
 
 configure_customer_profiling(current_admin, add_audit)
 configure_billing(current_admin, add_audit, billing_customer_resolver, billing_customer_search, seed_customer_data)
+configure_account_admin(current_admin, add_audit, lambda: admin_user)
 app.include_router(customer_profiling_router)
 app.include_router(billing_router)
+app.include_router(account_admin_router)
 
 
 @app.on_event("startup")
 def seed_logs():
     seed_customer_data()
     seed_billing_data()
+    seed_account_admin_data()
     sync_module_metrics()
     if not audit_logs:
         add_audit("system_started", "app", "app-shell", {"message": "ISP management shell started"})
@@ -341,13 +368,18 @@ def health():
 
 @app.post("/api/auth/login")
 def login(payload: LoginPayload, request: Request):
-    if payload.username != admin_user["username"] or payload.password != admin_user["password"]:
+    try:
+        account = authenticate_account(payload.username, payload.password)
+    except HTTPException as exc:
+        add_audit("login_blocked", "admin", payload.username, {"reason": exc.detail, "client": request.client.host if request.client else None})
+        raise
+    if account is None:
         add_audit("login_failed", "admin", payload.username, {"client": request.client.host if request.client else None})
         raise HTTPException(status_code=401, detail="Invalid username or password")
     token = str(uuid4())
-    active_tokens[token] = admin_user["id"]
-    add_audit("login_success", "admin", admin_user["id"], {"username": admin_user["username"]}, admin_user["username"])
-    return {"access_token": token, "token_type": "bearer", "user": public_user(admin_user)}
+    active_tokens[token] = account["id"]
+    add_audit("login_success", "admin", account["id"], {"username": account["username"]}, account["username"])
+    return {"access_token": token, "token_type": "bearer", "user": public_user(account)}
 
 
 @app.post("/api/auth/logout")
@@ -370,9 +402,11 @@ def get_me(admin=Depends(current_admin)):
 @app.patch("/api/me")
 def update_me(payload: ProfilePayload, admin=Depends(current_admin)):
     if payload.full_name is not None:
+        admin["fullName"] = payload.full_name
         admin["full_name"] = payload.full_name
     if payload.email is not None:
         admin["email"] = payload.email
+    admin["updatedAt"] = now_iso()
     add_audit("profile_updated", "admin", admin["id"], {"username": admin["username"]}, admin["username"])
     return public_user(admin)
 
@@ -384,6 +418,7 @@ def change_password(payload: PasswordPayload, admin=Depends(current_admin)):
     if payload.new_password != payload.confirm_password:
         raise HTTPException(status_code=400, detail="Password confirmation does not match")
     admin["password"] = payload.new_password
+    admin["updatedAt"] = now_iso()
     add_audit("password_changed", "admin", admin["id"], {"username": admin["username"]}, admin["username"])
     return {"status": "ok"}
 
@@ -392,6 +427,7 @@ def change_password(payload: PasswordPayload, admin=Depends(current_admin)):
 def list_modules(admin=Depends(current_admin)):
     seed_customer_data()
     seed_billing_data()
+    seed_account_admin_data()
     sync_module_metrics()
     return modules
 
@@ -400,6 +436,7 @@ def list_modules(admin=Depends(current_admin)):
 def dashboard(admin=Depends(current_admin)):
     seed_customer_data()
     seed_billing_data()
+    seed_account_admin_data()
     sync_module_metrics()
     module_counts = {module["slug"]: module["metrics"] for module in modules}
     billing_counts = billing_metrics()
@@ -416,6 +453,7 @@ def dashboard(admin=Depends(current_admin)):
         "alerts": [
             {"level": "info", "message": "Customer Profiling is loaded from the customer-profiling module folder."},
             {"level": "info", "message": "Billing is loaded from the billing module folder with in-memory first-shell data."},
+            {"level": "info", "message": "Account Admin is loaded with account CRUD and active/inactive lifecycle management."},
             {"level": "warning", "message": "Default admin password should be changed before deployment."},
         ],
     }

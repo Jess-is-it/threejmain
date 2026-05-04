@@ -50,6 +50,10 @@ customer-profiling/
 billing/
   web/        Billing page/components/styles
   api/        Billing FastAPI router/service shell
+
+account-admin/
+  web/        Account Admin page/components/styles
+  api/        Account Admin FastAPI router/service shell
 ```
 
 ## Module Structure
@@ -105,6 +109,24 @@ The current module includes:
 - Billing dashboard metrics for active subscriptions, open invoices, overdue invoices, collections, MRR, and outstanding balance
 
 The implementation is in-memory for the first working shell; durable PostgreSQL tables in the shared database should be added before production use.
+
+## Account Admin Module
+
+Account Admin has a first working CRUD shell in `/account-admin` using the modular monolith stack:
+
+- Frontend page/styles: `account-admin/web/`
+- API router/state: `account-admin/api/account_admin/`
+- Current API prefix: `/api/account-admin`
+
+The current module includes:
+
+- Admin account create, edit, list, search, and soft archive workflows
+- Account status values: `ACTIVE` and `INACTIVE`
+- Activate and deactivate account actions
+- Account-backed login integration with the shared shell auth flow
+- Account Admin dashboard metrics for total, active, and inactive accounts
+
+Roles and permissions are intentionally deferred until a later Account Admin phase. The implementation is in-memory for the first working shell; durable PostgreSQL tables in the shared database should be added before production use.
 
 ## Ports
 
