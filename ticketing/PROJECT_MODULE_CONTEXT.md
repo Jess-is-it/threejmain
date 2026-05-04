@@ -1,0 +1,71 @@
+# Ticketing Module Context
+
+Ticketing owns customer trouble tickets, basic issue intake, ticket queue filtering, notes, assignment placeholders, and resolution tracking.
+
+## Module Layout
+
+```text
+ticketing/
+  api/ticketing/__init__.py
+  api/ticketing/router.py
+  web/TicketingPage.jsx
+  web/ticketing.css
+  README.md
+  module.json
+  PROJECT_MODULE_CONTEXT.md
+```
+
+## API
+
+FastAPI router package: `ticketing.api.ticketing`
+
+Router prefix: `/api/ticketing`
+
+Current routes:
+
+- `GET /api/ticketing/meta`
+- `GET /api/ticketing/customers?search=`
+- `GET /api/ticketing/overview`
+- `GET /api/ticketing/tickets`
+- `GET /api/ticketing/tickets/{ticket_id}`
+- `POST /api/ticketing/tickets`
+- `PATCH /api/ticketing/tickets/{ticket_id}`
+- `DELETE /api/ticketing/tickets/{ticket_id}`
+- `POST /api/ticketing/tickets/{ticket_id}/notes`
+
+The module exposes `configure_ticketing`, `seed_ticketing_data`, and `ticketing_metrics` for the future integration Codex.
+
+## CRUD Scope
+
+The first pass is in-memory only and supports:
+
+- Ticket create/list/detail/update/soft-delete
+- Free-text search and filters for status, priority, category, customer, and assignee
+- Ticket number generation
+- Status, priority, category, source, due date, service reference, outage reference, assignment placeholder, and resolution fields
+- Internal and customer-visible notes
+- Dashboard-ready module metrics for total tickets, open tickets, urgent tickets, field jobs, and SLA risks
+
+## Dependencies
+
+- Customer Profiling: optional integration provider for customer lookup and ticket customer snapshots.
+- Account Admin: future dependency for real staff assignment; `assignedTo` is free text for now.
+- Customer Profiling service assignments: future source for `serviceId`; currently a placeholder reference field.
+- Outage tracking: future source for `outageId`; currently a placeholder reference field.
+- Inventory and dispatch workflows: future dependencies for field job equipment and technician scheduling.
+
+## Integration Notes
+
+- Do not run this module as a separate app.
+- Integration should import the router from `ticketing.api.ticketing` and include it in the shared FastAPI app.
+- Integration should import `TicketingPage` from `ticketing/web/TicketingPage.jsx` into the shared React shell.
+- The router expects the integration layer to call `configure_ticketing(...)` with shared auth, audit logging, and optional customer providers.
+- The module currently assumes the shared shell handles login/session and bearer token storage.
+
+## Risks
+
+- Data is in-memory and will reset on API restart.
+- There are no durable PostgreSQL tables yet.
+- There is no role-based assignment or staff validation yet.
+- SLA logic is basic: any open ticket with a past due date counts as an SLA risk.
+- Customer snapshots are copied into tickets for display and may become stale until durable relationships are implemented.
