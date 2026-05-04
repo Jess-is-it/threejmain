@@ -29,6 +29,7 @@ Restored workflows from the previous standalone Customer Profiling module:
 - Account number support with auto-generation when blank
 - Customer type and status tracking
 - Primary contact, alternate mobile, Facebook account/link, email, service address, and GPS fields
+- Service location selector connected to System Settings -> Location Management, with manual customer locations added to Location Management when no saved record matches
 - Secondary contact fields
 - Service assignment list/create workflow with plan ID, service ID, start/end dates, and assignment status
 - Bulk upload template workflow surface with the original required headers and allowed values

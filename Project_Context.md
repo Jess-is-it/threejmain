@@ -126,6 +126,7 @@ The current module includes:
 - Customer list with search and filters for type, status, province, city, and barangay
 - Create/edit/view/soft archive customer profile workflows
 - Primary contact, alternate mobile, Facebook account/link, email, service address, GPS, and secondary contact fields
+- Service location records are connected to System Settings -> Location Management; customer create/update can link an existing location or create a minimal location record if no saved match exists
 - Customer type/status values: `RESIDENTIAL`, `BUSINESS`, `ENTERPRISE`; `ACTIVE`, `INACTIVE`, `SUSPENDED`, `PENDING`
 - Service assignment workflow with plan ID, service ID, start/end dates, and assignment status
 - Bulk upload template workflow surface with the original required customer upload headers
@@ -172,7 +173,7 @@ System Settings now lives in the `system-settings/` module folder. Logs now live
 - `/api/locations`
 - `/api/audit-logs`
 
-System Settings includes first-phase in-memory Location Management under `/api/system-settings/locations`, with Nominatim-compatible geocoder lookup configurable through `GEOCODER_SEARCH_URL`. Location records remain in memory until shared PostgreSQL persistence is added.
+System Settings includes first-phase in-memory Location Management under `/api/system-settings/locations`, with Nominatim-compatible geocoder lookup configurable through `GEOCODER_SEARCH_URL`. Location Management preloads known Customer Profiling service-area barangays, supports `PATCH /api/system-settings/locations/{location_id}` for edits, and exposes an internal helper that Customer Profiling uses to create or link minimal locations during customer saves. Location records remain in memory until shared PostgreSQL persistence is added.
 
 ## Runtime Coordination
 

@@ -58,6 +58,42 @@ function csvEscape(value) {
   return `"${str.replaceAll('"', '""')}"`;
 }
 
+function normalizeUpper(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function uniqueValues(values) {
+  return Array.from(new Set(values.map(normalizeUpper).filter(Boolean))).sort();
+}
+
+function locationLabel(location) {
+  const parts = [
+    location.location_name,
+    location.barangay,
+    location.municipality,
+    location.province
+  ].map((part) => String(part || '').trim()).filter(Boolean);
+  return Array.from(new Set(parts)).join(' / ') || location.address || 'Unnamed location';
+}
+
+function formatCustomerAddress(customer) {
+  return [
+    customer.addressLine1,
+    customer.addressLine2,
+    customer.barangay,
+    customer.city,
+    customer.province
+  ].map((part) => String(part || '').trim()).filter(Boolean).join(', ') || '-';
+}
+
+function formatCustomerLocation(customer) {
+  return [
+    customer.locationName,
+    customer.barangay,
+    customer.city
+  ].map((part) => String(part || '').trim()).filter(Boolean).join(', ') || '-';
+}
+
 function Card({ title, icon: Icon, children, actions }) {
   return (
     <div className="card">
@@ -109,6 +145,8 @@ const blankCustomerForm = {
   secondaryContactFacebookAccount: '',
   secondaryContactRelationship: '',
   email: '',
+  locationId: '',
+  locationName: '',
   addressLine1: '',
   addressLine2: '',
   province: 'CAGAYAN',
@@ -123,6 +161,7 @@ const blankCustomerForm = {
 export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const [overview, setOverview] = useState(null);
   const [meta, setMeta] = useState({ customerTypes: [], customerStatuses: [], assignmentStatuses: [], provinces: [], cities: [], citiesByProvince: {}, barangays: [], barangaysByProvinceCity: {}, bulkUploadHeaders: [] });
+  const [locations, setLocations] = useState([]);
   const [customers, setCustomers] = useState({ data: [], page: 1, pageSize: 10, total: 0, totalPages: 1 });
   const [filters, setFilters] = useState({ search: '', customerType: '', status: '', province: '', city: '', barangay: '', page: 1, pageSize: 10 });
   const [selected, setSelected] = useState(null);
@@ -135,12 +174,28 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
-  const cities = filters.province ? (meta.citiesByProvince?.[filters.province] || []) : meta.cities || [];
-  const formCities = form.province ? (meta.citiesByProvince?.[form.province] || []) : meta.cities || [];
+  const savedProvinces = uniqueValues(locations.map((location) => normalizeUpper(location.province)));
+  const provinceOptions = uniqueValues([...savedProvinces, ...(meta.provinces || [])]);
+  const savedCities = uniqueValues(locations
+    .filter((location) => !filters.province || normalizeUpper(location.province) === normalizeUpper(filters.province))
+    .map((location) => normalizeUpper(location.municipality)));
+  const formSavedCities = uniqueValues(locations
+    .filter((location) => !form.province || normalizeUpper(location.province) === normalizeUpper(form.province))
+    .map((location) => normalizeUpper(location.municipality)));
+  const cities = filters.province ? uniqueValues([...(meta.citiesByProvince?.[filters.province] || []), ...savedCities]) : uniqueValues([...(meta.cities || []), ...savedCities]);
+  const formCities = form.province ? uniqueValues([...(meta.citiesByProvince?.[form.province] || []), ...formSavedCities]) : uniqueValues([...(meta.cities || []), ...formSavedCities]);
   const barangayKey = `${filters.province}::${filters.city}`;
   const formBarangayKey = `${form.province}::${form.city}`;
-  const barangays = filters.province && filters.city ? (meta.barangaysByProvinceCity?.[barangayKey] || meta.barangays || []) : meta.barangays || [];
-  const formBarangays = form.province && form.city ? (meta.barangaysByProvinceCity?.[formBarangayKey] || meta.barangays || []) : meta.barangays || [];
+  const savedBarangays = uniqueValues(locations
+    .filter((location) => (!filters.province || normalizeUpper(location.province) === normalizeUpper(filters.province))
+      && (!filters.city || normalizeUpper(location.municipality) === normalizeUpper(filters.city)))
+    .map((location) => normalizeUpper(location.barangay)));
+  const formSavedBarangays = uniqueValues(locations
+    .filter((location) => (!form.province || normalizeUpper(location.province) === normalizeUpper(form.province))
+      && (!form.city || normalizeUpper(location.municipality) === normalizeUpper(form.city)))
+    .map((location) => normalizeUpper(location.barangay)));
+  const barangays = filters.province && filters.city ? uniqueValues([...(meta.barangaysByProvinceCity?.[barangayKey] || []), ...savedBarangays]) : uniqueValues([...(meta.barangays || []), ...savedBarangays]);
+  const formBarangays = form.province && form.city ? uniqueValues([...(meta.barangaysByProvinceCity?.[formBarangayKey] || []), ...formSavedBarangays]) : uniqueValues([...(meta.barangays || []), ...formSavedBarangays]);
 
   async function load(nextFilters = filters) {
     setError('');
@@ -149,14 +204,16 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       if (value !== '') params.set(key, value);
     });
     try {
-      const [nextOverview, nextCustomers, nextMeta] = await Promise.all([
+      const [nextOverview, nextCustomers, nextMeta, nextLocations] = await Promise.all([
         request('/customer-profiling/customers/overview'),
         request(`/customer-profiling/customers?${params.toString()}`),
-        request('/customer-profiling/meta')
+        request('/customer-profiling/meta'),
+        request('/system-settings/locations').catch(() => [])
       ]);
       setOverview(nextOverview);
       setCustomers(nextCustomers);
       setMeta(nextMeta);
+      setLocations(Array.isArray(nextLocations) ? nextLocations : []);
     } catch (err) {
       setError(err.message);
     }
@@ -223,6 +280,25 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   function resetForm() {
     setEditingId('');
     setForm({ ...blankCustomerForm });
+  }
+
+  function applyLocation(locationId) {
+    const location = locations.find((item) => item.id === locationId);
+    if (!location) {
+      setForm({ ...form, locationId: '', locationName: '' });
+      return;
+    }
+    setForm({
+      ...form,
+      locationId: location.id,
+      locationName: location.location_name || '',
+      addressLine1: location.address || form.addressLine1 || '',
+      province: normalizeUpper(location.province) || form.province || '',
+      city: normalizeUpper(location.municipality) || form.city || '',
+      barangay: normalizeUpper(location.barangay) || form.barangay || '',
+      latitude: location.latitude ?? form.latitude ?? '',
+      longitude: location.longitude ?? form.longitude ?? ''
+    });
   }
 
   async function saveCustomer(e) {
@@ -334,7 +410,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
               <label className="form-label">Province</label>
               <select className="form-select" value={filters.province} onChange={(e) => updateFilters({ province: e.target.value, city: '', barangay: '' })}>
                 <option value="">All</option>
-                {meta.provinces.map((item) => <option key={item}>{item}</option>)}
+                {provinceOptions.map((item) => <option key={item}>{item}</option>)}
               </select>
             </div>
             <div className="col-md-2">
@@ -384,7 +460,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                     <td>{customer.contactNumber}</td>
                     <td><span className="badge bg-blue-lt text-blue">{customer.customerType}</span></td>
                     <td><span className={`badge ${statusClass(customer.status)}`}>{customer.status}</span></td>
-                    <td>{customer.barangay}, {customer.city}</td>
+                    <td>{formatCustomerLocation(customer)}</td>
                     <td>
                       <div className="btn-list flex-nowrap">
                         <button className="btn btn-icon btn-sm" title="View" onClick={() => loadCustomer(customer.id)}><IconEye size={16} /></button>
@@ -468,26 +544,32 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                 <div className="col-md-3"><label className="form-label">Alternate Mobile</label><input className="form-control" value={form.alternateMobileNumber || ''} onChange={(e) => setForm({ ...form, alternateMobileNumber: e.target.value })} /></div>
                 <div className="col-md-3"><label className="form-label">Facebook Account</label><input className="form-control" required value={form.facebookAccountName || ''} onChange={(e) => setForm({ ...form, facebookAccountName: e.target.value })} /></div>
                 <div className="col-md-3"><label className="form-label">Email</label><input className="form-control" type="email" value={form.email || ''} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
-                <div className="col-md-6"><label className="form-label">Address Line 1</label><input className="form-control" required value={form.addressLine1 || ''} onChange={(e) => setForm({ ...form, addressLine1: e.target.value })} /></div>
+                <div className="col-md-6">
+                  <label className="form-label">Location Management Record</label>
+                  <select className="form-select" value={form.locationId || ''} onChange={(e) => applyLocation(e.target.value)}>
+                    <option value="">Manual / create location on save</option>
+                    {locations.map((location) => <option key={location.id} value={location.id}>{locationLabel(location)}</option>)}
+                  </select>
+                  <div className="form-hint">Missing customer locations are added to System Settings for completion later.</div>
+                </div>
+                <div className="col-md-6"><label className="form-label">Location Name</label><input className="form-control" value={form.locationName || ''} onChange={(e) => setForm({ ...form, locationName: e.target.value })} placeholder="Optional service-area label" /></div>
+                <div className="col-md-6"><label className="form-label">Address Line 1</label><input className="form-control" value={form.addressLine1 || ''} onChange={(e) => setForm({ ...form, addressLine1: e.target.value })} /></div>
                 <div className="col-md-6"><label className="form-label">Address Line 2</label><input className="form-control" value={form.addressLine2 || ''} onChange={(e) => setForm({ ...form, addressLine2: e.target.value })} /></div>
                 <div className="col-md-3">
                   <label className="form-label">Province</label>
-                  <select className="form-select" value={form.province || ''} onChange={(e) => setForm({ ...form, province: e.target.value, city: '', barangay: '' })}>
-                    {meta.provinces.map((item) => <option key={item}>{item}</option>)}
-                  </select>
+                  <input className="form-control" list="customer-province-options" value={form.province || ''} onChange={(e) => setForm({ ...form, province: normalizeUpper(e.target.value), city: '', barangay: '' })} />
                 </div>
                 <div className="col-md-3">
                   <label className="form-label">City</label>
-                  <select className="form-select" value={form.city || ''} onChange={(e) => setForm({ ...form, city: e.target.value, barangay: '' })}>
-                    {formCities.map((item) => <option key={item}>{item}</option>)}
-                  </select>
+                  <input className="form-control" list="customer-city-options" value={form.city || ''} onChange={(e) => setForm({ ...form, city: normalizeUpper(e.target.value), barangay: '' })} />
                 </div>
                 <div className="col-md-3">
                   <label className="form-label">Barangay</label>
-                  <select className="form-select" value={form.barangay || ''} onChange={(e) => setForm({ ...form, barangay: e.target.value })}>
-                    {formBarangays.map((item) => <option key={item}>{item}</option>)}
-                  </select>
+                  <input className="form-control" list="customer-barangay-options" value={form.barangay || ''} onChange={(e) => setForm({ ...form, barangay: normalizeUpper(e.target.value) })} />
                 </div>
+                <datalist id="customer-province-options">{provinceOptions.map((item) => <option key={item} value={item} />)}</datalist>
+                <datalist id="customer-city-options">{formCities.map((item) => <option key={item} value={item} />)}</datalist>
+                <datalist id="customer-barangay-options">{formBarangays.map((item) => <option key={item} value={item} />)}</datalist>
                 <div className="col-md-3"><label className="form-label">Type</label><select className="form-select" value={form.customerType || 'RESIDENTIAL'} onChange={(e) => setForm({ ...form, customerType: e.target.value })}>{meta.customerTypes.map((item) => <option key={item}>{item}</option>)}</select></div>
                 <div className="col-md-3"><label className="form-label">Status</label><select className="form-select" value={form.status || 'ACTIVE'} onChange={(e) => setForm({ ...form, status: e.target.value })}>{meta.customerStatuses.map((item) => <option key={item}>{item}</option>)}</select></div>
                 <div className="col-md-3"><label className="form-label">Latitude</label><input className="form-control" value={form.latitude || ''} onChange={(e) => setForm({ ...form, latitude: e.target.value })} /></div>
@@ -530,7 +612,8 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                 <dt>Alternate mobile</dt><dd>{selected.alternateMobileNumber || '-'}</dd>
                 <dt>Facebook</dt><dd>{selected.facebookAccountName || '-'}</dd>
                 <dt>Email</dt><dd>{selected.email || '-'}</dd>
-                <dt>Address</dt><dd>{selected.addressLine1}, {selected.barangay}, {selected.city}, {selected.province}</dd>
+                <dt>Location record</dt><dd>{selected.locationName || selected.locationId || '-'}</dd>
+                <dt>Address</dt><dd>{formatCustomerAddress(selected)}</dd>
                 <dt>Coordinates</dt><dd>{selected.latitude || '-'}, {selected.longitude || '-'}</dd>
               </dl>
               <div className="border-top pt-3 mt-3">

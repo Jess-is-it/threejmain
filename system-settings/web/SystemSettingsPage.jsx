@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   IconDatabase,
   IconDeviceFloppy,
+  IconEdit,
   IconMapPin,
   IconNetwork,
   IconPlus,
@@ -140,6 +141,7 @@ function LocationManagementTab() {
   };
   const [locations, setLocations] = useState([]);
   const [modalOpen, setModalOpen] = useState(false);
+  const [editingId, setEditingId] = useState('');
   const [form, setForm] = useState(emptyForm);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
@@ -163,6 +165,46 @@ function LocationManagementTab() {
   useEffect(() => {
     load();
   }, []);
+
+  function openAddLocation() {
+    setEditingId('');
+    setForm(emptyForm);
+    setSearchQuery('');
+    setSearchResults([]);
+    setError('');
+    setMessage('');
+    setModalOpen(true);
+  }
+
+  function editLocation(location) {
+    setEditingId(location.id);
+    setForm({
+      location_name: location.location_name || '',
+      address: location.address || '',
+      municipality: location.municipality || '',
+      barangay: location.barangay || '',
+      province: location.province || '',
+      region: location.region || '',
+      latitude: location.latitude ?? '',
+      longitude: location.longitude ?? '',
+      geocode_source: location.geocode_source || 'MANUAL',
+      raw_geocode: location.raw_geocode || null,
+      notes: location.notes || ''
+    });
+    setSearchQuery('');
+    setSearchResults([]);
+    setError('');
+    setMessage('');
+    setModalOpen(true);
+  }
+
+  function closeLocationModal() {
+    setModalOpen(false);
+    setEditingId('');
+    setForm(emptyForm);
+    setSearchQuery('');
+    setSearchResults([]);
+  }
 
   async function searchAddress(e) {
     e.preventDefault();
@@ -204,7 +246,7 @@ function LocationManagementTab() {
     setSearchResults([]);
   }
 
-  async function createLocation(e) {
+  async function saveLocation(e) {
     e.preventDefault();
     setSaving(true);
     setError('');
@@ -216,12 +258,10 @@ function LocationManagementTab() {
         longitude: form.longitude === '' ? null : Number(form.longitude),
         geocode_source: form.geocode_source || 'MANUAL'
       };
-      await request('/system-settings/locations', { method: 'POST', body: JSON.stringify(body) });
-      setForm(emptyForm);
-      setSearchQuery('');
-      setSearchResults([]);
-      setModalOpen(false);
-      setMessage('Location saved.');
+      const path = editingId ? `/system-settings/locations/${editingId}` : '/system-settings/locations';
+      await request(path, { method: editingId ? 'PATCH' : 'POST', body: JSON.stringify(body) });
+      closeLocationModal();
+      setMessage(editingId ? 'Location updated.' : 'Location saved.');
       await load();
     } catch (err) {
       setError(err.message);
@@ -271,7 +311,7 @@ function LocationManagementTab() {
               <div className="text-muted small">Saved deployment addresses with municipality, barangay, and coordinates.</div>
             </div>
             <div className="card-actions">
-              <button className="btn btn-primary" type="button" onClick={() => setModalOpen(true)}>
+              <button className="btn btn-primary" type="button" onClick={openAddLocation}>
                 <IconPlus size={18} className="me-2" />Add Location
               </button>
             </div>
@@ -308,9 +348,14 @@ function LocationManagementTab() {
                       <td><span className="badge bg-blue-lt">{location.geocode_source || 'MANUAL'}</span></td>
                       <td>{fmt(location.created_at)}</td>
                       <td>
-                        <button className="btn btn-icon btn-outline-danger" type="button" onClick={() => deleteLocation(location)} title="Delete location" aria-label="Delete location">
-                          <IconTrash size={18} />
-                        </button>
+                        <div className="btn-list flex-nowrap">
+                          <button className="btn btn-icon btn-outline-primary" type="button" onClick={() => editLocation(location)} title="Edit location" aria-label="Edit location">
+                            <IconEdit size={18} />
+                          </button>
+                          <button className="btn btn-icon btn-outline-danger" type="button" onClick={() => deleteLocation(location)} title="Delete location" aria-label="Delete location">
+                            <IconTrash size={18} />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -322,7 +367,7 @@ function LocationManagementTab() {
         </div>
       </div>
       {modalOpen && (
-        <Modal title="Add Location" onClose={() => setModalOpen(false)}>
+        <Modal title={editingId ? 'Edit Location' : 'Add Location'} onClose={closeLocationModal}>
           <form onSubmit={searchAddress} className="mb-3">
             <label className="form-label">Search Address</label>
             <div className="input-group">
@@ -342,11 +387,11 @@ function LocationManagementTab() {
               ))}
             </div>
           )}
-          <form onSubmit={createLocation}>
+          <form onSubmit={saveLocation}>
             <div className="row g-3">
               <div className="col-md-6"><label className="form-label">Location Name</label><input className="form-control" value={form.location_name} onChange={(e) => setForm({ ...form, location_name: e.target.value })} /></div>
               <div className="col-md-6"><label className="form-label">Municipality</label><input className="form-control" value={form.municipality} onChange={(e) => setForm({ ...form, municipality: e.target.value })} /></div>
-              <div className="col-12"><label className="form-label">Address</label><input className="form-control" required value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} /></div>
+              <div className="col-12"><label className="form-label">Address</label><input className="form-control" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} /></div>
               <div className="col-md-6"><label className="form-label">Barangay</label><input className="form-control" value={form.barangay} onChange={(e) => setForm({ ...form, barangay: e.target.value })} /></div>
               <div className="col-md-6"><label className="form-label">Province</label><input className="form-control" value={form.province} onChange={(e) => setForm({ ...form, province: e.target.value })} /></div>
               <div className="col-md-6"><label className="form-label">Latitude</label><input className="form-control" type="number" step="any" value={form.latitude} onChange={(e) => setForm({ ...form, latitude: e.target.value })} /></div>
@@ -356,9 +401,9 @@ function LocationManagementTab() {
               <div className="col-12"><label className="form-label">Notes</label><textarea className="form-control" rows="3" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div>
             </div>
             <div className="modal-footer px-0 pb-0">
-              <button type="button" className="btn" onClick={() => setModalOpen(false)}>Cancel</button>
+              <button type="button" className="btn" onClick={closeLocationModal}>Cancel</button>
               <button className="btn btn-primary" disabled={saving}>
-                <IconDeviceFloppy size={18} className="me-2" />{saving ? 'Saving...' : 'Save Location'}
+                <IconDeviceFloppy size={18} className="me-2" />{saving ? 'Saving...' : editingId ? 'Update Location' : 'Save Location'}
               </button>
             </div>
           </form>

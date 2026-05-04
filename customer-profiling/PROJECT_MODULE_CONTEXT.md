@@ -17,6 +17,7 @@ Customer Profiling manages customer records, account identity, service plans, ad
 - Customer overview KPIs and distribution tables
 - Customer list with search and filters
 - Create, update, view, and soft archive customer profiles
+- Customer service location selection backed by System Settings -> Location Management
 - Secondary contacts and service assignments
 - Bulk upload template workflow surface
 
@@ -24,6 +25,8 @@ Customer Profiling manages customer records, account identity, service plans, ad
 
 - Keep Customer Profiling-specific pages, API routers, services, fixtures, and styles inside `customer-profiling/`.
 - Other modules may read Customer Profiling contracts for customer lookup prerequisites.
+- Customer Profiling reads `/api/system-settings/locations` in the frontend and uses System Settings' internal `ensure_location_record` helper in the API to create or link minimal location records during customer create/update.
+- Province, city, barangay, and coordinates are optional on customer saves so incomplete locations can be finished later in System Settings -> Location Management.
 - Integration Codex should read this file before changing Customer Profiling app-shell wiring.
 - Only stable cross-project facts should be copied into the main `Project_Context.md`.
 

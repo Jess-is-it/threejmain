@@ -5,6 +5,11 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+try:
+    from system_settings import ensure_location_record
+except Exception:  # pragma: no cover - keeps module usable before System Settings is wired.
+    ensure_location_record = None
+
 
 router = APIRouter(prefix="/api/customer-profiling", tags=["customer-profiling"])
 
@@ -179,6 +184,8 @@ BULK_UPLOAD_HEADERS = [
     "email",
     "addressLine1",
     "addressLine2",
+    "locationId",
+    "locationName",
     "province",
     "city",
     "barangay",
@@ -191,10 +198,6 @@ REQUIRED_BULK_UPLOAD_HEADERS = [
     "lastName",
     "contactNumber",
     "facebookAccountName",
-    "addressLine1",
-    "province",
-    "city",
-    "barangay",
 ]
 
 
@@ -213,6 +216,8 @@ class CustomerPayload(BaseModel):
     secondaryContactFacebookAccount: str | None = None
     secondaryContactRelationship: str | None = None
     email: str | None = None
+    locationId: str | None = None
+    locationName: str | None = None
     addressLine1: str | None = None
     addressLine2: str | None = None
     barangay: str | None = None
@@ -340,6 +345,27 @@ def build_duplicate_fingerprint(data: dict[str, Any]) -> str:
     )
 
 
+def ensure_customer_location(record: dict[str, Any], admin: dict[str, Any] | None = None) -> None:
+    if ensure_location_record is None:
+        return
+    location_data = {
+        "locationId": record.get("locationId"),
+        "location_name": record.get("locationName") or record.get("barangay") or record.get("city") or record.get("addressLine1"),
+        "address": record.get("addressLine1"),
+        "municipality": record.get("city"),
+        "barangay": record.get("barangay"),
+        "province": record.get("province"),
+        "latitude": record.get("latitude") or None,
+        "longitude": record.get("longitude") or None,
+        "geocode_source": "CUSTOMER_PROFILING",
+        "notes": "Created or linked from Customer Profiling. Complete missing details in System Settings > Location Management.",
+    }
+    location = ensure_location_record(location_data, actor=admin)
+    if location:
+        record["locationId"] = location.get("id") or record.get("locationId") or ""
+        record["locationName"] = location.get("location_name") or record.get("locationName") or ""
+
+
 def assert_no_duplicate_customer(candidate: dict[str, Any], ignore_id: str | None = None) -> None:
     fingerprint = build_duplicate_fingerprint(candidate)
     if not fingerprint.replace("|", ""):
@@ -365,10 +391,6 @@ def customer_payload_to_record(payload: CustomerPayload, current: dict[str, Any]
         "lastName",
         "contactNumber",
         "facebookAccountName",
-        "addressLine1",
-        "province",
-        "city",
-        "barangay",
     ]
     missing = [field for field in required if not base.get(field)]
     if missing:
@@ -379,16 +401,12 @@ def customer_payload_to_record(payload: CustomerPayload, current: dict[str, Any]
     base["province"] = normalize_upper(base.get("province"))
     base["city"] = normalize_upper(base.get("city"))
     base["barangay"] = normalize_upper(base.get("barangay"))
+    base["locationName"] = clean_value(base.get("locationName")) or ""
 
     if base["customerType"] not in CUSTOMER_TYPES:
         raise HTTPException(status_code=400, detail="Invalid customer type")
     if base["status"] not in CUSTOMER_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid customer status")
-    if base["province"] in MUNICIPALITIES_BY_PROVINCE and base["city"] not in MUNICIPALITIES_BY_PROVINCE[base["province"]]:
-        raise HTTPException(status_code=400, detail="City does not belong to selected province")
-    barangay_key = f"{base['province']}::{base['city']}"
-    if barangay_key in BARANGAYS_BY_PROVINCE_CITY and base["barangay"] not in BARANGAYS_BY_PROVINCE_CITY[barangay_key]:
-        raise HTTPException(status_code=400, detail="Barangay does not belong to selected province/city")
 
     secondary = list(base.get("secondaryContacts") or [])
     if base.get("secondaryContactName") and not secondary:
@@ -420,6 +438,7 @@ def seed_customer_data() -> None:
             "facebookProfileLink": "https://www.facebook.com/maria.santos",
             "email": "maria.santos@example.com",
             "addressLine1": "BLK 12 LOT 5 SAN ISIDRO VILLAGE",
+            "locationName": "ALIBAGO",
             "barangay": "ALIBAGO",
             "city": "ENRILE",
             "province": "CAGAYAN",
@@ -438,6 +457,7 @@ def seed_customer_data() -> None:
             "email": "juan.delacruz@example.com",
             "addressLine1": "PUROK 1",
             "addressLine2": "",
+            "locationName": "BATU",
             "barangay": "BATU",
             "city": "ENRILE",
             "province": "CAGAYAN",
@@ -455,6 +475,7 @@ def seed_customer_data() -> None:
             "facebookAccountName": "ANGELA REYES",
             "email": "a.reyes@example.com",
             "addressLine1": "SUNSET HOMES PHASE 2",
+            "locationName": "DIVISORIA",
             "barangay": "DIVISORIA",
             "city": "SANTA MARIA",
             "province": "ISABELA",
@@ -472,6 +493,7 @@ def seed_customer_data() -> None:
             "facebookAccountName": "KERVIN TAN",
             "email": "kervin.tan@example.com",
             "addressLine1": "8 INDUSTRIAL ROAD",
+            "locationName": "CENTRO",
             "barangay": "CENTRO",
             "city": "CABAGAN",
             "province": "ISABELA",
@@ -488,6 +510,7 @@ def seed_customer_data() -> None:
             "contactNumber": "09180000004",
             "facebookAccountName": "LIZA GARCIA",
             "addressLine1": "24 MAPLE ST",
+            "locationName": "SAN ANTONIO",
             "barangay": "SAN ANTONIO",
             "city": "ENRILE",
             "province": "CAGAYAN",
@@ -499,6 +522,7 @@ def seed_customer_data() -> None:
         },
     ]
     for row in seed_rows:
+        ensure_customer_location(row, {"id": "seed", "username": "seed"})
         customers.append(
             {
                 "id": str(uuid4()),
@@ -646,6 +670,8 @@ def customer_bulk_upload_template(admin=Depends(require_admin)):
             "email": "juan.delacruz@example.com",
             "addressLine1": "PUROK 1",
             "addressLine2": "",
+            "locationId": "",
+            "locationName": "ALIBAGO",
             "province": "CAGAYAN",
             "city": "ENRILE",
             "barangay": "ALIBAGO",
@@ -677,6 +703,7 @@ def create_customer(payload: CustomerPayload, request: Request, admin=Depends(re
         raise HTTPException(status_code=409, detail="Account number already exists")
     record["accountNumber"] = record.get("accountNumber") or generate_account_number()
     assert_no_duplicate_customer(record)
+    ensure_customer_location(record, admin)
     timestamp = now_iso()
     customer = {
         "id": str(uuid4()),
@@ -709,6 +736,7 @@ def update_customer(customer_id: str, payload: CustomerPayload, admin=Depends(re
     ):
         raise HTTPException(status_code=409, detail="Account number already exists")
     assert_no_duplicate_customer(record, ignore_id=customer_id)
+    ensure_customer_location(record, admin)
     current.update(record)
     current["updatedAt"] = now_iso()
     current["updatedByUserId"] = admin["id"]
