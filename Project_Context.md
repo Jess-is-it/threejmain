@@ -50,6 +50,10 @@ customer-profiling/
 billing/
   web/        Billing page/components/styles
   api/        Billing FastAPI router/service shell
+
+point-of-sale/
+  web/        Point of Sale page/components/styles
+  api/        Point of Sale FastAPI router/service shell
 ```
 
 ## Module Structure
@@ -103,6 +107,30 @@ The current module includes:
 - Adjustment CRUD/voiding for invoice credits and debits
 - Customer balance summaries with outstanding balance, credit, overdue total, and open invoice count
 - Billing dashboard metrics for active subscriptions, open invoices, overdue invoices, collections, MRR, and outstanding balance
+
+The implementation is in-memory for the first working shell; durable PostgreSQL tables in the shared database should be added before production use.
+
+## Point of Sale Module
+
+Point of Sale has a first working CRUD shell in `/point-of-sale` using the modular monolith stack:
+
+- Frontend page/styles: `point-of-sale/web/`
+- API router/state: `point-of-sale/api/point_of_sale/`
+- Current API prefix: `/api/point-of-sale`
+
+The current module includes:
+
+- Item catalog CRUD with SKU, category, unit price, stock on hand, reorder point, taxable flag, status, and soft archive
+- Cashier session CRUD with open/close flow, opening float, expected cash, closing cash, variance, and cancellation guard when active sales exist
+- Sale CRUD with receipt numbers, line items, optional customer link, walk-in support, discounts, tax, stock decrement/restore, payment status derivation, and voiding
+- Payment CRUD with cash, GCash, card, bank transfer, check, other methods, posting, editing, and voiding
+- Point of Sale dashboard metrics for today's sales, transaction count, open shifts, active items, and low stock
+
+Prerequisites and placeholders:
+
+- Inventory is a prerequisite for durable catalog and stock movement records. POS currently uses local in-memory item/stock records until Inventory APIs are connected.
+- Customer Profiling is optional for named customers; walk-in sales work without a customer. Customer lookup is wired when the shared shell provides the Customer Profiling resolver.
+- Billing handoff for invoice settlement is deferred until the POS CRUD surface is stable.
 
 The implementation is in-memory for the first working shell; durable PostgreSQL tables in the shared database should be added before production use.
 

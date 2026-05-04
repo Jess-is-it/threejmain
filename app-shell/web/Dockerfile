@@ -8,6 +8,7 @@ RUN npm install
 COPY app-shell/web ./
 COPY customer-profiling /workspace/customer-profiling
 COPY billing /workspace/billing
+COPY point-of-sale /workspace/point-of-sale
 RUN npm run build
 
 FROM nginx:1.27-alpine

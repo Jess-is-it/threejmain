@@ -17,6 +17,7 @@ for parent in Path(__file__).resolve().parents:
     local_module_api_roots = [
         parent / "customer-profiling" / "api",
         parent / "billing" / "api",
+        parent / "point-of-sale" / "api",
     ]
     if any(module_api_root.exists() for module_api_root in local_module_api_roots):
         for module_api_root in local_module_api_roots:
@@ -27,6 +28,7 @@ for parent in Path(__file__).resolve().parents:
 from customer_profiling import configure_customer_profiling, customer_metrics, router as customer_profiling_router, seed_customer_data
 from customer_profiling.router import customer_summary, find_customer, visible_customers
 from billing import billing_metrics, configure_billing, router as billing_router, seed_billing_data
+from point_of_sale import configure_point_of_sale, point_of_sale_metrics, router as point_of_sale_router, seed_point_of_sale_data
 
 
 APP_STARTED_AT = time.time()
@@ -90,9 +92,9 @@ modules = [
         "slug": "point-of-sale",
         "name": "Point of Sale",
         "folder": "point-of-sale",
-        "status": "planned",
+        "status": "functional-shell",
         "description": "Counter sales, receipts, payment capture, daily cashier sessions, and sales reports.",
-        "metrics": {"today_sales": 0, "transactions": 0, "open_shift": 0},
+        "metrics": {"today_sales": 0, "transactions": 0, "open_shift": 0, "active_items": 0, "low_stock": 0},
     },
     {
         "slug": "inventory",
@@ -209,6 +211,9 @@ def sync_module_metrics() -> None:
         if module["slug"] == "billing":
             module["status"] = "functional-shell"
             module["metrics"] = billing_metrics()
+        if module["slug"] == "point-of-sale":
+            module["status"] = "functional-shell"
+            module["metrics"] = point_of_sale_metrics()
 
 
 def billing_customer_search(search: str = "") -> list[dict[str, Any]]:
@@ -321,14 +326,17 @@ def port_registry() -> list[dict[str, Any]]:
 
 configure_customer_profiling(current_admin, add_audit)
 configure_billing(current_admin, add_audit, billing_customer_resolver, billing_customer_search, seed_customer_data)
+configure_point_of_sale(current_admin, add_audit, billing_customer_resolver, billing_customer_search, seed_customer_data)
 app.include_router(customer_profiling_router)
 app.include_router(billing_router)
+app.include_router(point_of_sale_router)
 
 
 @app.on_event("startup")
 def seed_logs():
     seed_customer_data()
     seed_billing_data()
+    seed_point_of_sale_data()
     sync_module_metrics()
     if not audit_logs:
         add_audit("system_started", "app", "app-shell", {"message": "ISP management shell started"})
@@ -392,6 +400,7 @@ def change_password(payload: PasswordPayload, admin=Depends(current_admin)):
 def list_modules(admin=Depends(current_admin)):
     seed_customer_data()
     seed_billing_data()
+    seed_point_of_sale_data()
     sync_module_metrics()
     return modules
 
@@ -400,22 +409,25 @@ def list_modules(admin=Depends(current_admin)):
 def dashboard(admin=Depends(current_admin)):
     seed_customer_data()
     seed_billing_data()
+    seed_point_of_sale_data()
     sync_module_metrics()
     module_counts = {module["slug"]: module["metrics"] for module in modules}
     billing_counts = billing_metrics()
+    pos_counts = point_of_sale_metrics()
     return {
         "summary": {
             "modules": len(modules),
             "customers": customer_metrics()["customers"],
             "open_tickets": 0,
             "monthly_revenue": billing_counts["monthly_recurring_revenue"],
-            "inventory_alerts": 0,
+            "inventory_alerts": pos_counts["low_stock"],
         },
         "modules": modules,
         "module_counts": module_counts,
         "alerts": [
             {"level": "info", "message": "Customer Profiling is loaded from the customer-profiling module folder."},
             {"level": "info", "message": "Billing is loaded from the billing module folder with in-memory first-shell data."},
+            {"level": "info", "message": "Point of Sale is loaded with local item, session, sale, and payment CRUD placeholders."},
             {"level": "warning", "message": "Default admin password should be changed before deployment."},
         ],
     }
