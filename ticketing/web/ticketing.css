@@ -1,0 +1,46 @@
+.ticketing-page .metric-card {
+  min-height: 106px;
+}
+
+.ticketing-page .ticket-list {
+  max-height: 680px;
+  overflow: auto;
+}
+
+.ticketing-page .ticket-row {
+  border: 1px solid var(--tblr-border-color);
+  border-radius: 8px;
+  padding: 0.9rem;
+  background: var(--tblr-bg-surface);
+}
+
+.ticketing-page .ticket-row + .ticket-row {
+  margin-top: 0.75rem;
+}
+
+.ticketing-page .ticket-row.active {
+  border-color: var(--tblr-primary);
+  box-shadow: 0 0 0 2px rgba(var(--tblr-primary-rgb), 0.1);
+}
+
+.ticketing-page .ticket-subject {
+  font-weight: 650;
+}
+
+.ticketing-page .ticket-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.ticketing-page .note-list {
+  max-height: 260px;
+  overflow: auto;
+}
+
+.ticketing-page .note-item {
+  border: 1px solid var(--tblr-border-color);
+  border-radius: 8px;
+  padding: 0.75rem;
+  background: var(--tblr-bg-surface-secondary);
+}

@@ -32,6 +32,7 @@ import {
 } from '@tabler/icons-react';
 import CustomerProfilingPage from '../../../customer-profiling/web/CustomerProfilingPage.jsx';
 import BillingPage from '../../../billing/web/BillingPage.jsx';
+import TicketingPage from '../../../ticketing/web/TicketingPage.jsx';
 import './styles.css';
 
 const API = '/api';
@@ -601,7 +602,8 @@ function App() {
             {page === 'Dashboard' && <Dashboard data={dashboard} />}
             {page === 'Customer Profiling' && <CustomerProfilingPage refreshShell={refresh} />}
             {page === 'Billing' && <BillingPage refreshShell={refresh} />}
-            {moduleNav.filter((item) => !['Dashboard', 'Customer Profiling', 'Billing', 'System Settings', 'Logs'].includes(item.page)).map((item) => (
+            {page === 'Ticketing' && <TicketingPage refreshShell={refresh} />}
+            {moduleNav.filter((item) => !['Dashboard', 'Customer Profiling', 'Billing', 'Ticketing', 'System Settings', 'Logs'].includes(item.page)).map((item) => (
               page === item.page ? <ModulePage key={item.page} module={moduleByPage.get(item.page)} /> : null
             ))}
             {page === 'System Settings' && <SystemSettingsPage refresh={refresh} />}

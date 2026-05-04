@@ -17,6 +17,7 @@ for parent in Path(__file__).resolve().parents:
     local_module_api_roots = [
         parent / "customer-profiling" / "api",
         parent / "billing" / "api",
+        parent / "ticketing" / "api",
     ]
     if any(module_api_root.exists() for module_api_root in local_module_api_roots):
         for module_api_root in local_module_api_roots:
@@ -27,6 +28,7 @@ for parent in Path(__file__).resolve().parents:
 from customer_profiling import configure_customer_profiling, customer_metrics, router as customer_profiling_router, seed_customer_data
 from customer_profiling.router import customer_summary, find_customer, visible_customers
 from billing import billing_metrics, configure_billing, router as billing_router, seed_billing_data
+from ticketing import configure_ticketing, router as ticketing_router, seed_ticketing_data, ticketing_metrics
 
 
 APP_STARTED_AT = time.time()
@@ -122,9 +124,9 @@ modules = [
         "slug": "ticketing",
         "name": "Ticketing",
         "folder": "ticketing",
-        "status": "planned",
-        "description": "Trouble tickets, field jobs, outage tracking, dispatch, notes, and resolution history.",
-        "metrics": {"open_tickets": 0, "urgent": 0, "field_jobs": 0},
+        "status": "functional-shell",
+        "description": "Trouble tickets, customer issue intake, priorities, assignment placeholders, notes, and resolution history.",
+        "metrics": {"tickets": 0, "open_tickets": 0, "urgent": 0, "field_jobs": 0, "sla_risks": 0},
     },
 ]
 
@@ -209,6 +211,9 @@ def sync_module_metrics() -> None:
         if module["slug"] == "billing":
             module["status"] = "functional-shell"
             module["metrics"] = billing_metrics()
+        if module["slug"] == "ticketing":
+            module["status"] = "functional-shell"
+            module["metrics"] = ticketing_metrics()
 
 
 def billing_customer_search(search: str = "") -> list[dict[str, Any]]:
@@ -321,14 +326,17 @@ def port_registry() -> list[dict[str, Any]]:
 
 configure_customer_profiling(current_admin, add_audit)
 configure_billing(current_admin, add_audit, billing_customer_resolver, billing_customer_search, seed_customer_data)
+configure_ticketing(current_admin, add_audit, billing_customer_resolver, billing_customer_search, seed_customer_data)
 app.include_router(customer_profiling_router)
 app.include_router(billing_router)
+app.include_router(ticketing_router)
 
 
 @app.on_event("startup")
 def seed_logs():
     seed_customer_data()
     seed_billing_data()
+    seed_ticketing_data()
     sync_module_metrics()
     if not audit_logs:
         add_audit("system_started", "app", "app-shell", {"message": "ISP management shell started"})
@@ -392,6 +400,7 @@ def change_password(payload: PasswordPayload, admin=Depends(current_admin)):
 def list_modules(admin=Depends(current_admin)):
     seed_customer_data()
     seed_billing_data()
+    seed_ticketing_data()
     sync_module_metrics()
     return modules
 
@@ -400,14 +409,16 @@ def list_modules(admin=Depends(current_admin)):
 def dashboard(admin=Depends(current_admin)):
     seed_customer_data()
     seed_billing_data()
+    seed_ticketing_data()
     sync_module_metrics()
     module_counts = {module["slug"]: module["metrics"] for module in modules}
     billing_counts = billing_metrics()
+    ticket_counts = ticketing_metrics()
     return {
         "summary": {
             "modules": len(modules),
             "customers": customer_metrics()["customers"],
-            "open_tickets": 0,
+            "open_tickets": ticket_counts["open_tickets"],
             "monthly_revenue": billing_counts["monthly_recurring_revenue"],
             "inventory_alerts": 0,
         },
@@ -416,6 +427,7 @@ def dashboard(admin=Depends(current_admin)):
         "alerts": [
             {"level": "info", "message": "Customer Profiling is loaded from the customer-profiling module folder."},
             {"level": "info", "message": "Billing is loaded from the billing module folder with in-memory first-shell data."},
+            {"level": "info", "message": "Ticketing is loaded from the ticketing module folder with Customer Profiling lookup placeholders."},
             {"level": "warning", "message": "Default admin password should be changed before deployment."},
         ],
     }

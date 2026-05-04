@@ -50,6 +50,10 @@ customer-profiling/
 billing/
   web/        Billing page/components/styles
   api/        Billing FastAPI router/service shell
+
+ticketing/
+  web/        Ticketing page/components/styles
+  api/        Ticketing FastAPI router/service shell
 ```
 
 ## Module Structure
@@ -103,6 +107,33 @@ The current module includes:
 - Adjustment CRUD/voiding for invoice credits and debits
 - Customer balance summaries with outstanding balance, credit, overdue total, and open invoice count
 - Billing dashboard metrics for active subscriptions, open invoices, overdue invoices, collections, MRR, and outstanding balance
+
+The implementation is in-memory for the first working shell; durable PostgreSQL tables in the shared database should be added before production use.
+
+## Ticketing Module
+
+Ticketing has a first working CRUD shell in `/ticketing` using the modular monolith stack:
+
+- Frontend page/styles: `ticketing/web/`
+- API router/state: `ticketing/api/ticketing/`
+- Current API prefix: `/api/ticketing`
+
+The current module includes:
+
+- Ticket CRUD with ticket number, subject, description, status, priority, category, source, due date, and resolution fields
+- Search/filter by free text, status, priority, and category
+- Customer lookup through Customer Profiling when a customer record exists
+- Manual requestor/contact placeholders for tickets that are not linked to Customer Profiling yet
+- Free-text assignee placeholder until Account Admin staff/user records are available
+- Service ID and outage ID placeholder fields for future service-assignment and outage integrations
+- Ticket notes with internal/customer-visible visibility
+- Ticketing dashboard metrics for open tickets, urgent tickets, field-job categories, and SLA risks
+
+Prerequisites and integration notes:
+
+- Customer Profiling is the dependency for durable customer/account linkage. Ticketing can already link to Customer Profiling records but still allows manual requestor fields.
+- Account Admin is the dependency for real staff assignment and ownership. The first CRUD shell uses free-text `assignedTo`.
+- Inventory, outage tracking, and dispatch workflows are future dependencies for field jobs. The first CRUD shell keeps `serviceId` and `outageId` as reference placeholders.
 
 The implementation is in-memory for the first working shell; durable PostgreSQL tables in the shared database should be added before production use.
 
