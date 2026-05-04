@@ -50,6 +50,10 @@ customer-profiling/
 billing/
   web/        Billing page/components/styles
   api/        Billing FastAPI router/service shell
+
+customer-service-management/
+  web/        Customer Service Management page/components/styles
+  api/        Customer Service Management FastAPI router/service shell
 ```
 
 ## Module Structure
@@ -103,6 +107,31 @@ The current module includes:
 - Adjustment CRUD/voiding for invoice credits and debits
 - Customer balance summaries with outstanding balance, credit, overdue total, and open invoice count
 - Billing dashboard metrics for active subscriptions, open invoices, overdue invoices, collections, MRR, and outstanding balance
+
+The implementation is in-memory for the first working shell; durable PostgreSQL tables in the shared database should be added before production use.
+
+## Customer Service Management Module
+
+Customer Service Management has a first working CRUD shell in `/customer-service-management` using the modular monolith stack:
+
+- Frontend page/styles: `customer-service-management/web/`
+- API router/state: `customer-service-management/api/customer_service_management/`
+- Current API prefix: `/api/customer-service-management`
+
+The current module includes:
+
+- Service request CRUD for general inquiries, billing concerns, service changes, complaints, retention, and follow-up work
+- Customer interaction CRUD for calls, SMS, Facebook messages, email, walk-ins, field notes, and internal notes
+- Follow-up/callback CRUD with due dates, assignees, statuses, and completion timestamps
+- Overview metrics for open requests, callbacks due, SLA risks, and interactions today
+- Customer lookup through Customer Profiling when the shell provides customer resolver/search hooks
+
+Prerequisites and placeholders:
+
+- Customer Profiling is the primary dependency for customer identity and lookup. Until persistent cross-module relationships are added, CSM stores customer snapshots in memory.
+- Ticketing can later link escalated service requests to trouble tickets; this first pass keeps ticket links as a future placeholder.
+- Billing can later link billing concerns to invoices/subscriptions; this first pass categorizes billing concerns without direct billing record links.
+- Inventory/field-service links for equipment or field visits are placeholders for later module integration.
 
 The implementation is in-memory for the first working shell; durable PostgreSQL tables in the shared database should be added before production use.
 

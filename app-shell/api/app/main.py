@@ -17,6 +17,7 @@ for parent in Path(__file__).resolve().parents:
     local_module_api_roots = [
         parent / "customer-profiling" / "api",
         parent / "billing" / "api",
+        parent / "customer-service-management" / "api",
     ]
     if any(module_api_root.exists() for module_api_root in local_module_api_roots):
         for module_api_root in local_module_api_roots:
@@ -27,6 +28,12 @@ for parent in Path(__file__).resolve().parents:
 from customer_profiling import configure_customer_profiling, customer_metrics, router as customer_profiling_router, seed_customer_data
 from customer_profiling.router import customer_summary, find_customer, visible_customers
 from billing import billing_metrics, configure_billing, router as billing_router, seed_billing_data
+from customer_service_management import (
+    configure_customer_service_management,
+    customer_service_metrics,
+    router as customer_service_management_router,
+    seed_customer_service_data,
+)
 
 
 APP_STARTED_AT = time.time()
@@ -114,7 +121,7 @@ modules = [
         "slug": "customer-service-management",
         "name": "Customer Service Management",
         "folder": "customer-service-management",
-        "status": "planned",
+        "status": "functional-shell",
         "description": "Customer interactions, service requests, follow-ups, callbacks, and care workflows.",
         "metrics": {"open_requests": 0, "callbacks_due": 0, "sla_risks": 0},
     },
@@ -209,6 +216,9 @@ def sync_module_metrics() -> None:
         if module["slug"] == "billing":
             module["status"] = "functional-shell"
             module["metrics"] = billing_metrics()
+        if module["slug"] == "customer-service-management":
+            module["status"] = "functional-shell"
+            module["metrics"] = customer_service_metrics()
 
 
 def billing_customer_search(search: str = "") -> list[dict[str, Any]]:
@@ -321,14 +331,17 @@ def port_registry() -> list[dict[str, Any]]:
 
 configure_customer_profiling(current_admin, add_audit)
 configure_billing(current_admin, add_audit, billing_customer_resolver, billing_customer_search, seed_customer_data)
+configure_customer_service_management(current_admin, add_audit, billing_customer_resolver, billing_customer_search, seed_customer_data)
 app.include_router(customer_profiling_router)
 app.include_router(billing_router)
+app.include_router(customer_service_management_router)
 
 
 @app.on_event("startup")
 def seed_logs():
     seed_customer_data()
     seed_billing_data()
+    seed_customer_service_data()
     sync_module_metrics()
     if not audit_logs:
         add_audit("system_started", "app", "app-shell", {"message": "ISP management shell started"})
@@ -392,6 +405,7 @@ def change_password(payload: PasswordPayload, admin=Depends(current_admin)):
 def list_modules(admin=Depends(current_admin)):
     seed_customer_data()
     seed_billing_data()
+    seed_customer_service_data()
     sync_module_metrics()
     return modules
 
@@ -400,6 +414,7 @@ def list_modules(admin=Depends(current_admin)):
 def dashboard(admin=Depends(current_admin)):
     seed_customer_data()
     seed_billing_data()
+    seed_customer_service_data()
     sync_module_metrics()
     module_counts = {module["slug"]: module["metrics"] for module in modules}
     billing_counts = billing_metrics()
@@ -407,7 +422,7 @@ def dashboard(admin=Depends(current_admin)):
         "summary": {
             "modules": len(modules),
             "customers": customer_metrics()["customers"],
-            "open_tickets": 0,
+            "open_tickets": customer_service_metrics()["open_requests"],
             "monthly_revenue": billing_counts["monthly_recurring_revenue"],
             "inventory_alerts": 0,
         },
@@ -416,6 +431,7 @@ def dashboard(admin=Depends(current_admin)):
         "alerts": [
             {"level": "info", "message": "Customer Profiling is loaded from the customer-profiling module folder."},
             {"level": "info", "message": "Billing is loaded from the billing module folder with in-memory first-shell data."},
+            {"level": "info", "message": "Customer Service Management is loaded with in-memory CRUD for service requests, interactions, and follow-ups."},
             {"level": "warning", "message": "Default admin password should be changed before deployment."},
         ],
     }
