@@ -21,8 +21,11 @@ Current API prefix: `/api/ticketing`.
 
 Implemented in this module:
 
-- Ticket create, list/search/filter, detail, update, and soft-delete workflows.
+- Ticket create, search/filter, detail, update, and soft-delete workflows.
+- Status-based Kanban board where ticket cards can be moved between status columns.
+- Modal-based create/edit ticket form instead of a persistent side panel.
 - Ticket number, status, priority, category, source, due date, service ID, outage ID, assignment, and resolution fields.
+- Priority-coded ticket cards for urgent, high, normal, and low tickets.
 - Customer Profiling lookup hooks with manual requestor/contact fallback.
 - Free-text assignee placeholder until Account Admin staff records are integrated.
 - Ticket notes with internal/customer-visible visibility.

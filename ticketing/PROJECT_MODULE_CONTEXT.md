@@ -1,6 +1,6 @@
 # Ticketing Module Context
 
-Ticketing owns customer trouble tickets, basic issue intake, ticket queue filtering, notes, assignment placeholders, and resolution tracking.
+Ticketing owns customer trouble tickets, basic issue intake, status-board queue management, notes, assignment placeholders, and resolution tracking.
 
 ## Module Layout
 
@@ -45,6 +45,15 @@ The first pass is in-memory only and supports:
 - Status, priority, category, source, due date, service reference, outage reference, assignment placeholder, and resolution fields
 - Internal and customer-visible notes
 - Dashboard-ready module metrics for total tickets, open tickets, urgent tickets, field jobs, and SLA risks
+
+## Frontend
+
+- `ticketing/web/TicketingPage.jsx` renders a Kanban-style board where ticket status values are the column titles.
+- Ticket cards expose priority, ticket number, subject, customer, requestor, contact, assignee, due date, category, source, service ID, outage ID, and a short description.
+- Priority is visually encoded on each card for `URGENT`, `HIGH`, `NORMAL`, and `LOW` so urgent/high work is immediately identifiable.
+- Users can move tickets between statuses by dragging cards to another status column or by using the status selector on each card.
+- Ticket create/edit now uses a modal form instead of a persistent side panel, leaving the board as the primary working surface.
+- Notes remain available for the selected ticket below the board.
 
 ## Dependencies
 
