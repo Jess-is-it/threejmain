@@ -1,8 +1,8 @@
 {
   "slug": "ticketing",
   "name": "Ticketing",
-  "status": "planned",
+  "status": "functional-shell",
   "owner": "threejmain",
-  "description": "Trouble tickets, field jobs, outage tracking, dispatch, notes, and resolution history.",
+  "description": "Trouble tickets, customer issue intake, priorities, assignment placeholders, notes, and resolution history.",
   "app_shell_route": "/ticketing"
 }
