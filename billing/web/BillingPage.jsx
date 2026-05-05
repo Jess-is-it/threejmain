@@ -11,6 +11,7 @@ import {
   IconRepeat,
   IconSearch,
   IconTrash,
+  IconX,
   IconUsers
 } from '@tabler/icons-react';
 import './billing.css';
@@ -71,6 +72,26 @@ function Card({ title, icon: Icon, children, actions }) {
         </div>
       )}
       <div className="card-body">{children}</div>
+    </div>
+  );
+}
+
+function Modal({ title, icon: Icon, open, onClose, children }) {
+  if (!open) return null;
+  return (
+    <div className="billing-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <div className="billing-modal" role="dialog" aria-modal="true" aria-label={title}>
+        <div className="billing-modal-header">
+          <h3 className="billing-modal-title">
+            {Icon && <Icon size={18} className="me-2 text-muted" />}
+            {title}
+          </h3>
+          <button className="btn btn-icon" type="button" onClick={onClose} aria-label="Close">
+            <IconX size={18} />
+          </button>
+        </div>
+        <div className="billing-modal-body">{children}</div>
+      </div>
     </div>
   );
 }
@@ -161,6 +182,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
   const [invoiceForm, setInvoiceForm] = useState(blankInvoice);
   const [paymentForm, setPaymentForm] = useState(blankPayment);
   const [adjustmentForm, setAdjustmentForm] = useState(blankAdjustment);
+  const [modal, setModal] = useState(null);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
@@ -229,6 +251,63 @@ export default function BillingPage({ refreshShell = () => {} }) {
     );
   }
 
+  function closeModal() {
+    setModal(null);
+  }
+
+  function openSubscriptionForm(subscription = null) {
+    setSubscriptionForm(subscription ? {
+      ...blankSubscription,
+      ...subscription,
+      monthlyRate: String(subscription.monthlyRate),
+      billingDay: String(subscription.billingDay),
+      dueDays: String(subscription.dueDays)
+    } : blankSubscription);
+    setModal('subscription');
+  }
+
+  function openInvoiceForm(invoice = null) {
+    if (!invoice) {
+      setInvoiceForm(blankInvoice);
+      setModal('invoice');
+      return;
+    }
+    const firstLine = invoice.lineItems?.[0] || {};
+    setInvoiceForm({
+      id: invoice.id,
+      customerId: invoice.customerId,
+      subscriptionId: invoice.subscriptionId || '',
+      billingCycleStart: invoice.billingCycleStart,
+      billingCycleEnd: invoice.billingCycleEnd,
+      issueDate: invoice.issueDate,
+      dueDate: invoice.dueDate,
+      status: invoice.status,
+      description: firstLine.description || '',
+      amount: String(firstLine.unitPrice || firstLine.amount || ''),
+      notes: invoice.notes || ''
+    });
+    setActiveTab('Invoices');
+    setModal('invoice');
+  }
+
+  function openPaymentForm(payment = null) {
+    setPaymentForm(payment ? {
+      ...blankPayment,
+      ...payment,
+      amount: String(payment.amount)
+    } : blankPayment);
+    setModal('payment');
+  }
+
+  function openAdjustmentForm(adjustment = null) {
+    setAdjustmentForm(adjustment ? {
+      ...blankAdjustment,
+      ...adjustment,
+      amount: String(adjustment.amount)
+    } : blankAdjustment);
+    setModal('adjustment');
+  }
+
   async function submitSubscription(e) {
     e.preventDefault();
     const body = {
@@ -240,6 +319,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
     const path = subscriptionForm.id ? `/billing/subscriptions/${subscriptionForm.id}` : '/billing/subscriptions';
     await request(path, { method: subscriptionForm.id ? 'PATCH' : 'POST', body: JSON.stringify(body) });
     setSubscriptionForm(blankSubscription);
+    closeModal();
     setMessage(subscriptionForm.id ? 'Subscription saved.' : 'Subscription created.');
     await load();
     refreshShell();
@@ -277,6 +357,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
     const path = invoiceForm.id ? `/billing/invoices/${invoiceForm.id}` : '/billing/invoices';
     await request(path, { method: invoiceForm.id ? 'PATCH' : 'POST', body: JSON.stringify(body) });
     setInvoiceForm(blankInvoice);
+    closeModal();
     setMessage(invoiceForm.id ? 'Invoice saved.' : 'Invoice created.');
     await load();
     refreshShell();
@@ -296,6 +377,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
     const path = paymentForm.id ? `/billing/payments/${paymentForm.id}` : '/billing/payments';
     await request(path, { method: paymentForm.id ? 'PATCH' : 'POST', body: JSON.stringify(body) });
     setPaymentForm(blankPayment);
+    closeModal();
     setMessage(paymentForm.id ? 'Payment saved.' : 'Payment posted.');
     await load();
     refreshShell();
@@ -315,6 +397,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
     const path = adjustmentForm.id ? `/billing/adjustments/${adjustmentForm.id}` : '/billing/adjustments';
     await request(path, { method: adjustmentForm.id ? 'PATCH' : 'POST', body: JSON.stringify(body) });
     setAdjustmentForm(blankAdjustment);
+    closeModal();
     setMessage(adjustmentForm.id ? 'Adjustment saved.' : 'Adjustment posted.');
     await load();
     refreshShell();
@@ -329,21 +412,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
   }
 
   function editInvoice(invoice) {
-    const firstLine = invoice.lineItems?.[0] || {};
-    setInvoiceForm({
-      id: invoice.id,
-      customerId: invoice.customerId,
-      subscriptionId: invoice.subscriptionId || '',
-      billingCycleStart: invoice.billingCycleStart,
-      billingCycleEnd: invoice.billingCycleEnd,
-      issueDate: invoice.issueDate,
-      dueDate: invoice.dueDate,
-      status: invoice.status,
-      description: firstLine.description || '',
-      amount: String(firstLine.unitPrice || firstLine.amount || ''),
-      notes: invoice.notes || ''
-    });
-    setActiveTab('Invoices');
+    openInvoiceForm(invoice);
   }
 
   function setPaymentInvoice(invoiceId) {
@@ -417,36 +486,15 @@ export default function BillingPage({ refreshShell = () => {} }) {
 
       {activeTab === 'Subscriptions' && (
         <div className="row row-cards">
-          <div className="col-lg-4">
-            <Card title={subscriptionForm.id ? 'Edit Subscription' : 'New Subscription'} icon={IconRepeat}>
-              <form className="billing-form" onSubmit={submitSubscription}>
-                <SelectField label="Customer" value={subscriptionForm.customerId} required onChange={(customerId) => setSubscriptionForm({ ...subscriptionForm, customerId })}>{customerOptions()}</SelectField>
-                <TextField label="Plan Name" value={subscriptionForm.planName} required onChange={(planName) => setSubscriptionForm({ ...subscriptionForm, planName })} />
-                <TextField label="Service ID" value={subscriptionForm.serviceId} onChange={(serviceId) => setSubscriptionForm({ ...subscriptionForm, serviceId })} />
-                <TextField label="Monthly Rate" type="number" min="0" step="0.01" value={subscriptionForm.monthlyRate} required onChange={(monthlyRate) => setSubscriptionForm({ ...subscriptionForm, monthlyRate })} />
-                <SelectField label="Billing Mode" value={subscriptionForm.billingMode} options={meta.billingModes || ['PREPAID', 'POSTPAID']} onChange={(billingMode) => setSubscriptionForm({ ...subscriptionForm, billingMode, dueDays: billingMode === 'PREPAID' ? '0' : '7' })} />
-                <div className="billing-two-cols">
-                  <TextField label="Billing Day" type="number" min="1" max="28" value={subscriptionForm.billingDay} required onChange={(billingDay) => setSubscriptionForm({ ...subscriptionForm, billingDay })} />
-                  <TextField label="Due Days" type="number" min="0" max="60" value={subscriptionForm.dueDays} required onChange={(dueDays) => setSubscriptionForm({ ...subscriptionForm, dueDays })} />
-                </div>
-                <div className="billing-two-cols">
-                  <TextField label="Start Date" type="date" value={subscriptionForm.startDate} required onChange={(startDate) => setSubscriptionForm({ ...subscriptionForm, startDate, nextInvoiceDate: subscriptionForm.nextInvoiceDate || startDate })} />
-                  <TextField label="Next Invoice" type="date" value={subscriptionForm.nextInvoiceDate} required onChange={(nextInvoiceDate) => setSubscriptionForm({ ...subscriptionForm, nextInvoiceDate })} />
-                </div>
-                <SelectField label="Status" value={subscriptionForm.status} options={meta.subscriptionStatuses || ['ACTIVE']} onChange={(status) => setSubscriptionForm({ ...subscriptionForm, status })} />
-                <TextField label="Notes" value={subscriptionForm.notes} onChange={(notes) => setSubscriptionForm({ ...subscriptionForm, notes })} />
-                <div className="billing-form-actions">
-                  {subscriptionForm.id && <button className="btn" type="button" onClick={() => setSubscriptionForm(blankSubscription)}>Cancel</button>}
-                  <button className="btn btn-primary"><IconDeviceFloppy size={16} className="me-1" />Save</button>
-                </div>
-              </form>
-            </Card>
-          </div>
-          <div className="col-lg-8">
-            <Card title="Subscriptions" icon={IconRepeat}>
+          <div className="col-12">
+            <Card
+              title="Subscriptions"
+              icon={IconRepeat}
+              actions={<button className="btn btn-primary btn-sm" type="button" onClick={() => openSubscriptionForm()}><IconPlus size={16} className="me-1" />New Subscription</button>}
+            >
               <SubscriptionTable
                 rows={subscriptions}
-                onEdit={(subscription) => setSubscriptionForm({ ...blankSubscription, ...subscription, monthlyRate: String(subscription.monthlyRate), billingDay: String(subscription.billingDay), dueDays: String(subscription.dueDays) })}
+                onEdit={openSubscriptionForm}
                 onGenerate={generateInvoice}
                 onDelete={deleteSubscription}
               />
@@ -457,35 +505,12 @@ export default function BillingPage({ refreshShell = () => {} }) {
 
       {activeTab === 'Invoices' && (
         <div className="row row-cards">
-          <div className="col-lg-4">
-            <Card title={invoiceForm.id ? 'Edit Invoice' : 'New Invoice'} icon={IconFileInvoice}>
-              <form className="billing-form" onSubmit={submitInvoice}>
-                <SelectField label="Subscription" value={invoiceForm.subscriptionId} onChange={(subscriptionId) => {
-                  const subscription = subscriptions.find((item) => item.id === subscriptionId);
-                  setInvoiceForm({ ...invoiceForm, subscriptionId, customerId: subscription?.customerId || invoiceForm.customerId, amount: subscription ? String(subscription.monthlyRate) : invoiceForm.amount });
-                }}>{subscriptionOptions()}</SelectField>
-                {!invoiceForm.subscriptionId && <SelectField label="Customer" value={invoiceForm.customerId} required onChange={(customerId) => setInvoiceForm({ ...invoiceForm, customerId })}>{customerOptions()}</SelectField>}
-                <div className="billing-two-cols">
-                  <TextField label="Cycle Start" type="date" value={invoiceForm.billingCycleStart} required onChange={(billingCycleStart) => setInvoiceForm({ ...invoiceForm, billingCycleStart })} />
-                  <TextField label="Cycle End" type="date" value={invoiceForm.billingCycleEnd} onChange={(billingCycleEnd) => setInvoiceForm({ ...invoiceForm, billingCycleEnd })} />
-                </div>
-                <div className="billing-two-cols">
-                  <TextField label="Issue Date" type="date" value={invoiceForm.issueDate} required onChange={(issueDate) => setInvoiceForm({ ...invoiceForm, issueDate })} />
-                  <TextField label="Due Date" type="date" value={invoiceForm.dueDate} required onChange={(dueDate) => setInvoiceForm({ ...invoiceForm, dueDate })} />
-                </div>
-                <TextField label="Line Item" value={invoiceForm.description} required onChange={(description) => setInvoiceForm({ ...invoiceForm, description })} />
-                <TextField label="Amount" type="number" min="0" step="0.01" value={invoiceForm.amount} required onChange={(amount) => setInvoiceForm({ ...invoiceForm, amount })} />
-                <SelectField label="Status" value={invoiceForm.status} options={meta.invoiceStatuses || ['ISSUED']} onChange={(status) => setInvoiceForm({ ...invoiceForm, status })} />
-                <TextField label="Notes" value={invoiceForm.notes} onChange={(notes) => setInvoiceForm({ ...invoiceForm, notes })} />
-                <div className="billing-form-actions">
-                  {invoiceForm.id && <button className="btn" type="button" onClick={() => setInvoiceForm(blankInvoice)}>Cancel</button>}
-                  <button className="btn btn-primary"><IconDeviceFloppy size={16} className="me-1" />Save</button>
-                </div>
-              </form>
-            </Card>
-          </div>
-          <div className="col-lg-8">
-            <Card title="Invoices" icon={IconFileInvoice}>
+          <div className="col-12">
+            <Card
+              title="Invoices"
+              icon={IconFileInvoice}
+              actions={<button className="btn btn-primary btn-sm" type="button" onClick={() => openInvoiceForm()}><IconPlus size={16} className="me-1" />New Invoice</button>}
+            >
               <InvoiceTable rows={invoices} onEdit={editInvoice} onVoid={voidInvoice} />
             </Card>
           </div>
@@ -494,29 +519,15 @@ export default function BillingPage({ refreshShell = () => {} }) {
 
       {activeTab === 'Payments' && (
         <div className="row row-cards">
-          <div className="col-lg-4">
-            <Card title={paymentForm.id ? 'Edit Payment' : 'Post Payment'} icon={IconCreditCard}>
-              <form className="billing-form" onSubmit={submitPayment}>
-                <SelectField label="Invoice" value={paymentForm.invoiceId} onChange={setPaymentInvoice}>{invoiceOptions()}</SelectField>
-                {!paymentForm.invoiceId && <SelectField label="Customer" value={paymentForm.customerId} required onChange={(customerId) => setPaymentForm({ ...paymentForm, customerId })}>{customerOptions()}</SelectField>}
-                <TextField label="Amount" type="number" min="0" step="0.01" value={paymentForm.amount} required onChange={(amount) => setPaymentForm({ ...paymentForm, amount })} />
-                <SelectField label="Method" value={paymentForm.method} options={meta.paymentMethods || ['CASH']} onChange={(method) => setPaymentForm({ ...paymentForm, method })} />
-                <TextField label="Payment Date" type="date" value={paymentForm.paymentDate} required onChange={(paymentDate) => setPaymentForm({ ...paymentForm, paymentDate })} />
-                <TextField label="Reference Number" value={paymentForm.referenceNumber} onChange={(referenceNumber) => setPaymentForm({ ...paymentForm, referenceNumber })} />
-                <SelectField label="Status" value={paymentForm.status} options={meta.paymentStatuses || ['POSTED']} onChange={(status) => setPaymentForm({ ...paymentForm, status })} />
-                <TextField label="Notes" value={paymentForm.notes} onChange={(notes) => setPaymentForm({ ...paymentForm, notes })} />
-                <div className="billing-form-actions">
-                  {paymentForm.id && <button className="btn" type="button" onClick={() => setPaymentForm(blankPayment)}>Cancel</button>}
-                  <button className="btn btn-primary"><IconDeviceFloppy size={16} className="me-1" />Save</button>
-                </div>
-              </form>
-            </Card>
-          </div>
-          <div className="col-lg-8">
-            <Card title="Payments" icon={IconReceipt}>
+          <div className="col-12">
+            <Card
+              title="Payments"
+              icon={IconReceipt}
+              actions={<button className="btn btn-primary btn-sm" type="button" onClick={() => openPaymentForm()}><IconPlus size={16} className="me-1" />Post Payment</button>}
+            >
               <PaymentTable
                 rows={payments}
-                onEdit={(payment) => setPaymentForm({ ...blankPayment, ...payment, amount: String(payment.amount) })}
+                onEdit={openPaymentForm}
                 onVoid={voidPayment}
               />
             </Card>
@@ -526,30 +537,15 @@ export default function BillingPage({ refreshShell = () => {} }) {
 
       {activeTab === 'Adjustments' && (
         <div className="row row-cards">
-          <div className="col-lg-4">
-            <Card title={adjustmentForm.id ? 'Edit Adjustment' : 'Post Adjustment'} icon={IconPlus}>
-              <form className="billing-form" onSubmit={submitAdjustment}>
-                <SelectField label="Invoice" value={adjustmentForm.invoiceId} required onChange={(invoiceId) => setAdjustmentForm({ ...adjustmentForm, invoiceId })}>
-                  <option value="">Select invoice</option>
-                  {invoices.filter((invoice) => invoice.status !== 'VOID').map((invoice) => <option key={invoice.id} value={invoice.id}>{invoice.invoiceNumber} - {customerLabel(invoice.customer)}</option>)}
-                </SelectField>
-                <SelectField label="Type" value={adjustmentForm.type} options={meta.adjustmentTypes || ['CREDIT', 'DEBIT']} onChange={(type) => setAdjustmentForm({ ...adjustmentForm, type })} />
-                <TextField label="Amount" type="number" min="0" step="0.01" value={adjustmentForm.amount} required onChange={(amount) => setAdjustmentForm({ ...adjustmentForm, amount })} />
-                <TextField label="Reason" value={adjustmentForm.reason} required onChange={(reason) => setAdjustmentForm({ ...adjustmentForm, reason })} />
-                <SelectField label="Status" value={adjustmentForm.status} options={meta.adjustmentStatuses || ['POSTED']} onChange={(status) => setAdjustmentForm({ ...adjustmentForm, status })} />
-                <TextField label="Notes" value={adjustmentForm.notes} onChange={(notes) => setAdjustmentForm({ ...adjustmentForm, notes })} />
-                <div className="billing-form-actions">
-                  {adjustmentForm.id && <button className="btn" type="button" onClick={() => setAdjustmentForm(blankAdjustment)}>Cancel</button>}
-                  <button className="btn btn-primary"><IconDeviceFloppy size={16} className="me-1" />Save</button>
-                </div>
-              </form>
-            </Card>
-          </div>
-          <div className="col-lg-8">
-            <Card title="Adjustments" icon={IconPlus}>
+          <div className="col-12">
+            <Card
+              title="Adjustments"
+              icon={IconPlus}
+              actions={<button className="btn btn-primary btn-sm" type="button" onClick={() => openAdjustmentForm()}><IconPlus size={16} className="me-1" />Post Adjustment</button>}
+            >
               <AdjustmentTable
                 rows={adjustments}
-                onEdit={(adjustment) => setAdjustmentForm({ ...blankAdjustment, ...adjustment, amount: String(adjustment.amount) })}
+                onEdit={openAdjustmentForm}
                 onVoid={voidAdjustment}
               />
             </Card>
@@ -562,6 +558,91 @@ export default function BillingPage({ refreshShell = () => {} }) {
           <BalanceTable rows={balances} />
         </Card>
       )}
+
+      <Modal title={subscriptionForm.id ? 'Edit Subscription' : 'New Subscription'} icon={IconRepeat} open={modal === 'subscription'} onClose={closeModal}>
+        <form className="billing-form" onSubmit={submitSubscription}>
+          <SelectField label="Customer" value={subscriptionForm.customerId} required onChange={(customerId) => setSubscriptionForm({ ...subscriptionForm, customerId })}>{customerOptions()}</SelectField>
+          <TextField label="Plan Name" value={subscriptionForm.planName} required onChange={(planName) => setSubscriptionForm({ ...subscriptionForm, planName })} />
+          <TextField label="Service ID" value={subscriptionForm.serviceId} onChange={(serviceId) => setSubscriptionForm({ ...subscriptionForm, serviceId })} />
+          <TextField label="Monthly Rate" type="number" min="0" step="0.01" value={subscriptionForm.monthlyRate} required onChange={(monthlyRate) => setSubscriptionForm({ ...subscriptionForm, monthlyRate })} />
+          <SelectField label="Billing Mode" value={subscriptionForm.billingMode} options={meta.billingModes || ['PREPAID', 'POSTPAID']} onChange={(billingMode) => setSubscriptionForm({ ...subscriptionForm, billingMode, dueDays: billingMode === 'PREPAID' ? '0' : '7' })} />
+          <div className="billing-two-cols">
+            <TextField label="Billing Day" type="number" min="1" max="28" value={subscriptionForm.billingDay} required onChange={(billingDay) => setSubscriptionForm({ ...subscriptionForm, billingDay })} />
+            <TextField label="Due Days" type="number" min="0" max="60" value={subscriptionForm.dueDays} required onChange={(dueDays) => setSubscriptionForm({ ...subscriptionForm, dueDays })} />
+          </div>
+          <div className="billing-two-cols">
+            <TextField label="Start Date" type="date" value={subscriptionForm.startDate} required onChange={(startDate) => setSubscriptionForm({ ...subscriptionForm, startDate, nextInvoiceDate: subscriptionForm.nextInvoiceDate || startDate })} />
+            <TextField label="Next Invoice" type="date" value={subscriptionForm.nextInvoiceDate} required onChange={(nextInvoiceDate) => setSubscriptionForm({ ...subscriptionForm, nextInvoiceDate })} />
+          </div>
+          <SelectField label="Status" value={subscriptionForm.status} options={meta.subscriptionStatuses || ['ACTIVE']} onChange={(status) => setSubscriptionForm({ ...subscriptionForm, status })} />
+          <TextField label="Notes" value={subscriptionForm.notes} onChange={(notes) => setSubscriptionForm({ ...subscriptionForm, notes })} />
+          <div className="billing-form-actions">
+            <button className="btn" type="button" onClick={closeModal}>Cancel</button>
+            <button className="btn btn-primary"><IconDeviceFloppy size={16} className="me-1" />Save</button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal title={invoiceForm.id ? 'Edit Invoice' : 'New Invoice'} icon={IconFileInvoice} open={modal === 'invoice'} onClose={closeModal}>
+        <form className="billing-form" onSubmit={submitInvoice}>
+          <SelectField label="Subscription" value={invoiceForm.subscriptionId} onChange={(subscriptionId) => {
+            const subscription = subscriptions.find((item) => item.id === subscriptionId);
+            setInvoiceForm({ ...invoiceForm, subscriptionId, customerId: subscription?.customerId || invoiceForm.customerId, amount: subscription ? String(subscription.monthlyRate) : invoiceForm.amount });
+          }}>{subscriptionOptions()}</SelectField>
+          {!invoiceForm.subscriptionId && <SelectField label="Customer" value={invoiceForm.customerId} required onChange={(customerId) => setInvoiceForm({ ...invoiceForm, customerId })}>{customerOptions()}</SelectField>}
+          <div className="billing-two-cols">
+            <TextField label="Cycle Start" type="date" value={invoiceForm.billingCycleStart} required onChange={(billingCycleStart) => setInvoiceForm({ ...invoiceForm, billingCycleStart })} />
+            <TextField label="Cycle End" type="date" value={invoiceForm.billingCycleEnd} onChange={(billingCycleEnd) => setInvoiceForm({ ...invoiceForm, billingCycleEnd })} />
+          </div>
+          <div className="billing-two-cols">
+            <TextField label="Issue Date" type="date" value={invoiceForm.issueDate} required onChange={(issueDate) => setInvoiceForm({ ...invoiceForm, issueDate })} />
+            <TextField label="Due Date" type="date" value={invoiceForm.dueDate} required onChange={(dueDate) => setInvoiceForm({ ...invoiceForm, dueDate })} />
+          </div>
+          <TextField label="Line Item" value={invoiceForm.description} required onChange={(description) => setInvoiceForm({ ...invoiceForm, description })} />
+          <TextField label="Amount" type="number" min="0" step="0.01" value={invoiceForm.amount} required onChange={(amount) => setInvoiceForm({ ...invoiceForm, amount })} />
+          <SelectField label="Status" value={invoiceForm.status} options={meta.invoiceStatuses || ['ISSUED']} onChange={(status) => setInvoiceForm({ ...invoiceForm, status })} />
+          <TextField label="Notes" value={invoiceForm.notes} onChange={(notes) => setInvoiceForm({ ...invoiceForm, notes })} />
+          <div className="billing-form-actions">
+            <button className="btn" type="button" onClick={closeModal}>Cancel</button>
+            <button className="btn btn-primary"><IconDeviceFloppy size={16} className="me-1" />Save</button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal title={paymentForm.id ? 'Edit Payment' : 'Post Payment'} icon={IconCreditCard} open={modal === 'payment'} onClose={closeModal}>
+        <form className="billing-form" onSubmit={submitPayment}>
+          <SelectField label="Invoice" value={paymentForm.invoiceId} onChange={setPaymentInvoice}>{invoiceOptions()}</SelectField>
+          {!paymentForm.invoiceId && <SelectField label="Customer" value={paymentForm.customerId} required onChange={(customerId) => setPaymentForm({ ...paymentForm, customerId })}>{customerOptions()}</SelectField>}
+          <TextField label="Amount" type="number" min="0" step="0.01" value={paymentForm.amount} required onChange={(amount) => setPaymentForm({ ...paymentForm, amount })} />
+          <SelectField label="Method" value={paymentForm.method} options={meta.paymentMethods || ['CASH']} onChange={(method) => setPaymentForm({ ...paymentForm, method })} />
+          <TextField label="Payment Date" type="date" value={paymentForm.paymentDate} required onChange={(paymentDate) => setPaymentForm({ ...paymentForm, paymentDate })} />
+          <TextField label="Reference Number" value={paymentForm.referenceNumber} onChange={(referenceNumber) => setPaymentForm({ ...paymentForm, referenceNumber })} />
+          <SelectField label="Status" value={paymentForm.status} options={meta.paymentStatuses || ['POSTED']} onChange={(status) => setPaymentForm({ ...paymentForm, status })} />
+          <TextField label="Notes" value={paymentForm.notes} onChange={(notes) => setPaymentForm({ ...paymentForm, notes })} />
+          <div className="billing-form-actions">
+            <button className="btn" type="button" onClick={closeModal}>Cancel</button>
+            <button className="btn btn-primary"><IconDeviceFloppy size={16} className="me-1" />Save</button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal title={adjustmentForm.id ? 'Edit Adjustment' : 'Post Adjustment'} icon={IconPlus} open={modal === 'adjustment'} onClose={closeModal}>
+        <form className="billing-form" onSubmit={submitAdjustment}>
+          <SelectField label="Invoice" value={adjustmentForm.invoiceId} required onChange={(invoiceId) => setAdjustmentForm({ ...adjustmentForm, invoiceId })}>
+            <option value="">Select invoice</option>
+            {invoices.filter((invoice) => invoice.status !== 'VOID').map((invoice) => <option key={invoice.id} value={invoice.id}>{invoice.invoiceNumber} - {customerLabel(invoice.customer)}</option>)}
+          </SelectField>
+          <SelectField label="Type" value={adjustmentForm.type} options={meta.adjustmentTypes || ['CREDIT', 'DEBIT']} onChange={(type) => setAdjustmentForm({ ...adjustmentForm, type })} />
+          <TextField label="Amount" type="number" min="0" step="0.01" value={adjustmentForm.amount} required onChange={(amount) => setAdjustmentForm({ ...adjustmentForm, amount })} />
+          <TextField label="Reason" value={adjustmentForm.reason} required onChange={(reason) => setAdjustmentForm({ ...adjustmentForm, reason })} />
+          <SelectField label="Status" value={adjustmentForm.status} options={meta.adjustmentStatuses || ['POSTED']} onChange={(status) => setAdjustmentForm({ ...adjustmentForm, status })} />
+          <TextField label="Notes" value={adjustmentForm.notes} onChange={(notes) => setAdjustmentForm({ ...adjustmentForm, notes })} />
+          <div className="billing-form-actions">
+            <button className="btn" type="button" onClick={closeModal}>Cancel</button>
+            <button className="btn btn-primary"><IconDeviceFloppy size={16} className="me-1" />Save</button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

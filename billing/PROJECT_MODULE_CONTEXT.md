@@ -25,6 +25,7 @@ billing/
 - Stylesheet: `billing/web/billing.css`
 - Storage: in-memory lists for the first working shell
 - Persistence target: shared PostgreSQL tables in a later production-ready pass
+- Frontend create/edit/post flows open in modals from each table card action; the tab tables no longer reserve a persistent side-panel form.
 
 ## CRUD Scope
 
