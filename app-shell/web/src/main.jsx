@@ -20,6 +20,7 @@ import {
   IconLogout,
   IconMenu2,
   IconNetwork,
+  IconPackage,
   IconSettings,
   IconShieldLock,
   IconTicket,
@@ -36,6 +37,7 @@ import CustomerServiceManagementPage from '../../../customer-service-management/
 import InventoryPage from '../../../inventory/web/InventoryPage.jsx';
 import LogsPage from '../../../logs/web/LogsPage.jsx';
 import PointOfSalePage from '../../../point-of-sale/web/PointOfSalePage.jsx';
+import ServicePage from '../../../service/web/ServicePage.jsx';
 import SystemSettingsPage from '../../../system-settings/web/SystemSettingsPage.jsx';
 import TicketingPage from '../../../ticketing/web/TicketingPage.jsx';
 import './styles.css';
@@ -51,6 +53,16 @@ const moduleNav = [
   { page: 'Account Admin', slug: 'account-admin', icon: IconUserCog, tone: 'purple' },
   { page: 'Customer Service Management', slug: 'customer-service-management', icon: IconTool, tone: 'cyan' },
   { page: 'Ticketing', slug: 'ticketing', icon: IconTicket, tone: 'red' },
+  {
+    page: 'Service',
+    slug: 'service/catalog',
+    icon: IconWifi,
+    tone: 'blue',
+    children: [
+      { page: 'Service Catalog', slug: 'service/catalog', icon: IconPackage, tone: 'blue' },
+      { page: 'Service Order', slug: 'service/order', icon: IconListDetails, tone: 'cyan' }
+    ]
+  },
   { page: 'System Settings', slug: 'system-settings', icon: IconSettings, tone: 'secondary' },
   { page: 'Logs', slug: 'logs', icon: IconListDetails, tone: 'yellow' }
 ];
@@ -85,8 +97,17 @@ async function publicRequest(path) {
   return data;
 }
 
+function navItems() {
+  return moduleNav.flatMap((item) => [item, ...(item.children || [])]);
+}
+
+function navParentForPage(page) {
+  return moduleNav.find((item) => item.children?.some((child) => child.page === page));
+}
+
 function routeForPage(page) {
-  const item = moduleNav.find((navItem) => navItem.page === page);
+  const item = navItems().find((navItem) => navItem.page === page);
+  if (item?.children?.length) return `/${item.children[0].slug}`;
   if (item) return `/${item.slug}`;
   if (page === 'View Profile') return '/profile';
   if (page === 'Change Password') return '/change-password';
@@ -95,7 +116,7 @@ function routeForPage(page) {
 
 function pageFromLocation() {
   const slug = window.location.pathname.replace(/^\/+|\/+$/g, '') || 'dashboard';
-  const item = moduleNav.find((navItem) => navItem.slug === slug);
+  const item = navItems().find((navItem) => navItem.slug === slug);
   if (item) return item.page;
   if (slug === 'profile') return 'View Profile';
   if (slug === 'change-password') return 'Change Password';
@@ -103,7 +124,8 @@ function pageFromLocation() {
 }
 
 function pageMeta(page) {
-  return moduleNav.find((item) => item.page === page) || profilePages[page] || { icon: IconShieldLock, tone: 'blue' };
+  const item = navItems().find((navItem) => navItem.page === page);
+  return item || profilePages[page] || { icon: IconShieldLock, tone: 'blue' };
 }
 
 function formatUptime(seconds = 0) {
@@ -210,11 +232,17 @@ function Login({ branding, onLogin }) {
 function Sidebar({ page, setPage, me, logout, branding, collapsed }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [navOpen, setNavOpen] = useState({});
   const activate = (nextPage) => {
     setPage(nextPage);
     setMobileOpen(false);
     setProfileOpen(false);
   };
+
+  useEffect(() => {
+    const parent = navParentForPage(page);
+    if (parent) setNavOpen((current) => ({ ...current, [parent.page]: true }));
+  }, [page]);
 
   return (
     <aside className="navbar navbar-vertical navbar-expand-lg" data-bs-theme="dark">
@@ -229,6 +257,43 @@ function Sidebar({ page, setPage, me, logout, branding, collapsed }) {
           <ul className="navbar-nav pt-lg-3">
             {moduleNav.map((item) => {
               const Icon = item.icon;
+              const activeChild = item.children?.some((child) => child.page === page);
+              const expanded = navOpen[item.page] || activeChild;
+              if (item.children?.length) {
+                return (
+                  <li className={`nav-item nav-item-parent ${activeChild ? 'active' : ''}`} key={item.page}>
+                    <button
+                      className={`nav-link ${activeChild ? 'active' : ''}`}
+                      onClick={() => {
+                        if (collapsed) {
+                          activate(item.children[0].page);
+                          return;
+                        }
+                        setNavOpen((current) => ({ ...current, [item.page]: !expanded }));
+                      }}
+                    >
+                      <span className="nav-link-icon d-md-none d-lg-inline-block"><Icon size={20} /></span>
+                      <span className="nav-link-title">{item.page}</span>
+                      {!collapsed && <span className="nav-link-chevron ms-auto">{expanded ? <IconChevronUp size={16} /> : <IconChevronDown size={16} />}</span>}
+                    </button>
+                    {!collapsed && expanded && (
+                      <ul className="nav-submenu">
+                        {item.children.map((child) => {
+                          const ChildIcon = child.icon;
+                          return (
+                            <li key={child.page}>
+                              <button className={`nav-link nav-sub-link ${page === child.page ? 'active' : ''}`} onClick={() => activate(child.page)}>
+                                <span className="nav-link-icon d-md-none d-lg-inline-block"><ChildIcon size={18} /></span>
+                                <span className="nav-link-title">{child.page}</span>
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </li>
+                );
+              }
               return (
                 <li className="nav-item" key={item.page}>
                   <button className={`nav-link ${page === item.page ? 'active' : ''}`} onClick={() => activate(item.page)}>
@@ -505,6 +570,8 @@ function App() {
             {page === 'Account Admin' && <AccountAdminPage refreshShell={refresh} />}
             {page === 'Customer Service Management' && <CustomerServiceManagementPage refreshShell={refresh} />}
             {page === 'Ticketing' && <TicketingPage refreshShell={refresh} />}
+            {page === 'Service Catalog' && <ServicePage initialSection="catalog" refreshShell={refresh} />}
+            {page === 'Service Order' && <ServicePage initialSection="orders" refreshShell={refresh} />}
             {moduleNav.filter((item) => ![
               'Dashboard',
               'Customer Profiling',
@@ -514,6 +581,7 @@ function App() {
               'Account Admin',
               'Customer Service Management',
               'Ticketing',
+              'Service',
               'System Settings',
               'Logs'
             ].includes(item.page)).map((item) => (

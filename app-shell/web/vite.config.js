@@ -23,6 +23,7 @@ export default defineConfig({
         path.resolve(__dirname, '../../account-admin'),
         path.resolve(__dirname, '../../customer-service-management'),
         path.resolve(__dirname, '../../ticketing'),
+        path.resolve(__dirname, '../../service'),
         path.resolve(__dirname, '../../system-settings'),
         path.resolve(__dirname, '../../logs')
       ]

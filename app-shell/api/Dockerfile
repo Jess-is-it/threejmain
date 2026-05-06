@@ -16,6 +16,7 @@ COPY inventory/api/inventory ./inventory
 COPY account-admin/api/account_admin ./account_admin
 COPY customer-service-management/api/customer_service_management ./customer_service_management
 COPY ticketing/api/ticketing ./ticketing
+COPY service/api/service ./service
 COPY system-settings/api/system_settings ./system_settings
 COPY logs/api/logs ./logs
 

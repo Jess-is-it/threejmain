@@ -53,6 +53,7 @@ inventory/
 account-admin/
 customer-service-management/
 ticketing/
+service/
   web/        module-owned React pages/styles
   api/        module-owned FastAPI routers
 ```
@@ -61,13 +62,14 @@ ticketing/
 
 Root-level business module folders:
 
-- `customer-profiling`: customer records, account identity, service plans, contacts, addresses, lifecycle state, bulk upload workflow, and service assignments
+- `customer-profiling`: customer records, account identity, contacts, addresses, lifecycle state, and bulk upload workflow
 - `billing`: invoices, subscriptions, payments, adjustments, balances, and billing cycles
 - `point-of-sale`: counter sales, receipts, payment capture, cashier sessions, and sales reports
 - `inventory`: routers, ONUs/CPEs, cables, installation materials, stock movement, and reorder alerts
 - `account-admin`: admin users, roles, permissions, access, and account security
 - `customer-service-management`: customer interactions, service requests, follow-ups, callbacks, and care workflows
 - `ticketing`: trouble tickets, outage tracking, field jobs, dispatch, notes, and resolution history
+- `service`: ISP service catalog, speed plans, customer service orders, service-availment tagging, and cross-module service references
 - `system-settings`: branding, business profile, reusable locations, runtime paths, access reminders, and system port registry
 - `logs`: shared audit log viewer for app-shell and module activity
 
@@ -127,7 +129,7 @@ The current module includes:
 - Create/edit/view/soft archive customer profile workflows
 - Primary contact, alternate mobile, Facebook account/link, email, service address, GPS, and secondary contact fields
 - Customer type/status values: `RESIDENTIAL`, `BUSINESS`, `ENTERPRISE`; `ACTIVE`, `INACTIVE`, `SUSPENDED`, `PENDING`
-- Service assignment workflow with plan ID, service ID, start/end dates, and assignment status
+- Read-only Service Order references from the Service module
 - Bulk upload template workflow surface with the original required customer upload headers
 
 Current API prefix: `/api/customer-profiling`. The implementation is in-memory for the first working shell; durable PostgreSQL tables in the shared database should be added before production use.
@@ -144,11 +146,14 @@ The Integration Codex wired these completed module folders into `app-shell` as f
 | Account Admin | `/account-admin` | `/api/account-admin` | `account-admin/web/AccountAdminPage.jsx` | `account-admin/api/account_admin` |
 | Customer Service Management | `/customer-service-management` | `/api/customer-service-management` | `customer-service-management/web/CustomerServiceManagementPage.jsx` | `customer-service-management/api/customer_service_management` |
 | Ticketing | `/ticketing` | `/api/ticketing` | `ticketing/web/TicketingPage.jsx` | `ticketing/api/ticketing` |
+| Service | `/service/catalog`, `/service/order` | `/api/service` | `service/web/ServicePage.jsx` | `service/api/service` |
 | System Settings | `/system-settings` | `/api/system-settings` | `system-settings/web/SystemSettingsPage.jsx` | `system-settings/api/system_settings` |
 
 Shared app-shell wiring now imports each module page in `app-shell/web/src/main.jsx`, includes each router in `app-shell/api/app/main.py`, injects shared auth/audit hooks, and exposes module metrics through `/api/modules` and `/api/dashboard`.
 
 Customer-dependent modules receive Customer Profiling provider hooks from the app shell for customer lookup/search where supported. All integrated module data remains in memory and resets on API restart. Durable shared PostgreSQL persistence, migrations, role/permission enforcement, and production-grade cross-module relationships are still future work.
+
+Service now owns Service Catalog and Service Order lifecycle. Service Catalog defines ISP speed plans and service items; Service Order tags what service a Customer Profiling customer is trying to avail. Customer Profiling no longer creates service assignments; it displays Service-owned orders for selected customers. Billing subscriptions can select a Service Order to populate customer, plan, service reference, and rate. Ticketing can tag tickets with the Service Order service reference.
 
 `app-shell/web/vite.config.js`, `app-shell/api/Dockerfile`, and `app-shell/web/Dockerfile` include module allowlist/copy entries for the integrated module folders.
 

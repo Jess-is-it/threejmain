@@ -13,6 +13,7 @@ COPY inventory /workspace/inventory
 COPY account-admin /workspace/account-admin
 COPY customer-service-management /workspace/customer-service-management
 COPY ticketing /workspace/ticketing
+COPY service /workspace/service
 COPY system-settings /workspace/system-settings
 COPY logs /workspace/logs
 RUN npm run build

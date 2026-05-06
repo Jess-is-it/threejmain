@@ -98,6 +98,7 @@ function SelectField({ label, value, onChange, options, required = false, childr
 const blankSubscription = {
   id: '',
   customerId: '',
+  serviceOrderId: '',
   planName: 'Home Fiber 50 Mbps',
   serviceId: '',
   monthlyRate: '999',
@@ -151,6 +152,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
   const [meta, setMeta] = useState({ billingModes: [], subscriptionStatuses: [], invoiceStatuses: [], paymentMethods: [], paymentStatuses: [], adjustmentTypes: [], adjustmentStatuses: [] });
   const [overview, setOverview] = useState({ metrics: {}, recentInvoices: [], recentPayments: [], atRisk: [] });
   const [customers, setCustomers] = useState([]);
+  const [serviceOrders, setServiceOrders] = useState([]);
   const [customerSearch, setCustomerSearch] = useState('');
   const [subscriptions, setSubscriptions] = useState([]);
   const [invoices, setInvoices] = useState([]);
@@ -169,10 +171,11 @@ export default function BillingPage({ refreshShell = () => {} }) {
   async function load(search = customerSearch) {
     setError('');
     try {
-      const [nextMeta, nextOverview, nextCustomers, nextSubscriptions, nextInvoices, nextPayments, nextAdjustments, nextBalances] = await Promise.all([
+      const [nextMeta, nextOverview, nextCustomers, nextServiceOrders, nextSubscriptions, nextInvoices, nextPayments, nextAdjustments, nextBalances] = await Promise.all([
         request('/billing/meta'),
         request('/billing/overview'),
         request(`/billing/customers?search=${encodeURIComponent(search)}`),
+        request('/service/orders?activeOnly=true'),
         request('/billing/subscriptions'),
         request('/billing/invoices'),
         request('/billing/payments'),
@@ -182,6 +185,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
       setMeta(nextMeta);
       setOverview(nextOverview);
       setCustomers(nextCustomers);
+      setServiceOrders(nextServiceOrders);
       setSubscriptions(nextSubscriptions);
       setInvoices(nextInvoices);
       setPayments(nextPayments);
@@ -214,6 +218,38 @@ export default function BillingPage({ refreshShell = () => {} }) {
         ))}
       </>
     );
+  }
+
+  function serviceOrderOptions() {
+    return (
+      <>
+        <option value="">Manual subscription</option>
+        {serviceOrders.map((order) => (
+          <option key={order.id} value={order.id}>
+            {order.serviceReference || order.orderNumber} - {order.catalogName || order.catalog?.name} - {customerLabel(order.customer)}
+          </option>
+        ))}
+      </>
+    );
+  }
+
+  function setSubscriptionServiceOrder(serviceOrderId) {
+    const order = serviceOrders.find((item) => item.id === serviceOrderId);
+    if (!order) {
+      setSubscriptionForm({ ...subscriptionForm, serviceOrderId });
+      return;
+    }
+    setSubscriptionForm({
+      ...subscriptionForm,
+      serviceOrderId,
+      customerId: order.customerId,
+      planName: order.catalogName || order.catalog?.name || subscriptionForm.planName,
+      serviceId: order.serviceReference || subscriptionForm.serviceId,
+      monthlyRate: String(order.catalog?.monthlyRate ?? subscriptionForm.monthlyRate),
+      billingMode: order.catalog?.billingMode === 'POSTPAID' ? 'POSTPAID' : 'PREPAID',
+      startDate: order.billingStartDate || order.activationDate || order.requestedDate || subscriptionForm.startDate,
+      nextInvoiceDate: order.billingStartDate || order.activationDate || order.requestedDate || subscriptionForm.nextInvoiceDate
+    });
   }
 
   function invoiceOptions() {
@@ -420,6 +456,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
           <div className="col-lg-4">
             <Card title={subscriptionForm.id ? 'Edit Subscription' : 'New Subscription'} icon={IconRepeat}>
               <form className="billing-form" onSubmit={submitSubscription}>
+                <SelectField label="Service Order" value={subscriptionForm.serviceOrderId} onChange={setSubscriptionServiceOrder}>{serviceOrderOptions()}</SelectField>
                 <SelectField label="Customer" value={subscriptionForm.customerId} required onChange={(customerId) => setSubscriptionForm({ ...subscriptionForm, customerId })}>{customerOptions()}</SelectField>
                 <TextField label="Plan Name" value={subscriptionForm.planName} required onChange={(planName) => setSubscriptionForm({ ...subscriptionForm, planName })} />
                 <TextField label="Service ID" value={subscriptionForm.serviceId} onChange={(serviceId) => setSubscriptionForm({ ...subscriptionForm, serviceId })} />
@@ -579,6 +616,7 @@ function SubscriptionTable({ rows, onEdit, onGenerate, onDelete }) {
           <tr>
             <th>Customer</th>
             <th>Plan</th>
+            <th>Service Ref</th>
             <th>Mode</th>
             <th>Rate</th>
             <th>Next Invoice</th>
@@ -591,6 +629,7 @@ function SubscriptionTable({ rows, onEdit, onGenerate, onDelete }) {
             <tr key={row.id}>
               <td>{customerLabel(row.customer)}</td>
               <td>{row.planName}</td>
+              <td>{row.serviceId || '-'}</td>
               <td><span className={`badge ${statusClass(row.billingMode)}`}>{row.billingMode}</span></td>
               <td>{currency(row.monthlyRate)}</td>
               <td>{row.nextInvoiceDate}</td>

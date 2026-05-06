@@ -314,7 +314,7 @@ def ticketing_meta(admin=Depends(require_admin)):
         "placeholders": {
             "customerLookup": "Uses Customer Profiling when the integration provider is supplied; manual requestor fields remain available.",
             "assignedTo": "Free-text assignee until Account Admin staff records are integrated.",
-            "serviceId": "Reference field for future Customer Profiling service assignment integration.",
+            "serviceId": "Reference field for the Service module's Service Order serviceReference.",
             "outageId": "Reference field for future outage tracking integration.",
         },
     }
