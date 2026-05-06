@@ -134,7 +134,7 @@ export default function TicketingPage({ refreshShell = () => {} }) {
   const [selectedId, setSelectedId] = useState('');
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [draggingTicketId, setDraggingTicketId] = useState('');
-  const [notesTicketId, setNotesTicketId] = useState('');
+  const [detailTicketId, setDetailTicketId] = useState('');
   const [noteBody, setNoteBody] = useState('');
   const [noteVisibility, setNoteVisibility] = useState('INTERNAL');
   const [message, setMessage] = useState('');
@@ -158,7 +158,7 @@ export default function TicketingPage({ refreshShell = () => {} }) {
       return groups;
     }, {});
   }, [statuses, boardTickets]);
-  const notesTicket = useMemo(() => tickets.find((ticket) => ticket.id === notesTicketId) || null, [notesTicketId, tickets]);
+  const detailTicket = useMemo(() => tickets.find((ticket) => ticket.id === detailTicketId) || null, [detailTicketId, tickets]);
 
   async function load(nextFilters = filters, nextCustomerSearch = customerSearch) {
     setError('');
@@ -198,13 +198,13 @@ export default function TicketingPage({ refreshShell = () => {} }) {
     setForm(blankTicket);
   }
 
-  function openNotes(ticket) {
+  function openTicketDetail(ticket) {
     setSelectedId(ticket.id);
-    setNotesTicketId(ticket.id);
+    setDetailTicketId(ticket.id);
   }
 
-  function closeNotes() {
-    setNotesTicketId('');
+  function closeTicketDetail() {
+    setDetailTicketId('');
     setNoteBody('');
   }
 
@@ -259,6 +259,7 @@ export default function TicketingPage({ refreshShell = () => {} }) {
       await request(`/ticketing/tickets/${ticket.id}`, { method: 'DELETE' });
       setMessage(`Deleted ${ticket.ticketNumber}`);
       if (selectedId === ticket.id) setSelectedId('');
+      if (detailTicketId === ticket.id) closeTicketDetail();
       await load();
       await refreshShell();
     } catch (err) {
@@ -294,10 +295,10 @@ export default function TicketingPage({ refreshShell = () => {} }) {
 
   async function addNote(event) {
     event.preventDefault();
-    if (!notesTicket) return;
+    if (!detailTicket) return;
     setError('');
     try {
-      const updated = await request(`/ticketing/tickets/${notesTicket.id}/notes`, {
+      const updated = await request(`/ticketing/tickets/${detailTicket.id}/notes`, {
         method: 'POST',
         body: JSON.stringify({ body: noteBody, visibility: noteVisibility })
       });
@@ -397,7 +398,7 @@ export default function TicketingPage({ refreshShell = () => {} }) {
                     className={`ticketing-card ${selectedId === ticket.id ? 'active' : ''} ${priorityClass(ticket.priority)}`}
                     draggable
                     key={ticket.id}
-                    onClick={() => setSelectedId(ticket.id)}
+                    onClick={() => openTicketDetail(ticket)}
                     onDragStart={(event) => {
                       setDraggingTicketId(ticket.id);
                       event.dataTransfer.setData('text/plain', ticket.id);
@@ -405,64 +406,22 @@ export default function TicketingPage({ refreshShell = () => {} }) {
                     onDragEnd={() => setDraggingTicketId('')}
                   >
                     <div className="ticketing-card-top">
+                      <span className={`badge ${statusClass(ticket.status)}`}>{label(ticket.status)}</span>
+                      <span className="ticketing-number">{ticket.ticketNumber}</span>
+                    </div>
+
+                    <div className="ticketing-card-title">{ticket.subject}</div>
+                    <div className="ticketing-customer">{customerLabel(ticket.customer)}</div>
+
+                    <div className="ticketing-card-actions">
                       <span className={`ticketing-priority ${priorityClass(ticket.priority)}`}>
                         <IconAlertTriangle size={14} />
                         {priorityCopy[ticket.priority] || label(ticket.priority)}
                       </span>
-                      <span className="ticketing-number">{ticket.ticketNumber}</span>
-                    </div>
-
-                    <button className="ticketing-card-title" type="button" onClick={() => editTicket(ticket)}>
-                      {ticket.subject}
-                    </button>
-                    <div className="ticketing-customer">{customerLabel(ticket.customer)}</div>
-
-                    <div className="ticketing-card-details">
-                      <div>
-                        <span>Requestor</span>
-                        <strong>{ticket.requestorName || 'Manual requestor'}</strong>
-                      </div>
-                      <div>
-                        <span>Contact</span>
-                        <strong>{ticket.contactNumber || 'No contact'}</strong>
-                      </div>
-                      <div>
-                        <span>Assigned</span>
-                        <strong>{ticket.assignedTo || 'Unassigned'}</strong>
-                      </div>
-                      <div>
-                        <span>Due</span>
-                        <strong>{ticket.dueDate || 'No due date'}</strong>
-                      </div>
-                    </div>
-
-                    {ticket.description && <p className="ticketing-description">{ticket.description}</p>}
-
-                    <div className="ticketing-card-tags">
-                      <span className="badge bg-secondary-lt text-secondary">{label(ticket.category)}</span>
-                      <span className="badge bg-cyan-lt text-cyan">{label(ticket.source)}</span>
-                      {ticket.serviceId && <span className="badge bg-blue-lt text-blue">{ticket.serviceId}</span>}
-                      {ticket.outageId && <span className="badge bg-red-lt text-red">{ticket.outageId}</span>}
-                    </div>
-
-                    <div className="ticketing-card-actions">
-                      <select
-                        className="form-select form-select-sm"
-                        value={ticket.status}
-                        onChange={(event) => moveTicket(ticket, event.target.value)}
-                        onClick={(event) => event.stopPropagation()}
-                        title="Move ticket"
-                      >
-                        {statuses.map((option) => <option key={option} value={option}>{label(option)}</option>)}
-                      </select>
-                      <div className="btn-list flex-nowrap">
-                        <button className="btn btn-icon btn-outline-secondary" type="button" onClick={(event) => { event.stopPropagation(); openNotes(ticket); }} title="Notes">
-                          <IconMessage2 size={16} />
-                          {!!(ticket.notes || []).length && <span className="ticketing-note-count">{ticket.notes.length}</span>}
-                        </button>
-                        <button className="btn btn-icon btn-outline-primary" type="button" onClick={(event) => { event.stopPropagation(); editTicket(ticket); }} title="Edit ticket"><IconEdit size={16} /></button>
-                        <button className="btn btn-icon btn-outline-danger" type="button" onClick={(event) => { event.stopPropagation(); deleteTicket(ticket); }} title="Delete ticket"><IconTrash size={16} /></button>
-                      </div>
+                      <button className="btn btn-icon btn-outline-secondary" type="button" onClick={(event) => { event.stopPropagation(); openTicketDetail(ticket); }} title="View details and notes">
+                        <IconMessage2 size={16} />
+                        {!!(ticket.notes || []).length && <span className="ticketing-note-count">{ticket.notes.length}</span>}
+                      </button>
                     </div>
                   </article>
                 ))}
@@ -474,28 +433,61 @@ export default function TicketingPage({ refreshShell = () => {} }) {
         {!boardTickets.length && <div className="empty mt-3">No tickets match the current category and filters.</div>}
       </Card>
 
-      {notesTicket && (
-        <div className="ticketing-drawer-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeNotes(); }}>
-          <aside className="ticketing-notes-drawer" role="dialog" aria-modal="true" aria-labelledby="ticketing-notes-title">
+      {detailTicket && (
+        <div className="ticketing-drawer-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeTicketDetail(); }}>
+          <aside className="ticketing-detail-drawer" role="dialog" aria-modal="true" aria-labelledby="ticketing-detail-title">
             <div className="ticketing-drawer-header">
               <div>
-                <div className="text-muted small">Ticket notes</div>
-                <h3 id="ticketing-notes-title">{notesTicket.ticketNumber}</h3>
-                <div className="text-muted">{notesTicket.subject}</div>
+                <div className="text-muted small">Ticket details</div>
+                <h3 id="ticketing-detail-title">{detailTicket.ticketNumber}</h3>
+                <div className="text-muted">{detailTicket.subject}</div>
               </div>
-              <button className="btn btn-icon btn-outline-secondary" type="button" onClick={closeNotes} title="Close notes"><IconX size={18} /></button>
+              <button className="btn btn-icon btn-outline-secondary" type="button" onClick={closeTicketDetail} title="Close details"><IconX size={18} /></button>
             </div>
 
             <div className="ticketing-drawer-body">
-              <div className="ticketing-note-target mb-3">
+              <div className="ticketing-detail-summary">
                 <div>
-                  <div className="fw-bold">{customerLabel(notesTicket.customer)}</div>
-                  <div className="text-muted small">{notesTicket.requestorName || 'Manual requestor'} / {notesTicket.contactNumber || 'No contact'}</div>
+                  <div className="fw-bold">{customerLabel(detailTicket.customer)}</div>
+                  <div className="text-muted small">{detailTicket.requestorName || 'Manual requestor'} / {detailTicket.contactNumber || 'No contact'}</div>
                 </div>
-                <span className={`ticketing-priority ${priorityClass(notesTicket.priority)}`}>
+                <span className={`ticketing-priority ${priorityClass(detailTicket.priority)}`}>
                   <IconAlertTriangle size={14} />
-                  {priorityCopy[notesTicket.priority] || label(notesTicket.priority)}
+                  {priorityCopy[detailTicket.priority] || label(detailTicket.priority)}
                 </span>
+              </div>
+
+              <div className="ticketing-detail-actions">
+                <button className="btn btn-outline-primary" type="button" onClick={() => editTicket(detailTicket)}><IconEdit size={16} /> Edit</button>
+                <button className="btn btn-outline-danger" type="button" onClick={() => deleteTicket(detailTicket)}><IconTrash size={16} /> Delete</button>
+              </div>
+
+              <div className="ticketing-detail-grid">
+                <div><span>Status</span><strong>{label(detailTicket.status)}</strong></div>
+                <div><span>Priority</span><strong>{label(detailTicket.priority)}</strong></div>
+                <div><span>Category</span><strong>{label(detailTicket.category)}</strong></div>
+                <div><span>Source</span><strong>{label(detailTicket.source)}</strong></div>
+                <div><span>Assigned To</span><strong>{detailTicket.assignedTo || 'Unassigned'}</strong></div>
+                <div><span>Due Date</span><strong>{detailTicket.dueDate || 'No due date'}</strong></div>
+                <div><span>Service ID</span><strong>{detailTicket.serviceId || 'No service reference'}</strong></div>
+                <div><span>Outage ID</span><strong>{detailTicket.outageId || 'No outage reference'}</strong></div>
+                <div><span>Opened</span><strong>{detailTicket.openedAt ? new Date(detailTicket.openedAt).toLocaleString() : 'Not recorded'}</strong></div>
+                <div><span>Updated</span><strong>{detailTicket.updatedAt ? new Date(detailTicket.updatedAt).toLocaleString() : 'Not recorded'}</strong></div>
+              </div>
+
+              <div className="ticketing-detail-section">
+                <span>Description</span>
+                <p>{detailTicket.description || 'No description provided.'}</p>
+              </div>
+
+              <div className="ticketing-detail-section">
+                <span>Resolution Summary</span>
+                <p>{detailTicket.resolutionSummary || 'No resolution summary yet.'}</p>
+              </div>
+
+              <div className="ticketing-drawer-subtitle">
+                <IconMessage2 size={17} />
+                Notes
               </div>
 
               <form className="ticketing-note-form" onSubmit={addNote}>
@@ -509,7 +501,7 @@ export default function TicketingPage({ refreshShell = () => {} }) {
               </form>
 
               <div className="ticketing-notes">
-                {(notesTicket.notes || []).map((note) => (
+                {(detailTicket.notes || []).map((note) => (
                   <div className="ticketing-note mb-2" key={note.id}>
                     <div className="d-flex justify-content-between gap-3">
                       <span className={`badge ${note.visibility === 'INTERNAL' ? 'bg-purple-lt text-purple' : 'bg-green-lt text-green'}`}>{label(note.visibility)}</span>
@@ -518,7 +510,7 @@ export default function TicketingPage({ refreshShell = () => {} }) {
                     <div className="mt-2">{note.body}</div>
                   </div>
                 ))}
-                {!(notesTicket.notes || []).length && <div className="empty">No notes yet.</div>}
+                {!(detailTicket.notes || []).length && <div className="empty">No notes yet.</div>}
               </div>
             </div>
           </aside>
