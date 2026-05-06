@@ -1,0 +1,21 @@
+{
+  "name": "threejmain-isp-management-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 8180",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 8180"
+  },
+  "dependencies": {
+    "@tabler/core": "^1.4.0",
+    "@tabler/icons-react": "^3.41.1",
+    "@vitejs/plugin-react": "4.3.4",
+    "vite": "6.4.2",
+    "typescript": "^5.5.4",
+    "react": "19.0.0",
+    "react-dom": "19.0.0"
+  },
+  "devDependencies": {}
+}
