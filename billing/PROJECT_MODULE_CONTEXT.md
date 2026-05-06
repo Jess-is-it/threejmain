@@ -25,10 +25,12 @@ billing/
 - Stylesheet: `billing/web/billing.css`
 - Storage: in-memory lists for the first working shell
 - Persistence target: shared PostgreSQL tables in a later production-ready pass
+- Frontend create/edit/post flows open in modals from each table card action; the tab tables no longer reserve a persistent side-panel form.
 
 ## CRUD Scope
 
 - Subscriptions: create, list, update, soft delete/cancel, and generate monthly invoice
+- Subscriptions can store `serviceOrderId` and `serviceId` from the Service module's Service Order records.
 - Invoices: create, list, update, void, derive status from due date/payments/adjustments
 - Payments: create, list, update, void; supports invoice-level and customer-level payments
 - Adjustments: create, list, update, void; supports invoice credits and debits
@@ -71,6 +73,7 @@ billing/
 ## Dependencies
 
 - Customer Profiling is the source of customer identity. Billing stores `customerId` and snapshots display fields for in-memory records.
+- Service is the source of service catalog/order identity. Billing subscription creation can select a Service Order to populate customer, plan name, service reference, monthly rate, and billing mode.
 - Integration must provide Billing with:
   - authenticated admin dependency
   - audit logger

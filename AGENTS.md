@@ -385,6 +385,70 @@ Release `runtime/server` as soon as the build/start/restart operation and immedi
 
 ---
 
+# Module Preview Runtime Rules
+
+Module Codex sessions should use an isolated preview runtime when the user needs to see that module's current branch before Integration Codex combines all module work.
+
+Use:
+
+```bash
+./scripts/start_module_preview.sh <agent> <module-name> "<task-name>"
+```
+
+Example:
+
+```bash
+./scripts/start_module_preview.sh codex-3 billing "billing-form-modals"
+```
+
+The preview helper starts the shared app-shell from that Codex worktree on unique per-agent ports:
+
+```text
+codex-3 -> API 8203, web 8303
+codex-4 -> API 8204, web 8304
+codex-12 -> API 8212, web 8312
+```
+
+Preview servers are for fast user review only. They do not combine branches and they do not replace Integration Codex.
+
+Before starting, restarting, or stopping a module preview, Codex must lock its own preview runtime:
+
+```text
+runtime/preview/<agent>
+```
+
+The helper script handles this lock automatically. If running preview commands manually, use:
+
+```bash
+python3 scripts/ai_coord.py recent
+python3 scripts/ai_coord.py locks
+python3 scripts/ai_coord.py lock runtime/preview/<agent> <agent> "<task-name>" "<why this preview operation is needed>"
+```
+
+Module previews must not use shared ports:
+
+```text
+8180/tcp
+8100/tcp
+5432/tcp
+```
+
+Use `runtime/server` only for the central shared runtime on the shared ports. Use `runtime/preview/<agent>` for per-Codex preview servers on unique preview ports.
+
+When a new module or new module Codex session is created, that Codex should be able to run its own preview with `scripts/start_module_preview.sh` after the module folder exists and the current branch has the app-shell wiring needed to display it.
+
+For a brand-new module that is not yet registered in `app-shell/`, the preview API can run but the module page will not appear in the shared navigation until Integration Codex performs one-time app-shell wiring. Module Codex sessions must not edit `app-shell/` just to make a new module visible; ask Integration Codex to wire the new module, then continue module-local work and previews from that integrated base.
+
+The final combined app still comes from:
+
+```text
+Module Codex branch previews -> Integration Codex combines selected module branches -> staging -> master
+```
+
+Pushing a module Codex branch to GitHub does not combine it with other module branches. Pushing to `staging` combines outputs only when Integration Codex has already merged the selected changes into one staging-ready result and the user explicitly approves pushing that result to `staging`.
+
+---
+
 # During Work
 
 After meaningful progress, notify the other Codex sessions:

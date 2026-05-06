@@ -30,6 +30,7 @@ ADJUSTMENT_STATUSES = ["POSTED", "VOID"]
 
 class SubscriptionPayload(BaseModel):
     customerId: str | None = None
+    serviceOrderId: str | None = None
     planName: str | None = None
     serviceId: str | None = None
     monthlyRate: float | None = Field(default=None, ge=0)
@@ -240,6 +241,7 @@ def normalize_subscription_payload(payload: SubscriptionPayload, current: dict[s
     record["dueDays"] = int(record.get("dueDays") if record.get("dueDays") is not None else (0 if record["billingMode"] == "PREPAID" else 7))
     record["startDate"] = parse_day(record.get("startDate"), "startDate").isoformat()
     record["nextInvoiceDate"] = parse_day(record.get("nextInvoiceDate") or record["startDate"], "nextInvoiceDate").isoformat()
+    record["serviceOrderId"] = record.get("serviceOrderId") or ""
     record["serviceId"] = record.get("serviceId") or ""
     record["notes"] = record.get("notes") or ""
     return record
@@ -414,6 +416,7 @@ def seed_billing_data() -> None:
             "customerId": customer["id"],
             "customer": customer,
             "planName": plan_name,
+            "serviceOrderId": "",
             "serviceId": f"SVC-{customer.get('accountNumber') or customer['id'][:6]}",
             "monthlyRate": money(rate),
             "billingMode": billing_mode,

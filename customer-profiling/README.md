@@ -1,6 +1,6 @@
 # Customer Profiling
 
-Customer Profiling owns ISP customer records, account identity, contact details, service addresses, plan assignments, account status, and lifecycle notes.
+Customer Profiling owns ISP customer records, account identity, contact details, service addresses, account status, lifecycle notes, and read-only Service Order references.
 
 The previous standalone React/Nest implementation has been folded into the modular monolith:
 
@@ -29,9 +29,10 @@ Restored workflows from the previous standalone Customer Profiling module:
 - Account number support with auto-generation when blank
 - Customer type and status tracking
 - Primary contact, alternate mobile, Facebook account/link, email, service address, and GPS fields
+- Service location selector connected to System Settings -> Location Management, with manual customer locations added to Location Management when no saved record matches
 - Secondary contact fields
-- Service assignment list/create workflow with plan ID, service ID, start/end dates, and assignment status
-- Bulk upload template workflow surface with the original required headers and allowed values
+- Service Order references from the Service module for selected customers
+- Bulk upload CSV modal with template download, client-side preview validation, duplicate checks, and guarded import
 
 Current shell API route prefix:
 
