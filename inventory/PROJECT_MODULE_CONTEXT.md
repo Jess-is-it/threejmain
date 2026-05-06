@@ -123,7 +123,7 @@ The page expects an authenticated shared shell with bearer token stored as `thre
 Tabs:
 
 - Overview
-- Items
+- Items: table-first layout; item create/edit opens in a modal from the table header `New item` action or row edit action
 - Movements
 - Assignments
 

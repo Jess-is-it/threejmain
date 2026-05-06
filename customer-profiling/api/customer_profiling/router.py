@@ -5,18 +5,21 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+try:
+    from system_settings import ensure_location_record
+except Exception:  # pragma: no cover - keeps module usable before System Settings is wired.
+    ensure_location_record = None
+
 
 router = APIRouter(prefix="/api/customer-profiling", tags=["customer-profiling"])
 
 customers: list[dict[str, Any]] = []
-customer_services: list[dict[str, Any]] = []
 
 _current_admin: Callable[[str | None], dict[str, Any]] | None = None
 _audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None] | None = None
 
 CUSTOMER_TYPES = ["RESIDENTIAL", "BUSINESS", "ENTERPRISE"]
 CUSTOMER_STATUSES = ["ACTIVE", "INACTIVE", "SUSPENDED", "PENDING"]
-ASSIGNMENT_STATUSES = ["ACTIVE", "PAUSED", "TERMINATED", "PENDING"]
 PROVINCES = ["CAGAYAN", "ISABELA"]
 MUNICIPALITIES_BY_PROVINCE = {
     "CAGAYAN": [
@@ -169,6 +172,7 @@ BARANGAYS_BY_PROVINCE_CITY = {
     ],
 }
 BULK_UPLOAD_HEADERS = [
+    "accountNumber",
     "firstName",
     "middleName",
     "lastName",
@@ -179,6 +183,8 @@ BULK_UPLOAD_HEADERS = [
     "email",
     "addressLine1",
     "addressLine2",
+    "locationId",
+    "locationName",
     "province",
     "city",
     "barangay",
@@ -191,10 +197,6 @@ REQUIRED_BULK_UPLOAD_HEADERS = [
     "lastName",
     "contactNumber",
     "facebookAccountName",
-    "addressLine1",
-    "province",
-    "city",
-    "barangay",
 ]
 
 
@@ -213,6 +215,8 @@ class CustomerPayload(BaseModel):
     secondaryContactFacebookAccount: str | None = None
     secondaryContactRelationship: str | None = None
     email: str | None = None
+    locationId: str | None = None
+    locationName: str | None = None
     addressLine1: str | None = None
     addressLine2: str | None = None
     barangay: str | None = None
@@ -222,14 +226,6 @@ class CustomerPayload(BaseModel):
     longitude: str | float | None = None
     customerType: str | None = None
     status: str | None = None
-
-
-class CustomerServicePayload(BaseModel):
-    planId: str | None = None
-    serviceId: str | None = None
-    startDate: str
-    endDate: str | None = None
-    status: str = "ACTIVE"
 
 
 def configure_customer_profiling(
@@ -277,16 +273,10 @@ def visible_customers() -> list[dict[str, Any]]:
     return [customer for customer in customers if not customer.get("deletedAt")]
 
 
-def services_for_customer(customer_id: str) -> list[dict[str, Any]]:
-    return [service for service in customer_services if service["customerId"] == customer_id]
-
-
 def customer_summary(customer: dict[str, Any]) -> dict[str, Any]:
     return {
         **customer,
         "fullName": customer_full_name(customer),
-        "services": services_for_customer(customer["id"]),
-        "serviceCount": len(services_for_customer(customer["id"])),
     }
 
 
@@ -340,6 +330,27 @@ def build_duplicate_fingerprint(data: dict[str, Any]) -> str:
     )
 
 
+def ensure_customer_location(record: dict[str, Any], admin: dict[str, Any] | None = None) -> None:
+    if ensure_location_record is None:
+        return
+    location_data = {
+        "locationId": record.get("locationId"),
+        "location_name": record.get("locationName") or record.get("barangay") or record.get("city") or record.get("addressLine1"),
+        "address": record.get("addressLine1"),
+        "municipality": record.get("city"),
+        "barangay": record.get("barangay"),
+        "province": record.get("province"),
+        "latitude": record.get("latitude") or None,
+        "longitude": record.get("longitude") or None,
+        "geocode_source": "CUSTOMER_PROFILING",
+        "notes": "Created or linked from Customer Profiling. Complete missing details in System Settings > Location Management.",
+    }
+    location = ensure_location_record(location_data, actor=admin)
+    if location:
+        record["locationId"] = location.get("id") or record.get("locationId") or ""
+        record["locationName"] = location.get("location_name") or record.get("locationName") or ""
+
+
 def assert_no_duplicate_customer(candidate: dict[str, Any], ignore_id: str | None = None) -> None:
     fingerprint = build_duplicate_fingerprint(candidate)
     if not fingerprint.replace("|", ""):
@@ -365,10 +376,6 @@ def customer_payload_to_record(payload: CustomerPayload, current: dict[str, Any]
         "lastName",
         "contactNumber",
         "facebookAccountName",
-        "addressLine1",
-        "province",
-        "city",
-        "barangay",
     ]
     missing = [field for field in required if not base.get(field)]
     if missing:
@@ -379,16 +386,12 @@ def customer_payload_to_record(payload: CustomerPayload, current: dict[str, Any]
     base["province"] = normalize_upper(base.get("province"))
     base["city"] = normalize_upper(base.get("city"))
     base["barangay"] = normalize_upper(base.get("barangay"))
+    base["locationName"] = clean_value(base.get("locationName")) or ""
 
     if base["customerType"] not in CUSTOMER_TYPES:
         raise HTTPException(status_code=400, detail="Invalid customer type")
     if base["status"] not in CUSTOMER_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid customer status")
-    if base["province"] in MUNICIPALITIES_BY_PROVINCE and base["city"] not in MUNICIPALITIES_BY_PROVINCE[base["province"]]:
-        raise HTTPException(status_code=400, detail="City does not belong to selected province")
-    barangay_key = f"{base['province']}::{base['city']}"
-    if barangay_key in BARANGAYS_BY_PROVINCE_CITY and base["barangay"] not in BARANGAYS_BY_PROVINCE_CITY[barangay_key]:
-        raise HTTPException(status_code=400, detail="Barangay does not belong to selected province/city")
 
     secondary = list(base.get("secondaryContacts") or [])
     if base.get("secondaryContactName") and not secondary:
@@ -420,6 +423,7 @@ def seed_customer_data() -> None:
             "facebookProfileLink": "https://www.facebook.com/maria.santos",
             "email": "maria.santos@example.com",
             "addressLine1": "BLK 12 LOT 5 SAN ISIDRO VILLAGE",
+            "locationName": "ALIBAGO",
             "barangay": "ALIBAGO",
             "city": "ENRILE",
             "province": "CAGAYAN",
@@ -438,6 +442,7 @@ def seed_customer_data() -> None:
             "email": "juan.delacruz@example.com",
             "addressLine1": "PUROK 1",
             "addressLine2": "",
+            "locationName": "BATU",
             "barangay": "BATU",
             "city": "ENRILE",
             "province": "CAGAYAN",
@@ -455,6 +460,7 @@ def seed_customer_data() -> None:
             "facebookAccountName": "ANGELA REYES",
             "email": "a.reyes@example.com",
             "addressLine1": "SUNSET HOMES PHASE 2",
+            "locationName": "DIVISORIA",
             "barangay": "DIVISORIA",
             "city": "SANTA MARIA",
             "province": "ISABELA",
@@ -472,6 +478,7 @@ def seed_customer_data() -> None:
             "facebookAccountName": "KERVIN TAN",
             "email": "kervin.tan@example.com",
             "addressLine1": "8 INDUSTRIAL ROAD",
+            "locationName": "CENTRO",
             "barangay": "CENTRO",
             "city": "CABAGAN",
             "province": "ISABELA",
@@ -488,6 +495,7 @@ def seed_customer_data() -> None:
             "contactNumber": "09180000004",
             "facebookAccountName": "LIZA GARCIA",
             "addressLine1": "24 MAPLE ST",
+            "locationName": "SAN ANTONIO",
             "barangay": "SAN ANTONIO",
             "city": "ENRILE",
             "province": "CAGAYAN",
@@ -499,6 +507,7 @@ def seed_customer_data() -> None:
         },
     ]
     for row in seed_rows:
+        ensure_customer_location(row, {"id": "seed", "username": "seed"})
         customers.append(
             {
                 "id": str(uuid4()),
@@ -510,28 +519,6 @@ def seed_customer_data() -> None:
                 **row,
             },
         )
-    for customer in customers:
-        if customer["accountNumber"] in {"58392741", "83476195", "94573268"}:
-            status = "ACTIVE"
-        elif customer["accountNumber"] == "76149028":
-            status = "PENDING"
-        else:
-            status = "PAUSED"
-        customer_services.append(
-            {
-                "id": str(uuid4()),
-                "customerId": customer["id"],
-                "planId": "BASIC-50MBPS" if customer["customerType"] != "ENTERPRISE" else "BUSINESS-200MBPS",
-                "serviceId": "FIBER-INTERNET",
-                "startDate": "2025-01-01",
-                "endDate": None,
-                "status": status,
-                "createdAt": created_at,
-                "updatedAt": created_at,
-            },
-        )
-
-
 @router.get("/meta")
 def customer_profiling_meta(admin=Depends(require_admin)):
     cities = sorted({city for cities in MUNICIPALITIES_BY_PROVINCE.values() for city in cities})
@@ -539,7 +526,6 @@ def customer_profiling_meta(admin=Depends(require_admin)):
     return {
         "customerTypes": CUSTOMER_TYPES,
         "customerStatuses": CUSTOMER_STATUSES,
-        "assignmentStatuses": ASSIGNMENT_STATUSES,
         "provinces": PROVINCES,
         "cities": cities,
         "citiesByProvince": MUNICIPALITIES_BY_PROVINCE,
@@ -636,6 +622,7 @@ def customer_bulk_upload_template(admin=Depends(require_admin)):
         "filename": "customer-bulk-upload-template.csv",
         "headers": BULK_UPLOAD_HEADERS,
         "sample": {
+            "accountNumber": "",
             "firstName": "JUAN",
             "middleName": "D",
             "lastName": "DELA CRUZ",
@@ -646,6 +633,8 @@ def customer_bulk_upload_template(admin=Depends(require_admin)):
             "email": "juan.delacruz@example.com",
             "addressLine1": "PUROK 1",
             "addressLine2": "",
+            "locationId": "",
+            "locationName": "ALIBAGO",
             "province": "CAGAYAN",
             "city": "ENRILE",
             "barangay": "ALIBAGO",
@@ -677,6 +666,7 @@ def create_customer(payload: CustomerPayload, request: Request, admin=Depends(re
         raise HTTPException(status_code=409, detail="Account number already exists")
     record["accountNumber"] = record.get("accountNumber") or generate_account_number()
     assert_no_duplicate_customer(record)
+    ensure_customer_location(record, admin)
     timestamp = now_iso()
     customer = {
         "id": str(uuid4()),
@@ -709,6 +699,7 @@ def update_customer(customer_id: str, payload: CustomerPayload, admin=Depends(re
     ):
         raise HTTPException(status_code=409, detail="Account number already exists")
     assert_no_duplicate_customer(record, ignore_id=customer_id)
+    ensure_customer_location(record, admin)
     current.update(record)
     current["updatedAt"] = now_iso()
     current["updatedByUserId"] = admin["id"]
@@ -725,34 +716,3 @@ def delete_customer(customer_id: str, admin=Depends(require_admin)):
     current["updatedByUserId"] = admin["id"]
     add_audit("customer_deleted", "Customer", current["id"], {"accountNumber": current["accountNumber"]}, admin["username"])
     return {"status": "ok"}
-
-
-@router.get("/customers/{customer_id}/services")
-def list_customer_services(customer_id: str, admin=Depends(require_admin)):
-    seed_customer_data()
-    find_customer(customer_id)
-    return services_for_customer(customer_id)
-
-
-@router.post("/customers/{customer_id}/services")
-def assign_customer_service(customer_id: str, payload: CustomerServicePayload, admin=Depends(require_admin)):
-    seed_customer_data()
-    find_customer(customer_id)
-    status = normalize_upper(payload.status)
-    if status not in ASSIGNMENT_STATUSES:
-        raise HTTPException(status_code=400, detail="Invalid assignment status")
-    timestamp = now_iso()
-    service = {
-        "id": str(uuid4()),
-        "customerId": customer_id,
-        "planId": payload.planId or "",
-        "serviceId": payload.serviceId or "",
-        "startDate": payload.startDate,
-        "endDate": payload.endDate,
-        "status": status,
-        "createdAt": timestamp,
-        "updatedAt": timestamp,
-    }
-    customer_services.append(service)
-    add_audit("customer_service_assigned", "CustomerService", service["id"], {"customerId": customer_id}, admin["username"])
-    return service

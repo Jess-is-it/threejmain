@@ -110,6 +110,7 @@ const blankTicket = {
 };
 
 const defaultStatuses = ['OPEN', 'IN_PROGRESS', 'WAITING_CUSTOMER', 'WAITING_INTERNAL', 'RESOLVED', 'CLOSED', 'CANCELLED'];
+const defaultCategories = ['CONNECTIVITY', 'BILLING', 'INSTALLATION', 'EQUIPMENT', 'OUTAGE', 'GENERAL'];
 
 const priorityCopy = {
   URGENT: 'Urgent',
@@ -127,40 +128,57 @@ export default function TicketingPage({ refreshShell = () => {} }) {
   const [overview, setOverview] = useState({ metrics: {}, byStatus: {}, byPriority: {}, recentTickets: [] });
   const [tickets, setTickets] = useState([]);
   const [customers, setCustomers] = useState([]);
+  const [serviceOrders, setServiceOrders] = useState([]);
   const [customerSearch, setCustomerSearch] = useState('');
   const [filters, setFilters] = useState({ search: '', status: '', priority: '', category: '' });
   const [form, setForm] = useState(blankTicket);
   const [selectedId, setSelectedId] = useState('');
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [draggingTicketId, setDraggingTicketId] = useState('');
+  const [detailTicketId, setDetailTicketId] = useState('');
   const [noteBody, setNoteBody] = useState('');
   const [noteVisibility, setNoteVisibility] = useState('INTERNAL');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
-  const selectedTicket = useMemo(() => tickets.find((ticket) => ticket.id === selectedId) || null, [selectedId, tickets]);
   const statuses = meta.statuses.length ? meta.statuses : defaultStatuses;
+  const categories = meta.categories.length ? meta.categories : defaultCategories;
+  const activeCategory = filters.category || categories[0] || '';
+  const boardTickets = useMemo(() => {
+    return activeCategory ? tickets.filter((ticket) => ticket.category === activeCategory) : tickets;
+  }, [activeCategory, tickets]);
+  const categoryCounts = useMemo(() => {
+    return categories.reduce((counts, category) => {
+      counts[category] = tickets.filter((ticket) => ticket.category === category).length;
+      return counts;
+    }, {});
+  }, [categories, tickets]);
   const ticketsByStatus = useMemo(() => {
     return statuses.reduce((groups, status) => {
-      groups[status] = tickets.filter((ticket) => ticket.status === status);
+      groups[status] = boardTickets.filter((ticket) => ticket.status === status);
       return groups;
     }, {});
-  }, [statuses, tickets]);
+  }, [statuses, boardTickets]);
+  const detailTicket = useMemo(() => tickets.find((ticket) => ticket.id === detailTicketId) || null, [detailTicketId, tickets]);
 
   async function load(nextFilters = filters, nextCustomerSearch = customerSearch) {
     setError('');
     const params = new URLSearchParams();
-    Object.entries(nextFilters).forEach(([key, value]) => { if (value) params.set(key, value); });
+    Object.entries(nextFilters).forEach(([key, value]) => {
+      if (value && key !== 'category') params.set(key, value);
+    });
     try {
-      const [nextMeta, nextOverview, nextCustomers, nextTickets] = await Promise.all([
+      const [nextMeta, nextOverview, nextCustomers, nextServiceOrders, nextTickets] = await Promise.all([
         request('/ticketing/meta'),
         request('/ticketing/overview'),
         request(`/ticketing/customers?search=${encodeURIComponent(nextCustomerSearch)}`),
+        request('/service/orders?activeOnly=true'),
         request(`/ticketing/tickets?${params.toString()}`)
       ]);
       setMeta(nextMeta);
       setOverview(nextOverview);
       setCustomers(nextCustomers);
+      setServiceOrders(nextServiceOrders);
       setTickets(nextTickets);
       if (!selectedId && nextTickets[0]) setSelectedId(nextTickets[0].id);
     } catch (err) {
@@ -181,6 +199,16 @@ export default function TicketingPage({ refreshShell = () => {} }) {
   function closeTicketModal() {
     setIsFormOpen(false);
     setForm(blankTicket);
+  }
+
+  function openTicketDetail(ticket) {
+    setSelectedId(ticket.id);
+    setDetailTicketId(ticket.id);
+  }
+
+  function closeTicketDetail() {
+    setDetailTicketId('');
+    setNoteBody('');
   }
 
   function editTicket(ticket) {
@@ -227,6 +255,35 @@ export default function TicketingPage({ refreshShell = () => {} }) {
     }
   }
 
+  function serviceOrderOptions() {
+    const rows = form.customerId ? serviceOrders.filter((order) => order.customerId === form.customerId) : serviceOrders;
+    return (
+      <>
+        <option value="">No service order</option>
+        {rows.map((order) => (
+          <option key={order.id} value={order.serviceReference || order.orderNumber}>
+            {order.serviceReference || order.orderNumber} - {order.catalogName || order.catalog?.name} - {customerLabel(order.customer)}
+          </option>
+        ))}
+      </>
+    );
+  }
+
+  function setTicketServiceOrder(serviceId) {
+    const order = serviceOrders.find((item) => (item.serviceReference || item.orderNumber) === serviceId);
+    if (!order) {
+      setForm({ ...form, serviceId });
+      return;
+    }
+    setForm({
+      ...form,
+      serviceId,
+      customerId: order.customerId,
+      requestorName: form.requestorName || order.customer?.name || '',
+      contactNumber: form.contactNumber || order.customer?.contactNumber || ''
+    });
+  }
+
   async function deleteTicket(ticket) {
     if (!window.confirm(`Delete ${ticket.ticketNumber}?`)) return;
     setError('');
@@ -234,6 +291,7 @@ export default function TicketingPage({ refreshShell = () => {} }) {
       await request(`/ticketing/tickets/${ticket.id}`, { method: 'DELETE' });
       setMessage(`Deleted ${ticket.ticketNumber}`);
       if (selectedId === ticket.id) setSelectedId('');
+      if (detailTicketId === ticket.id) closeTicketDetail();
       await load();
       await refreshShell();
     } catch (err) {
@@ -269,10 +327,10 @@ export default function TicketingPage({ refreshShell = () => {} }) {
 
   async function addNote(event) {
     event.preventDefault();
-    if (!selectedTicket) return;
+    if (!detailTicket) return;
     setError('');
     try {
-      const updated = await request(`/ticketing/tickets/${selectedTicket.id}/notes`, {
+      const updated = await request(`/ticketing/tickets/${detailTicket.id}/notes`, {
         method: 'POST',
         body: JSON.stringify({ body: noteBody, visibility: noteVisibility })
       });
@@ -328,17 +386,27 @@ export default function TicketingPage({ refreshShell = () => {} }) {
               {meta.priorities.map((priority) => <option key={priority} value={priority}>{label(priority)}</option>)}
             </select>
           </div>
-          <div className="col-md-2">
-            <select className="form-select" value={filters.category} onChange={(event) => setFilters({ ...filters, category: event.target.value })}>
-              <option value="">All categories</option>
-              {meta.categories.map((category) => <option key={category} value={category}>{label(category)}</option>)}
-            </select>
-          </div>
-          <div className="col-md-2 d-flex gap-2">
+          <div className="col-md-4 d-flex gap-2">
             <button className="btn btn-outline-primary flex-fill" type="submit"><IconSearch size={16} /></button>
             <button className="btn btn-outline-secondary" type="button" onClick={() => load()}><IconRefresh size={16} /></button>
           </div>
         </form>
+
+        <div className="ticketing-category-tabs" role="tablist" aria-label="Ticket categories">
+          {categories.map((category) => (
+            <button
+              className={`ticketing-category-tab ${activeCategory === category ? 'active' : ''}`}
+              key={category}
+              onClick={() => setFilters({ ...filters, category })}
+              role="tab"
+              type="button"
+              aria-selected={activeCategory === category}
+            >
+              <span>{label(category)}</span>
+              <span className="badge bg-blue-lt text-blue">{categoryCounts[category] || 0}</span>
+            </button>
+          ))}
+        </div>
 
         <div className="ticketing-board" aria-label="Ticket status board">
           {statuses.map((status) => (
@@ -362,7 +430,7 @@ export default function TicketingPage({ refreshShell = () => {} }) {
                     className={`ticketing-card ${selectedId === ticket.id ? 'active' : ''} ${priorityClass(ticket.priority)}`}
                     draggable
                     key={ticket.id}
-                    onClick={() => setSelectedId(ticket.id)}
+                    onClick={() => openTicketDetail(ticket)}
                     onDragStart={(event) => {
                       setDraggingTicketId(ticket.id);
                       event.dataTransfer.setData('text/plain', ticket.id);
@@ -370,60 +438,22 @@ export default function TicketingPage({ refreshShell = () => {} }) {
                     onDragEnd={() => setDraggingTicketId('')}
                   >
                     <div className="ticketing-card-top">
+                      <span className={`badge ${statusClass(ticket.status)}`}>{label(ticket.status)}</span>
+                      <span className="ticketing-number">{ticket.ticketNumber}</span>
+                    </div>
+
+                    <div className="ticketing-card-title">{ticket.subject}</div>
+                    <div className="ticketing-customer">{customerLabel(ticket.customer)}</div>
+
+                    <div className="ticketing-card-actions">
                       <span className={`ticketing-priority ${priorityClass(ticket.priority)}`}>
                         <IconAlertTriangle size={14} />
                         {priorityCopy[ticket.priority] || label(ticket.priority)}
                       </span>
-                      <span className="ticketing-number">{ticket.ticketNumber}</span>
-                    </div>
-
-                    <button className="ticketing-card-title" type="button" onClick={() => editTicket(ticket)}>
-                      {ticket.subject}
-                    </button>
-                    <div className="ticketing-customer">{customerLabel(ticket.customer)}</div>
-
-                    <div className="ticketing-card-details">
-                      <div>
-                        <span>Requestor</span>
-                        <strong>{ticket.requestorName || 'Manual requestor'}</strong>
-                      </div>
-                      <div>
-                        <span>Contact</span>
-                        <strong>{ticket.contactNumber || 'No contact'}</strong>
-                      </div>
-                      <div>
-                        <span>Assigned</span>
-                        <strong>{ticket.assignedTo || 'Unassigned'}</strong>
-                      </div>
-                      <div>
-                        <span>Due</span>
-                        <strong>{ticket.dueDate || 'No due date'}</strong>
-                      </div>
-                    </div>
-
-                    {ticket.description && <p className="ticketing-description">{ticket.description}</p>}
-
-                    <div className="ticketing-card-tags">
-                      <span className="badge bg-secondary-lt text-secondary">{label(ticket.category)}</span>
-                      <span className="badge bg-cyan-lt text-cyan">{label(ticket.source)}</span>
-                      {ticket.serviceId && <span className="badge bg-blue-lt text-blue">{ticket.serviceId}</span>}
-                      {ticket.outageId && <span className="badge bg-red-lt text-red">{ticket.outageId}</span>}
-                    </div>
-
-                    <div className="ticketing-card-actions">
-                      <select
-                        className="form-select form-select-sm"
-                        value={ticket.status}
-                        onChange={(event) => moveTicket(ticket, event.target.value)}
-                        onClick={(event) => event.stopPropagation()}
-                        title="Move ticket"
-                      >
-                        {statuses.map((option) => <option key={option} value={option}>{label(option)}</option>)}
-                      </select>
-                      <div className="btn-list flex-nowrap">
-                        <button className="btn btn-icon btn-outline-primary" type="button" onClick={(event) => { event.stopPropagation(); editTicket(ticket); }} title="Edit ticket"><IconEdit size={16} /></button>
-                        <button className="btn btn-icon btn-outline-danger" type="button" onClick={(event) => { event.stopPropagation(); deleteTicket(ticket); }} title="Delete ticket"><IconTrash size={16} /></button>
-                      </div>
+                      <button className="btn btn-icon btn-outline-secondary" type="button" onClick={(event) => { event.stopPropagation(); openTicketDetail(ticket); }} title="View details and notes">
+                        <IconMessage2 size={16} />
+                        {!!(ticket.notes || []).length && <span className="ticketing-note-count">{ticket.notes.length}</span>}
+                      </button>
                     </div>
                   </article>
                 ))}
@@ -432,52 +462,92 @@ export default function TicketingPage({ refreshShell = () => {} }) {
             </section>
           ))}
         </div>
-        {!tickets.length && <div className="empty mt-3">No tickets match the current filters.</div>}
+        {!boardTickets.length && <div className="empty mt-3">No tickets match the current category and filters.</div>}
       </Card>
 
-      <div className="mt-3">
-        <Card title="Notes" icon={IconMessage2}>
-          {selectedTicket ? (
-            <>
-              <div className="ticketing-note-target mb-3">
+      {detailTicket && (
+        <div className="ticketing-drawer-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeTicketDetail(); }}>
+          <aside className="ticketing-detail-drawer" role="dialog" aria-modal="true" aria-labelledby="ticketing-detail-title">
+            <div className="ticketing-drawer-header">
+              <div>
+                <div className="text-muted small">Ticket details</div>
+                <h3 id="ticketing-detail-title">{detailTicket.ticketNumber}</h3>
+                <div className="text-muted">{detailTicket.subject}</div>
+              </div>
+              <button className="btn btn-icon btn-outline-secondary" type="button" onClick={closeTicketDetail} title="Close details"><IconX size={18} /></button>
+            </div>
+
+            <div className="ticketing-drawer-body">
+              <div className="ticketing-detail-summary">
                 <div>
-                  <div className="fw-bold">{selectedTicket.ticketNumber}</div>
-                  <div className="text-muted">{selectedTicket.subject}</div>
+                  <div className="fw-bold">{customerLabel(detailTicket.customer)}</div>
+                  <div className="text-muted small">{detailTicket.requestorName || 'Manual requestor'} / {detailTicket.contactNumber || 'No contact'}</div>
                 </div>
-                <span className={`ticketing-priority ${priorityClass(selectedTicket.priority)}`}>
+                <span className={`ticketing-priority ${priorityClass(detailTicket.priority)}`}>
                   <IconAlertTriangle size={14} />
-                  {priorityCopy[selectedTicket.priority] || label(selectedTicket.priority)}
+                  {priorityCopy[detailTicket.priority] || label(detailTicket.priority)}
                 </span>
               </div>
-              <form className="row g-2 mb-3" onSubmit={addNote}>
-                <div className="col-12">
-                  <textarea className="form-control" rows="2" placeholder="Add note" value={noteBody} onChange={(event) => setNoteBody(event.target.value)} />
-                </div>
-                <div className="col-md-7">
+
+              <div className="ticketing-detail-actions">
+                <button className="btn btn-outline-primary" type="button" onClick={() => editTicket(detailTicket)}><IconEdit size={16} /> Edit</button>
+                <button className="btn btn-outline-danger" type="button" onClick={() => deleteTicket(detailTicket)}><IconTrash size={16} /> Delete</button>
+              </div>
+
+              <div className="ticketing-detail-grid">
+                <div><span>Status</span><strong>{label(detailTicket.status)}</strong></div>
+                <div><span>Priority</span><strong>{label(detailTicket.priority)}</strong></div>
+                <div><span>Category</span><strong>{label(detailTicket.category)}</strong></div>
+                <div><span>Source</span><strong>{label(detailTicket.source)}</strong></div>
+                <div><span>Assigned To</span><strong>{detailTicket.assignedTo || 'Unassigned'}</strong></div>
+                <div><span>Due Date</span><strong>{detailTicket.dueDate || 'No due date'}</strong></div>
+                <div><span>Service ID</span><strong>{detailTicket.serviceId || 'No service reference'}</strong></div>
+                <div><span>Outage ID</span><strong>{detailTicket.outageId || 'No outage reference'}</strong></div>
+                <div><span>Opened</span><strong>{detailTicket.openedAt ? new Date(detailTicket.openedAt).toLocaleString() : 'Not recorded'}</strong></div>
+                <div><span>Updated</span><strong>{detailTicket.updatedAt ? new Date(detailTicket.updatedAt).toLocaleString() : 'Not recorded'}</strong></div>
+              </div>
+
+              <div className="ticketing-detail-section">
+                <span>Description</span>
+                <p>{detailTicket.description || 'No description provided.'}</p>
+              </div>
+
+              <div className="ticketing-detail-section">
+                <span>Resolution Summary</span>
+                <p>{detailTicket.resolutionSummary || 'No resolution summary yet.'}</p>
+              </div>
+
+              <div className="ticketing-drawer-subtitle">
+                <IconMessage2 size={17} />
+                Notes
+              </div>
+
+              <form className="ticketing-note-form" onSubmit={addNote}>
+                <textarea className="form-control" rows="4" placeholder="Add note" value={noteBody} onChange={(event) => setNoteBody(event.target.value)} />
+                <div className="ticketing-note-form-row">
                   <select className="form-select" value={noteVisibility} onChange={(event) => setNoteVisibility(event.target.value)}>
                     {meta.noteVisibilities.map((visibility) => <option key={visibility} value={visibility}>{label(visibility)}</option>)}
                   </select>
-                </div>
-                <div className="col-md-5">
-                  <button className="btn btn-outline-primary w-100" type="submit"><IconPlus size={16} /> Add Note</button>
+                  <button className="btn btn-primary" type="submit"><IconPlus size={16} /> Add</button>
                 </div>
               </form>
+
               <div className="ticketing-notes">
-                {(selectedTicket.notes || []).map((note) => (
+                {(detailTicket.notes || []).map((note) => (
                   <div className="ticketing-note mb-2" key={note.id}>
-                    <div className="d-flex justify-content-between">
+                    <div className="d-flex justify-content-between gap-3">
                       <span className={`badge ${note.visibility === 'INTERNAL' ? 'bg-purple-lt text-purple' : 'bg-green-lt text-green'}`}>{label(note.visibility)}</span>
                       <span className="text-muted small">{note.createdBy} / {new Date(note.createdAt).toLocaleString()}</span>
                     </div>
                     <div className="mt-2">{note.body}</div>
                   </div>
                 ))}
-                {!(selectedTicket.notes || []).length && <div className="text-muted">No notes yet.</div>}
+                {!(detailTicket.notes || []).length && <div className="empty">No notes yet.</div>}
               </div>
-            </>
-          ) : <div className="empty">Select a ticket to manage notes.</div>}
-        </Card>
-      </div>
+            </div>
+          </aside>
+        </div>
+      )}
 
       {isFormOpen && (
         <div className="ticketing-modal-backdrop" role="presentation">
@@ -498,7 +568,7 @@ export default function TicketingPage({ refreshShell = () => {} }) {
                 </div>
               </div>
               <div className="col-12">
-                <SelectField label="Customer" value={form.customerId} onChange={(value) => setForm({ ...form, customerId: value })}>
+                <SelectField label="Customer" value={form.customerId} onChange={(value) => setForm({ ...form, customerId: value, serviceId: '' })}>
                   <option value="">Manual requestor</option>
                   {customers.map((customer) => <option key={customer.id} value={customer.id}>{customerLabel(customer)}</option>)}
                 </SelectField>
@@ -516,7 +586,7 @@ export default function TicketingPage({ refreshShell = () => {} }) {
               <div className="col-md-6"><SelectField label="Source" value={form.source} options={meta.sources} onChange={(value) => setForm({ ...form, source: value })} /></div>
               <div className="col-md-6"><TextField label="Assigned To" value={form.assignedTo} onChange={(value) => setForm({ ...form, assignedTo: value })} /></div>
               <div className="col-md-6"><TextField label="Due Date" type="date" value={form.dueDate} onChange={(value) => setForm({ ...form, dueDate: value })} /></div>
-              <div className="col-md-6"><TextField label="Service ID" value={form.serviceId} onChange={(value) => setForm({ ...form, serviceId: value })} /></div>
+              <div className="col-md-6"><SelectField label="Service Order" value={form.serviceId} onChange={setTicketServiceOrder}>{serviceOrderOptions()}</SelectField></div>
               <div className="col-md-6"><TextField label="Outage ID" value={form.outageId} onChange={(value) => setForm({ ...form, outageId: value })} /></div>
               <div className="col-12">
                 <label className="form-label">Resolution Summary</label>

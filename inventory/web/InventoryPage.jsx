@@ -153,6 +153,7 @@ export default function InventoryPage({ refreshShell = () => {} }) {
   const [movements, setMovements] = useState([]);
   const [assignments, setAssignments] = useState([]);
   const [itemForm, setItemForm] = useState(blankItem);
+  const [itemModalOpen, setItemModalOpen] = useState(false);
   const [movementForm, setMovementForm] = useState(blankMovement);
   const [assignmentForm, setAssignmentForm] = useState(blankAssignment);
   const [search, setSearch] = useState('');
@@ -207,6 +208,7 @@ export default function InventoryPage({ refreshShell = () => {} }) {
     const path = itemForm.id ? `/inventory/items/${itemForm.id}` : '/inventory/items';
     await request(path, { method: itemForm.id ? 'PATCH' : 'POST', body: JSON.stringify(body) });
     setItemForm(blankItem);
+    setItemModalOpen(false);
     setMessage(itemForm.id ? 'Item saved.' : 'Item created.');
     await load();
     refreshShell();
@@ -270,6 +272,18 @@ export default function InventoryPage({ refreshShell = () => {} }) {
       serialNumbersText: (item.serialNumbers || []).join(', ')
     });
     setActiveTab('Items');
+    setItemModalOpen(true);
+  }
+
+  function newItem() {
+    setItemForm(blankItem);
+    setActiveTab('Items');
+    setItemModalOpen(true);
+  }
+
+  function closeItemModal() {
+    setItemForm(blankItem);
+    setItemModalOpen(false);
   }
 
   function metricCards() {
@@ -331,9 +345,27 @@ export default function InventoryPage({ refreshShell = () => {} }) {
 
       {activeTab === 'Items' && (
         <div className="row row-cards">
-          <div className="col-lg-4">
-            <Card title={itemForm.id ? 'Edit Item' : 'New Item'} icon={IconBox}>
-              <form className="inventory-form" onSubmit={submitItem}>
+          <div className="col-12">
+            <Card
+              title="Items"
+              icon={IconBox}
+              actions={<button className="btn btn-primary" type="button" onClick={newItem}><IconPlus size={16} className="me-1" />New item</button>}
+            >
+              <ItemTable rows={items} onEdit={editItem} onDelete={deleteItem} />
+            </Card>
+          </div>
+        </div>
+      )}
+
+      {itemModalOpen && (
+        <div className="inventory-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeItemModal(); }}>
+          <div className="inventory-modal" role="dialog" aria-modal="true" aria-labelledby="inventory-item-modal-title">
+            <div className="inventory-modal-header">
+              <h3 id="inventory-item-modal-title" className="inventory-modal-title">{itemForm.id ? 'Edit Item' : 'New Item'}</h3>
+              <button className="btn-close" type="button" aria-label="Close" onClick={closeItemModal} />
+            </div>
+            <form className="inventory-form" onSubmit={submitItem}>
+              <div className="inventory-modal-body">
                 <TextField label="SKU" value={itemForm.sku} onChange={(sku) => setItemForm({ ...itemForm, sku })} />
                 <TextField label="Name" value={itemForm.name} required onChange={(name) => setItemForm({ ...itemForm, name })} />
                 <SelectField label="Category" value={itemForm.category} options={meta.itemCategories || ['OTHER']} onChange={(category) => setItemForm({ ...itemForm, category })} />
@@ -351,17 +383,12 @@ export default function InventoryPage({ refreshShell = () => {} }) {
                 <SelectField label="Status" value={itemForm.status} options={meta.itemStatuses || ['ACTIVE']} onChange={(status) => setItemForm({ ...itemForm, status })} />
                 <TextArea label="Serial Numbers" value={itemForm.serialNumbersText} onChange={(serialNumbersText) => setItemForm({ ...itemForm, serialNumbersText })} />
                 <TextArea label="Notes" value={itemForm.notes} onChange={(notes) => setItemForm({ ...itemForm, notes })} />
-                <div className="inventory-form-actions">
-                  {itemForm.id && <button className="btn" type="button" onClick={() => setItemForm(blankItem)}>Cancel</button>}
-                  <button className="btn btn-primary"><IconDeviceFloppy size={16} className="me-1" />Save</button>
-                </div>
-              </form>
-            </Card>
-          </div>
-          <div className="col-lg-8">
-            <Card title="Items" icon={IconBox}>
-              <ItemTable rows={items} onEdit={editItem} onDelete={deleteItem} />
-            </Card>
+              </div>
+              <div className="inventory-modal-footer">
+                <button className="btn" type="button" onClick={closeItemModal}>Cancel</button>
+                <button className="btn btn-primary"><IconDeviceFloppy size={16} className="me-1" />Save</button>
+              </div>
+            </form>
           </div>
         </div>
       )}
