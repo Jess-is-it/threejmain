@@ -1,0 +1,85 @@
+.service-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.service-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+}
+
+.service-metric {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  min-height: 5rem;
+  border: 1px solid var(--tblr-border-color);
+  border-radius: 0.5rem;
+  background: #fff;
+  padding: 1rem;
+}
+
+.service-metric .badge {
+  display: inline-flex;
+  width: 2.35rem;
+  height: 2.35rem;
+  align-items: center;
+  justify-content: center;
+}
+
+.service-metric-value {
+  font-size: 1.35rem;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.service-form {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.service-two-cols {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.service-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.service-search {
+  display: flex;
+  min-width: min(20rem, 48vw);
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.service-search .input-icon {
+  flex: 1 1 auto;
+}
+
+.service-table td,
+.service-table th {
+  white-space: nowrap;
+}
+
+.service-table td:nth-child(2),
+.service-table td:nth-child(3) {
+  white-space: normal;
+}
+
+@media (max-width: 767.98px) {
+  .service-two-cols {
+    grid-template-columns: 1fr;
+  }
+
+  .service-search {
+    min-width: 0;
+    width: 100%;
+  }
+}

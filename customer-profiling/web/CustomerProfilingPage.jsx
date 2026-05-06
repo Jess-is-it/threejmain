@@ -160,17 +160,16 @@ const blankCustomerForm = {
 
 export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const [overview, setOverview] = useState(null);
-  const [meta, setMeta] = useState({ customerTypes: [], customerStatuses: [], assignmentStatuses: [], provinces: [], cities: [], citiesByProvince: {}, barangays: [], barangaysByProvinceCity: {}, bulkUploadHeaders: [] });
+  const [meta, setMeta] = useState({ customerTypes: [], customerStatuses: [], provinces: [], cities: [], citiesByProvince: {}, barangays: [], barangaysByProvinceCity: {}, bulkUploadHeaders: [] });
   const [locations, setLocations] = useState([]);
   const [customers, setCustomers] = useState({ data: [], page: 1, pageSize: 10, total: 0, totalPages: 1 });
   const [filters, setFilters] = useState({ search: '', customerType: '', status: '', province: '', city: '', barangay: '', page: 1, pageSize: 10 });
   const [selected, setSelected] = useState(null);
-  const [services, setServices] = useState([]);
+  const [serviceOrders, setServiceOrders] = useState([]);
   const [form, setForm] = useState(blankCustomerForm);
   const [editingId, setEditingId] = useState('');
   const [isFormModalOpen, setFormModalOpen] = useState(false);
   const [isDetailsPanelOpen, setDetailsPanelOpen] = useState(false);
-  const [serviceForm, setServiceForm] = useState({ planId: 'BASIC-50MBPS', serviceId: 'FIBER-INTERNET', startDate: new Date().toISOString().slice(0, 10), endDate: '', status: 'ACTIVE' });
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
@@ -222,12 +221,12 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   async function loadCustomer(id) {
     setError('');
     try {
-      const [customer, customerServices] = await Promise.all([
+      const [customer, customerServiceOrders] = await Promise.all([
         request(`/customer-profiling/customers/${id}`),
-        request(`/customer-profiling/customers/${id}/services`)
+        request(`/service/orders?customerId=${encodeURIComponent(id)}`)
       ]);
       setSelected(customer);
-      setServices(customerServices);
+      setServiceOrders(customerServiceOrders);
       setDetailsPanelOpen(true);
     } catch (err) {
       setError(err.message);
@@ -274,7 +273,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   function closeDetailsPanel() {
     setDetailsPanelOpen(false);
     setSelected(null);
-    setServices([]);
+    setServiceOrders([]);
   }
 
   function resetForm() {
@@ -329,19 +328,6 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     if (selected?.id === customer.id) closeDetailsPanel();
     await load(filters);
     refreshShell();
-  }
-
-  async function assignService(e) {
-    e.preventDefault();
-    if (!selected) return;
-    setError('');
-    try {
-      await request(`/customer-profiling/customers/${selected.id}/services`, { method: 'POST', body: JSON.stringify(serviceForm) });
-      setMessage(`Service assigned to ${selected.accountNumber}.`);
-      await loadCustomer(selected.id);
-    } catch (err) {
-      setError(err.message);
-    }
   }
 
   async function downloadTemplate() {
@@ -480,19 +466,21 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       </div>
 
       <div className="col-12 col-xl-4">
-        <Card title="Assign Service" icon={IconWifi}>
-          {!selected && <div className="empty">Select a customer before assigning service.</div>}
+        <Card title="Service Orders" icon={IconWifi}>
+          {!selected && <div className="empty">Select a customer to view Service module orders.</div>}
           {selected && (
-            <form onSubmit={assignService}>
-              <div className="mb-3"><label className="form-label">Plan ID</label><input className="form-control" value={serviceForm.planId} onChange={(e) => setServiceForm({ ...serviceForm, planId: e.target.value })} /></div>
-              <div className="mb-3"><label className="form-label">Service ID</label><input className="form-control" value={serviceForm.serviceId} onChange={(e) => setServiceForm({ ...serviceForm, serviceId: e.target.value })} /></div>
-              <div className="row g-2">
-                <div className="col-6"><label className="form-label">Start Date</label><input className="form-control" type="date" value={serviceForm.startDate} onChange={(e) => setServiceForm({ ...serviceForm, startDate: e.target.value })} /></div>
-                <div className="col-6"><label className="form-label">End Date</label><input className="form-control" type="date" value={serviceForm.endDate} onChange={(e) => setServiceForm({ ...serviceForm, endDate: e.target.value })} /></div>
-              </div>
-              <div className="mt-3"><label className="form-label">Status</label><select className="form-select" value={serviceForm.status} onChange={(e) => setServiceForm({ ...serviceForm, status: e.target.value })}>{meta.assignmentStatuses.map((item) => <option key={item}>{item}</option>)}</select></div>
-              <button className="btn btn-primary w-100 mt-3"><IconPlus size={18} className="me-2" />Assign Service</button>
-            </form>
+            <>
+              {serviceOrders.map((order) => (
+                <div className="service-pill" key={order.id}>
+                  <div>
+                    <strong>{order.catalogName || order.catalog?.name || 'Service order'}</strong>
+                    <span>{order.serviceReference || order.orderNumber}</span>
+                  </div>
+                  <span className={`badge ${statusClass(order.status)}`}>{order.status}</span>
+                </div>
+              ))}
+              {!serviceOrders.length && <div className="text-muted">No Service Orders for this customer.</div>}
+            </>
           )}
         </Card>
 
@@ -626,14 +614,17 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                 )) : <div className="text-muted">No secondary contacts.</div>}
               </div>
               <div className="border-top pt-3 mt-3">
-                <div className="fw-semibold mb-2">Services</div>
-                {services.map((service) => (
-                  <div className="service-pill" key={service.id}>
-                    <div><strong>{service.planId || 'No plan'}</strong><span>{service.serviceId || 'No service ID'}</span></div>
-                    <span className={`badge ${statusClass(service.status)}`}>{service.status}</span>
+                <div className="fw-semibold mb-2">Service orders</div>
+                {serviceOrders.map((order) => (
+                  <div className="service-pill" key={order.id}>
+                    <div>
+                      <strong>{order.catalogName || order.catalog?.name || 'Service order'}</strong>
+                      <span>{order.serviceReference || order.orderNumber}</span>
+                    </div>
+                    <span className={`badge ${statusClass(order.status)}`}>{order.status}</span>
                   </div>
                 ))}
-                {!services.length && <div className="text-muted">No services assigned.</div>}
+                {!serviceOrders.length && <div className="text-muted">No service orders.</div>}
               </div>
             </div>
           </div>

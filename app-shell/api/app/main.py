@@ -21,6 +21,7 @@ MODULE_API_PATHS = [
     ("account-admin", "api"),
     ("customer-service-management", "api"),
     ("ticketing", "api"),
+    ("service", "api"),
     ("system-settings", "api"),
     ("logs", "api"),
 ]
@@ -44,6 +45,7 @@ from customer_service_management import (
 from inventory import configure_inventory, inventory_metrics, router as inventory_router, seed_inventory_data
 from point_of_sale import configure_point_of_sale, point_of_sale_metrics, router as point_of_sale_router, seed_point_of_sale_data
 from logs import configure_logs, router as logs_router
+from service import configure_service, router as service_router, seed_service_data, service_metrics
 from system_settings import configure_system_settings, router as system_settings_router
 from ticketing import configure_ticketing, router as ticketing_router, seed_ticketing_data, ticketing_metrics
 
@@ -94,7 +96,7 @@ modules = [
         "name": "Customer Profiling",
         "folder": "customer-profiling",
         "status": "functional-shell",
-        "description": "Customer records, account identity, service plans, addresses, contacts, bulk upload workflow, and account lifecycle.",
+        "description": "Customer records, account identity, service addresses, contacts, bulk upload workflow, account lifecycle, and Service Order references.",
         "metrics": {"customers": 0, "active": 0, "pending": 0},
     },
     {
@@ -144,6 +146,14 @@ modules = [
         "status": "functional-shell",
         "description": "Trouble tickets, customer issue intake, priorities, assignment placeholders, notes, and resolution history.",
         "metrics": {"open_tickets": 0, "urgent": 0, "field_jobs": 0},
+    },
+    {
+        "slug": "service",
+        "name": "Service",
+        "folder": "service",
+        "status": "functional-shell",
+        "description": "Service catalog speed plans, customer service orders, and canonical service references for billing and support.",
+        "metrics": {"catalog_items": 0, "open_orders": 0, "active_orders": 0},
     },
     {
         "slug": "system-settings",
@@ -248,6 +258,7 @@ def seed_module_data() -> None:
     seed_account_admin_data()
     seed_customer_service_data()
     seed_ticketing_data()
+    seed_service_data()
 
 
 def sync_module_metrics() -> None:
@@ -259,6 +270,7 @@ def sync_module_metrics() -> None:
         "account-admin": account_admin_metrics,
         "customer-service-management": customer_service_metrics,
         "ticketing": ticketing_metrics,
+        "service": service_metrics,
         "system-settings": lambda: {"sections": len(settings), "registered_ports": len(port_registry())},
         "logs": lambda: {"audit_events": len(audit_logs)},
     }
@@ -362,6 +374,7 @@ configure_inventory(current_admin, add_audit)
 configure_account_admin(current_admin, add_audit)
 configure_customer_service_management(current_admin, add_audit, resolve_customer_for_modules, search_customers_for_modules, seed_customer_data)
 configure_ticketing(current_admin, add_audit, resolve_customer_for_modules, search_customers_for_modules, seed_customer_data)
+configure_service(current_admin, add_audit, resolve_customer_for_modules, search_customers_for_modules, seed_customer_data)
 configure_system_settings(current_admin, add_audit, settings, port_registry)
 configure_logs(current_admin, audit_logs)
 
@@ -372,6 +385,7 @@ app.include_router(inventory_router)
 app.include_router(account_admin_router)
 app.include_router(customer_service_router)
 app.include_router(ticketing_router)
+app.include_router(service_router)
 app.include_router(system_settings_router)
 app.include_router(logs_router)
 

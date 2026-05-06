@@ -176,7 +176,38 @@ Read-only checks such as `docker compose ps` and `curl` health checks do not nee
 
 ---
 
-## 9. Follow the module-folder pattern
+## 9. Use module preview when the user needs fast visual review
+
+Module Codex sessions can run their own isolated preview app from the current worktree. This helps the user inspect that Codex branch immediately without waiting for Integration Codex to combine every module.
+
+Use:
+
+```bash
+./scripts/start_module_preview.sh <agent> <module-name> "<task-name>"
+```
+
+Example:
+
+```bash
+./scripts/start_module_preview.sh codex-3 billing "billing-form-modals"
+```
+
+The helper uses unique ports based on the Codex identity:
+
+```text
+codex-3 -> API 8203, web 8303
+codex-4 -> API 8204, web 8304
+```
+
+The helper locks `runtime/preview/<agent>` automatically. Do not use shared ports `8100`, `8180`, or `5432` for module previews.
+
+This preview shows only that worktree/branch. Integration Codex is still responsible for combining selected module branches into the staging-ready app.
+
+If this is a brand-new module that does not appear in app-shell navigation yet, do not edit `app-shell/` from the Module Codex. Ask Integration Codex to do the one-time app-shell wiring, then continue module-local previews from that integrated base.
+
+---
+
+## 10. Follow the module-folder pattern
 
 If the task creates or changes a business module, implement the module inside its root-level module folder first.
 
@@ -205,7 +236,7 @@ The Integration Codex wires completed module folders into `app-shell/` and merge
 
 ---
 
-## 10. Keep Module Branches Clean
+## 11. Keep Module Branches Clean
 
 For module work, create the task branch from latest `origin/staging` and keep the branch module-only:
 
@@ -251,7 +282,7 @@ Only create a module PR if the user explicitly asks for PR review.
 
 ---
 
-## 11. Summarize before coding
+## 12. Summarize before coding
 
 Before making implementation changes, summarize:
 

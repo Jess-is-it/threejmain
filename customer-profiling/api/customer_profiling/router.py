@@ -14,14 +14,12 @@ except Exception:  # pragma: no cover - keeps module usable before System Settin
 router = APIRouter(prefix="/api/customer-profiling", tags=["customer-profiling"])
 
 customers: list[dict[str, Any]] = []
-customer_services: list[dict[str, Any]] = []
 
 _current_admin: Callable[[str | None], dict[str, Any]] | None = None
 _audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None] | None = None
 
 CUSTOMER_TYPES = ["RESIDENTIAL", "BUSINESS", "ENTERPRISE"]
 CUSTOMER_STATUSES = ["ACTIVE", "INACTIVE", "SUSPENDED", "PENDING"]
-ASSIGNMENT_STATUSES = ["ACTIVE", "PAUSED", "TERMINATED", "PENDING"]
 PROVINCES = ["CAGAYAN", "ISABELA"]
 MUNICIPALITIES_BY_PROVINCE = {
     "CAGAYAN": [
@@ -229,14 +227,6 @@ class CustomerPayload(BaseModel):
     status: str | None = None
 
 
-class CustomerServicePayload(BaseModel):
-    planId: str | None = None
-    serviceId: str | None = None
-    startDate: str
-    endDate: str | None = None
-    status: str = "ACTIVE"
-
-
 def configure_customer_profiling(
     current_admin: Callable[[str | None], dict[str, Any]],
     audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None],
@@ -282,16 +272,10 @@ def visible_customers() -> list[dict[str, Any]]:
     return [customer for customer in customers if not customer.get("deletedAt")]
 
 
-def services_for_customer(customer_id: str) -> list[dict[str, Any]]:
-    return [service for service in customer_services if service["customerId"] == customer_id]
-
-
 def customer_summary(customer: dict[str, Any]) -> dict[str, Any]:
     return {
         **customer,
         "fullName": customer_full_name(customer),
-        "services": services_for_customer(customer["id"]),
-        "serviceCount": len(services_for_customer(customer["id"])),
     }
 
 
@@ -534,28 +518,6 @@ def seed_customer_data() -> None:
                 **row,
             },
         )
-    for customer in customers:
-        if customer["accountNumber"] in {"58392741", "83476195", "94573268"}:
-            status = "ACTIVE"
-        elif customer["accountNumber"] == "76149028":
-            status = "PENDING"
-        else:
-            status = "PAUSED"
-        customer_services.append(
-            {
-                "id": str(uuid4()),
-                "customerId": customer["id"],
-                "planId": "BASIC-50MBPS" if customer["customerType"] != "ENTERPRISE" else "BUSINESS-200MBPS",
-                "serviceId": "FIBER-INTERNET",
-                "startDate": "2025-01-01",
-                "endDate": None,
-                "status": status,
-                "createdAt": created_at,
-                "updatedAt": created_at,
-            },
-        )
-
-
 @router.get("/meta")
 def customer_profiling_meta(admin=Depends(require_admin)):
     cities = sorted({city for cities in MUNICIPALITIES_BY_PROVINCE.values() for city in cities})
@@ -563,7 +525,6 @@ def customer_profiling_meta(admin=Depends(require_admin)):
     return {
         "customerTypes": CUSTOMER_TYPES,
         "customerStatuses": CUSTOMER_STATUSES,
-        "assignmentStatuses": ASSIGNMENT_STATUSES,
         "provinces": PROVINCES,
         "cities": cities,
         "citiesByProvince": MUNICIPALITIES_BY_PROVINCE,
@@ -753,34 +714,3 @@ def delete_customer(customer_id: str, admin=Depends(require_admin)):
     current["updatedByUserId"] = admin["id"]
     add_audit("customer_deleted", "Customer", current["id"], {"accountNumber": current["accountNumber"]}, admin["username"])
     return {"status": "ok"}
-
-
-@router.get("/customers/{customer_id}/services")
-def list_customer_services(customer_id: str, admin=Depends(require_admin)):
-    seed_customer_data()
-    find_customer(customer_id)
-    return services_for_customer(customer_id)
-
-
-@router.post("/customers/{customer_id}/services")
-def assign_customer_service(customer_id: str, payload: CustomerServicePayload, admin=Depends(require_admin)):
-    seed_customer_data()
-    find_customer(customer_id)
-    status = normalize_upper(payload.status)
-    if status not in ASSIGNMENT_STATUSES:
-        raise HTTPException(status_code=400, detail="Invalid assignment status")
-    timestamp = now_iso()
-    service = {
-        "id": str(uuid4()),
-        "customerId": customer_id,
-        "planId": payload.planId or "",
-        "serviceId": payload.serviceId or "",
-        "startDate": payload.startDate,
-        "endDate": payload.endDate,
-        "status": status,
-        "createdAt": timestamp,
-        "updatedAt": timestamp,
-    }
-    customer_services.append(service)
-    add_audit("customer_service_assigned", "CustomerService", service["id"], {"customerId": customer_id}, admin["username"])
-    return service

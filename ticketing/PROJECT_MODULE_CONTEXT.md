@@ -49,17 +49,19 @@ The first pass is in-memory only and supports:
 ## Frontend
 
 - `ticketing/web/TicketingPage.jsx` renders a Kanban-style board where ticket status values are the column titles.
-- Ticket cards expose priority, ticket number, subject, customer, requestor, contact, assignee, due date, category, source, service ID, outage ID, and a short description.
+- Category filtering is displayed as tabs with per-category ticket counters instead of a category select field.
+- Ticket cards are intentionally compact: status, ticket number, subject, customer label, priority marker, and notes/detail action only.
 - Priority is visually encoded on each card for `URGENT`, `HIGH`, `NORMAL`, and `LOW` so urgent/high work is immediately identifiable.
-- Users can move tickets between statuses by dragging cards to another status column or by using the status selector on each card.
+- Users can move tickets between statuses by dragging cards to another status column or by editing the ticket from the detail drawer.
 - Ticket create/edit now uses a modal form instead of a persistent side panel, leaving the board as the primary working surface.
-- Notes remain available for the selected ticket below the board.
+- Clicking a ticket card opens a right-side detail drawer with the full ticket record, edit/delete actions, description, resolution summary, and notes.
+- Notes are displayed inside the right-side detail drawer where users can view existing notes and add new notes.
 
 ## Dependencies
 
 - Customer Profiling: optional integration provider for customer lookup and ticket customer snapshots.
 - Account Admin: future dependency for real staff assignment; `assignedTo` is free text for now.
-- Customer Profiling service assignments: future source for `serviceId`; currently a placeholder reference field.
+- Service: Service Order records are the source for selectable `serviceId` references in ticket create/edit.
 - Outage tracking: future source for `outageId`; currently a placeholder reference field.
 - Inventory and dispatch workflows: future dependencies for field job equipment and technician scheduling.
 
