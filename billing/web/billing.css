@@ -75,6 +75,53 @@
   min-width: 2rem;
 }
 
+.billing-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1050;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(15 23 42 / 0.48);
+  padding: 1rem;
+}
+
+.billing-modal {
+  width: min(100%, 42rem);
+  max-height: calc(100vh - 2rem);
+  overflow: hidden;
+  border: 1px solid var(--admin-border);
+  border-radius: 0.5rem;
+  background: #fff;
+  box-shadow: 0 1.5rem 4rem rgb(15 23 42 / 0.22);
+}
+
+.billing-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--admin-border);
+  padding: 0.9rem 1rem;
+}
+
+.billing-modal-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  margin: 0;
+  color: #111827;
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.billing-modal-body {
+  max-height: calc(100vh - 7rem);
+  overflow: auto;
+  padding: 1rem;
+}
+
 @media (max-width: 575.98px) {
   .billing-two-cols {
     grid-template-columns: 1fr;
@@ -87,5 +134,14 @@
   .billing-toolbar .btn,
   .billing-search {
     width: 100%;
+  }
+
+  .billing-modal-backdrop {
+    align-items: stretch;
+    padding: 0.5rem;
+  }
+
+  .billing-modal {
+    max-height: calc(100vh - 1rem);
   }
 }

@@ -30,6 +30,7 @@ system-settings/
   - `GET /api/system-settings/locations`
   - `GET /api/system-settings/locations/search?q=<text>`
   - `POST /api/system-settings/locations`
+  - `PATCH /api/system-settings/locations/{location_id}`
   - `DELETE /api/system-settings/locations/{location_id}`
 - Compatibility endpoints retained:
   - `/api/system/settings`
@@ -42,3 +43,4 @@ system-settings/
 
 The app-shell configures this module with shared auth, audit logging, the shared settings store, and the port registry provider.
 Location records are in-memory in this first shell and should move to shared PostgreSQL persistence before production use.
+Location Management preloads the existing Customer Profiling service-area barangays and exposes edit actions so incomplete customer-created locations can be completed later.

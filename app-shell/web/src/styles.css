@@ -134,9 +134,35 @@ button.nav-link {
   background: rgba(255, 255, 255, 0.1);
 }
 
+.nav-link-chevron {
+  display: inline-flex;
+  align-items: center;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.nav-submenu {
+  margin: 0.2rem 0 0.35rem;
+  padding: 0;
+  list-style: none;
+}
+
+.navbar-vertical .nav-sub-link {
+  min-height: 2.35rem;
+  margin-left: 1.4rem;
+  width: calc(100% - 1.85rem);
+  padding-block: 0.45rem;
+  font-size: 0.9rem;
+}
+
+.navbar-vertical .nav-sub-link .nav-link-icon {
+  opacity: 0.78;
+}
+
 .page.sidebar-collapsed .navbar-vertical .nav-link-title,
 .page.sidebar-collapsed .sidebar-user-text,
-.page.sidebar-collapsed .sidebar-user-chevron {
+.page.sidebar-collapsed .sidebar-user-chevron,
+.page.sidebar-collapsed .nav-link-chevron,
+.page.sidebar-collapsed .nav-submenu {
   display: none;
 }
 

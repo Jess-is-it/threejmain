@@ -54,6 +54,61 @@
   gap: 0.4rem;
 }
 
+.bulk-upload-file {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.75rem;
+  margin-bottom: 1rem;
+  border: 1px solid var(--admin-border);
+  border-radius: 0.5rem;
+  background: #f8fafc;
+}
+
+.bulk-upload-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.bulk-upload-preview {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--admin-border);
+  border-radius: 0.5rem;
+}
+
+.bulk-upload-preview .table {
+  margin-bottom: 0;
+}
+
+.customer-status-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--admin-border);
+}
+
+.customer-status-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 2.25rem;
+  padding: 0 0.25rem 0.65rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #64748b;
+  font-weight: 600;
+}
+
+.customer-status-tab.active {
+  border-bottom-color: #206bc4;
+  color: #1e293b;
+}
+
 .customer-modal-backdrop,
 .customer-drawer-backdrop {
   position: fixed;
@@ -78,6 +133,10 @@
   border: 1px solid var(--admin-border);
   border-radius: 0.5rem;
   box-shadow: 0 24px 80px rgba(15, 23, 42, 0.28);
+}
+
+.customer-bulk-upload-modal {
+  width: min(860px, 100%);
 }
 
 .customer-modal-header,

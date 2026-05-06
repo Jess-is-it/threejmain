@@ -61,7 +61,7 @@ The first pass is in-memory only and supports:
 
 - Customer Profiling: optional integration provider for customer lookup and ticket customer snapshots.
 - Account Admin: future dependency for real staff assignment; `assignedTo` is free text for now.
-- Customer Profiling service assignments: future source for `serviceId`; currently a placeholder reference field.
+- Service: Service Order records are the source for selectable `serviceId` references in ticket create/edit.
 - Outage tracking: future source for `outageId`; currently a placeholder reference field.
 - Inventory and dispatch workflows: future dependencies for field job equipment and technician scheduling.
 

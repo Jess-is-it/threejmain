@@ -153,6 +153,16 @@ Before pushing to `staging`, confirm:
 
 Never push to `master`.
 
+## Relationship To Module Previews
+
+Module preview servers are for fast user review of one Codex branch at a time. They run from each Module Codex worktree on per-agent ports such as web `8303` and API `8203`.
+
+The Integration Codex does not need to manage every module preview. It may use a preview only to verify an integrated result, but normal integration verification should still use shared app-shell checks and the shared runtime when needed.
+
+Preview servers do not combine branches. Integration Codex is still required to fetch completed clean module branches, merge the selected module folder outputs, wire app-shell, run checks, and prepare the staging-ready result.
+
+If the user asks why a module preview is visible but staging does not show it yet, explain that preview is branch-local. It appears in staging only after Integration Codex integrates that module and the user explicitly approves pushing the integrated result to `staging`.
+
 ## Module Context Merge
 
 Each module should keep its local project memory in:

@@ -1,5 +1,6 @@
 # Local AI coordination state
 .ai_coord/
+.preview/
 
 # Environment/secrets
 .env

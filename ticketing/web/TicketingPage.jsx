@@ -128,6 +128,7 @@ export default function TicketingPage({ refreshShell = () => {} }) {
   const [overview, setOverview] = useState({ metrics: {}, byStatus: {}, byPriority: {}, recentTickets: [] });
   const [tickets, setTickets] = useState([]);
   const [customers, setCustomers] = useState([]);
+  const [serviceOrders, setServiceOrders] = useState([]);
   const [customerSearch, setCustomerSearch] = useState('');
   const [filters, setFilters] = useState({ search: '', status: '', priority: '', category: '' });
   const [form, setForm] = useState(blankTicket);
@@ -167,15 +168,17 @@ export default function TicketingPage({ refreshShell = () => {} }) {
       if (value && key !== 'category') params.set(key, value);
     });
     try {
-      const [nextMeta, nextOverview, nextCustomers, nextTickets] = await Promise.all([
+      const [nextMeta, nextOverview, nextCustomers, nextServiceOrders, nextTickets] = await Promise.all([
         request('/ticketing/meta'),
         request('/ticketing/overview'),
         request(`/ticketing/customers?search=${encodeURIComponent(nextCustomerSearch)}`),
+        request('/service/orders?activeOnly=true'),
         request(`/ticketing/tickets?${params.toString()}`)
       ]);
       setMeta(nextMeta);
       setOverview(nextOverview);
       setCustomers(nextCustomers);
+      setServiceOrders(nextServiceOrders);
       setTickets(nextTickets);
       if (!selectedId && nextTickets[0]) setSelectedId(nextTickets[0].id);
     } catch (err) {
@@ -250,6 +253,35 @@ export default function TicketingPage({ refreshShell = () => {} }) {
     } catch (err) {
       setError(err.message);
     }
+  }
+
+  function serviceOrderOptions() {
+    const rows = form.customerId ? serviceOrders.filter((order) => order.customerId === form.customerId) : serviceOrders;
+    return (
+      <>
+        <option value="">No service order</option>
+        {rows.map((order) => (
+          <option key={order.id} value={order.serviceReference || order.orderNumber}>
+            {order.serviceReference || order.orderNumber} - {order.catalogName || order.catalog?.name} - {customerLabel(order.customer)}
+          </option>
+        ))}
+      </>
+    );
+  }
+
+  function setTicketServiceOrder(serviceId) {
+    const order = serviceOrders.find((item) => (item.serviceReference || item.orderNumber) === serviceId);
+    if (!order) {
+      setForm({ ...form, serviceId });
+      return;
+    }
+    setForm({
+      ...form,
+      serviceId,
+      customerId: order.customerId,
+      requestorName: form.requestorName || order.customer?.name || '',
+      contactNumber: form.contactNumber || order.customer?.contactNumber || ''
+    });
   }
 
   async function deleteTicket(ticket) {
@@ -536,7 +568,7 @@ export default function TicketingPage({ refreshShell = () => {} }) {
                 </div>
               </div>
               <div className="col-12">
-                <SelectField label="Customer" value={form.customerId} onChange={(value) => setForm({ ...form, customerId: value })}>
+                <SelectField label="Customer" value={form.customerId} onChange={(value) => setForm({ ...form, customerId: value, serviceId: '' })}>
                   <option value="">Manual requestor</option>
                   {customers.map((customer) => <option key={customer.id} value={customer.id}>{customerLabel(customer)}</option>)}
                 </SelectField>
@@ -554,7 +586,7 @@ export default function TicketingPage({ refreshShell = () => {} }) {
               <div className="col-md-6"><SelectField label="Source" value={form.source} options={meta.sources} onChange={(value) => setForm({ ...form, source: value })} /></div>
               <div className="col-md-6"><TextField label="Assigned To" value={form.assignedTo} onChange={(value) => setForm({ ...form, assignedTo: value })} /></div>
               <div className="col-md-6"><TextField label="Due Date" type="date" value={form.dueDate} onChange={(value) => setForm({ ...form, dueDate: value })} /></div>
-              <div className="col-md-6"><TextField label="Service ID" value={form.serviceId} onChange={(value) => setForm({ ...form, serviceId: value })} /></div>
+              <div className="col-md-6"><SelectField label="Service Order" value={form.serviceId} onChange={setTicketServiceOrder}>{serviceOrderOptions()}</SelectField></div>
               <div className="col-md-6"><TextField label="Outage ID" value={form.outageId} onChange={(value) => setForm({ ...form, outageId: value })} /></div>
               <div className="col-12">
                 <label className="form-label">Resolution Summary</label>
