@@ -32,7 +32,7 @@ Restored workflows from the previous standalone Customer Profiling module:
 - Service location selector connected to System Settings -> Location Management, with manual customer locations added to Location Management when no saved record matches
 - Secondary contact fields
 - Service Order references from the Service module for selected customers
-- Bulk upload template workflow surface with the original required headers and allowed values
+- Bulk upload CSV modal with template download, client-side preview validation, duplicate checks, and guarded import
 
 Current shell API route prefix:
 

@@ -172,6 +172,7 @@ BARANGAYS_BY_PROVINCE_CITY = {
     ],
 }
 BULK_UPLOAD_HEADERS = [
+    "accountNumber",
     "firstName",
     "middleName",
     "lastName",
@@ -621,6 +622,7 @@ def customer_bulk_upload_template(admin=Depends(require_admin)):
         "filename": "customer-bulk-upload-template.csv",
         "headers": BULK_UPLOAD_HEADERS,
         "sample": {
+            "accountNumber": "",
             "firstName": "JUAN",
             "middleName": "D",
             "lastName": "DELA CRUZ",

@@ -66,6 +66,132 @@ function uniqueValues(values) {
   return Array.from(new Set(values.map(normalizeUpper).filter(Boolean))).sort();
 }
 
+function keyValue(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function customerDuplicateKey(data) {
+  const key = [
+    data.firstName,
+    data.lastName,
+    data.addressLine1,
+    data.province,
+    data.city,
+    data.barangay,
+    data.latitude,
+    data.longitude
+  ].map(keyValue).join('|');
+  return key.replaceAll('|', '') ? key : '';
+}
+
+function rowNumbers(rows) {
+  return rows.map((row) => row.rowNumber).join(', ');
+}
+
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let value = '';
+  let inQuotes = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+
+    if (char === '"') {
+      if (inQuotes && next === '"') {
+        value += '"';
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === ',' && !inQuotes) {
+      row.push(value);
+      value = '';
+    } else if ((char === '\n' || char === '\r') && !inQuotes) {
+      if (char === '\r' && next === '\n') index += 1;
+      row.push(value);
+      if (row.some((cell) => String(cell).trim() !== '')) rows.push(row);
+      row = [];
+      value = '';
+    } else {
+      value += char;
+    }
+  }
+
+  row.push(value);
+  if (row.some((cell) => String(cell).trim() !== '')) rows.push(row);
+  return rows;
+}
+
+function parseCustomerCsv(text, requiredHeaders, existingCustomers = []) {
+  const rows = parseCsv(text);
+  if (rows.length < 2) {
+    return { headers: [], rows: [], fileErrors: ['CSV must include a header row and at least one customer row.'] };
+  }
+
+  const headers = rows[0].map((header) => String(header || '').trim());
+  const normalizedHeaders = headers.map((header) => header.toLowerCase());
+  const fileErrors = requiredHeaders
+    .filter((header) => !normalizedHeaders.includes(header.toLowerCase()))
+    .map((header) => `Missing required header: ${header}`);
+
+  const parsedRows = rows.slice(1).map((cells, index) => {
+    const data = {};
+    headers.forEach((header, cellIndex) => {
+      if (header) data[header] = String(cells[cellIndex] || '').trim();
+    });
+    const hasData = Object.values(data).some((item) => String(item || '').trim());
+    const rowErrors = requiredHeaders
+      .filter((header) => !String(data[header] || '').trim())
+      .map((header) => `${header} is required`);
+    return {
+      rowNumber: index + 2,
+      hasData,
+      data: {
+        status: 'ACTIVE',
+        customerType: 'RESIDENTIAL',
+        ...data
+      },
+      errors: rowErrors
+    };
+  }).filter((item) => item.hasData);
+
+  const existingAccounts = new Set(existingCustomers.map((customer) => keyValue(customer.accountNumber)).filter(Boolean));
+  const existingCustomerKeys = new Set(existingCustomers.map(customerDuplicateKey).filter(Boolean));
+  const accountRows = new Map();
+  const customerKeyRows = new Map();
+
+  parsedRows.forEach((row) => {
+    const accountNumber = keyValue(row.data.accountNumber);
+    const duplicateKey = customerDuplicateKey(row.data);
+    if (accountNumber) accountRows.set(accountNumber, [...(accountRows.get(accountNumber) || []), row]);
+    if (duplicateKey) customerKeyRows.set(duplicateKey, [...(customerKeyRows.get(duplicateKey) || []), row]);
+  });
+
+  parsedRows.forEach((row) => {
+    const accountNumber = keyValue(row.data.accountNumber);
+    const duplicateKey = customerDuplicateKey(row.data);
+    const duplicateAccountRows = accountRows.get(accountNumber) || [];
+    const duplicateCustomerRows = customerKeyRows.get(duplicateKey) || [];
+
+    if (accountNumber && existingAccounts.has(accountNumber)) {
+      row.errors.push(`Account number ${row.data.accountNumber} already exists`);
+    }
+    if (duplicateKey && existingCustomerKeys.has(duplicateKey)) {
+      row.errors.push('Customer already exists with the same name and service address');
+    }
+    if (duplicateAccountRows.length > 1) {
+      row.errors.push(`Duplicate account number in CSV rows ${rowNumbers(duplicateAccountRows)}`);
+    }
+    if (duplicateCustomerRows.length > 1) {
+      row.errors.push(`Duplicate customer identity/address in CSV rows ${rowNumbers(duplicateCustomerRows)}`);
+    }
+  });
+
+  return { headers, rows: parsedRows, fileErrors };
+}
+
 function locationLabel(location) {
   const parts = [
     location.location_name,
@@ -169,6 +295,12 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const [form, setForm] = useState(blankCustomerForm);
   const [editingId, setEditingId] = useState('');
   const [isFormModalOpen, setFormModalOpen] = useState(false);
+  const [isBulkUploadModalOpen, setBulkUploadModalOpen] = useState(false);
+  const [bulkUploadFileName, setBulkUploadFileName] = useState('');
+  const [bulkUploadRows, setBulkUploadRows] = useState([]);
+  const [bulkUploadFileErrors, setBulkUploadFileErrors] = useState([]);
+  const [bulkUploadResult, setBulkUploadResult] = useState(null);
+  const [isBulkUploading, setBulkUploading] = useState(false);
   const [isDetailsPanelOpen, setDetailsPanelOpen] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -195,6 +327,27 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     .map((location) => normalizeUpper(location.barangay)));
   const barangays = filters.province && filters.city ? uniqueValues([...(meta.barangaysByProvinceCity?.[barangayKey] || []), ...savedBarangays]) : uniqueValues([...(meta.barangays || []), ...savedBarangays]);
   const formBarangays = form.province && form.city ? uniqueValues([...(meta.barangaysByProvinceCity?.[formBarangayKey] || []), ...formSavedBarangays]) : uniqueValues([...(meta.barangays || []), ...formSavedBarangays]);
+  const requiredBulkUploadHeaders = meta.requiredBulkUploadHeaders || ['firstName', 'lastName', 'contactNumber', 'facebookAccountName'];
+  const validBulkUploadRows = bulkUploadRows.filter((row) => !row.errors.length);
+  const invalidBulkUploadRows = bulkUploadRows.filter((row) => row.errors.length);
+  const statusTabs = [
+    { label: 'All', value: '', count: overview?.totalCustomers ?? 0, tone: 'blue' },
+    { label: 'Active', value: 'ACTIVE', count: overview?.activeCustomers ?? 0, tone: 'green' },
+    { label: 'Pending', value: 'PENDING', count: overview?.pendingCustomers ?? 0, tone: 'yellow' },
+    { label: 'Suspended', value: 'SUSPENDED', count: overview?.suspendedCustomers ?? 0, tone: 'red' },
+    {
+      label: 'Inactive',
+      value: 'INACTIVE',
+      count: Math.max(
+        0,
+        (overview?.totalCustomers ?? 0)
+          - (overview?.activeCustomers ?? 0)
+          - (overview?.pendingCustomers ?? 0)
+          - (overview?.suspendedCustomers ?? 0)
+      ),
+      tone: 'secondary'
+    }
+  ];
 
   async function load(nextFilters = filters) {
     setError('');
@@ -268,6 +421,24 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     setFormModalOpen(false);
     setEditingId('');
     setForm({ ...blankCustomerForm });
+  }
+
+  function openBulkUploadModal() {
+    setBulkUploadModalOpen(true);
+    setBulkUploadFileName('');
+    setBulkUploadRows([]);
+    setBulkUploadFileErrors([]);
+    setBulkUploadResult(null);
+    setMessage('');
+    setError('');
+  }
+
+  function closeBulkUploadModal() {
+    setBulkUploadModalOpen(false);
+    setBulkUploadFileName('');
+    setBulkUploadRows([]);
+    setBulkUploadFileErrors([]);
+    setBulkUploadResult(null);
   }
 
   function closeDetailsPanel() {
@@ -344,6 +515,71 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     URL.revokeObjectURL(href);
   }
 
+  async function loadBulkUploadDuplicateCustomers() {
+    const firstPage = await request('/customer-profiling/customers?page=1&pageSize=100&sortBy=createdAt&sortDir=desc');
+    const rows = [...(firstPage.data || [])];
+    const totalPages = firstPage.totalPages || 1;
+    for (let page = 2; page <= totalPages; page += 1) {
+      const nextPage = await request(`/customer-profiling/customers?page=${page}&pageSize=100&sortBy=createdAt&sortDir=desc`);
+      rows.push(...(nextPage.data || []));
+    }
+    return rows;
+  }
+
+  async function handleBulkUploadFile(event) {
+    const file = event.target.files?.[0];
+    setBulkUploadResult(null);
+    setBulkUploadRows([]);
+    setBulkUploadFileErrors([]);
+    setBulkUploadFileName(file?.name || '');
+    if (!file) return;
+
+    try {
+      const [csvText, existingCustomers] = await Promise.all([
+        file.text(),
+        loadBulkUploadDuplicateCustomers()
+      ]);
+      const parsed = parseCustomerCsv(csvText, requiredBulkUploadHeaders, existingCustomers);
+      setBulkUploadRows(parsed.rows);
+      setBulkUploadFileErrors(parsed.fileErrors);
+      if (!parsed.fileErrors.length && !parsed.rows.length) {
+        setBulkUploadFileErrors(['No customer rows were found in the selected file.']);
+      }
+    } catch (err) {
+      setBulkUploadFileErrors([err.message || 'Unable to read the selected CSV file.']);
+    } finally {
+      event.target.value = '';
+    }
+  }
+
+  async function importBulkUploadRows() {
+    const rowsToImport = validBulkUploadRows;
+    if (!rowsToImport.length || bulkUploadFileErrors.length) return;
+
+    setBulkUploading(true);
+    setBulkUploadResult(null);
+    setError('');
+
+    const failures = [];
+    let created = 0;
+    for (const row of rowsToImport) {
+      try {
+        await request('/customer-profiling/customers', { method: 'POST', body: JSON.stringify(row.data) });
+        created += 1;
+      } catch (err) {
+        failures.push({ rowNumber: row.rowNumber, message: err.message });
+      }
+    }
+
+    setBulkUploading(false);
+    setBulkUploadResult({ created, failed: failures.length, failures });
+    if (created) {
+      setMessage(`${created} customer${created === 1 ? '' : 's'} imported from ${bulkUploadFileName}.`);
+      await load(filters);
+      refreshShell();
+    }
+  }
+
   const kpis = [
     ['Total Customers', overview?.totalCustomers, IconUsers, 'azure'],
     ['Active', overview?.activeCustomers, IconActivity, 'green'],
@@ -386,13 +622,6 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
               </select>
             </div>
             <div className="col-md-2">
-              <label className="form-label">Status</label>
-              <select className="form-select" value={filters.status} onChange={(e) => updateFilters({ status: e.target.value })}>
-                <option value="">All</option>
-                {meta.customerStatuses.map((item) => <option key={item}>{item}</option>)}
-              </select>
-            </div>
-            <div className="col-md-2">
               <label className="form-label">Province</label>
               <select className="form-select" value={filters.province} onChange={(e) => updateFilters({ province: e.target.value, city: '', barangay: '' })}>
                 <option value="">All</option>
@@ -421,7 +650,35 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       </div>
 
       <div className="col-12 col-xl-8">
-        <Card title={`Customers (${customers.total})`} icon={IconUsers} actions={<button className="btn btn-primary btn-sm" onClick={openNewCustomerModal}><IconPlus size={16} className="me-1" />New Customer</button>}>
+        <Card
+          title={`Customers (${customers.total})`}
+          icon={IconUsers}
+          actions={(
+            <div className="btn-list">
+              <button className="btn btn-outline-primary btn-sm" onClick={openBulkUploadModal}>
+                <IconUpload size={16} className="me-1" />Bulk Upload
+              </button>
+              <button className="btn btn-primary btn-sm" onClick={openNewCustomerModal}>
+                <IconPlus size={16} className="me-1" />New Customer
+              </button>
+            </div>
+          )}
+        >
+          <div className="customer-status-tabs" role="tablist" aria-label="Customer status filter">
+            {statusTabs.map((item) => (
+              <button
+                type="button"
+                key={item.label}
+                className={`customer-status-tab ${filters.status === item.value ? 'active' : ''}`}
+                onClick={() => updateFilters({ status: item.value })}
+                role="tab"
+                aria-selected={filters.status === item.value}
+              >
+                <span>{item.label}</span>
+                <span className={`badge bg-${item.tone}-lt text-${item.tone}`}>{item.count}</span>
+              </button>
+            ))}
+          </div>
           <div className="table-responsive">
             <table className="table card-table table-vcenter">
               <thead>
@@ -483,17 +740,6 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
             </>
           )}
         </Card>
-
-        <div className="mt-3">
-          <Card title="Bulk Upload" icon={IconUpload}>
-            <div className="text-muted mb-3">The previous module supported Excel/CSV bulk creation, preview validation, invalid-row reports, and a guided template. This shell preserves that workflow entry point.</div>
-            <button className="btn btn-outline-primary w-100 mb-3" onClick={downloadTemplate}><IconFileSpreadsheet size={18} className="me-2" />Download CSV Template</button>
-            <div className="small text-muted mb-2">Required headers</div>
-            <div className="bulk-header-list">
-              {(meta.requiredBulkUploadHeaders || []).map((item) => <span className="badge bg-blue-lt text-blue" key={item}>{item}</span>)}
-            </div>
-          </Card>
-        </div>
       </div>
 
       <div className="col-12">
@@ -511,6 +757,93 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
         </Card>
       </div>
     </div>
+    {isBulkUploadModalOpen && (
+      <div className="customer-modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeBulkUploadModal()}>
+        <div className="customer-modal customer-bulk-upload-modal" role="dialog" aria-modal="true" aria-labelledby="customer-bulk-upload-title">
+          <div className="customer-modal-header">
+            <div>
+              <div className="text-muted small">Import customer records</div>
+              <h3 id="customer-bulk-upload-title" className="customer-modal-title">Bulk Upload</h3>
+            </div>
+            <button type="button" className="btn btn-icon btn-sm" title="Close" onClick={closeBulkUploadModal}><IconX size={18} /></button>
+          </div>
+          <div className="customer-modal-body">
+            <div className="btn-list mb-3">
+              <button className="btn btn-outline-primary" onClick={downloadTemplate}><IconFileSpreadsheet size={18} className="me-2" />Download CSV Template</button>
+              <label className="btn btn-primary mb-0">
+                <IconUpload size={18} className="me-2" />Choose CSV File
+                <input className="visually-hidden" type="file" accept=".csv,text/csv" onChange={handleBulkUploadFile} />
+              </label>
+            </div>
+            {bulkUploadFileName && (
+              <div className="bulk-upload-file">
+                <IconFileSpreadsheet size={18} />
+                <div>
+                  <div className="fw-semibold">{bulkUploadFileName}</div>
+                  <div className="text-muted small">{bulkUploadRows.length} parsed row{bulkUploadRows.length === 1 ? '' : 's'}</div>
+                </div>
+              </div>
+            )}
+            {!!bulkUploadFileErrors.length && (
+              <div className="alert alert-danger">
+                {bulkUploadFileErrors.map((item) => <div key={item}>{item}</div>)}
+              </div>
+            )}
+            {!!bulkUploadRows.length && !bulkUploadFileErrors.length && (
+              <>
+                <div className="bulk-upload-summary">
+                  <span className="badge bg-green-lt text-green">{validBulkUploadRows.length} valid</span>
+                  <span className="badge bg-red-lt text-red">{invalidBulkUploadRows.length} needs fix</span>
+                </div>
+                <div className="bulk-upload-preview table-responsive">
+                  <table className="table card-table table-vcenter">
+                    <thead>
+                      <tr>
+                        <th>Row</th>
+                        <th>Name</th>
+                        <th>Contact</th>
+                        <th>Location</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {bulkUploadRows.slice(0, 8).map((row) => (
+                        <tr key={row.rowNumber}>
+                          <td>{row.rowNumber}</td>
+                          <td>
+                            <div className="fw-semibold">{[row.data.firstName, row.data.middleName, row.data.lastName].filter(Boolean).join(' ') || '-'}</div>
+                            {!!row.errors.length && <div className="text-danger small">{row.errors.join(', ')}</div>}
+                          </td>
+                          <td>{row.data.contactNumber || '-'}</td>
+                          <td>{[row.data.locationName, row.data.barangay, row.data.city].filter(Boolean).join(', ') || '-'}</td>
+                          <td><span className={`badge ${row.errors.length ? 'bg-red-lt text-red' : 'bg-green-lt text-green'}`}>{row.errors.length ? 'Invalid' : 'Ready'}</span></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {bulkUploadRows.length > 8 && <div className="text-muted small mt-2">Showing first 8 rows. All valid rows will be imported.</div>}
+                </div>
+                <div className="text-end mt-3">
+                  <button className="btn btn-primary" disabled={!validBulkUploadRows.length || !!invalidBulkUploadRows.length || isBulkUploading} onClick={importBulkUploadRows}>
+                    <IconUpload size={18} className="me-2" />{isBulkUploading ? 'Importing...' : `Import ${validBulkUploadRows.length} Customer${validBulkUploadRows.length === 1 ? '' : 's'}`}
+                  </button>
+                </div>
+              </>
+            )}
+            {bulkUploadResult && (
+              <div className={`alert ${bulkUploadResult.failed ? 'alert-warning' : 'alert-success'} mt-3 mb-0`}>
+                <div>{bulkUploadResult.created} imported, {bulkUploadResult.failed} failed.</div>
+                {bulkUploadResult.failures.map((failure) => <div key={failure.rowNumber}>Row {failure.rowNumber}: {failure.message}</div>)}
+              </div>
+            )}
+            <div className="small text-muted mb-2">Required headers</div>
+            <div className="bulk-header-list">
+              {requiredBulkUploadHeaders.map((item) => <span className="badge bg-blue-lt text-blue" key={item}>{item}</span>)}
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
     {isFormModalOpen && (
       <div className="customer-modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeCustomerFormModal()}>
         <div className="customer-modal" role="dialog" aria-modal="true" aria-labelledby="customer-form-title">

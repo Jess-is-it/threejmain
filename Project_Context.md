@@ -131,7 +131,7 @@ The current module includes:
 - Service location records are connected to System Settings -> Location Management; customer create/update can link an existing location or create a minimal location record if no saved match exists
 - Customer type/status values: `RESIDENTIAL`, `BUSINESS`, `ENTERPRISE`; `ACTIVE`, `INACTIVE`, `SUSPENDED`, `PENDING`
 - Service Orders are owned by the Service module; Customer Profiling displays read-only Service Order references for the selected customer
-- Bulk upload template workflow surface with the original required customer upload headers
+- Bulk upload CSV modal with template download, preview validation, duplicate checks, guarded import, and required customer upload headers
 
 Current API prefix: `/api/customer-profiling`. The implementation is in-memory for the first working shell; durable PostgreSQL tables in the shared database should be added before production use.
 

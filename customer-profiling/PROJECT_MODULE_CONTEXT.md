@@ -19,7 +19,7 @@ Customer Profiling manages customer records, account identity, service addresses
 - Create, update, view, and soft archive customer profiles
 - Customer service location selection backed by System Settings -> Location Management
 - Secondary contacts and read-only Service Order references from the Service module
-- Bulk upload template workflow surface
+- Bulk upload CSV modal with template download, preview validation, duplicate checks, and guarded import
 
 ## Integration Notes
 
