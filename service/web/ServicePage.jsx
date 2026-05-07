@@ -9,7 +9,8 @@ import {
   IconSearch,
   IconTrash,
   IconUsers,
-  IconWifi
+  IconWifi,
+  IconX
 } from '@tabler/icons-react';
 import './service.css';
 
@@ -132,7 +133,7 @@ const blankOrder = {
 };
 
 export default function ServicePage({ initialSection = 'catalog', refreshShell = () => {} }) {
-  const [activeView, setActiveView] = useState(initialSection);
+  const pageView = initialSection === 'orders' ? 'orders' : 'catalog';
   const [meta, setMeta] = useState({ serviceTypes: [], segments: [], catalogStatuses: [], billingModes: [], orderStatuses: [], orderPriorities: [] });
   const [catalogOverview, setCatalogOverview] = useState({ metrics: {}, byType: [], activePlans: [] });
   const [orderOverview, setOrderOverview] = useState({ metrics: {}, byStatus: {}, recentOrders: [] });
@@ -144,12 +145,12 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
   const [customerSearch, setCustomerSearch] = useState('');
   const [catalogForm, setCatalogForm] = useState(blankCatalog);
   const [orderForm, setOrderForm] = useState(blankOrder);
+  const [isCatalogModalOpen, setIsCatalogModalOpen] = useState(false);
+  const [isOrderModalOpen, setIsOrderModalOpen] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
   const activeCatalog = useMemo(() => catalog.filter((item) => item.status === 'ACTIVE'), [catalog]);
-
-  useEffect(() => { setActiveView(initialSection); }, [initialSection]);
 
   async function load(nextCatalogSearch = catalogSearch, nextOrderSearch = orderSearch, nextCustomerSearch = customerSearch) {
     setError('');
@@ -175,7 +176,35 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
 
   useEffect(() => { load(); }, []);
 
+  function openNewCatalogModal() {
+    setMessage('');
+    setError('');
+    setCatalogForm(blankCatalog);
+    setIsCatalogModalOpen(true);
+  }
+
+  function closeCatalogModal() {
+    setIsCatalogModalOpen(false);
+    setCatalogForm(blankCatalog);
+    setError('');
+  }
+
+  function openNewOrderModal() {
+    setMessage('');
+    setError('');
+    setOrderForm(blankOrder);
+    setIsOrderModalOpen(true);
+  }
+
+  function closeOrderModal() {
+    setIsOrderModalOpen(false);
+    setOrderForm(blankOrder);
+    setError('');
+  }
+
   function editCatalog(item) {
+    setMessage('');
+    setError('');
     setCatalogForm({
       ...blankCatalog,
       ...item,
@@ -185,10 +214,12 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
       installFee: String(item.installFee || ''),
       contractMonths: String(item.contractMonths || 0)
     });
-    setActiveView('catalog');
+    setIsCatalogModalOpen(true);
   }
 
   function editOrder(order) {
+    setMessage('');
+    setError('');
     setOrderForm({
       ...blankOrder,
       ...order,
@@ -198,7 +229,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
       billingStartDate: order.billingStartDate || '',
       notes: order.notes || ''
     });
-    setActiveView('orders');
+    setIsOrderModalOpen(true);
   }
 
   async function saveCatalog(event) {
@@ -218,6 +249,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
       const saved = await request(path, { method: catalogForm.id ? 'PATCH' : 'POST', body: JSON.stringify(body) });
       setMessage(`${saved.code} saved.`);
       setCatalogForm(blankCatalog);
+      setIsCatalogModalOpen(false);
       await load();
       refreshShell();
     } catch (err) {
@@ -248,6 +280,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
       const saved = await request(path, { method: orderForm.id ? 'PATCH' : 'POST', body: JSON.stringify(body) });
       setMessage(`${saved.orderNumber} saved.`);
       setOrderForm(blankOrder);
+      setIsOrderModalOpen(false);
       await load();
       refreshShell();
     } catch (err) {
@@ -311,19 +344,65 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
         ))}
       </div>
 
-      <ul className="nav nav-tabs mb-3">
-        <li className="nav-item">
-          <button className={`nav-link ${activeView === 'catalog' ? 'active' : ''}`} onClick={() => setActiveView('catalog')}>Service Catalog</button>
-        </li>
-        <li className="nav-item">
-          <button className={`nav-link ${activeView === 'orders' ? 'active' : ''}`} onClick={() => setActiveView('orders')}>Service Order</button>
-        </li>
-      </ul>
-
-      {activeView === 'catalog' && (
+      {pageView === 'catalog' && (
         <div className="row row-cards">
-          <div className="col-lg-4">
-            <Card title={catalogForm.id ? 'Edit Catalog Item' : 'New Catalog Item'} icon={IconPackage}>
+          <div className="col-12">
+            <Card
+              title="Service Catalog"
+              icon={IconPackage}
+              actions={
+                <div className="service-card-actions">
+                  <div className="service-search">
+                    <div className="input-icon">
+                      <span className="input-icon-addon"><IconSearch size={16} /></span>
+                      <input className="form-control form-control-sm" placeholder="Search catalog" value={catalogSearch} onChange={(event) => setCatalogSearch(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && load(catalogSearch)} />
+                    </div>
+                    <button className="btn btn-sm" type="button" onClick={() => load(catalogSearch)}><IconRefresh size={15} /></button>
+                  </div>
+                  <button className="btn btn-primary btn-sm" type="button" onClick={openNewCatalogModal}><IconPlus size={15} className="me-1" />New Catalog Item</button>
+                </div>
+              }
+            >
+              <CatalogTable rows={catalog} onEdit={editCatalog} onArchive={archiveCatalog} />
+            </Card>
+          </div>
+        </div>
+      )}
+
+      {pageView === 'orders' && (
+        <div className="row row-cards">
+          <div className="col-12">
+            <Card
+              title="Service Orders"
+              icon={IconListDetails}
+              actions={
+                <div className="service-card-actions">
+                  <div className="service-search">
+                    <div className="input-icon">
+                      <span className="input-icon-addon"><IconSearch size={16} /></span>
+                      <input className="form-control form-control-sm" placeholder="Search orders" value={orderSearch} onChange={(event) => setOrderSearch(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && load(catalogSearch, orderSearch)} />
+                    </div>
+                    <button className="btn btn-sm" type="button" onClick={() => load(catalogSearch, orderSearch)}><IconRefresh size={15} /></button>
+                  </div>
+                  <button className="btn btn-primary btn-sm" type="button" onClick={openNewOrderModal}><IconPlus size={15} className="me-1" />New Service Order</button>
+                </div>
+              }
+            >
+              <OrderTable rows={orders} onEdit={editOrder} onCancel={cancelOrder} />
+            </Card>
+          </div>
+        </div>
+      )}
+
+      {isCatalogModalOpen && (
+        <div className="service-modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeCatalogModal()}>
+          <div className="service-modal" role="dialog" aria-modal="true" aria-labelledby="service-catalog-modal-title">
+            <div className="service-modal-header">
+              <h3 id="service-catalog-modal-title">{catalogForm.id ? 'Edit Catalog Item' : 'New Catalog Item'}</h3>
+              <button className="btn btn-icon" type="button" aria-label="Close" onClick={closeCatalogModal}><IconX size={18} /></button>
+            </div>
+            <div className="service-modal-body">
+              {error && <div className="alert alert-danger">{error}</div>}
               <form className="service-form" onSubmit={saveCatalog}>
                 <div className="service-two-cols">
                   <TextField label="Code" value={catalogForm.code} required onChange={(code) => setCatalogForm({ ...catalogForm, code })} />
@@ -353,36 +432,24 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
                 </div>
                 <TextField label="Notes" value={catalogForm.notes} onChange={(notes) => setCatalogForm({ ...catalogForm, notes })} />
                 <div className="service-form-actions">
-                  {catalogForm.id && <button className="btn" type="button" onClick={() => setCatalogForm(blankCatalog)}>Cancel</button>}
-                  <button className="btn btn-primary"><IconDeviceFloppy size={16} className="me-1" />Save</button>
+                  <button className="btn" type="button" onClick={closeCatalogModal}>Cancel</button>
+                  <button className="btn btn-primary" type="submit"><IconDeviceFloppy size={16} className="me-1" />Save</button>
                 </div>
               </form>
-            </Card>
-          </div>
-          <div className="col-lg-8">
-            <Card
-              title="Service Catalog"
-              icon={IconPackage}
-              actions={
-                <div className="service-search">
-                  <div className="input-icon">
-                    <span className="input-icon-addon"><IconSearch size={16} /></span>
-                    <input className="form-control form-control-sm" placeholder="Search catalog" value={catalogSearch} onChange={(event) => setCatalogSearch(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && load(catalogSearch)} />
-                  </div>
-                  <button className="btn btn-sm" onClick={() => load(catalogSearch)}><IconRefresh size={15} /></button>
-                </div>
-              }
-            >
-              <CatalogTable rows={catalog} onEdit={editCatalog} onArchive={archiveCatalog} />
-            </Card>
+            </div>
           </div>
         </div>
       )}
 
-      {activeView === 'orders' && (
-        <div className="row row-cards">
-          <div className="col-lg-4">
-            <Card title={orderForm.id ? 'Edit Service Order' : 'New Service Order'} icon={IconListDetails}>
+      {isOrderModalOpen && (
+        <div className="service-modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeOrderModal()}>
+          <div className="service-modal" role="dialog" aria-modal="true" aria-labelledby="service-order-modal-title">
+            <div className="service-modal-header">
+              <h3 id="service-order-modal-title">{orderForm.id ? 'Edit Service Order' : 'New Service Order'}</h3>
+              <button className="btn btn-icon" type="button" aria-label="Close" onClick={closeOrderModal}><IconX size={18} /></button>
+            </div>
+            <div className="service-modal-body">
+              {error && <div className="alert alert-danger">{error}</div>}
               <form className="service-form" onSubmit={saveOrder}>
                 <div className="input-group">
                   <input className="form-control" placeholder="Search Customer Profiling records" value={customerSearch} onChange={(event) => setCustomerSearch(event.target.value)} />
@@ -412,28 +479,11 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
                 <TextField label="Install Address" value={orderForm.installAddress} onChange={(installAddress) => setOrderForm({ ...orderForm, installAddress })} />
                 <TextField label="Notes" value={orderForm.notes} onChange={(notes) => setOrderForm({ ...orderForm, notes })} />
                 <div className="service-form-actions">
-                  {orderForm.id && <button className="btn" type="button" onClick={() => setOrderForm(blankOrder)}>Cancel</button>}
-                  <button className="btn btn-primary"><IconPlus size={16} className="me-1" />Save</button>
+                  <button className="btn" type="button" onClick={closeOrderModal}>Cancel</button>
+                  <button className="btn btn-primary" type="submit"><IconDeviceFloppy size={16} className="me-1" />Save</button>
                 </div>
               </form>
-            </Card>
-          </div>
-          <div className="col-lg-8">
-            <Card
-              title="Service Orders"
-              icon={IconListDetails}
-              actions={
-                <div className="service-search">
-                  <div className="input-icon">
-                    <span className="input-icon-addon"><IconSearch size={16} /></span>
-                    <input className="form-control form-control-sm" placeholder="Search orders" value={orderSearch} onChange={(event) => setOrderSearch(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && load(catalogSearch, orderSearch)} />
-                  </div>
-                  <button className="btn btn-sm" onClick={() => load(catalogSearch, orderSearch)}><IconRefresh size={15} /></button>
-                </div>
-              }
-            >
-              <OrderTable rows={orders} onEdit={editOrder} onCancel={cancelOrder} />
-            </Card>
+            </div>
           </div>
         </div>
       )}
@@ -472,8 +522,8 @@ function CatalogTable({ rows, onEdit, onArchive }) {
               <td>{money(row.monthlyRate)}</td>
               <td><span className={`badge ${statusClass(row.status)}`}>{label(row.status)}</span></td>
               <td className="text-end">
-                <button className="btn btn-sm me-1" onClick={() => onEdit(row)}><IconEdit size={14} /></button>
-                <button className="btn btn-sm btn-outline-danger" onClick={() => onArchive(row)}><IconTrash size={14} /></button>
+                <button className="btn btn-sm me-1" type="button" onClick={() => onEdit(row)}><IconEdit size={14} /></button>
+                <button className="btn btn-sm btn-outline-danger" type="button" onClick={() => onArchive(row)}><IconTrash size={14} /></button>
               </td>
             </tr>
           ))}
@@ -513,8 +563,8 @@ function OrderTable({ rows, onEdit, onCancel }) {
               <td>{row.serviceReference}</td>
               <td><span className={`badge ${statusClass(row.status)}`}>{label(row.status)}</span></td>
               <td className="text-end">
-                <button className="btn btn-sm me-1" onClick={() => onEdit(row)}><IconEdit size={14} /></button>
-                <button className="btn btn-sm btn-outline-danger" onClick={() => onCancel(row)}><IconTrash size={14} /></button>
+                <button className="btn btn-sm me-1" type="button" onClick={() => onEdit(row)}><IconEdit size={14} /></button>
+                <button className="btn btn-sm btn-outline-danger" type="button" onClick={() => onCancel(row)}><IconTrash size={14} /></button>
               </td>
             </tr>
           ))}

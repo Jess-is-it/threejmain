@@ -18,6 +18,11 @@ Service manages the ISP service catalog and service orders. The catalog answers 
 - Service Order CRUD with customer lookup, selected catalog item, dates, status, priority, service reference, install address, and notes.
 - Service Order cancellation uses soft-delete style state with `CANCELLED`.
 
+## Frontend Notes
+
+- Service Catalog and Service Order are separate app-shell pages, not tabs within the Service module page.
+- Create and edit forms open as modal dialogs from the table header `New` actions and row edit buttons.
+
 ## Backend Notes
 
 - Router package: `service/api/service`
