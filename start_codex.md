@@ -57,7 +57,7 @@ git status --short
 git branch --show-current
 ```
 
-The normal branch should be `staging` or a shared integration branch aligned with `origin/staging`. If the branch is unclear, ask before committing or pushing.
+The normal branch is `staging`. If this checkout is on another branch, switch to an up-to-date `staging` branch before committing or pushing unless the user explicitly requested an isolated experiment.
 
 ## 5. Start The Task
 
@@ -149,18 +149,18 @@ If it affects shared routing, navigation, Docker, Vite, or shared API contracts,
 
 ## 10. Git And Commits
 
-Module Codex sessions should usually avoid committing because all Codex sessions share one working tree.
+Module Codex sessions may commit completed work directly on `staging`.
 
-If the user explicitly asks this Codex to commit:
+Before committing:
 
 ```bash
 git status --short
 git diff --name-only
 ```
 
-Stage only files/folders this Codex locked and changed. Report exactly what is staged before committing.
+Stage only files/folders this Codex locked and changed. Verify exactly what is staged before committing.
 
-Never push to `master`. Never push to `staging` unless the user explicitly approves that exact push.
+Never push to `master`. Push to `staging` with a normal non-force push after coordination, verification, and committing only owned locked changes.
 
 ## 11. Final Response Expectation
 

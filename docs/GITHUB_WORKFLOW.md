@@ -23,15 +23,15 @@ http://192.168.50.70:8180/
 ## Rules
 
 - Codex must not push directly to `master`.
-- Codex must not push to `staging` unless the user explicitly approves that exact push.
+- Codex may commit and push directly to `staging` after coordination locks, status/diff checks, staging only owned locked files, and appropriate verification.
 - Normal module work does not use per-Codex worktrees, per-Codex preview servers, or per-module PRs.
 - All Codex sessions coordinate with `scripts/ai_coord.py` file/folder locks.
 - Use `runtime/server` before rebuilding or restarting the shared server.
 - Module folders remain the ownership boundary.
 - Cross-module features must lock every affected module folder and shared file.
-- Module Codex sessions should usually avoid committing because all Codex sessions share one working tree.
+- Module Codex sessions may commit completed module work directly on `staging`.
 - Integration Codex owns shared app-shell integration and shared runtime verification.
-- GitHub Codex owns release status checks and `staging` -> `master` production PR flow.
+- GitHub Codex owns status checks and `staging` -> `master` production PR flow.
 - Do not force push unless the user explicitly approves.
 - Do not commit secrets, `.env` files, credentials, API keys, database passwords, or tokens.
 
@@ -66,6 +66,8 @@ Edit only locked paths.
 Post updates.
 Ask for shared server restart only when needed.
 Unlock when done.
+Commit owned locked files on staging when the task is complete.
+Push staging with a normal non-force push.
 ```
 
 Integration Codex:
@@ -76,7 +78,7 @@ Run checks.
 Restart/rebuild the shared server with runtime/server lock.
 Verify http://192.168.50.70:8180/.
 Prepare a staging commit if requested.
-Push to staging only after explicit user approval.
+Push staging with a normal non-force push.
 ```
 
 GitHub Codex:

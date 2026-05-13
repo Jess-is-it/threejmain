@@ -678,7 +678,7 @@ Codex sessions must not commit directly to `master`.
 
 Codex sessions must not push directly to `master`.
 
-Codex sessions must not push to `staging` unless the user explicitly approves that exact push.
+Codex sessions may commit and push directly to `staging` after following the coordination, lock, status, diff, and verification rules in this file.
 
 Before starting work, Codex must verify the current branch:
 
@@ -686,7 +686,7 @@ Before starting work, Codex must verify the current branch:
 git branch --show-current
 ```
 
-The normal shared development branch should be `staging` or a shared integration branch that is already aligned with `origin/staging`. If the branch is unclear, stop and ask the user before committing or pushing.
+The normal shared development branch is `staging`. If a Codex is on any other branch, it must switch to an up-to-date `staging` branch before committing or pushing unless the user explicitly requested an isolated experiment.
 
 Before committing or pushing, Codex must run:
 
@@ -695,17 +695,23 @@ git status --short
 git diff --name-only
 ```
 
-Module Codex sessions should usually avoid committing. In a shared working tree, one Codex can accidentally commit another Codex's changes. If the user asks for a commit, stage only the files/folders that Codex locked and changed, then report exactly what is staged before committing.
+Module Codex sessions may commit their own completed work directly on `staging`. In the shared working tree, stage only the files/folders that Codex locked and changed, then verify the staged paths before committing.
+
+Pushes to `staging` must be normal non-force pushes:
+
+```bash
+git push origin staging
+```
 
 Default local development flow:
 
 ```text
-shared /home/threejmain edits -> shared server verification -> approved push to staging -> staging to master release PR
+shared /home/threejmain edits -> shared server verification -> commit on staging -> push to staging -> staging to master release PR
 ```
 
 Integration Codex owns app-shell wiring and shared runtime verification when a module feature affects shared routes, navigation, Docker files, or cross-module contracts.
 
-GitHub Codex is primarily for the later `staging` -> `master` release flow.
+GitHub Codex is primarily for status checks and the later `staging` -> `master` release flow.
 
 Production releases should be merged from `staging` into `master` through a Pull Request.
 

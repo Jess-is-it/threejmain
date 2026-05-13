@@ -242,11 +242,11 @@ Cross-module work is allowed only after locking every affected module folder and
 - `/home/threejmain` is the normal shared development working tree.
 - Codex sessions must not commit directly to `master`.
 - Codex sessions must not push directly to `master`.
-- Codex sessions must not push directly to `staging` unless the user explicitly approves.
-- Module Codex sessions should usually avoid committing because all Codex sessions share one working tree.
-- If the user asks for a commit, stage only files/folders owned and locked by that Codex, then report exactly what is staged before committing.
+- Codex sessions may commit and push directly to `staging` after following coordination locks, checking status/diffs, staging only owned locked files, and running appropriate verification.
+- Module Codex sessions may commit their own completed module work directly on `staging`.
+- Before committing, stage only files/folders owned and locked by that Codex, then verify exactly what is staged.
 - Integration Codex owns shared app-shell wiring, cross-module integration checks, and shared runtime verification when needed.
-- GitHub Codex owns release checks and the later `staging` -> `master` production PR.
+- GitHub Codex owns status checks and the later `staging` -> `master` production PR.
 - Production releases should merge `staging` into `master` by Pull Request.
 - Codex sessions must not force push unless the user explicitly approves.
 
@@ -264,7 +264,7 @@ Cross-module work is allowed only after locking every affected module folder and
 - Module Codex sessions should keep module-local lasting context in `<module-name>/PROJECT_MODULE_CONTEXT.md`.
 - Integration Codex owns wiring completed module folders into `app-shell`, Docker/Vite access, shared API/router imports, shared navigation/page imports, and integration notes.
 - Integration Codex reads each module's `PROJECT_MODULE_CONTEXT.md` and merges only stable cross-project summaries into the main `Project_Context.md`.
-- Integration Codex may prepare shared staging commits and may push to `staging` only after explicit user approval.
+- Integration Codex may prepare shared staging commits and push coordinated integration changes directly to `staging`.
 - Integration Codex should decline unrelated work and only accept app-shell integration requests such as `Integrate inventory into app-shell` or `Integrate these completed modules into app-shell as a batch: inventory, ticketing`.
 - Integration is needed because module-local code does not appear in the shared web app or shared API until `app-shell` imports and routes it.
 

@@ -5,7 +5,7 @@ This guide is for the dedicated GitHub Codex terminal only.
 The GitHub Codex has one job:
 
 ```text
-Manage GitHub status checks, approved staging pushes, and staging-to-master release flow.
+Manage GitHub status checks, optional staging push checks, and staging-to-master release flow.
 ```
 
 It must not accept module CRUD work, UI changes, app-shell integration work, database work, shared runtime operations, branch protection setup, or unrelated coding tasks.
@@ -17,7 +17,7 @@ Normal development now uses one shared working tree and one shared test server:
 http://192.168.50.70:8180/
 ```
 
-Module Codex sessions and Integration Codex update the shared working tree through coordination locks. GitHub Codex may help commit/push `staging` only after explicit user approval and after checking the working tree.
+Module Codex sessions and Integration Codex update the shared working tree through coordination locks and may commit/push directly to `staging`. GitHub Codex may help inspect, commit, or push `staging` when asked, but it is no longer the required gate for module staging pushes.
 
 ## Accepted Commands
 
@@ -54,13 +54,13 @@ Integrate Service into app-shell.
 Restart Docker.
 Configure branch protection.
 Create per-module PRs.
-Merge module branches into staging.
+Create or merge per-module branches for normal work.
 ```
 
 Example decline:
 
 ```text
-I am the GitHub Codex, so I only handle GitHub status, approved staging pushes, and staging-to-master release flow. Module work goes to Module Codex; app-shell integration goes to Integration Codex.
+I am the GitHub Codex, so I only handle GitHub status, staging push checks when asked, and staging-to-master release flow. Module work goes to Module Codex; app-shell integration goes to Integration Codex.
 ```
 
 ## Required Startup
@@ -138,7 +138,7 @@ git status --short
 git diff --name-only
 ```
 
-Then ask the user to confirm the exact files and commit message before committing.
+Then stage only the explicit files owned by the current task and verify the staged paths before committing.
 
 Do not stage `.env`, `.ai_coord/`, secrets, credentials, or unrelated local runtime files.
 
@@ -146,14 +146,10 @@ Prefer:
 
 ```bash
 git add <explicit files>
-git commit -m "<confirmed message>"
+git commit -m "<message>"
 ```
 
-Do not push yet unless the user explicitly says:
-
-```text
-Push shared staging commit to staging.
-```
+Do not push unrelated local changes.
 
 ## Push Shared Staging Commit
 
@@ -173,17 +169,17 @@ git rev-parse --short origin/staging
 git log --oneline --decorate -5
 ```
 
-Confirm with the user:
+Verify:
 
 - exact source branch
 - exact HEAD SHA
 - target branch is `staging`
 - no force push
 
-Then push only if explicitly confirmed:
+Then push from `staging`:
 
 ```bash
-git push origin HEAD:staging
+git push origin staging
 ```
 
 Never force push.
@@ -259,7 +255,7 @@ Never force push.
 
 Never push to `master`.
 
-Never push to `staging` without explicit user confirmation.
+Push to `staging` only with a normal non-force push from an up-to-date local `staging` branch.
 
 Never merge without explicit user confirmation in the same conversation.
 
