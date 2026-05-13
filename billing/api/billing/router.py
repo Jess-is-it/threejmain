@@ -20,6 +20,7 @@ _customer_searcher: Callable[[str], list[dict[str, Any]]] | None = None
 _customer_seed: Callable[[], None] | None = None
 
 BILLING_MODES = ["PREPAID", "POSTPAID"]
+PRICING_SOURCES = ["MANUAL", "SERVICE_CATALOG", "PRICE_OVERRIDE"]
 SUBSCRIPTION_STATUSES = ["ACTIVE", "PAUSED", "CANCELLED", "PENDING"]
 INVOICE_STATUSES = ["DRAFT", "ISSUED", "PARTIALLY_PAID", "PAID", "OVERDUE", "VOID"]
 PAYMENT_STATUSES = ["POSTED", "VOID"]
@@ -30,10 +31,19 @@ ADJUSTMENT_STATUSES = ["POSTED", "VOID"]
 
 class SubscriptionPayload(BaseModel):
     customerId: str | None = None
+    serviceAccountId: str | None = None
+    serviceAccountNumber: str | None = None
     serviceOrderId: str | None = None
+    catalogId: str | None = None
+    catalogCode: str | None = None
+    catalogName: str | None = None
     planName: str | None = None
     serviceId: str | None = None
+    listMonthlyRate: float | None = Field(default=None, ge=0)
     monthlyRate: float | None = Field(default=None, ge=0)
+    priceOverrideAmount: float | None = Field(default=None, ge=0)
+    priceOverrideReason: str | None = None
+    pricingSource: str | None = None
     billingMode: str | None = None
     billingDay: int | None = Field(default=None, ge=1, le=28)
     startDate: str | None = None
@@ -118,6 +128,10 @@ def money(value: Any) -> float:
     return round(float(value or 0), 2)
 
 
+def clean_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
 def parse_day(value: str | None, field_name: str) -> date:
     try:
         return date.fromisoformat(value or today_iso())
@@ -144,6 +158,7 @@ def customer_snapshot(customer: dict[str, Any]) -> dict[str, Any]:
         "accountNumber": customer.get("accountNumber", ""),
         "name": customer_name(customer),
         "status": customer.get("status", ""),
+        "gender": customer.get("gender", ""),
         "contactNumber": customer.get("contactNumber", ""),
         "address": ", ".join(
             part
@@ -225,8 +240,9 @@ def next_number(prefix: str, rows: list[dict[str, Any]], field_name: str) -> str
 def normalize_subscription_payload(payload: SubscriptionPayload, current: dict[str, Any] | None = None) -> dict[str, Any]:
     data = payload.model_dump(exclude_unset=True)
     record = dict(current or {})
-    record.update({key: value for key, value in data.items() if value is not None})
-    required = ["customerId", "planName", "monthlyRate", "billingMode", "startDate"]
+    clearable_fields = {"priceOverrideAmount", "priceOverrideReason", "pricingSource", "serviceOrderId"}
+    record.update({key: value for key, value in data.items() if value is not None or key in clearable_fields})
+    required = ["customerId", "planName", "billingMode", "startDate"]
     missing = [field for field in required if record.get(field) in [None, ""]]
     if missing:
         raise HTTPException(status_code=400, detail=f"Missing required subscription fields: {', '.join(missing)}")
@@ -236,15 +252,68 @@ def normalize_subscription_payload(payload: SubscriptionPayload, current: dict[s
         raise HTTPException(status_code=400, detail="Invalid billing mode")
     if record["status"] not in SUBSCRIPTION_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid subscription status")
-    record["monthlyRate"] = money(record["monthlyRate"])
+    record["serviceAccountId"] = clean_text(record.get("serviceAccountId"))
+    record["serviceAccountNumber"] = clean_text(record.get("serviceAccountNumber"))
+    record["serviceOrderId"] = clean_text(record.get("serviceOrderId"))
+    record["catalogId"] = clean_text(record.get("catalogId"))
+    record["catalogCode"] = clean_text(record.get("catalogCode"))
+    record["catalogName"] = clean_text(record.get("catalogName"))
+    record["serviceId"] = clean_text(record.get("serviceId"))
+    record["notes"] = clean_text(record.get("notes"))
+    record["planName"] = clean_text(record.get("catalogName") or record.get("planName"))
+    if record.get("monthlyRate") in [None, ""] and record.get("listMonthlyRate") in [None, ""]:
+        raise HTTPException(status_code=400, detail="monthlyRate or listMonthlyRate is required")
+    record["listMonthlyRate"] = money(record.get("listMonthlyRate") if record.get("listMonthlyRate") is not None else record.get("monthlyRate"))
+    override_amount = record.get("priceOverrideAmount")
+    override_reason = clean_text(record.get("priceOverrideReason"))
+    linked_to_service = bool(record["serviceAccountId"])
+    if linked_to_service:
+        if not record["catalogId"]:
+            raise HTTPException(status_code=400, detail="catalogId is required for Service Account billing")
+        if not record["serviceId"]:
+            raise HTTPException(status_code=400, detail="serviceId is required for Service Account billing")
+        has_override = override_amount is not None and money(override_amount) != record["listMonthlyRate"]
+        if has_override:
+            if not override_reason:
+                raise HTTPException(status_code=400, detail="priceOverrideReason is required when overriding catalog price")
+            record["priceOverrideAmount"] = money(override_amount)
+            record["monthlyRate"] = record["priceOverrideAmount"]
+            record["pricingSource"] = "PRICE_OVERRIDE"
+        else:
+            record["priceOverrideAmount"] = None
+            record["priceOverrideReason"] = ""
+            record["monthlyRate"] = record["listMonthlyRate"]
+            record["pricingSource"] = "SERVICE_CATALOG"
+    else:
+        record["monthlyRate"] = money(record["monthlyRate"])
+        record["listMonthlyRate"] = record["monthlyRate"]
+        record["priceOverrideAmount"] = None
+        record["priceOverrideReason"] = ""
+        record["pricingSource"] = "MANUAL"
+    if record["pricingSource"] not in PRICING_SOURCES:
+        raise HTTPException(status_code=400, detail="Invalid pricing source")
+    record["priceOverrideReason"] = override_reason if record["pricingSource"] == "PRICE_OVERRIDE" else ""
     record["billingDay"] = int(record.get("billingDay") or min(parse_day(record["startDate"], "startDate").day, 28))
     record["dueDays"] = int(record.get("dueDays") if record.get("dueDays") is not None else (0 if record["billingMode"] == "PREPAID" else 7))
     record["startDate"] = parse_day(record.get("startDate"), "startDate").isoformat()
     record["nextInvoiceDate"] = parse_day(record.get("nextInvoiceDate") or record["startDate"], "nextInvoiceDate").isoformat()
-    record["serviceOrderId"] = record.get("serviceOrderId") or ""
-    record["serviceId"] = record.get("serviceId") or ""
-    record["notes"] = record.get("notes") or ""
     return record
+
+
+def ensure_service_target_available(record: dict[str, Any], current_subscription_id: str | None = None) -> None:
+    service_account_id = record.get("serviceAccountId", "")
+    service_order_id = record.get("serviceOrderId", "")
+    if not service_account_id and not service_order_id:
+        return
+    for subscription in visible_subscriptions():
+        if subscription["id"] == current_subscription_id:
+            continue
+        if subscription.get("status") == "CANCELLED":
+            continue
+        if service_account_id and subscription.get("serviceAccountId") == service_account_id:
+            raise HTTPException(status_code=409, detail="Service Account is already linked to an active Billing subscription")
+        if service_order_id and subscription.get("serviceOrderId") == service_order_id:
+            raise HTTPException(status_code=409, detail="Service Order is already linked to an active Billing subscription")
 
 
 def line_amount(item: dict[str, Any]) -> float:
@@ -255,11 +324,25 @@ def line_amount(item: dict[str, Any]) -> float:
 
 def normalize_line_items(items: list[dict[str, Any]] | None, subscription: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     if not items and subscription is not None:
+        service_ref = subscription.get("serviceId")
+        description = f"{subscription['planName']} monthly internet service"
+        if service_ref:
+            description = f"{description} ({service_ref})"
         items = [
             {
-                "description": f"{subscription['planName']} monthly internet service",
+                "description": description,
                 "quantity": 1,
                 "unitPrice": subscription["monthlyRate"],
+                "serviceAccountId": subscription.get("serviceAccountId", ""),
+                "serviceOrderId": subscription.get("serviceOrderId", ""),
+                "serviceId": service_ref or "",
+                "catalogId": subscription.get("catalogId", ""),
+                "catalogCode": subscription.get("catalogCode", ""),
+                "catalogName": subscription.get("catalogName", ""),
+                "listMonthlyRate": subscription.get("listMonthlyRate", subscription["monthlyRate"]),
+                "pricingSource": subscription.get("pricingSource", "MANUAL"),
+                "priceOverrideAmount": subscription.get("priceOverrideAmount"),
+                "priceOverrideReason": subscription.get("priceOverrideReason", ""),
             }
         ]
     normalized = []
@@ -273,6 +356,16 @@ def normalize_line_items(items: list[dict[str, Any]] | None, subscription: dict[
                 "quantity": quantity,
                 "unitPrice": unit_price,
                 "amount": money(quantity * unit_price),
+                "serviceAccountId": item.get("serviceAccountId") or (subscription.get("serviceAccountId", "") if subscription else ""),
+                "serviceOrderId": item.get("serviceOrderId") or (subscription.get("serviceOrderId", "") if subscription else ""),
+                "serviceId": item.get("serviceId") or (subscription.get("serviceId", "") if subscription else ""),
+                "catalogId": item.get("catalogId") or (subscription.get("catalogId", "") if subscription else ""),
+                "catalogCode": item.get("catalogCode") or (subscription.get("catalogCode", "") if subscription else ""),
+                "catalogName": item.get("catalogName") or (subscription.get("catalogName", "") if subscription else ""),
+                "listMonthlyRate": money(item.get("listMonthlyRate") or (subscription.get("listMonthlyRate", unit_price) if subscription else unit_price)),
+                "pricingSource": item.get("pricingSource") or (subscription.get("pricingSource", "MANUAL") if subscription else "MANUAL"),
+                "priceOverrideAmount": item.get("priceOverrideAmount") or (subscription.get("priceOverrideAmount") if subscription else None),
+                "priceOverrideReason": item.get("priceOverrideReason") or (subscription.get("priceOverrideReason", "") if subscription else ""),
             }
         )
     if not normalized:
@@ -379,6 +472,17 @@ def create_invoice_from_subscription(subscription: dict[str, Any], cycle_start: 
         "customerId": subscription["customerId"],
         "customer": subscription["customer"],
         "subscriptionId": subscription["id"],
+        "serviceAccountId": subscription.get("serviceAccountId", ""),
+        "serviceAccountNumber": subscription.get("serviceAccountNumber", ""),
+        "serviceOrderId": subscription.get("serviceOrderId", ""),
+        "serviceId": subscription.get("serviceId", ""),
+        "catalogId": subscription.get("catalogId", ""),
+        "catalogCode": subscription.get("catalogCode", ""),
+        "catalogName": subscription.get("catalogName", ""),
+        "listMonthlyRate": subscription.get("listMonthlyRate", subscription["monthlyRate"]),
+        "pricingSource": subscription.get("pricingSource", "MANUAL"),
+        "priceOverrideAmount": subscription.get("priceOverrideAmount"),
+        "priceOverrideReason": subscription.get("priceOverrideReason", ""),
         "billingMode": subscription["billingMode"],
         "billingCycleStart": cycle_start_day.isoformat(),
         "billingCycleEnd": cycle_end_day.isoformat(),
@@ -416,9 +520,18 @@ def seed_billing_data() -> None:
             "customerId": customer["id"],
             "customer": customer,
             "planName": plan_name,
+            "serviceAccountId": "",
+            "serviceAccountNumber": "",
             "serviceOrderId": "",
+            "catalogId": "",
+            "catalogCode": "",
+            "catalogName": "",
             "serviceId": f"SVC-{customer.get('accountNumber') or customer['id'][:6]}",
+            "listMonthlyRate": money(rate),
             "monthlyRate": money(rate),
+            "priceOverrideAmount": None,
+            "priceOverrideReason": "",
+            "pricingSource": "MANUAL",
             "billingMode": billing_mode,
             "billingDay": 1,
             "startDate": start,
@@ -448,6 +561,9 @@ def filter_rows(rows: list[dict[str, Any]], search: str = "", status: str = "", 
             if needle in str(row.get("invoiceNumber", "")).lower()
             or needle in str(row.get("receiptNumber", "")).lower()
             or needle in str(row.get("planName", "")).lower()
+            or needle in str(row.get("serviceAccountNumber", "")).lower()
+            or needle in str(row.get("serviceId", "")).lower()
+            or needle in str(row.get("catalogCode", "")).lower()
             or needle in str(row.get("customer", {}).get("name", "")).lower()
             or needle in str(row.get("customer", {}).get("accountNumber", "")).lower()
         ]
@@ -458,6 +574,7 @@ def filter_rows(rows: list[dict[str, Any]], search: str = "", status: str = "", 
 def billing_meta(admin=Depends(require_admin)):
     return {
         "billingModes": BILLING_MODES,
+        "pricingSources": PRICING_SOURCES,
         "subscriptionStatuses": SUBSCRIPTION_STATUSES,
         "invoiceStatuses": INVOICE_STATUSES,
         "paymentStatuses": PAYMENT_STATUSES,
@@ -499,6 +616,7 @@ def list_subscriptions(
 @router.post("/subscriptions")
 def create_subscription(payload: SubscriptionPayload, admin=Depends(require_admin)):
     record = normalize_subscription_payload(payload)
+    ensure_service_target_available(record)
     customer = resolve_customer(record["customerId"])
     timestamp = now_iso()
     subscription = {
@@ -518,6 +636,7 @@ def create_subscription(payload: SubscriptionPayload, admin=Depends(require_admi
 def update_subscription(subscription_id: str, payload: SubscriptionPayload, admin=Depends(require_admin)):
     current = find_subscription(subscription_id)
     record = normalize_subscription_payload(payload, current)
+    ensure_service_target_available(record, current["id"])
     if record["customerId"] != current["customerId"]:
         record["customer"] = resolve_customer(record["customerId"])
     current.update(record)
@@ -580,6 +699,17 @@ def create_invoice(payload: InvoicePayload, admin=Depends(require_admin)):
         "customerId": customer["id"],
         "customer": customer,
         "subscriptionId": subscription["id"] if subscription else None,
+        "serviceAccountId": subscription.get("serviceAccountId", "") if subscription else "",
+        "serviceAccountNumber": subscription.get("serviceAccountNumber", "") if subscription else "",
+        "serviceOrderId": subscription.get("serviceOrderId", "") if subscription else "",
+        "serviceId": subscription.get("serviceId", "") if subscription else "",
+        "catalogId": subscription.get("catalogId", "") if subscription else "",
+        "catalogCode": subscription.get("catalogCode", "") if subscription else "",
+        "catalogName": subscription.get("catalogName", "") if subscription else "",
+        "listMonthlyRate": subscription.get("listMonthlyRate", subscription["monthlyRate"]) if subscription else None,
+        "pricingSource": subscription.get("pricingSource", "MANUAL") if subscription else "MANUAL",
+        "priceOverrideAmount": subscription.get("priceOverrideAmount") if subscription else None,
+        "priceOverrideReason": subscription.get("priceOverrideReason", "") if subscription else "",
         "billingMode": subscription["billingMode"] if subscription else None,
         "billingCycleStart": cycle_start.isoformat(),
         "billingCycleEnd": cycle_end.isoformat(),
@@ -601,12 +731,38 @@ def create_invoice(payload: InvoicePayload, admin=Depends(require_admin)):
 def update_invoice(invoice_id: str, payload: InvoicePayload, admin=Depends(require_admin)):
     current = find_invoice(invoice_id)
     data = payload.model_dump(exclude_unset=True)
-    if "subscriptionId" in data and data["subscriptionId"]:
-        subscription = find_subscription(data["subscriptionId"])
-        current["subscriptionId"] = subscription["id"]
-        current["customerId"] = subscription["customerId"]
-        current["customer"] = subscription["customer"]
-        current["billingMode"] = subscription["billingMode"]
+    if "subscriptionId" in data:
+        if data["subscriptionId"]:
+            subscription = find_subscription(data["subscriptionId"])
+            current["subscriptionId"] = subscription["id"]
+            current["customerId"] = subscription["customerId"]
+            current["customer"] = subscription["customer"]
+            current["serviceAccountId"] = subscription.get("serviceAccountId", "")
+            current["serviceAccountNumber"] = subscription.get("serviceAccountNumber", "")
+            current["serviceOrderId"] = subscription.get("serviceOrderId", "")
+            current["serviceId"] = subscription.get("serviceId", "")
+            current["catalogId"] = subscription.get("catalogId", "")
+            current["catalogCode"] = subscription.get("catalogCode", "")
+            current["catalogName"] = subscription.get("catalogName", "")
+            current["listMonthlyRate"] = subscription.get("listMonthlyRate", subscription["monthlyRate"])
+            current["pricingSource"] = subscription.get("pricingSource", "MANUAL")
+            current["priceOverrideAmount"] = subscription.get("priceOverrideAmount")
+            current["priceOverrideReason"] = subscription.get("priceOverrideReason", "")
+            current["billingMode"] = subscription["billingMode"]
+        else:
+            current["subscriptionId"] = None
+            current["serviceAccountId"] = ""
+            current["serviceAccountNumber"] = ""
+            current["serviceOrderId"] = ""
+            current["serviceId"] = ""
+            current["catalogId"] = ""
+            current["catalogCode"] = ""
+            current["catalogName"] = ""
+            current["listMonthlyRate"] = None
+            current["pricingSource"] = "MANUAL"
+            current["priceOverrideAmount"] = None
+            current["priceOverrideReason"] = ""
+            current["billingMode"] = None
     elif "customerId" in data and data["customerId"]:
         current["customerId"] = data["customerId"]
         current["customer"] = resolve_customer(data["customerId"])

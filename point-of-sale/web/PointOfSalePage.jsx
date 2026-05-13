@@ -1,17 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  IconBuildingStore,
   IconCash,
-  IconCreditCard,
-  IconDeviceFloppy,
-  IconEdit,
   IconPackage,
-  IconPlus,
   IconReceipt,
   IconRefresh,
   IconSearch,
+  IconShoppingCart,
   IconTrash,
-  IconUsers
+  IconX
 } from '@tabler/icons-react';
 import './pointOfSale.css';
 
@@ -55,6 +51,10 @@ function statusClass(status) {
 function customerLabel(customer) {
   if (!customer) return 'Walk-in';
   return `${customer.accountNumber || 'NO-ACCOUNT'} - ${customer.name || 'Unnamed customer'}`;
+}
+
+function saleUserLabel(sale) {
+  return sale.cashierName || sale.cashierUsername || 'POS user';
 }
 
 function Card({ title, icon: Icon, children, actions }) {
@@ -107,19 +107,9 @@ const blankItem = {
   notes: ''
 };
 
-const blankSession = {
-  id: '',
-  cashierName: 'Admin Cashier',
-  registerName: 'Main Counter',
-  openingFloat: '1000',
-  openedAt: today(),
-  closingCash: '',
-  status: 'OPEN',
-  notes: ''
-};
-
 const blankSaleLine = {
   itemId: '',
+  serialNumber: '',
   description: '',
   quantity: '1',
   unitPrice: '',
@@ -128,7 +118,6 @@ const blankSaleLine = {
 
 const blankSale = {
   id: '',
-  sessionId: '',
   customerId: '',
   saleDate: today(),
   lineItems: [blankSaleLine],
@@ -141,60 +130,44 @@ const blankSale = {
   notes: ''
 };
 
-const blankPayment = {
-  id: '',
-  saleId: '',
-  amount: '',
-  method: 'CASH',
-  paymentDate: today(),
-  referenceNumber: '',
-  status: 'POSTED',
-  notes: ''
-};
-
 export default function PointOfSalePage({ refreshShell = () => {} }) {
-  const [activeTab, setActiveTab] = useState('Overview');
-  const [meta, setMeta] = useState({ itemStatuses: [], sessionStatuses: [], saleStatuses: [], paymentMethods: [], paymentStatuses: [], dependencies: [] });
-  const [overview, setOverview] = useState({ metrics: {}, dependencies: [], recentSales: [], lowStock: [], openSessions: [] });
+  const [activeTab, setActiveTab] = useState('Register');
+  const [meta, setMeta] = useState({ itemStatuses: [], saleStatuses: [], paymentMethods: [] });
+  const [overview, setOverview] = useState({ metrics: {}, recentSales: [], lowStock: [] });
   const [items, setItems] = useState([]);
-  const [sessions, setSessions] = useState([]);
   const [sales, setSales] = useState([]);
-  const [payments, setPayments] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [customerSearch, setCustomerSearch] = useState('');
   const [itemSearch, setItemSearch] = useState('');
   const [itemForm, setItemForm] = useState(blankItem);
-  const [sessionForm, setSessionForm] = useState(blankSession);
   const [saleForm, setSaleForm] = useState(blankSale);
-  const [paymentForm, setPaymentForm] = useState(blankPayment);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [showLowStockPanel, setShowLowStockPanel] = useState(false);
 
   const itemById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
-  const openSessions = useMemo(() => sessions.filter((session) => session.status === 'OPEN'), [sessions]);
+  const cartLines = useMemo(() => saleForm.lineItems.filter((line) => line.itemId || line.description), [saleForm.lineItems]);
+  const cartSubtotal = useMemo(() => cartLines.reduce((sum, line) => {
+    const amount = Number(line.quantity || 0) * Number(line.unitPrice || 0) - Number(line.discountAmount || 0);
+    return sum + Math.max(0, amount);
+  }, 0), [cartLines]);
+  const cartTotal = Math.max(0, cartSubtotal - Number(saleForm.discountAmount || 0) + Number(saleForm.taxAmount || 0));
 
   async function load(search = customerSearch, itemTerm = itemSearch) {
     setError('');
     try {
-      const [nextMeta, nextOverview, nextCustomers, nextItems, nextSessions, nextSales, nextPayments] = await Promise.all([
+      const [nextMeta, nextOverview, nextCustomers, nextItems, nextSales] = await Promise.all([
         request('/point-of-sale/meta'),
         request('/point-of-sale/overview'),
         request(`/point-of-sale/customers?search=${encodeURIComponent(search)}`),
         request(`/point-of-sale/items?search=${encodeURIComponent(itemTerm)}`),
-        request('/point-of-sale/sessions'),
-        request('/point-of-sale/sales'),
-        request('/point-of-sale/payments')
+        request('/point-of-sale/sales')
       ]);
       setMeta(nextMeta);
       setOverview(nextOverview);
       setCustomers(nextCustomers);
       setItems(nextItems);
-      setSessions(nextSessions);
       setSales(nextSales);
-      setPayments(nextPayments);
-      if (!saleForm.sessionId && nextSessions.some((session) => session.status === 'OPEN')) {
-        setSaleForm((form) => ({ ...form, sessionId: nextSessions.find((session) => session.status === 'OPEN')?.id || '' }));
-      }
     } catch (err) {
       setError(err.message);
     }
@@ -211,51 +184,12 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
     );
   }
 
-  function sessionOptions() {
-    return (
-      <>
-        <option value="">Select open session</option>
-        {openSessions.map((session) => <option key={session.id} value={session.id}>{session.sessionNumber} - {session.cashierName}</option>)}
-      </>
-    );
-  }
-
-  function itemOptions() {
-    return (
-      <>
-        <option value="">Manual line</option>
-        {items.filter((item) => item.status === 'ACTIVE').map((item) => (
-          <option key={item.id} value={item.id}>{item.sku} - {item.name} ({currency(item.unitPrice)})</option>
-        ))}
-      </>
-    );
-  }
-
-  function saleOptions() {
-    return (
-      <>
-        <option value="">Select sale</option>
-        {sales.filter((sale) => sale.status !== 'VOID').map((sale) => (
-          <option key={sale.id} value={sale.id}>{sale.receiptNumber} - {currency(sale.balance)} balance</option>
-        ))}
-      </>
-    );
-  }
-
   function resetItem() {
     setItemForm(blankItem);
   }
 
-  function resetSession() {
-    setSessionForm(blankSession);
-  }
-
   function resetSale() {
-    setSaleForm({ ...blankSale, sessionId: openSessions[0]?.id || '' });
-  }
-
-  function resetPayment() {
-    setPaymentForm(blankPayment);
+    setSaleForm(blankSale);
   }
 
   async function saveItem(e) {
@@ -288,46 +222,6 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
     refreshShell();
   }
 
-  async function saveSession(e) {
-    e.preventDefault();
-    const payload = {
-      cashierName: sessionForm.cashierName,
-      registerName: sessionForm.registerName,
-      openingFloat: Number(sessionForm.openingFloat || 0),
-      openedAt: sessionForm.openedAt,
-      closingCash: Number(sessionForm.closingCash || 0),
-      status: sessionForm.status,
-      notes: sessionForm.notes
-    };
-    await request(sessionForm.id ? `/point-of-sale/sessions/${sessionForm.id}` : '/point-of-sale/sessions', {
-      method: sessionForm.id ? 'PATCH' : 'POST',
-      body: JSON.stringify(payload)
-    });
-    setMessage(sessionForm.id ? 'Session saved.' : 'Session opened.');
-    resetSession();
-    await load();
-    refreshShell();
-  }
-
-  async function closeSession(session) {
-    const closingCash = window.prompt('Closing cash', String(session.cashExpected || session.openingFloat || 0));
-    if (closingCash === null) return;
-    await request(`/point-of-sale/sessions/${session.id}/close`, {
-      method: 'POST',
-      body: JSON.stringify({ closingCash: Number(closingCash || 0), notes: session.notes || '' })
-    });
-    setMessage('Session closed.');
-    await load();
-    refreshShell();
-  }
-
-  async function cancelSession(session) {
-    await request(`/point-of-sale/sessions/${session.id}`, { method: 'DELETE' });
-    setMessage('Session cancelled.');
-    await load();
-    refreshShell();
-  }
-
   function setSaleLine(index, patch) {
     setSaleForm((form) => {
       const lineItems = form.lineItems.map((line, lineIndex) => (lineIndex === index ? { ...line, ...patch } : line));
@@ -335,17 +229,38 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
     });
   }
 
-  function chooseSaleItem(index, itemId) {
-    const item = itemById.get(itemId);
-    setSaleLine(index, {
-      itemId,
-      description: item?.name || '',
-      unitPrice: item?.unitPrice ?? ''
+  function addCatalogItemToCart(item) {
+    if (item.stockTracked && Number(item.stockOnHand || 0) <= 0) {
+      setError(`${item.sku} is out of stock.`);
+      return;
+    }
+    setError('');
+    setSaleForm((form) => {
+      const currentLines = form.lineItems.filter((line) => line.itemId || line.description);
+      const existingIndex = item.trackingType === 'SERIALIZED' ? -1 : currentLines.findIndex((line) => line.itemId === item.id && !line.serialNumber);
+      if (existingIndex >= 0) {
+        return {
+          ...form,
+          lineItems: currentLines.map((line, index) => (
+            index === existingIndex ? { ...line, quantity: String(Number(line.quantity || 0) + 1) } : line
+          ))
+        };
+      }
+      return {
+        ...form,
+        lineItems: [
+          ...currentLines,
+          {
+            ...blankSaleLine,
+            itemId: item.id,
+            description: item.name,
+            quantity: '1',
+            unitPrice: String(item.unitPrice || 0),
+            discountAmount: '0'
+          }
+        ]
+      };
     });
-  }
-
-  function addSaleLine() {
-    setSaleForm((form) => ({ ...form, lineItems: [...form.lineItems, blankSaleLine] }));
   }
 
   function removeSaleLine(index) {
@@ -357,11 +272,11 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
 
   function salePayload() {
     return {
-      sessionId: saleForm.sessionId,
       customerId: saleForm.customerId || null,
       saleDate: saleForm.saleDate,
-      lineItems: saleForm.lineItems.map((line) => ({
+      lineItems: saleForm.lineItems.filter((line) => line.itemId || line.description).map((line) => ({
         itemId: line.itemId || null,
+        serialNumber: line.serialNumber || '',
         description: line.description,
         quantity: Number(line.quantity || 0),
         unitPrice: Number(line.unitPrice || 0),
@@ -383,6 +298,10 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
 
   async function saveSale(e) {
     e.preventDefault();
+    if (!cartLines.length) {
+      setError('Add at least one item to the cart.');
+      return;
+    }
     await request(saleForm.id ? `/point-of-sale/sales/${saleForm.id}` : '/point-of-sale/sales', {
       method: saleForm.id ? 'PATCH' : 'POST',
       body: JSON.stringify(salePayload())
@@ -400,59 +319,13 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
     refreshShell();
   }
 
-  async function savePayment(e) {
-    e.preventDefault();
-    const payload = {
-      saleId: paymentForm.saleId,
-      amount: Number(paymentForm.amount || 0),
-      method: paymentForm.method,
-      paymentDate: paymentForm.paymentDate,
-      referenceNumber: paymentForm.referenceNumber,
-      status: paymentForm.status,
-      notes: paymentForm.notes
-    };
-    await request(paymentForm.id ? `/point-of-sale/payments/${paymentForm.id}` : '/point-of-sale/payments', {
-      method: paymentForm.id ? 'PATCH' : 'POST',
-      body: JSON.stringify(payload)
-    });
-    setMessage(paymentForm.id ? 'Payment saved.' : 'Payment posted.');
-    resetPayment();
-    await load();
-    refreshShell();
-  }
-
-  async function voidPayment(payment) {
-    await request(`/point-of-sale/payments/${payment.id}`, { method: 'DELETE' });
-    setMessage('Payment voided.');
-    await load();
-    refreshShell();
-  }
-
-  function editSale(sale) {
-    setSaleForm({
-      id: sale.id,
-      sessionId: sale.sessionId || '',
-      customerId: sale.customerId || '',
-      saleDate: sale.saleDate || today(),
-      lineItems: sale.lineItems?.length ? sale.lineItems.map((line) => ({
-        itemId: line.itemId || '',
-        description: line.description || '',
-        quantity: String(line.quantity || 1),
-        unitPrice: String(line.unitPrice || 0),
-        discountAmount: String(line.discountAmount || 0)
-      })) : [blankSaleLine],
-      discountAmount: String(sale.discountAmount || 0),
-      taxAmount: String(sale.taxAmount || 0),
-      status: sale.status || 'COMPLETED',
-      paymentAmount: '',
-      paymentMethod: 'CASH',
-      paymentReference: '',
-      notes: sale.notes || ''
-    });
-    setActiveTab('Sales');
-  }
-
   const metrics = overview.metrics || {};
+  const salesMetrics = [
+    { label: 'Today Sales', value: currency(metrics.today_sales), icon: IconCash, tone: 'green' },
+    { label: 'Transactions', value: metrics.transactions || 0, icon: IconReceipt, tone: 'blue' },
+    { label: 'Active Items', value: metrics.active_items || 0, icon: IconPackage, tone: 'azure' },
+    { label: 'Low Stock', value: metrics.low_stock || 0, icon: IconPackage, tone: 'red', action: () => setShowLowStockPanel(true) }
+  ];
 
   return (
     <div className="pos-page">
@@ -460,197 +333,121 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
       {error && <div className="alert alert-danger">{error}</div>}
 
       <ul className="nav nav-tabs mb-3">
-        {['Overview', 'Items', 'Sessions', 'Sales', 'Payments'].map((tab) => (
+        {['Register', 'Sales', 'Catalog'].map((tab) => (
           <li className="nav-item" key={tab}>
             <button className={`nav-link ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>{tab}</button>
           </li>
         ))}
       </ul>
 
-      {activeTab === 'Overview' && (
-        <div className="row row-cards">
-          {[
-            ['Today Sales', currency(metrics.today_sales), IconCash, 'green'],
-            ['Transactions', metrics.transactions || 0, IconReceipt, 'blue'],
-            ['Open Shifts', metrics.open_shift || 0, IconBuildingStore, 'yellow'],
-            ['Low Stock', metrics.low_stock || 0, IconPackage, 'red']
-          ].map(([label, value, Icon, tone]) => (
-            <div className="col-sm-6 col-lg-3" key={label}>
-              <div className="card status-card">
-                <div className="card-body">
-                  <span className={`badge bg-${tone}-lt text-${tone} mb-3`}><Icon size={18} /></span>
-                  <div className="h1 mb-0">{value}</div>
-                  <div className="text-muted">{label}</div>
+      {activeTab === 'Register' && (
+        <div className="pos-register-layout">
+          <Card
+            title="Checkout Menu"
+            icon={IconShoppingCart}
+            actions={
+              <form className="d-flex gap-2" onSubmit={(e) => { e.preventDefault(); load(customerSearch, itemSearch); }}>
+                <input className="form-control form-control-sm" value={itemSearch} onChange={(e) => setItemSearch(e.target.value)} placeholder="Search SKU, barcode, or item" />
+                <button className="btn btn-sm"><IconSearch size={16} /></button>
+              </form>
+            }
+          >
+            <div className="pos-product-grid">
+              {items.filter((item) => item.status === 'ACTIVE').map((item) => (
+                <button
+                  type="button"
+                  className="pos-product-tile"
+                  key={item.id}
+                  onClick={() => addCatalogItemToCart(item)}
+                  disabled={item.stockTracked && Number(item.stockOnHand || 0) <= 0}
+                >
+                  <span className="pos-product-sku">{item.sku}</span>
+                  <strong>{item.name}</strong>
+                  <span>{currency(item.unitPrice)}</span>
+                  <small>{item.stockTracked ? `${item.stockOnHand} ${item.unit || ''} available` : 'Non-stock service'}</small>
+                </button>
+              ))}
+              {!items.length && <div className="empty">No sellable inventory items yet.</div>}
+            </div>
+          </Card>
+
+          <Card title="Cart" icon={IconReceipt}>
+            <form onSubmit={saveSale}>
+              <div className="row g-3">
+                <div className="col-md-6"><TextField label="Sale Date" type="date" value={saleForm.saleDate} onChange={(value) => setSaleForm({ ...saleForm, saleDate: value })} /></div>
+                <div className="col-12">
+                  <div className="d-flex gap-2">
+                    <select className="form-select" value={saleForm.customerId} onChange={(e) => setSaleForm({ ...saleForm, customerId: e.target.value })}>{customerOptions()}</select>
+                    <input className="form-control" value={customerSearch} onChange={(e) => setCustomerSearch(e.target.value)} placeholder="Search customers" />
+                    <button type="button" className="btn" onClick={() => load(customerSearch, itemSearch)}><IconSearch size={16} /></button>
+                  </div>
+                </div>
+                <div className="col-12">
+                  <div className="pos-cart-lines">
+                    {cartLines.map((line, index) => {
+                      const originalIndex = saleForm.lineItems.indexOf(line);
+                      const cartItem = itemById.get(line.itemId);
+                      return (
+                        <div className="pos-cart-line" key={`${line.itemId || line.description}-${index}`}>
+                          <div>
+                            <strong>{line.description}</strong>
+                            <div className="text-muted">{cartItem?.sku || 'Manual line'}</div>
+                          </div>
+                          <input className="form-control pos-qty" type="number" min="0.01" step="0.01" value={line.quantity} onChange={(e) => setSaleLine(originalIndex, { quantity: e.target.value })} />
+                          <input className="form-control pos-price" type="number" min="0" step="0.01" value={line.unitPrice} onChange={(e) => setSaleLine(originalIndex, { unitPrice: e.target.value })} />
+                          <input className="form-control pos-serial" value={line.serialNumber || ''} placeholder={cartItem?.trackingType === 'SERIALIZED' ? 'Serial required' : 'Serial'} onChange={(e) => setSaleLine(originalIndex, { serialNumber: e.target.value })} />
+                          <button type="button" className="btn btn-icon" onClick={() => removeSaleLine(originalIndex)}><IconTrash size={16} /></button>
+                        </div>
+                      );
+                    })}
+                    {!cartLines.length && <div className="empty">Add items from the checkout menu.</div>}
+                  </div>
+                </div>
+                <div className="col-6"><TextField label="Discount" type="number" min="0" step="0.01" value={saleForm.discountAmount} onChange={(value) => setSaleForm({ ...saleForm, discountAmount: value })} /></div>
+                <div className="col-6"><TextField label="Tax" type="number" min="0" step="0.01" value={saleForm.taxAmount} onChange={(value) => setSaleForm({ ...saleForm, taxAmount: value })} /></div>
+                <div className="col-md-4"><TextField label="Payment" type="number" min="0" step="0.01" value={saleForm.paymentAmount} onChange={(value) => setSaleForm({ ...saleForm, paymentAmount: value })} /></div>
+                <div className="col-md-4"><SelectField label="Method" value={saleForm.paymentMethod} options={meta.paymentMethods} onChange={(value) => setSaleForm({ ...saleForm, paymentMethod: value })} /></div>
+                <div className="col-md-4"><TextField label="Reference" value={saleForm.paymentReference} onChange={(value) => setSaleForm({ ...saleForm, paymentReference: value })} /></div>
+                <div className="col-12">
+                  <div className="pos-total-panel">
+                    <span>Subtotal {currency(cartSubtotal)}</span>
+                    <strong>Total {currency(cartTotal)}</strong>
+                  </div>
+                </div>
+                <div className="col-12 d-flex justify-content-between gap-2">
+                  <button type="button" className="btn" onClick={resetSale}>Clear</button>
+                  <button className="btn btn-primary"><IconReceipt size={18} className="me-2" />Complete Checkout</button>
                 </div>
               </div>
-            </div>
-          ))}
-          <div className="col-lg-7">
-            <Card title="Recent Sales" icon={IconReceipt} actions={<button className="btn btn-sm" onClick={() => load()}><IconRefresh size={16} className="me-1" />Refresh</button>}>
-              <div className="table-responsive">
-                <table className="table card-table table-vcenter">
-                  <thead><tr><th>Receipt</th><th>Customer</th><th>Total</th><th>Paid</th><th>Status</th></tr></thead>
-                  <tbody>
-                    {overview.recentSales?.map((sale) => (
-                      <tr key={sale.id}>
-                        <td>{sale.receiptNumber}</td>
-                        <td>{customerLabel(sale.customer)}</td>
-                        <td>{currency(sale.total)}</td>
-                        <td>{currency(sale.paidTotal)}</td>
-                        <td><span className={`badge ${statusClass(sale.paymentStatus)}`}>{sale.paymentStatus?.replaceAll('_', ' ')}</span></td>
-                      </tr>
-                    ))}
-                    {!overview.recentSales?.length && <tr><td colSpan="5" className="text-muted">No records yet.</td></tr>}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-          </div>
-          <div className="col-lg-5">
-            <Card title="Prerequisites" icon={IconUsers}>
-              <div className="pos-dependency-list">
-                {(overview.dependencies || meta.dependencies || []).map((dependency) => (
-                  <div className="pos-dependency" key={dependency.module}>
-                    <div className="d-flex justify-content-between gap-3">
-                      <strong>{dependency.module}</strong>
-                      <span className={`badge ${dependency.status === 'placeholder' ? 'bg-yellow-lt text-yellow' : 'bg-blue-lt text-blue'}`}>{dependency.status}</span>
-                    </div>
-                    <div className="text-muted">{dependency.note}</div>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          </div>
-          <div className="col-lg-6">
-            <Card title="Open Sessions" icon={IconBuildingStore}>
-              <div className="table-responsive">
-                <table className="table card-table table-vcenter">
-                  <thead><tr><th>Session</th><th>Cashier</th><th>Gross</th><th>Expected Cash</th></tr></thead>
-                  <tbody>
-                    {overview.openSessions?.map((session) => (
-                      <tr key={session.id}><td>{session.sessionNumber}</td><td>{session.cashierName}</td><td>{currency(session.grossSales)}</td><td>{currency(session.cashExpected)}</td></tr>
-                    ))}
-                    {!overview.openSessions?.length && <tr><td colSpan="4" className="text-muted">No records yet.</td></tr>}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-          </div>
-          <div className="col-lg-6">
-            <Card title="Low Stock" icon={IconPackage}>
-              <div className="table-responsive">
-                <table className="table card-table table-vcenter">
-                  <thead><tr><th>SKU</th><th>Item</th><th>On Hand</th><th>Reorder</th></tr></thead>
-                  <tbody>
-                    {overview.lowStock?.map((item) => (
-                      <tr key={item.id}><td>{item.sku}</td><td>{item.name}</td><td>{item.stockOnHand}</td><td>{item.reorderPoint}</td></tr>
-                    ))}
-                    {!overview.lowStock?.length && <tr><td colSpan="4" className="text-muted">No records yet.</td></tr>}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-          </div>
+            </form>
+          </Card>
         </div>
       )}
 
-      {activeTab === 'Items' && (
+      {activeTab === 'Catalog' && (
         <div className="row row-cards">
-          <div className="col-lg-4">
-            <Card title={itemForm.id ? 'Edit Item' : 'New Item'} icon={IconPackage}>
-              <form onSubmit={saveItem}>
-                <div className="row g-3">
-                  <div className="col-md-6 col-lg-12"><TextField label="SKU" value={itemForm.sku} required onChange={(value) => setItemForm({ ...itemForm, sku: value })} /></div>
-                  <div className="col-md-6 col-lg-12"><TextField label="Name" value={itemForm.name} required onChange={(value) => setItemForm({ ...itemForm, name: value })} /></div>
-                  <div className="col-md-6 col-lg-12"><TextField label="Category" value={itemForm.category} onChange={(value) => setItemForm({ ...itemForm, category: value })} /></div>
-                  <div className="col-6"><TextField label="Unit Price" type="number" min="0" step="0.01" value={itemForm.unitPrice} required onChange={(value) => setItemForm({ ...itemForm, unitPrice: value })} /></div>
-                  <div className="col-6"><TextField label="Stock" type="number" min="0" step="0.01" value={itemForm.stockOnHand} onChange={(value) => setItemForm({ ...itemForm, stockOnHand: value })} /></div>
-                  <div className="col-6"><TextField label="Reorder Point" type="number" min="0" step="0.01" value={itemForm.reorderPoint} onChange={(value) => setItemForm({ ...itemForm, reorderPoint: value })} /></div>
-                  <div className="col-6"><SelectField label="Status" value={itemForm.status} options={meta.itemStatuses} onChange={(value) => setItemForm({ ...itemForm, status: value })} /></div>
-                  <div className="col-12">
-                    <label className="form-check">
-                      <input className="form-check-input" type="checkbox" checked={itemForm.taxable} onChange={(e) => setItemForm({ ...itemForm, taxable: e.target.checked })} />
-                      <span className="form-check-label">Taxable</span>
-                    </label>
-                  </div>
-                  <div className="col-12"><TextField label="Notes" value={itemForm.notes} onChange={(value) => setItemForm({ ...itemForm, notes: value })} /></div>
-                  <div className="col-12 d-flex justify-content-end gap-2">
-                    {itemForm.id && <button type="button" className="btn" onClick={resetItem}>Cancel</button>}
-                    <button className="btn btn-primary"><IconDeviceFloppy size={18} className="me-2" />Save Item</button>
-                  </div>
-                </div>
-              </form>
-            </Card>
-          </div>
-          <div className="col-lg-8">
-            <Card title="Item Catalog" icon={IconPackage} actions={
+          <div className="col-12">
+            <Card title="Sellable Inventory Catalog" icon={IconPackage} actions={
               <form className="d-flex gap-2" onSubmit={(e) => { e.preventDefault(); load(customerSearch, itemSearch); }}>
                 <input className="form-control form-control-sm" value={itemSearch} onChange={(e) => setItemSearch(e.target.value)} placeholder="Search items" />
                 <button className="btn btn-sm"><IconSearch size={16} /></button>
               </form>
             }>
+              <p className="text-muted mb-3">Items are maintained in Inventory. POS only sells active inventory items marked as sellable in POS.</p>
               <div className="table-responsive">
                 <table className="table card-table table-vcenter">
-                  <thead><tr><th>SKU</th><th>Name</th><th>Category</th><th>Price</th><th>Stock</th><th>Status</th><th /></tr></thead>
+                  <thead><tr><th>SKU</th><th>Name</th><th>Category</th><th>Price</th><th>Available</th><th>Tracking</th><th>Status</th><th /></tr></thead>
                   <tbody>
                     {items.map((item) => (
                       <tr key={item.id}>
-                        <td>{item.sku}</td><td>{item.name}</td><td>{item.category}</td><td>{currency(item.unitPrice)}</td><td>{item.stockOnHand}</td>
+                        <td>{item.sku}</td><td>{item.name}</td><td>{item.category?.replaceAll('_', ' ')}</td><td>{currency(item.unitPrice)}</td><td>{item.stockTracked ? `${item.stockOnHand} ${item.unit || ''}` : 'Not tracked'}</td><td>{item.trackingType?.replaceAll('_', ' ')}</td>
                         <td><span className={`badge ${statusClass(item.status)}`}>{item.status}</span></td>
                         <td className="text-end">
-                          <button className="btn btn-icon btn-sm me-1" onClick={() => setItemForm({ ...item, unitPrice: String(item.unitPrice), stockOnHand: String(item.stockOnHand), reorderPoint: String(item.reorderPoint) })}><IconEdit size={16} /></button>
-                          <button className="btn btn-icon btn-sm text-danger" onClick={() => archiveItem(item)}><IconTrash size={16} /></button>
+                          <button className="btn btn-sm" onClick={() => addCatalogItemToCart(item)}>Add</button>
                         </td>
                       </tr>
                     ))}
-                    {!items.length && <tr><td colSpan="7" className="text-muted">No records yet.</td></tr>}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'Sessions' && (
-        <div className="row row-cards">
-          <div className="col-lg-4">
-            <Card title={sessionForm.id ? 'Edit Session' : 'New Session'} icon={IconBuildingStore}>
-              <form onSubmit={saveSession}>
-                <div className="row g-3">
-                  <div className="col-12"><TextField label="Cashier" value={sessionForm.cashierName} required onChange={(value) => setSessionForm({ ...sessionForm, cashierName: value })} /></div>
-                  <div className="col-12"><TextField label="Register" value={sessionForm.registerName} required onChange={(value) => setSessionForm({ ...sessionForm, registerName: value })} /></div>
-                  <div className="col-6"><TextField label="Opening Float" type="number" min="0" step="0.01" value={sessionForm.openingFloat} onChange={(value) => setSessionForm({ ...sessionForm, openingFloat: value })} /></div>
-                  <div className="col-6"><TextField label="Opened At" type="date" value={sessionForm.openedAt} onChange={(value) => setSessionForm({ ...sessionForm, openedAt: value })} /></div>
-                  <div className="col-6"><TextField label="Closing Cash" type="number" min="0" step="0.01" value={sessionForm.closingCash} onChange={(value) => setSessionForm({ ...sessionForm, closingCash: value })} /></div>
-                  <div className="col-6"><SelectField label="Status" value={sessionForm.status} options={meta.sessionStatuses} onChange={(value) => setSessionForm({ ...sessionForm, status: value })} /></div>
-                  <div className="col-12"><TextField label="Notes" value={sessionForm.notes} onChange={(value) => setSessionForm({ ...sessionForm, notes: value })} /></div>
-                  <div className="col-12 d-flex justify-content-end gap-2">
-                    {sessionForm.id && <button type="button" className="btn" onClick={resetSession}>Cancel</button>}
-                    <button className="btn btn-primary"><IconDeviceFloppy size={18} className="me-2" />Save Session</button>
-                  </div>
-                </div>
-              </form>
-            </Card>
-          </div>
-          <div className="col-lg-8">
-            <Card title="Cashier Sessions" icon={IconBuildingStore}>
-              <div className="table-responsive">
-                <table className="table card-table table-vcenter">
-                  <thead><tr><th>Session</th><th>Cashier</th><th>Gross</th><th>Expected Cash</th><th>Variance</th><th>Status</th><th /></tr></thead>
-                  <tbody>
-                    {sessions.map((session) => (
-                      <tr key={session.id}>
-                        <td>{session.sessionNumber}</td><td>{session.cashierName}</td><td>{currency(session.grossSales)}</td><td>{currency(session.cashExpected)}</td><td>{currency(session.variance)}</td>
-                        <td><span className={`badge ${statusClass(session.status)}`}>{session.status}</span></td>
-                        <td className="text-end">
-                          {session.status === 'OPEN' && <button className="btn btn-sm me-1" onClick={() => closeSession(session)}>Close</button>}
-                          <button className="btn btn-icon btn-sm me-1" onClick={() => setSessionForm({ ...session, openingFloat: String(session.openingFloat), closingCash: String(session.closingCash || '') })}><IconEdit size={16} /></button>
-                          <button className="btn btn-icon btn-sm text-danger" onClick={() => cancelSession(session)}><IconTrash size={16} /></button>
-                        </td>
-                      </tr>
-                    ))}
-                    {!sessions.length && <tr><td colSpan="7" className="text-muted">No records yet.</td></tr>}
+                    {!items.length && <tr><td colSpan="8" className="text-muted">No sellable inventory items yet.</td></tr>}
                   </tbody>
                 </table>
               </div>
@@ -661,70 +458,64 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
 
       {activeTab === 'Sales' && (
         <div className="row row-cards">
-          <div className="col-lg-5">
-            <Card title={saleForm.id ? 'Edit Sale' : 'New Sale'} icon={IconReceipt}>
-              <form onSubmit={saveSale}>
-                <div className="row g-3">
-                  <div className="col-md-6"><SelectField label="Session" value={saleForm.sessionId} required onChange={(value) => setSaleForm({ ...saleForm, sessionId: value })}>{sessionOptions()}</SelectField></div>
-                  <div className="col-md-6"><TextField label="Sale Date" type="date" value={saleForm.saleDate} onChange={(value) => setSaleForm({ ...saleForm, saleDate: value })} /></div>
-                  <div className="col-12">
-                    <div className="d-flex gap-2">
-                      <select className="form-select" value={saleForm.customerId} onChange={(e) => setSaleForm({ ...saleForm, customerId: e.target.value })}>{customerOptions()}</select>
-                      <input className="form-control" value={customerSearch} onChange={(e) => setCustomerSearch(e.target.value)} placeholder="Search customers" />
-                      <button type="button" className="btn" onClick={() => load(customerSearch, itemSearch)}><IconSearch size={16} /></button>
-                    </div>
-                  </div>
-                  <div className="col-12">
-                    <div className="pos-line-stack">
-                      {saleForm.lineItems.map((line, index) => (
-                        <div className="pos-line" key={index}>
-                          <select className="form-select" value={line.itemId} onChange={(e) => chooseSaleItem(index, e.target.value)}>{itemOptions()}</select>
-                          <input className="form-control" value={line.description} placeholder="Description" onChange={(e) => setSaleLine(index, { description: e.target.value })} required />
-                          <input className="form-control pos-qty" type="number" min="0.01" step="0.01" value={line.quantity} onChange={(e) => setSaleLine(index, { quantity: e.target.value })} required />
-                          <input className="form-control pos-price" type="number" min="0" step="0.01" value={line.unitPrice} onChange={(e) => setSaleLine(index, { unitPrice: e.target.value })} required />
-                          <input className="form-control pos-price" type="number" min="0" step="0.01" value={line.discountAmount} onChange={(e) => setSaleLine(index, { discountAmount: e.target.value })} />
-                          <button type="button" className="btn btn-icon" onClick={() => removeSaleLine(index)}><IconTrash size={16} /></button>
-                        </div>
-                      ))}
-                    </div>
-                    <button type="button" className="btn btn-sm mt-2" onClick={addSaleLine}><IconPlus size={16} className="me-1" />Add Line</button>
-                  </div>
-                  <div className="col-4"><TextField label="Discount" type="number" min="0" step="0.01" value={saleForm.discountAmount} onChange={(value) => setSaleForm({ ...saleForm, discountAmount: value })} /></div>
-                  <div className="col-4"><TextField label="Tax" type="number" min="0" step="0.01" value={saleForm.taxAmount} onChange={(value) => setSaleForm({ ...saleForm, taxAmount: value })} /></div>
-                  <div className="col-4"><SelectField label="Status" value={saleForm.status} options={meta.saleStatuses} onChange={(value) => setSaleForm({ ...saleForm, status: value })} /></div>
-                  {!saleForm.id && (
-                    <>
-                      <div className="col-md-4"><TextField label="Payment" type="number" min="0" step="0.01" value={saleForm.paymentAmount} onChange={(value) => setSaleForm({ ...saleForm, paymentAmount: value })} /></div>
-                      <div className="col-md-4"><SelectField label="Method" value={saleForm.paymentMethod} options={meta.paymentMethods} onChange={(value) => setSaleForm({ ...saleForm, paymentMethod: value })} /></div>
-                      <div className="col-md-4"><TextField label="Reference" value={saleForm.paymentReference} onChange={(value) => setSaleForm({ ...saleForm, paymentReference: value })} /></div>
-                    </>
-                  )}
-                  <div className="col-12"><TextField label="Notes" value={saleForm.notes} onChange={(value) => setSaleForm({ ...saleForm, notes: value })} /></div>
-                  <div className="col-12 d-flex justify-content-end gap-2">
-                    {saleForm.id && <button type="button" className="btn" onClick={resetSale}>Cancel</button>}
-                    <button className="btn btn-primary"><IconReceipt size={18} className="me-2" />Save Sale</button>
+          {salesMetrics.map(({ label, value, icon: Icon, tone, action }) => (
+            <div className="col-sm-6 col-lg-3" key={label}>
+              {action ? (
+                <div
+                  className="card status-card pos-kpi-card"
+                  role="button"
+                  tabIndex={0}
+                  onClick={action}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      action();
+                    }
+                  }}
+                  aria-label="Show low stock items"
+                >
+                  <div className="card-body">
+                    <span className={`badge bg-${tone}-lt text-${tone} mb-3`}><Icon size={18} /></span>
+                    <div className="h1 mb-0">{value}</div>
+                    <div className="text-muted">{label}</div>
                   </div>
                 </div>
-              </form>
-            </Card>
-          </div>
-          <div className="col-lg-7">
-            <Card title="Sales" icon={IconReceipt}>
+              ) : (
+                <div className="card status-card">
+                  <div className="card-body">
+                    <span className={`badge bg-${tone}-lt text-${tone} mb-3`}><Icon size={18} /></span>
+                    <div className="h1 mb-0">{value}</div>
+                    <div className="text-muted">{label}</div>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+          <div className="col-12">
+            <Card
+              title="Sales History"
+              icon={IconReceipt}
+              actions={
+                <div className="d-flex gap-2">
+                  <button className="btn btn-sm" type="button" onClick={() => load()}><IconRefresh size={16} className="me-1" />Refresh</button>
+                  <button className="btn btn-sm btn-primary" type="button" onClick={() => setActiveTab('Register')}><IconShoppingCart size={16} className="me-1" />Register</button>
+                </div>
+              }
+            >
               <div className="table-responsive">
                 <table className="table card-table table-vcenter">
-                  <thead><tr><th>Receipt</th><th>Customer</th><th>Total</th><th>Paid</th><th>Balance</th><th>Status</th><th /></tr></thead>
+                  <thead><tr><th>Receipt</th><th>Customer</th><th>User</th><th>Total</th><th>Paid</th><th>Balance</th><th>Status</th><th /></tr></thead>
                   <tbody>
                     {sales.map((sale) => (
                       <tr key={sale.id}>
-                        <td>{sale.receiptNumber}</td><td>{customerLabel(sale.customer)}</td><td>{currency(sale.total)}</td><td>{currency(sale.paidTotal)}</td><td>{currency(sale.balance)}</td>
+                        <td>{sale.receiptNumber}</td><td>{customerLabel(sale.customer)}</td><td>{saleUserLabel(sale)}</td><td>{currency(sale.total)}</td><td>{currency(sale.paidTotal)}</td><td>{currency(sale.balance)}</td>
                         <td><span className={`badge ${statusClass(sale.paymentStatus)}`}>{sale.paymentStatus?.replaceAll('_', ' ')}</span></td>
                         <td className="text-end">
-                          <button className="btn btn-icon btn-sm me-1" onClick={() => editSale(sale)}><IconEdit size={16} /></button>
-                          <button className="btn btn-icon btn-sm text-danger" onClick={() => voidSale(sale)}><IconTrash size={16} /></button>
+                          <button className="btn btn-sm text-danger" onClick={() => voidSale(sale)}>Void</button>
                         </td>
                       </tr>
                     ))}
-                    {!sales.length && <tr><td colSpan="7" className="text-muted">No records yet.</td></tr>}
+                    {!sales.length && <tr><td colSpan="8" className="text-muted">No records yet.</td></tr>}
                   </tbody>
                 </table>
               </div>
@@ -733,51 +524,41 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
         </div>
       )}
 
-      {activeTab === 'Payments' && (
-        <div className="row row-cards">
-          <div className="col-lg-4">
-            <Card title={paymentForm.id ? 'Edit Payment' : 'New Payment'} icon={IconCreditCard}>
-              <form onSubmit={savePayment}>
-                <div className="row g-3">
-                  <div className="col-12"><SelectField label="Sale" value={paymentForm.saleId} required onChange={(value) => setPaymentForm({ ...paymentForm, saleId: value })}>{saleOptions()}</SelectField></div>
-                  <div className="col-6"><TextField label="Amount" type="number" min="0.01" step="0.01" value={paymentForm.amount} required onChange={(value) => setPaymentForm({ ...paymentForm, amount: value })} /></div>
-                  <div className="col-6"><SelectField label="Method" value={paymentForm.method} options={meta.paymentMethods} onChange={(value) => setPaymentForm({ ...paymentForm, method: value })} /></div>
-                  <div className="col-6"><TextField label="Date" type="date" value={paymentForm.paymentDate} onChange={(value) => setPaymentForm({ ...paymentForm, paymentDate: value })} /></div>
-                  <div className="col-6"><SelectField label="Status" value={paymentForm.status} options={meta.paymentStatuses} onChange={(value) => setPaymentForm({ ...paymentForm, status: value })} /></div>
-                  <div className="col-12"><TextField label="Reference" value={paymentForm.referenceNumber} onChange={(value) => setPaymentForm({ ...paymentForm, referenceNumber: value })} /></div>
-                  <div className="col-12"><TextField label="Notes" value={paymentForm.notes} onChange={(value) => setPaymentForm({ ...paymentForm, notes: value })} /></div>
-                  <div className="col-12 d-flex justify-content-end gap-2">
-                    {paymentForm.id && <button type="button" className="btn" onClick={resetPayment}>Cancel</button>}
-                    <button className="btn btn-primary"><IconDeviceFloppy size={18} className="me-2" />Save Payment</button>
-                  </div>
-                </div>
-              </form>
-            </Card>
-          </div>
-          <div className="col-lg-8">
-            <Card title="Payments" icon={IconCreditCard}>
-              <div className="table-responsive">
-                <table className="table card-table table-vcenter">
-                  <thead><tr><th>Payment</th><th>Sale</th><th>Amount</th><th>Method</th><th>Status</th><th /></tr></thead>
-                  <tbody>
-                    {payments.map((payment) => (
-                      <tr key={payment.id}>
-                        <td>{payment.paymentNumber}</td><td>{payment.saleId}</td><td>{currency(payment.amount)}</td><td>{payment.method}</td>
-                        <td><span className={`badge ${statusClass(payment.status)}`}>{payment.status}</span></td>
-                        <td className="text-end">
-                          <button className="btn btn-icon btn-sm me-1" onClick={() => setPaymentForm({ ...payment, amount: String(payment.amount) })}><IconEdit size={16} /></button>
-                          <button className="btn btn-icon btn-sm text-danger" onClick={() => voidPayment(payment)}><IconTrash size={16} /></button>
-                        </td>
-                      </tr>
-                    ))}
-                    {!payments.length && <tr><td colSpan="6" className="text-muted">No records yet.</td></tr>}
-                  </tbody>
-                </table>
+      {showLowStockPanel && (
+        <div className="pos-drawer-backdrop" onClick={() => setShowLowStockPanel(false)}>
+          <aside className="pos-drawer" role="dialog" aria-modal="true" aria-labelledby="pos-low-stock-title" onClick={(event) => event.stopPropagation()}>
+            <div className="pos-drawer-header">
+              <div>
+                <h3 id="pos-low-stock-title" className="mb-1">Low Stock</h3>
+                <div className="text-muted">{overview.lowStock?.length || 0} item{overview.lowStock?.length === 1 ? '' : 's'} at or below reorder point</div>
               </div>
-            </Card>
-          </div>
+              <button type="button" className="btn btn-icon" onClick={() => setShowLowStockPanel(false)} aria-label="Close low stock panel"><IconX size={18} /></button>
+            </div>
+            <div className="pos-drawer-body">
+              {overview.lowStock?.length ? (
+                <div className="pos-low-stock-list">
+                  {overview.lowStock.map((item) => (
+                    <div className="pos-low-stock-row" key={item.id}>
+                      <div>
+                        <strong>{item.sku}</strong>
+                        <div>{item.name}</div>
+                        <small className="text-muted">{item.category?.replaceAll('_', ' ') || 'Uncategorized'}</small>
+                      </div>
+                      <div className="pos-low-stock-counts">
+                        <span>{item.stockOnHand} {item.unit || ''}</span>
+                        <small>Reorder {item.reorderPoint}</small>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="empty">No low stock items.</div>
+              )}
+            </div>
+          </aside>
         </div>
       )}
+
     </div>
   );
 }

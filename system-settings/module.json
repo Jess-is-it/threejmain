@@ -3,7 +3,7 @@
   "name": "System Settings",
   "status": "functional-shell",
   "owner": "threejmain",
-  "description": "Branding, business profile, Location Management, runtime paths, access reminders, and system port registry.",
+  "description": "Branding, business profile, avatar moods, Location Management, runtime paths, and system port registry.",
   "app_shell_route": "/system-settings",
   "api_prefix": "/api/system-settings",
   "frontend_entry": "system-settings/web/SystemSettingsPage.jsx",

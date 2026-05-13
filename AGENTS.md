@@ -385,67 +385,65 @@ Release `runtime/server` as soon as the build/start/restart operation and immedi
 
 ---
 
-# Module Preview Runtime Rules
+# Single Shared Test Server Workflow
 
-Module Codex sessions should use an isolated preview runtime when the user needs to see that module's current branch before Integration Codex combines all module work.
+This project uses one shared local working tree and one shared test server for normal Codex development.
 
-Use:
-
-```bash
-./scripts/start_module_preview.sh <agent> <module-name> "<task-name>"
-```
-
-Example:
-
-```bash
-./scripts/start_module_preview.sh codex-3 billing "billing-form-modals"
-```
-
-The preview helper starts the shared app-shell from that Codex worktree on unique per-agent ports:
+Normal Codex work happens in:
 
 ```text
-codex-3 -> API 8203, web 8303
-codex-4 -> API 8204, web 8304
-codex-12 -> API 8212, web 8312
+/home/threejmain
 ```
 
-Preview servers are for fast user review only. They do not combine branches and they do not replace Integration Codex.
-
-Before starting, restarting, or stopping a module preview, Codex must lock its own preview runtime:
+The shared test URLs are:
 
 ```text
-runtime/preview/<agent>
+Web: http://192.168.50.70:8180/
+API: http://192.168.50.70:8100/
 ```
 
-The helper script handles this lock automatically. If running preview commands manually, use:
+Do not create per-Codex preview servers for normal work. Do not use per-Codex ports such as `8303`, `8314`, `8203`, or `8214`.
+
+Do not create per-Codex worktrees or task branches for normal module work unless the user explicitly requests an isolated experiment.
+
+All Codex sessions coordinate in the same repo with file/folder locks:
 
 ```bash
 python3 scripts/ai_coord.py recent
 python3 scripts/ai_coord.py locks
-python3 scripts/ai_coord.py lock runtime/preview/<agent> <agent> "<task-name>" "<why this preview operation is needed>"
+python3 scripts/ai_coord.py lock <file-or-folder> <agent> "<task-name>" "<why this is needed>"
 ```
 
-Module previews must not use shared ports:
+Module folders remain the ownership boundary. A module Codex may edit its own module folder after locking it. If a feature must touch multiple modules, lock every affected module folder before editing.
+
+Examples:
+
+```bash
+python3 scripts/ai_coord.py lock billing codex-3 "service-order-billing" "Update Billing to use Service Orders"
+python3 scripts/ai_coord.py lock service codex-14 "service-orders" "Update Service Order contracts"
+python3 scripts/ai_coord.py lock ticketing codex-6 "ticket-service-order" "Tag tickets with Service Orders"
+```
+
+Shared app-shell files still require explicit locks before edits:
 
 ```text
-8180/tcp
-8100/tcp
-5432/tcp
+app-shell/
+docker-compose.yml
+Project_Context.md
+AGENTS.md
+scripts/
+docs/
 ```
 
-Use `runtime/server` only for the central shared runtime on the shared ports. Use `runtime/preview/<agent>` for per-Codex preview servers on unique preview ports.
-
-When a new module or new module Codex session is created, that Codex should be able to run its own preview with `scripts/start_module_preview.sh` after the module folder exists and the current branch has the app-shell wiring needed to display it.
-
-For a brand-new module that is not yet registered in `app-shell/`, the preview API can run but the module page will not appear in the shared navigation until Integration Codex performs one-time app-shell wiring. Module Codex sessions must not edit `app-shell/` just to make a new module visible; ask Integration Codex to wire the new module, then continue module-local work and previews from that integrated base.
-
-The final combined app still comes from:
+Before rebuilding or restarting the shared test server, lock:
 
 ```text
-Module Codex branch previews -> Integration Codex combines selected module branches -> staging -> master
+runtime/server
 ```
 
-Pushing a module Codex branch to GitHub does not combine it with other module branches. Pushing to `staging` combines outputs only when Integration Codex has already merged the selected changes into one staging-ready result and the user explicitly approves pushing that result to `staging`.
+Release `runtime/server` immediately after restart/build and basic verification. Other Codex sessions should keep coding on unlocked files while one Codex briefly owns the runtime lock.
+
+All visual review happens on the shared server at `http://192.168.50.70:8180/`.
 
 ---
 
@@ -673,28 +671,14 @@ unless the user explicitly approves.
 This repo uses:
 
 - `master` for production
-- `staging` for integration/testing
-- `codex/<agent>/<task-name>` for individual Codex task branches
+- `staging` for the shared integration/testing branch
+- `/home/threejmain` as the normal shared development working tree
 
 Codex sessions must not commit directly to `master`.
 
 Codex sessions must not push directly to `master`.
 
-Codex sessions must not push directly to `staging` unless the user explicitly approves.
-
-Each Codex must work on its own feature/task branch created from `origin/staging`.
-
-Branch naming format:
-
-```text
-codex/<agent>/<task-name>
-```
-
-Examples:
-
-- codex/codex-1/login-feature
-- codex/codex-2/dashboard-polish
-- codex/codex-3/admin-user-table
+Codex sessions must not push to `staging` unless the user explicitly approves that exact push.
 
 Before starting work, Codex must verify the current branch:
 
@@ -702,127 +686,32 @@ Before starting work, Codex must verify the current branch:
 git branch --show-current
 ```
 
-The branch must not be `master` or `staging`.
+The normal shared development branch should be `staging` or a shared integration branch that is already aligned with `origin/staging`. If the branch is unclear, stop and ask the user before committing or pushing.
 
-Before committing, Codex must run:
+Before committing or pushing, Codex must run:
 
 ```bash
 git status --short
 git diff --name-only
 ```
 
-Codex may create checkpoint commits on its own Codex branch.
+Module Codex sessions should usually avoid committing. In a shared working tree, one Codex can accidentally commit another Codex's changes. If the user asks for a commit, stage only the files/folders that Codex locked and changed, then report exactly what is staged before committing.
 
-Codex may push its own Codex branch to GitHub for backup and for Integration Codex to fetch.
-
-Example:
-
-```bash
-git push -u origin codex/codex-1/login-feature
-```
-
-Codex must not force push unless the user explicitly approves.
-
-Default fast-development flow:
+Default local development flow:
 
 ```text
-Module Codex branches -> Integration Codex staging-ready branch/commit -> staging -> master
+shared /home/threejmain edits -> shared server verification -> approved push to staging -> staging to master release PR
 ```
 
-Module Codex sessions do not need to open PRs by default.
-
-Module Codex sessions should push their own `codex/*` branch for backup and for Integration Codex to fetch.
-
-Integration Codex owns collecting completed module outputs, wiring `app-shell/`, running checks, and preparing one staging-ready integrated result.
-
-Integration Codex may push the integrated result directly to `staging` only after the user explicitly confirms that exact action.
+Integration Codex owns app-shell wiring and shared runtime verification when a module feature affects shared routes, navigation, Docker files, or cross-module contracts.
 
 GitHub Codex is primarily for the later `staging` -> `master` release flow.
-
-Individual module PRs into `staging` are optional and should be used only if the user explicitly wants PR review for module branches.
 
 Production releases should be merged from `staging` into `master` through a Pull Request.
 
 Codex must update `Project_Context.md` when important lasting project information changes.
 
 Codex must not commit secrets, `.env` files, credentials, API keys, database passwords, or tokens.
-
----
-
-# Module Branch Output Rules
-
-For fast development, module Codex branches must be clean module-only branches for Integration Codex to consume.
-
-Before creating or updating a module branch, the Module Codex must start from the latest `origin/staging`:
-
-```bash
-git fetch origin
-git checkout -b codex/<agent>/<module>-module-only origin/staging
-```
-
-The branch purpose is:
-
-```text
-codex/<agent>/<module>-module-only -> source branch for Integration Codex
-```
-
-The branch must contain only that module folder:
-
-```text
-<module>/
-```
-
-Allowed examples:
-
-```text
-billing/api/billing/router.py
-billing/web/BillingPage.jsx
-billing/web/billing.css
-billing/README.md
-billing/module.json
-billing/PROJECT_MODULE_CONTEXT.md
-```
-
-Forbidden in module-only branches:
-
-```text
-app-shell/
-docker-compose.yml
-Dockerfile
-Project_Context.md
-AGENTS.md
-scripts/
-docs/
-customer-profiling broad cleanup/deletions
-files from another module
-```
-
-Before pushing the branch, run a scope check against `origin/staging`:
-
-```bash
-git fetch origin
-git diff --name-only origin/staging...HEAD
-```
-
-Every changed file must start with the module folder path:
-
-```text
-<module>/
-```
-
-If the diff contains files outside the module folder, do not push as complete. Create a clean replacement branch from `origin/staging` and copy only the module folder changes.
-
-Do not stack module branches on older broad migration branches or another module branch. A clean module branch must be independently consumable by Integration Codex against `origin/staging`.
-
-When reporting completion, include:
-
-- branch name
-- commit SHA
-- exact `git diff --name-only origin/staging...HEAD` output
-- checks run
-- confirmation that only `<module>/` files changed
-
-Only open a module PR if the user explicitly requests PR review. Otherwise, push the clean `codex/*` branch and tell Integration Codex the branch name.
 
 ---
 

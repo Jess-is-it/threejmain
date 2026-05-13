@@ -109,6 +109,7 @@ def customer_snapshot(customer: dict[str, Any]) -> dict[str, Any]:
         "accountNumber": customer.get("accountNumber", ""),
         "name": customer_name(customer),
         "status": customer.get("status", ""),
+        "gender": customer.get("gender", ""),
         "contactNumber": customer.get("contactNumber", ""),
         "address": ", ".join(
             part

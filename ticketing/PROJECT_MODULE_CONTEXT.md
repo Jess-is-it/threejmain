@@ -51,6 +51,7 @@ The first pass is in-memory only and supports:
 - `ticketing/web/TicketingPage.jsx` renders a Kanban-style board where ticket status values are the column titles.
 - Category filtering is displayed as tabs with per-category ticket counters instead of a category select field.
 - Ticket cards are intentionally compact: status, ticket number, subject, customer label, priority marker, and notes/detail action only.
+- Ticket cards and the detail drawer show System Settings customer emotion avatars. Ticket status and priority influence mood, with urgent/open tickets pushing toward angry/support and resolved tickets pushing toward resolved/happy.
 - Priority is visually encoded on each card for `URGENT`, `HIGH`, `NORMAL`, and `LOW` so urgent/high work is immediately identifiable.
 - Users can move tickets between statuses by dragging cards to another status column or by editing the ticket from the detail drawer.
 - Ticket create/edit now uses a modal form instead of a persistent side panel, leaving the board as the primary working surface.
@@ -60,6 +61,7 @@ The first pass is in-memory only and supports:
 ## Dependencies
 
 - Customer Profiling: optional integration provider for customer lookup and ticket customer snapshots.
+- Ticketing customer snapshots include `gender` from Customer Profiling so male/female avatar slots resolve correctly.
 - Account Admin: future dependency for real staff assignment; `assignedTo` is free text for now.
 - Service: Service Order records are the source for selectable `serviceId` references in ticket create/edit.
 - Outage tracking: future source for `outageId`; currently a placeholder reference field.

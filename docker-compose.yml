@@ -25,9 +25,12 @@ services:
       DEFAULT_ADMIN_EMAIL: ${DEFAULT_ADMIN_EMAIL:-admin@example.local}
       DATABASE_URL: ${DATABASE_URL:-postgresql://threejmain:threejmain@postgres:5432/threejmain}
       CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:8180,http://127.0.0.1:8180}
+      SYSTEM_SETTINGS_DATA_PATH: /app/data/system_settings.json
     depends_on:
       postgres:
         condition: service_healthy
+    volumes:
+      - threejmain_api_data:/app/data
     ports:
       - "8100:8100"
 
@@ -42,3 +45,4 @@ services:
 
 volumes:
   threejmain_pgdata:
+  threejmain_api_data:

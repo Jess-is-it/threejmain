@@ -20,6 +20,7 @@ _audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None] | Non
 
 CUSTOMER_TYPES = ["RESIDENTIAL", "BUSINESS", "ENTERPRISE"]
 CUSTOMER_STATUSES = ["ACTIVE", "INACTIVE", "SUSPENDED", "PENDING"]
+CUSTOMER_GENDERS = ["MALE", "FEMALE"]
 PROVINCES = ["CAGAYAN", "ISABELA"]
 MUNICIPALITIES_BY_PROVINCE = {
     "CAGAYAN": [
@@ -176,6 +177,7 @@ BULK_UPLOAD_HEADERS = [
     "firstName",
     "middleName",
     "lastName",
+    "businessName",
     "contactNumber",
     "alternateMobileNumber",
     "facebookAccountName",
@@ -185,18 +187,20 @@ BULK_UPLOAD_HEADERS = [
     "addressLine2",
     "locationId",
     "locationName",
+    "landmark",
     "province",
     "city",
     "barangay",
     "latitude",
     "longitude",
+    "gender",
     "customerType",
+    "status",
 ]
 REQUIRED_BULK_UPLOAD_HEADERS = [
     "firstName",
     "lastName",
     "contactNumber",
-    "facebookAccountName",
 ]
 
 
@@ -205,6 +209,7 @@ class CustomerPayload(BaseModel):
     firstName: str | None = None
     lastName: str | None = None
     middleName: str | None = None
+    businessName: str | None = None
     contactNumber: str | None = None
     alternateMobileNumber: str | None = None
     facebookAccountName: str | None = None
@@ -217,6 +222,7 @@ class CustomerPayload(BaseModel):
     email: str | None = None
     locationId: str | None = None
     locationName: str | None = None
+    landmark: str | None = None
     addressLine1: str | None = None
     addressLine2: str | None = None
     barangay: str | None = None
@@ -224,6 +230,7 @@ class CustomerPayload(BaseModel):
     province: str | None = None
     latitude: str | float | None = None
     longitude: str | float | None = None
+    gender: str | None = None
     customerType: str | None = None
     status: str | None = None
 
@@ -320,6 +327,7 @@ def build_duplicate_fingerprint(data: dict[str, Any]) -> str:
         [
             normalize_upper(data.get("firstName")),
             normalize_upper(data.get("lastName")),
+            normalize_upper(data.get("landmark")),
             normalize_upper(data.get("addressLine1")),
             normalize_upper(data.get("province")),
             normalize_upper(data.get("city")),
@@ -335,7 +343,7 @@ def ensure_customer_location(record: dict[str, Any], admin: dict[str, Any] | Non
         return
     location_data = {
         "locationId": record.get("locationId"),
-        "location_name": record.get("locationName") or record.get("barangay") or record.get("city") or record.get("addressLine1"),
+        "location_name": record.get("locationName") or record.get("landmark") or record.get("barangay") or record.get("city") or record.get("addressLine1"),
         "address": record.get("addressLine1"),
         "municipality": record.get("city"),
         "barangay": record.get("barangay"),
@@ -343,7 +351,7 @@ def ensure_customer_location(record: dict[str, Any], admin: dict[str, Any] | Non
         "latitude": record.get("latitude") or None,
         "longitude": record.get("longitude") or None,
         "geocode_source": "CUSTOMER_PROFILING",
-        "notes": "Created or linked from Customer Profiling. Complete missing details in System Settings > Location Management.",
+        "notes": f"Created or linked from Customer Profiling. Landmark: {record.get('landmark') or 'Not specified'}. Complete missing details in System Settings > Location Management.",
     }
     location = ensure_location_record(location_data, actor=admin)
     if location:
@@ -375,7 +383,6 @@ def customer_payload_to_record(payload: CustomerPayload, current: dict[str, Any]
         "firstName",
         "lastName",
         "contactNumber",
-        "facebookAccountName",
     ]
     missing = [field for field in required if not base.get(field)]
     if missing:
@@ -383,6 +390,8 @@ def customer_payload_to_record(payload: CustomerPayload, current: dict[str, Any]
 
     base["customerType"] = normalize_upper(base.get("customerType") or "RESIDENTIAL")
     base["status"] = normalize_upper(base.get("status") or "ACTIVE")
+    base["gender"] = normalize_upper(base.get("gender") or "MALE")
+    base["businessName"] = clean_value(base.get("businessName")) or ""
     base["province"] = normalize_upper(base.get("province"))
     base["city"] = normalize_upper(base.get("city"))
     base["barangay"] = normalize_upper(base.get("barangay"))
@@ -390,8 +399,12 @@ def customer_payload_to_record(payload: CustomerPayload, current: dict[str, Any]
 
     if base["customerType"] not in CUSTOMER_TYPES:
         raise HTTPException(status_code=400, detail="Invalid customer type")
+    if base["customerType"] == "BUSINESS" and not base["businessName"]:
+        raise HTTPException(status_code=400, detail="Business Name is required for business customers.")
     if base["status"] not in CUSTOMER_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid customer status")
+    if base["gender"] not in CUSTOMER_GENDERS:
+        raise HTTPException(status_code=400, detail="Invalid customer gender")
 
     secondary = list(base.get("secondaryContacts") or [])
     if base.get("secondaryContactName") and not secondary:
@@ -429,6 +442,7 @@ def seed_customer_data() -> None:
             "province": "CAGAYAN",
             "latitude": "17.559311",
             "longitude": "121.684928",
+            "gender": "FEMALE",
             "customerType": "RESIDENTIAL",
             "status": "ACTIVE",
             "secondaryContacts": [{"name": "PEDRO SANTOS", "contactNumber": "09175551234", "relationship": "Spouse"}],
@@ -437,6 +451,7 @@ def seed_customer_data() -> None:
             "accountNumber": "76149028",
             "firstName": "JUAN",
             "lastName": "DELA CRUZ",
+            "businessName": "DELA CRUZ SARI-SARI STORE",
             "contactNumber": "09180000001",
             "facebookAccountName": "JUAN DELA CRUZ",
             "email": "juan.delacruz@example.com",
@@ -448,6 +463,7 @@ def seed_customer_data() -> None:
             "province": "CAGAYAN",
             "latitude": "",
             "longitude": "",
+            "gender": "MALE",
             "customerType": "BUSINESS",
             "status": "PENDING",
             "secondaryContacts": [{"name": "ANA DELA CRUZ", "contactNumber": "09181230000", "relationship": "Owner"}],
@@ -466,6 +482,7 @@ def seed_customer_data() -> None:
             "province": "ISABELA",
             "latitude": "",
             "longitude": "",
+            "gender": "FEMALE",
             "customerType": "RESIDENTIAL",
             "status": "ACTIVE",
             "secondaryContacts": [],
@@ -484,6 +501,7 @@ def seed_customer_data() -> None:
             "province": "ISABELA",
             "latitude": "",
             "longitude": "",
+            "gender": "MALE",
             "customerType": "ENTERPRISE",
             "status": "SUSPENDED",
             "secondaryContacts": [{"name": "LIZA TAN", "contactNumber": "09189999999", "relationship": "Office Admin"}],
@@ -501,6 +519,7 @@ def seed_customer_data() -> None:
             "province": "CAGAYAN",
             "latitude": "",
             "longitude": "",
+            "gender": "FEMALE",
             "customerType": "RESIDENTIAL",
             "status": "ACTIVE",
             "secondaryContacts": [],
@@ -526,6 +545,7 @@ def customer_profiling_meta(admin=Depends(require_admin)):
     return {
         "customerTypes": CUSTOMER_TYPES,
         "customerStatuses": CUSTOMER_STATUSES,
+        "customerGenders": CUSTOMER_GENDERS,
         "provinces": PROVINCES,
         "cities": cities,
         "citiesByProvince": MUNICIPALITIES_BY_PROVINCE,
@@ -626,6 +646,7 @@ def customer_bulk_upload_template(admin=Depends(require_admin)):
             "firstName": "JUAN",
             "middleName": "D",
             "lastName": "DELA CRUZ",
+            "businessName": "",
             "contactNumber": "09171234567",
             "alternateMobileNumber": "09180000001",
             "facebookAccountName": "JUAN DELA CRUZ",
@@ -635,15 +656,19 @@ def customer_bulk_upload_template(admin=Depends(require_admin)):
             "addressLine2": "",
             "locationId": "",
             "locationName": "ALIBAGO",
+            "landmark": "ALIBAGO",
             "province": "CAGAYAN",
             "city": "ENRILE",
             "barangay": "ALIBAGO",
             "latitude": "",
             "longitude": "",
+            "gender": "MALE",
             "customerType": "RESIDENTIAL",
+            "status": "ACTIVE",
         },
         "allowedValues": {
             "customerType": CUSTOMER_TYPES,
+            "gender": CUSTOMER_GENDERS,
             "province": PROVINCES,
             "status": CUSTOMER_STATUSES,
         },

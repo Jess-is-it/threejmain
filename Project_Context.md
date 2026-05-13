@@ -19,6 +19,11 @@ python3 scripts/ai_coord.py update <agent> "<task-name>" "<what changed>" --file
 
 `threejmain` is a modular ISP business management application for a small internet service provider. The first working shell uses the UI style from `/home/threejpisowifi/services/admin` and adapts it for the new business management system.
 
+## UI References
+
+- `/home/threejmon` is a cloned copy of `https://github.com/Jess-is-it/threejmon.git` for UI reference only. Codex sessions may inspect it for layout, component, styling, page, and interaction ideas, but must not edit it or copy backend/configuration blindly into `threejmain`.
+- `/home/threejpisowifi/services/admin` remains the original UI basis for the current shared shell style.
+
 ## Current Tech Stack
 
 - Shared frontend shell: React + Vite + Tabler under `app-shell/web`
@@ -62,7 +67,7 @@ service/
 
 Root-level business module folders:
 
-- `customer-profiling`: customer records, account identity, contacts, addresses, lifecycle state, bulk upload workflow, and read-only Service Order references
+- `customer-profiling`: customer records, account identity, contacts, addresses, lifecycle state, and bulk upload workflow
 - `billing`: invoices, subscriptions, payments, adjustments, balances, and billing cycles
 - `point-of-sale`: counter sales, receipts, payment capture, cashier sessions, and sales reports
 - `inventory`: routers, ONUs/CPEs, cables, installation materials, stock movement, and reorder alerts
@@ -70,7 +75,7 @@ Root-level business module folders:
 - `customer-service-management`: customer interactions, service requests, follow-ups, callbacks, and care workflows
 - `ticketing`: trouble tickets, outage tracking, field jobs, dispatch, notes, and resolution history
 - `service`: ISP service catalog, speed plans, customer Service Orders, installation requirements, and canonical service references for Billing and Ticketing
-- `system-settings`: branding, business profile, reusable locations, runtime paths, access reminders, and system port registry
+- `system-settings`: branding, business profile, reusable locations, Avatar settings, OPENAI settings, runtime paths, access reminders, and system port registry
 - `logs`: shared audit log viewer for app-shell and module activity
 
 New business modules must get their own root-level folder and follow the module-folder pattern used by `customer-profiling/`.
@@ -124,13 +129,13 @@ The previous standalone `customer-profiling` work has been restored into the mod
 
 The current module includes:
 
-- Customer overview KPIs and distribution tables
-- Customer list with search and filters for type, status, province, city, and barangay
+- Customer overview KPIs
+- Customer list with status tabs and collapsible filters for type, province, city, and barangay
 - Create/edit/view/soft archive customer profile workflows
 - Primary contact, alternate mobile, Facebook account/link, email, service address, GPS, and secondary contact fields
 - Service location records are connected to System Settings -> Location Management; customer create/update can link an existing location or create a minimal location record if no saved match exists
 - Customer type/status values: `RESIDENTIAL`, `BUSINESS`, `ENTERPRISE`; `ACTIVE`, `INACTIVE`, `SUSPENDED`, `PENDING`
-- Service Orders are owned by the Service module; Customer Profiling displays read-only Service Order references for the selected customer
+- Service Orders are owned by the Service module and are not displayed in Customer Profiling
 - Bulk upload CSV modal with template download, preview validation, duplicate checks, guarded import, and required customer upload headers
 
 Current API prefix: `/api/customer-profiling`. The implementation is in-memory for the first working shell; durable PostgreSQL tables in the shared database should be added before production use.
@@ -154,9 +159,9 @@ The Integration Codex wired these completed module folders into `app-shell` as f
 
 Shared app-shell wiring now imports each module page in `app-shell/web/src/main.jsx`, includes each router in `app-shell/api/app/main.py`, injects shared auth/audit hooks, and exposes module metrics through `/api/modules` and `/api/dashboard`.
 
-Customer-dependent modules receive Customer Profiling provider hooks from the app shell for customer lookup/search where supported. All integrated module data remains in memory and resets on API restart. Durable shared PostgreSQL persistence, migrations, role/permission enforcement, and production-grade cross-module relationships are still future work.
+Customer-dependent modules receive Customer Profiling provider hooks from the app shell for customer lookup/search where supported. Most integrated module data remains in memory and resets on API restart. System Settings Location Management records, deleted preloaded-location markers, avatar images, avatar emotion settings, and OPENAI settings persist separately in the API data volume. Durable shared PostgreSQL persistence, migrations, role/permission enforcement, and production-grade cross-module relationships are still future work.
 
-Service is now integrated as a functional in-memory module with separate app-shell pages for Service Catalog and Service Order. Create/edit workflows open in module-owned modals. Service owns catalog CRUD, Service Order CRUD, customer lookup, and canonical `serviceReference` values. Billing subscriptions can select active Service Orders to populate customer, plan, service reference, rate, and billing mode. Ticketing can select active Service Orders to populate ticket service references. Customer Profiling displays Service-owned orders for the selected customer instead of creating service assignments itself.
+Service is now integrated as a functional in-memory module with separate app-shell pages for Service Catalog and Service Order. Create/edit workflows open in module-owned modals. Service owns catalog CRUD, Service Account records, Service Order CRUD, customer lookup, catalog list pricing, and canonical `serviceReference` values. Billing subscriptions use active Service Accounts as the billable target, keep Service Catalog plan/rate fields locked for linked subscriptions, and require an explicit override amount and reason when Billing charges a non-catalog monthly rate. Ticketing can select active Service Orders to populate ticket service references. Customer Profiling does not display or manage Service Orders.
 
 `app-shell/web/vite.config.js`, `app-shell/api/Dockerfile`, and `app-shell/web/Dockerfile` include module allowlist/copy entries for the integrated module folders.
 
@@ -165,8 +170,6 @@ Service is now integrated as a functional in-memory module with separate app-she
 - `8180/tcp`: threejmain web/admin entry point
 - `8100/tcp`: threejmain FastAPI API
 - `5432/tcp`: PostgreSQL container-only default
-- `8200 + Codex number`: per-Codex preview API port, such as `8203` for `codex-3`
-- `8300 + Codex number`: per-Codex preview web port, such as `8303` for `codex-3`
 - Avoid using `3JCentralPisowifi` ports: `8080/tcp`, `80/tcp`, `1812/udp`, `1813/udp`, `11812/udp`, and `11813/udp`
 
 The app exposes a System Settings -> Ports page backed by `/api/system/ports` so operators can view reserved and in-use ports.
@@ -182,7 +185,9 @@ System Settings now lives in the `system-settings/` module folder. Logs now live
 - `/api/locations`
 - `/api/audit-logs`
 
-System Settings includes first-phase in-memory Location Management under `/api/system-settings/locations`, with Nominatim-compatible geocoder lookup configurable through `GEOCODER_SEARCH_URL`. Location Management preloads known Customer Profiling service-area barangays, supports `PATCH /api/system-settings/locations/{location_id}` for edits, and exposes an internal helper that Customer Profiling uses to create or link minimal locations during customer saves. Location records remain in memory until shared PostgreSQL persistence is added.
+System Settings includes Location Management under `/api/system-settings/locations`, with Nominatim-compatible geocoder lookup configurable through `GEOCODER_SEARCH_URL`. Location Management preloads known Customer Profiling service-area barangays, supports `PATCH /api/system-settings/locations/{location_id}` for edits, and exposes an internal helper that Customer Profiling uses to create or link minimal locations during customer saves. Location records persist to the System Settings data file for restart safety until shared PostgreSQL persistence is added.
+
+System Settings Location Management records, deleted preloaded-location markers, Avatar uploads, avatar emotion guide settings, and OPENAI settings persist to `SYSTEM_SETTINGS_DATA_PATH`, which Docker Compose sets to `/app/data/system_settings.json` in the `threejmain_api_data` named volume. This keeps reusable locations, uploaded avatar images, and AI integration configuration across API container restarts/rebuilds. OPENAI stores the selected model, optional organization/project ids, and server-side API key; API responses expose only masked key metadata to the frontend.
 
 ## Runtime Coordination
 
@@ -204,75 +209,62 @@ This applies to `docker compose up`, `docker compose up -d --build`, `docker com
 
 Release `runtime/server` after the build/start/restart and immediate health checks are complete. Read-only checks like `docker compose ps` or `curl` health checks do not need the runtime lock.
 
-## Module Preview Runtime Workflow
+## Shared Test Server Workflow
 
-To reduce waiting during concurrent module development, Module Codex sessions can run isolated preview copies of the shared app-shell from their own worktrees. This is not a separate microservice architecture; it is a per-Codex preview stack for the current branch.
+The project is back to one shared working tree and one shared test server for normal Codex development.
 
-Use:
-
-```bash
-./scripts/start_module_preview.sh <agent> <module-name> "<task-name>"
-```
-
-Example:
-
-```bash
-./scripts/start_module_preview.sh codex-3 billing "billing-form-modals"
-```
-
-Default preview ports are derived from the Codex identity:
+Normal Codex work happens in:
 
 ```text
-codex-3 -> API 8203, web 8303
-codex-4 -> API 8204, web 8304
-codex-12 -> API 8212, web 8312
+/home/threejmain
 ```
 
-The helper restarts only that Codex session's preview processes and uses the lock path `runtime/preview/<agent>`. It does not use or block the shared `runtime/server` lock unless the Codex touches the central shared runtime on ports `8100`, `8180`, or `5432`.
+All visual review should use:
 
-Preview servers let the user inspect one module branch immediately. They do not combine module outputs. Integration still happens when Integration Codex fetches completed clean module branches, merges the selected module folder outputs, wires the shared app-shell, runs checks, and prepares the staging-ready result.
+```text
+http://192.168.50.70:8180/
+```
 
-For a brand-new module that is not already registered in `app-shell/`, the preview API can run but the page will not appear in the shared navigation until Integration Codex performs one-time app-shell wiring. Module Codex sessions should not edit `app-shell/` for that visibility; they should ask Integration Codex to wire the new module first, then continue module-local previews from the integrated base.
+All API review should use:
 
-Pushing a module branch to GitHub does not combine it with other modules. Pushing to `staging` combines outputs only when Integration Codex has already merged the selected module changes into one integrated result and the user explicitly approves pushing that result to `staging`.
+```text
+http://192.168.50.70:8100/
+```
+
+Module Codex sessions should not create per-Codex preview servers, per-Codex worktrees, or per-Codex task branches for normal work. They should coordinate through `scripts/ai_coord.py`, lock the module folders and shared files they need, and use `runtime/server` before restarting or rebuilding the shared server.
+
+Cross-module work is allowed only after locking every affected module folder and any shared app-shell files. This is important for Service Order features that affect Service, Customer Profiling, Billing, Ticketing, and app-shell contracts.
 
 ## GitHub Branch Workflow
 
 - `master` is production only.
-- `staging` is the integration/testing branch.
-- `codex/<agent>/<task-name>` branches are temporary Codex task branches.
+- `staging` is the shared integration/testing branch.
+- `/home/threejmain` is the normal shared development working tree.
 - Codex sessions must not commit directly to `master`.
 - Codex sessions must not push directly to `master`.
 - Codex sessions must not push directly to `staging` unless the user explicitly approves.
-- Codex task branches should be created from `origin/staging`.
-- Default fast-development flow is module branches -> Integration Codex staging-ready integration -> `staging` -> `master`.
-- Module Codex sessions should push clean `codex/*` module branches for backup and for Integration Codex to fetch.
-- Module Codex sessions do not need to open PRs by default.
-- Clean module branches should be created from latest `origin/staging` and change only their module folder, such as `billing/` or `inventory/`.
-- Clean module branches must not include `app-shell/`, Docker files, `Project_Context.md`, `AGENTS.md`, scripts, docs, another module folder, or broad customer-profiling deletions.
-- Before reporting a module branch as complete, Module Codex must run `git diff --name-only origin/staging...HEAD` and confirm every changed path starts with the module folder.
-- Do not stack module branches on old broad migration branches or another module branch.
-- Integration Codex owns collecting completed module branch outputs, wiring `app-shell/`, running checks, and preparing one staging-ready integrated result.
-- Integration Codex may push directly to `staging` only when the user explicitly confirms that exact action.
-- Individual module PRs into `staging` are optional and should be used only when the user explicitly requests PR review.
+- Module Codex sessions should usually avoid committing because all Codex sessions share one working tree.
+- If the user asks for a commit, stage only files/folders owned and locked by that Codex, then report exactly what is staged before committing.
+- Integration Codex owns shared app-shell wiring, cross-module integration checks, and shared runtime verification when needed.
+- GitHub Codex owns release checks and the later `staging` -> `master` production PR.
 - Production releases should merge `staging` into `master` by Pull Request.
 - Codex sessions must not force push unless the user explicitly approves.
 
-## Worktree Workflow
+## Shared Working Tree Workflow
 
-- Codex worktrees are created under `/home/worktrees/`.
-- Each Codex task should use one isolated worktree and one `codex/<agent>/<task-name>` branch.
 - Shared AI coordination state is stored at `/home/threejmain/.ai_coord`.
-- Worktrees should export `AI_COORD_STATE_DIR=/home/threejmain/.ai_coord` so all Codex sessions share locks, agents, and activity.
+- All normal Codex sessions should work from `/home/threejmain`.
+- All Codex sessions should export `AI_COORD_STATE_DIR=/home/threejmain/.ai_coord` so locks, agents, and activity are shared.
+- Use file/folder locks before editing. Use `runtime/server` before shared server rebuilds/restarts.
 
 ## Integration Codex Workflow
 
 - `integration_codex.md` is the operating guide for the dedicated Integration Codex terminal.
 - Module Codex sessions should build CRUD inside their own module folders first.
 - Module Codex sessions should keep module-local lasting context in `<module-name>/PROJECT_MODULE_CONTEXT.md`.
-- Integration Codex owns fetching completed module branches, copying/merging module folder outputs, wiring completed modules into `app-shell`, Docker/Vite access, shared API/router imports, shared navigation/page imports, and integration notes.
+- Integration Codex owns wiring completed module folders into `app-shell`, Docker/Vite access, shared API/router imports, shared navigation/page imports, and integration notes.
 - Integration Codex reads each module's `PROJECT_MODULE_CONTEXT.md` and merges only stable cross-project summaries into the main `Project_Context.md`.
-- Integration Codex prepares one staging-ready integrated commit and may push it directly to `staging` only after explicit user approval.
+- Integration Codex may prepare shared staging commits and may push to `staging` only after explicit user approval.
 - Integration Codex should decline unrelated work and only accept app-shell integration requests such as `Integrate inventory into app-shell` or `Integrate these completed modules into app-shell as a batch: inventory, ticketing`.
 - Integration is needed because module-local code does not appear in the shared web app or shared API until `app-shell` imports and routes it.
 
@@ -280,15 +272,11 @@ Pushing a module branch to GitHub does not combine it with other modules. Pushin
 
 - `scripts/ai_coord.py`: Codex identity, activity, and file lock coordination.
 - `start_codex.md`: Codex startup guide. There is no shell startup script; use this Markdown guide instead.
-- `scripts/create_codex_worktree.sh`: Creates a Codex worktree and task branch from `origin/staging`.
-- `scripts/codex_checkpoint.sh`: Creates safe checkpoint commits and pushes only the current `codex/*` task branch.
-- `scripts/start_module_preview.sh`: Starts or restarts an isolated per-Codex preview app/API server for fast module review.
 
 ## Documentation
 
-- `docs/GITHUB_WORKFLOW.md`: Branch model, worktree examples, checkpoint examples, and PR flow.
+- `docs/GITHUB_WORKFLOW.md`: Shared staging workflow, shared server rules, and production PR flow.
 - `docs/BRANCH_PROTECTION.md`: GitHub UI guidance for protecting `master` and `staging`.
-- `docs/MODULE_PREVIEW_WORKFLOW.md`: Per-Codex module preview workflow and port rules.
 
 ## Safety Notes
 

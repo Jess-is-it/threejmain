@@ -12,6 +12,7 @@ import {
   IconUserSearch,
   IconX
 } from '@tabler/icons-react';
+import CustomerEmotionAvatar from '../../system-settings/web/CustomerEmotionAvatar';
 import './ticketing.css';
 
 const API = '/api';
@@ -128,6 +129,7 @@ export default function TicketingPage({ refreshShell = () => {} }) {
   const [overview, setOverview] = useState({ metrics: {}, byStatus: {}, byPriority: {}, recentTickets: [] });
   const [tickets, setTickets] = useState([]);
   const [customers, setCustomers] = useState([]);
+  const [avatarConfig, setAvatarConfig] = useState(null);
   const [serviceOrders, setServiceOrders] = useState([]);
   const [customerSearch, setCustomerSearch] = useState('');
   const [filters, setFilters] = useState({ search: '', status: '', priority: '', category: '' });
@@ -168,18 +170,20 @@ export default function TicketingPage({ refreshShell = () => {} }) {
       if (value && key !== 'category') params.set(key, value);
     });
     try {
-      const [nextMeta, nextOverview, nextCustomers, nextServiceOrders, nextTickets] = await Promise.all([
+      const [nextMeta, nextOverview, nextCustomers, nextServiceOrders, nextTickets, nextAvatarConfig] = await Promise.all([
         request('/ticketing/meta'),
         request('/ticketing/overview'),
         request(`/ticketing/customers?search=${encodeURIComponent(nextCustomerSearch)}`),
         request('/service/orders?activeOnly=true'),
-        request(`/ticketing/tickets?${params.toString()}`)
+        request(`/ticketing/tickets?${params.toString()}`),
+        request('/system-settings/avatars').catch(() => null)
       ]);
       setMeta(nextMeta);
       setOverview(nextOverview);
       setCustomers(nextCustomers);
       setServiceOrders(nextServiceOrders);
       setTickets(nextTickets);
+      setAvatarConfig(nextAvatarConfig);
       if (!selectedId && nextTickets[0]) setSelectedId(nextTickets[0].id);
     } catch (err) {
       setError(err.message);
@@ -443,7 +447,10 @@ export default function TicketingPage({ refreshShell = () => {} }) {
                     </div>
 
                     <div className="ticketing-card-title">{ticket.subject}</div>
-                    <div className="ticketing-customer">{customerLabel(ticket.customer)}</div>
+                    <div className="ticketing-customer">
+                      <CustomerEmotionAvatar customer={ticket.customer || { name: ticket.requestorName, contactNumber: ticket.contactNumber }} avatarConfig={avatarConfig} context={{ ticket }} size={30} />
+                      <span>{customerLabel(ticket.customer)}</span>
+                    </div>
 
                     <div className="ticketing-card-actions">
                       <span className={`ticketing-priority ${priorityClass(ticket.priority)}`}>
@@ -479,9 +486,12 @@ export default function TicketingPage({ refreshShell = () => {} }) {
 
             <div className="ticketing-drawer-body">
               <div className="ticketing-detail-summary">
-                <div>
-                  <div className="fw-bold">{customerLabel(detailTicket.customer)}</div>
-                  <div className="text-muted small">{detailTicket.requestorName || 'Manual requestor'} / {detailTicket.contactNumber || 'No contact'}</div>
+                <div className="d-flex align-items-center gap-3">
+                  <CustomerEmotionAvatar customer={detailTicket.customer || { name: detailTicket.requestorName, contactNumber: detailTicket.contactNumber }} avatarConfig={avatarConfig} context={{ ticket: detailTicket }} size={46} showLabel />
+                  <div>
+                    <div className="fw-bold">{customerLabel(detailTicket.customer)}</div>
+                    <div className="text-muted small">{detailTicket.requestorName || 'Manual requestor'} / {detailTicket.contactNumber || 'No contact'}</div>
+                  </div>
                 </div>
                 <span className={`ticketing-priority ${priorityClass(detailTicket.priority)}`}>
                   <IconAlertTriangle size={14} />

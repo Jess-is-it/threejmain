@@ -3,7 +3,7 @@
   "name": "Customer Profiling",
   "status": "functional-shell",
   "owner": "threejmain",
-  "description": "Customer records, account identity, service addresses, contacts, account lifecycle, bulk upload workflow, and read-only Service Order references.",
+  "description": "Customer records, account identity, service addresses, contacts, account lifecycle, and bulk upload workflow.",
   "app_shell_route": "/customer-profiling",
   "api_prefix": "/api/customer-profiling",
   "frontend_entry": "customer-profiling/web/CustomerProfilingPage.jsx",
@@ -14,7 +14,6 @@
     "create_update_soft_delete",
     "secondary_contacts",
     "location_validation_lists",
-    "service_order_references",
     "bulk_upload_template"
   ]
 }

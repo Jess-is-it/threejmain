@@ -1,17 +1,25 @@
 import React, { useEffect, useState } from 'react';
 import {
+  IconBrandOpenai,
   IconDatabase,
   IconDeviceFloppy,
   IconEdit,
+  IconKey,
   IconMapPin,
   IconNetwork,
+  IconPhoto,
+  IconPlayerPlay,
   IconPlus,
   IconRefresh,
+  IconRobot,
   IconSearch,
   IconSettings,
+  IconShieldLock,
+  IconSparkles,
   IconTrash,
-  IconUserCog
+  IconUpload
 } from '@tabler/icons-react';
+import { CUSTOMER_AVATAR_GENDERS, DEFAULT_CUSTOMER_EMOTION_SETTINGS } from './avatarEmotion';
 import './systemSettings.css';
 
 const API = '/api';
@@ -125,6 +133,32 @@ function hasCoordinates(location) {
     && location.longitude !== '';
 }
 
+const AVATAR_UPLOAD_ACCEPT = 'image/png,image/jpeg,image/webp,image/gif';
+const DEFAULT_AVATAR_MAX_BYTES = 1048576;
+
+function formatBytes(bytes) {
+  if (!bytes && bytes !== 0) return '-';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatUsdPerMTok(value) {
+  if (value === null || value === undefined || value === '') return '-';
+  const numeric = Number(value);
+  const precision = numeric < 1 ? 3 : 2;
+  return `$${numeric.toFixed(precision).replace(/\.?0+$/, '')}`;
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Unable to read avatar image.'));
+    reader.readAsDataURL(file);
+  });
+}
+
 function LocationManagementTab() {
   const emptyForm = {
     location_name: '',
@@ -150,6 +184,9 @@ function LocationManagementTab() {
   const [loading, setLoading] = useState(true);
   const [searching, setSearching] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [bulkSelectEnabled, setBulkSelectEnabled] = useState(false);
+  const [selectedLocationIds, setSelectedLocationIds] = useState([]);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -165,6 +202,10 @@ function LocationManagementTab() {
   useEffect(() => {
     load();
   }, []);
+
+  useEffect(() => {
+    setSelectedLocationIds((currentIds) => currentIds.filter((id) => locations.some((location) => location.id === id)));
+  }, [locations]);
 
   function openAddLocation() {
     setEditingId('');
@@ -283,12 +324,69 @@ function LocationManagementTab() {
     }
   }
 
+  function toggleBulkSelect(enabled) {
+    setBulkSelectEnabled(enabled);
+    setSelectedLocationIds([]);
+  }
+
+  function toggleLocationSelection(locationId, checked) {
+    setSelectedLocationIds((currentIds) => {
+      if (checked) return currentIds.includes(locationId) ? currentIds : [...currentIds, locationId];
+      return currentIds.filter((id) => id !== locationId);
+    });
+  }
+
+  function toggleLocationRowSelection(locationId) {
+    setSelectedLocationIds((currentIds) => (
+      currentIds.includes(locationId)
+        ? currentIds.filter((id) => id !== locationId)
+        : [...currentIds, locationId]
+    ));
+  }
+
+  function handleLocationRowKeyDown(e, locationId) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    toggleLocationRowSelection(locationId);
+  }
+
+  function toggleAllLocations(checked) {
+    setSelectedLocationIds(checked ? locations.map((location) => location.id).filter(Boolean) : []);
+  }
+
+  async function deleteSelectedLocations() {
+    const selectedCount = selectedLocationIds.length;
+    if (!selectedCount) return;
+    if (!window.confirm(`Delete ${selectedCount} selected location${selectedCount === 1 ? '' : 's'}?`)) return;
+    setBulkDeleting(true);
+    setError('');
+    setMessage('');
+    try {
+      const result = await request('/system-settings/locations/bulk-delete', {
+        method: 'POST',
+        body: JSON.stringify({ ids: selectedLocationIds })
+      });
+      const deletedCount = result.deleted ?? selectedCount;
+      setSelectedLocationIds([]);
+      setMessage(`${deletedCount} selected ${deletedCount === 1 ? 'location was' : 'locations were'} deleted.`);
+      await load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBulkDeleting(false);
+    }
+  }
+
   const counts = {
     total: locations.length,
     withCoordinates: locations.filter(hasCoordinates).length,
     municipalities: new Set(locations.map((location) => location.municipality).filter(Boolean)).size,
     barangays: new Set(locations.map((location) => location.barangay).filter(Boolean)).size
   };
+  const selectedLocationIdSet = new Set(selectedLocationIds);
+  const selectableLocationIds = locations.map((location) => location.id).filter(Boolean);
+  const allLocationsSelected = selectableLocationIds.length > 0
+    && selectableLocationIds.every((locationId) => selectedLocationIdSet.has(locationId));
 
   return (
     <div className="row row-cards system-settings-locations">
@@ -311,9 +409,29 @@ function LocationManagementTab() {
               <div className="text-muted small">Saved deployment addresses with municipality, barangay, and coordinates.</div>
             </div>
             <div className="card-actions">
-              <button className="btn btn-primary" type="button" onClick={openAddLocation}>
-                <IconPlus size={18} className="me-2" />Add Location
-              </button>
+              <div className="system-settings-location-actions">
+                <label className="btn btn-outline-secondary system-settings-select-switch">
+                  <span className="form-check form-switch mb-0 system-settings-select-switch-control">
+                    <input
+                      className="form-check-input"
+                      type="checkbox"
+                      role="switch"
+                      checked={bulkSelectEnabled}
+                      onChange={(e) => toggleBulkSelect(e.target.checked)}
+                    />
+                    <span className="form-check-label">Multiple select</span>
+                  </span>
+                </label>
+                {bulkSelectEnabled ? (
+                  <button className="btn btn-danger" type="button" onClick={deleteSelectedLocations} disabled={!selectedLocationIds.length || bulkDeleting}>
+                    <IconTrash size={18} className="me-2" />{bulkDeleting ? 'Deleting...' : `Delete selected${selectedLocationIds.length ? ` (${selectedLocationIds.length})` : ''}`}
+                  </button>
+                ) : (
+                  <button className="btn btn-primary" type="button" onClick={openAddLocation}>
+                    <IconPlus size={18} className="me-2" />Add Location
+                  </button>
+                )}
+              </div>
             </div>
           </div>
           {loading ? (
@@ -323,6 +441,18 @@ function LocationManagementTab() {
               <table className="table card-table table-vcenter">
                 <thead>
                   <tr>
+                    {bulkSelectEnabled && (
+                      <th className="system-settings-location-select">
+                        <input
+                          className="form-check-input m-0"
+                          type="checkbox"
+                          checked={allLocationsSelected}
+                          onChange={(e) => toggleAllLocations(e.target.checked)}
+                          disabled={!locations.length}
+                          aria-label="Select all locations"
+                        />
+                      </th>
+                    )}
                     <th>Location</th>
                     <th>Address</th>
                     <th>Municipality</th>
@@ -330,35 +460,57 @@ function LocationManagementTab() {
                     <th>Coordinates</th>
                     <th>Source</th>
                     <th>Created At</th>
-                    <th className="w-1">Management</th>
+                    {!bulkSelectEnabled && <th className="w-1">Management</th>}
                   </tr>
                 </thead>
                 <tbody>
-                  {locations.map((location) => (
-                    <tr key={location.id}>
-                      <td className="fw-semibold">{location.location_name || 'Unnamed location'}</td>
-                      <td className="system-settings-location-address">{location.address}</td>
-                      <td>{location.municipality || 'n/a'}</td>
-                      <td>{location.barangay || 'n/a'}</td>
-                      <td>
-                        {hasCoordinates(location)
-                          ? <code>{Number(location.latitude).toFixed(6)}, {Number(location.longitude).toFixed(6)}</code>
-                          : <span className="text-muted">n/a</span>}
-                      </td>
-                      <td><span className="badge bg-blue-lt">{location.geocode_source || 'MANUAL'}</span></td>
-                      <td>{fmt(location.created_at)}</td>
-                      <td>
-                        <div className="btn-list flex-nowrap">
-                          <button className="btn btn-icon btn-outline-primary" type="button" onClick={() => editLocation(location)} title="Edit location" aria-label="Edit location">
-                            <IconEdit size={18} />
-                          </button>
-                          <button className="btn btn-icon btn-outline-danger" type="button" onClick={() => deleteLocation(location)} title="Delete location" aria-label="Delete location">
-                            <IconTrash size={18} />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                  {locations.map((location) => {
+                    const selected = selectedLocationIdSet.has(location.id);
+                    return (
+                      <tr
+                        key={location.id}
+                        className={bulkSelectEnabled ? `system-settings-location-row-select${selected ? ' is-selected' : ''}` : undefined}
+                        tabIndex={bulkSelectEnabled ? 0 : undefined}
+                        aria-selected={bulkSelectEnabled ? selected : undefined}
+                        onClick={bulkSelectEnabled ? () => toggleLocationRowSelection(location.id) : undefined}
+                        onKeyDown={bulkSelectEnabled ? (e) => handleLocationRowKeyDown(e, location.id) : undefined}
+                      >
+                        {bulkSelectEnabled && (
+                          <td className="system-settings-location-select">
+                            <input
+                              className="form-check-input m-0"
+                              type="checkbox"
+                              checked={selected}
+                              onClick={(e) => e.stopPropagation()}
+                              onChange={(e) => toggleLocationSelection(location.id, e.target.checked)}
+                              aria-label={`Select ${location.location_name || location.address || 'location'}`}
+                            />
+                          </td>
+                        )}
+                        <td className="fw-semibold">{location.location_name || 'Unnamed location'}</td>
+                        <td className="system-settings-location-address">{location.address}</td>
+                        <td>{location.municipality || 'n/a'}</td>
+                        <td>{location.barangay || 'n/a'}</td>
+                        <td>
+                          {hasCoordinates(location)
+                            ? <code>{Number(location.latitude).toFixed(6)}, {Number(location.longitude).toFixed(6)}</code>
+                            : <span className="text-muted">n/a</span>}
+                        </td>
+                        <td><span className="badge bg-blue-lt">{location.geocode_source || 'MANUAL'}</span></td>
+                        <td>{fmt(location.created_at)}</td>
+                        {!bulkSelectEnabled && <td>
+                          <div className="btn-list flex-nowrap">
+                            <button className="btn btn-icon btn-outline-primary" type="button" onClick={() => editLocation(location)} title="Edit location" aria-label="Edit location">
+                              <IconEdit size={18} />
+                            </button>
+                            <button className="btn btn-icon btn-outline-danger" type="button" onClick={() => deleteLocation(location)} title="Delete location" aria-label="Delete location">
+                              <IconTrash size={18} />
+                            </button>
+                          </div>
+                        </td>}
+                      </tr>
+                    );
+                  })}
                   {!locations.length && <tr><td colSpan="8" className="text-muted p-4">No locations saved yet.</td></tr>}
                 </tbody>
               </table>
@@ -413,8 +565,658 @@ function LocationManagementTab() {
   );
 }
 
+function AvatarTab() {
+  const [avatarConfig, setAvatarConfig] = useState(null);
+  const [avatarView, setAvatarView] = useState('uploads');
+  const [settingsForm, setSettingsForm] = useState(DEFAULT_CUSTOMER_EMOTION_SETTINGS);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [busyAvatarId, setBusyAvatarId] = useState('');
+  const [savingSettings, setSavingSettings] = useState(false);
+
+  async function loadAvatars() {
+    setLoading(true);
+    try {
+      const nextConfig = await request('/system-settings/avatars');
+      setAvatarConfig(nextConfig);
+      setSettingsForm(nextConfig.emotion_settings || DEFAULT_CUSTOMER_EMOTION_SETTINGS);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadAvatars();
+  }, []);
+
+  async function uploadAvatar(gender, emotion, file, input) {
+    if (!file) return;
+    const maxBytes = avatarConfig?.max_bytes || DEFAULT_AVATAR_MAX_BYTES;
+    setError('');
+    setMessage('');
+    if (!AVATAR_UPLOAD_ACCEPT.split(',').includes(file.type)) {
+      setError('Accepted avatar image formats are PNG, JPG/JPEG, WebP, and GIF.');
+      input.value = '';
+      return;
+    }
+    if (file.size > maxBytes) {
+      setError(`Avatar image must be ${formatBytes(maxBytes)} or smaller.`);
+      input.value = '';
+      return;
+    }
+    const busyKey = `${gender.id}:${emotion.id}`;
+    setBusyAvatarId(busyKey);
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      const nextConfig = await request(`/system-settings/avatars/${gender.id}/${emotion.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          data_url: dataUrl,
+          file_name: file.name,
+          mime_type: file.type
+        })
+      });
+      setAvatarConfig(nextConfig);
+      setSettingsForm(nextConfig.emotion_settings || DEFAULT_CUSTOMER_EMOTION_SETTINGS);
+      setMessage(`${gender.label} ${emotion.label} avatar saved.`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusyAvatarId('');
+      input.value = '';
+    }
+  }
+
+  async function removeAvatar(gender, emotion) {
+    if (!window.confirm(`Remove the ${gender.label} ${emotion.label} avatar?`)) return;
+    setBusyAvatarId(`${gender.id}:${emotion.id}`);
+    setError('');
+    setMessage('');
+    try {
+      const nextConfig = await request(`/system-settings/avatars/${gender.id}/${emotion.id}`, { method: 'DELETE' });
+      setAvatarConfig(nextConfig);
+      setSettingsForm(nextConfig.emotion_settings || DEFAULT_CUSTOMER_EMOTION_SETTINGS);
+      setMessage(`${gender.label} ${emotion.label} avatar removed.`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusyAvatarId('');
+    }
+  }
+
+  function updateEmotionSetting(section, key, value) {
+    setSettingsForm((current) => ({
+      ...current,
+      [section]: {
+        ...(current?.[section] || {}),
+        [key]: Number(value)
+      }
+    }));
+  }
+
+  async function saveEmotionSettings(event) {
+    event.preventDefault();
+    setSavingSettings(true);
+    setError('');
+    setMessage('');
+    try {
+      const nextConfig = await request('/system-settings/avatar-emotion-settings', {
+        method: 'PATCH',
+        body: JSON.stringify(settingsForm)
+      });
+      setAvatarConfig(nextConfig);
+      setSettingsForm(nextConfig.emotion_settings || DEFAULT_CUSTOMER_EMOTION_SETTINGS);
+      setMessage('Avatar emotion guide saved.');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSavingSettings(false);
+    }
+  }
+
+  const emotions = avatarConfig?.emotions || [];
+  const genders = avatarConfig?.genders?.length ? avatarConfig.genders : CUSTOMER_AVATAR_GENDERS;
+  const savedCount = emotions.reduce((total, emotion) => total + genders.filter((gender) => emotion.avatars?.[gender.id]).length, 0);
+  const maxBytes = avatarConfig?.max_bytes || DEFAULT_AVATAR_MAX_BYTES;
+  const thresholds = settingsForm?.thresholds || DEFAULT_CUSTOMER_EMOTION_SETTINGS.thresholds;
+  const weights = settingsForm?.weights || DEFAULT_CUSTOMER_EMOTION_SETTINGS.weights;
+
+  const settingLabels = {
+    happy_min: 'Happy from score',
+    warning_max: 'Warning at or below',
+    angry_max: 'Angry at or below',
+    customer_active: 'Customer active',
+    customer_pending: 'Customer pending',
+    customer_inactive: 'Customer inactive',
+    customer_suspended: 'Customer suspended',
+    service_active: 'Service active',
+    service_pending: 'Service pending',
+    service_suspended: 'Service suspended',
+    service_disconnected: 'Service disconnected',
+    no_service_account: 'No service account',
+    open_service_order: 'Open service order',
+    completed_service_order: 'Completed service order',
+    overdue_billing: 'Overdue billing',
+    open_invoice: 'Open invoice',
+    urgent_ticket: 'Urgent ticket',
+    high_ticket: 'High priority ticket',
+    open_ticket: 'Open ticket',
+    resolved_ticket: 'Resolved ticket'
+  };
+
+  const weightGroups = [
+    ['Customer Profiling', ['customer_active', 'customer_pending', 'customer_inactive', 'customer_suspended']],
+    ['Service', ['service_active', 'service_pending', 'service_suspended', 'service_disconnected', 'no_service_account', 'open_service_order', 'completed_service_order']],
+    ['Billing', ['overdue_billing', 'open_invoice']],
+    ['Ticketing', ['urgent_ticket', 'high_ticket', 'open_ticket', 'resolved_ticket']]
+  ];
+
+  return (
+    <div className="row row-cards system-settings-avatars">
+      <div className="col-12">
+        <div className="alert alert-info">
+          Customer-information screens can use these avatar moods to match account context such as active service, outages, support follow-up, maintenance, billing warnings, or resolved tickets.
+        </div>
+      </div>
+      <div className="col-12">
+        <div className="alert alert-secondary mb-0">
+          Accepted avatar image formats: PNG, JPG/JPEG, WebP, and GIF. Maximum upload size is {formatBytes(maxBytes)} per image; square transparent PNG or WebP images around 512 x 512 px are recommended.
+        </div>
+      </div>
+      {message && <div className="col-12"><div className="alert alert-success">{message}</div></div>}
+      {error && <div className="col-12"><div className="alert alert-danger">{error}</div></div>}
+      <KpiCard icon={IconPhoto} label="Avatar Moods" value={emotions.length || '-'} tone="blue" />
+      <KpiCard icon={IconDatabase} label="Uploaded" value={savedCount} tone="green" />
+      <KpiCard icon={IconSettings} label="Formats" value="PNG JPG WebP GIF" tone="cyan" />
+      <KpiCard icon={IconNetwork} label="Max Size" value={formatBytes(maxBytes)} tone="purple" />
+      <div className="col-12">
+        <ul className="nav nav-tabs" role="tablist" aria-label="Avatar configuration tabs">
+          {[
+            ['uploads', 'Uploads'],
+            ['settings', 'Settings']
+          ].map(([id, label]) => (
+            <li className="nav-item" role="presentation" key={id}>
+              <button className={`nav-link ${avatarView === id ? 'active' : ''}`} type="button" role="tab" aria-selected={avatarView === id} onClick={() => setAvatarView(id)}>
+                {label}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+      {loading ? (
+        <div className="col-12"><div className="empty">Loading avatar settings...</div></div>
+      ) : avatarView === 'settings' ? (
+        <div className="col-12">
+          <form className="card" onSubmit={saveEmotionSettings}>
+            <div className="card-body">
+              <div className="row g-3">
+                <div className="col-12">
+                  <h3 className="card-title mb-1">Emotion Guide</h3>
+                  <div className="text-muted small">Scores start at 0. Positive signals move customer behavior toward happy, and negative signals move it toward warning or angry.</div>
+                </div>
+                {Object.keys(thresholds).map((key) => (
+                  <div className="col-md-4" key={key}>
+                    <label className="form-label">{settingLabels[key] || key}</label>
+                    <input className="form-control" type="number" min="-100" max="100" value={thresholds[key]} onChange={(e) => updateEmotionSetting('thresholds', key, e.target.value)} />
+                  </div>
+                ))}
+                {weightGroups.map(([group, keys]) => (
+                  <div className="col-lg-6" key={group}>
+                    <div className="system-settings-emotion-group">
+                      <div className="fw-semibold mb-2">{group}</div>
+                      <div className="row g-2">
+                        {keys.map((key) => (
+                          <div className="col-md-6" key={key}>
+                            <label className="form-label">{settingLabels[key] || key}</label>
+                            <input className="form-control" type="number" min="-75" max="75" value={weights[key]} onChange={(e) => updateEmotionSetting('weights', key, e.target.value)} />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {!!avatarConfig?.emotion_guide?.length && (
+                  <div className="col-12">
+                    <div className="system-settings-emotion-guide-list">
+                      {avatarConfig.emotion_guide.map((item) => (
+                        <div key={item.module}>
+                          <span className="badge bg-blue-lt text-blue">{item.module}</span>
+                          <div className="fw-semibold">{item.signal}</div>
+                          <div className="text-muted small">{item.description}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="card-footer text-end">
+              <button className="btn btn-primary" disabled={savingSettings}>
+                <IconDeviceFloppy size={18} className="me-2" />{savingSettings ? 'Saving...' : 'Save Emotion Guide'}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : (
+        emotions.map((emotion) => {
+          return (
+            <div className="col-md-6 col-xl-4" key={emotion.id}>
+              <div className="card system-settings-avatar-card">
+                <div className="card-body">
+                  <div className="system-settings-avatar-card-header">
+                    <div>
+                      <h3 className="card-title mb-1">{emotion.label}</h3>
+                      <div className="text-muted small">{emotion.description}</div>
+                    </div>
+                  </div>
+                  <div className="system-settings-avatar-gender-grid">
+                    {genders.map((gender) => {
+                      const avatar = emotion.avatars?.[gender.id] || null;
+                      const inputId = `avatar-upload-${gender.id}-${emotion.id}`;
+                      const busy = busyAvatarId === `${gender.id}:${emotion.id}`;
+                      return (
+                        <div className="system-settings-avatar-gender-card" key={gender.id}>
+                          <div className="system-settings-avatar-preview">
+                            {avatar?.data_url ? (
+                              <img src={avatar.data_url} alt={`${gender.label} ${emotion.label} avatar`} />
+                            ) : (
+                              <IconPhoto size={30} className="text-muted" />
+                            )}
+                          </div>
+                          <div className="system-settings-avatar-meta">
+                            <span className="badge bg-blue-lt text-blue">{gender.label}</span>
+                            <span className="badge bg-secondary-lt">{avatar ? avatar.mime_type : 'No image'}</span>
+                            <span className="text-muted small">{avatar ? `${avatar.file_name || 'avatar'} · ${formatBytes(avatar.byte_size)}` : 'Upload avatar.'}</span>
+                          </div>
+                          <div className="btn-list mt-3">
+                            <input
+                              id={inputId}
+                              className="d-none"
+                              type="file"
+                              accept={AVATAR_UPLOAD_ACCEPT}
+                              onChange={(e) => uploadAvatar(gender, emotion, e.target.files?.[0], e.target)}
+                            />
+                            <label className={`btn btn-outline-primary btn-sm ${busy ? 'disabled' : ''}`} htmlFor={busy ? undefined : inputId} aria-disabled={busy}>
+                              <IconUpload size={16} className="me-2" />{busy ? 'Saving...' : avatar ? 'Replace' : 'Upload'}
+                            </label>
+                            {avatar && (
+                              <button className="btn btn-outline-danger btn-sm" type="button" onClick={() => removeAvatar(gender, emotion)} disabled={busy}>
+                                <IconTrash size={16} className="me-2" />Remove
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+const DEFAULT_OPENAI_TEST_PROMPT = 'Reply with one short sentence confirming this OpenAI API key works for 3J ISP Management.';
+
+const OPENAI_REASONING_FALLBACK_LABELS = {
+  none: 'None',
+  minimal: 'Minimal',
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'Extra high'
+};
+
+function reasoningEffortsForModel(model, allEfforts = []) {
+  const ids = Array.isArray(model?.reasoning_efforts) && model.reasoning_efforts.length
+    ? model.reasoning_efforts
+    : String(model?.reasoning || '')
+      .split(',')
+      .map((effort) => effort.trim())
+      .filter(Boolean);
+  const effortById = new Map((allEfforts || []).map((effort) => [effort.id, effort]));
+  return ids.map((id) => effortById.get(id) || {
+    id,
+    label: OPENAI_REASONING_FALLBACK_LABELS[id] || id,
+    description: ''
+  });
+}
+
+function defaultReasoningEffortForModel(model, allEfforts = []) {
+  const efforts = reasoningEffortsForModel(model, allEfforts);
+  if (efforts.some((effort) => effort.id === 'medium')) return 'medium';
+  return efforts[0]?.id || '';
+}
+
+function OpenAISettingsTab() {
+  const [config, setConfig] = useState(null);
+  const [form, setForm] = useState({
+    api_key: '',
+    selected_model: '',
+    reasoning_effort: '',
+    organization_id: '',
+    project_id: ''
+  });
+  const [testPrompt, setTestPrompt] = useState(DEFAULT_OPENAI_TEST_PROMPT);
+  const [maxOutputTokens, setMaxOutputTokens] = useState(120);
+  const [testResult, setTestResult] = useState(null);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+
+  async function loadOpenAISettings() {
+    setLoading(true);
+    try {
+      const nextConfig = await request('/system-settings/openai');
+      setConfig(nextConfig);
+      setForm({
+        api_key: '',
+        selected_model: nextConfig.selected_model || '',
+        reasoning_effort: nextConfig.selected_reasoning_effort || '',
+        organization_id: nextConfig.organization_id || '',
+        project_id: nextConfig.project_id || ''
+      });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadOpenAISettings();
+  }, []);
+
+  const selectedModel = config?.models?.find((model) => model.id === form.selected_model)
+    || config?.selected_model_config
+    || config?.models?.[0]
+    || null;
+  const selectedReasoningEfforts = reasoningEffortsForModel(selectedModel, config?.reasoning_efforts);
+  const selectedReasoningEffort = selectedReasoningEfforts.find((effort) => effort.id === form.reasoning_effort)
+    || selectedReasoningEfforts.find((effort) => effort.id === defaultReasoningEffortForModel(selectedModel, config?.reasoning_efforts))
+    || selectedReasoningEfforts[0]
+    || null;
+  const activeReasoningEffortId = selectedReasoningEffort?.id || form.reasoning_effort || '';
+  const pricingSource = config?.pricing_source || {};
+
+  function updateSelectedModel(modelId) {
+    const nextModel = config?.models?.find((model) => model.id === modelId);
+    const nextEfforts = reasoningEffortsForModel(nextModel, config?.reasoning_efforts);
+    const currentEffortStillSupported = nextEfforts.some((effort) => effort.id === form.reasoning_effort);
+    setForm({
+      ...form,
+      selected_model: modelId,
+      reasoning_effort: currentEffortStillSupported
+        ? form.reasoning_effort
+        : defaultReasoningEffortForModel(nextModel, config?.reasoning_efforts)
+    });
+  }
+
+  async function saveOpenAISettings(event) {
+    event.preventDefault();
+    setSaving(true);
+    setError('');
+    setMessage('');
+    try {
+      const payload = {
+        selected_model: form.selected_model,
+        reasoning_effort: activeReasoningEffortId,
+        organization_id: form.organization_id,
+        project_id: form.project_id
+      };
+      if (form.api_key.trim()) payload.api_key = form.api_key.trim();
+      const nextConfig = await request('/system-settings/openai', {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      });
+      setConfig(nextConfig);
+      setForm({
+        api_key: '',
+        selected_model: nextConfig.selected_model || '',
+        reasoning_effort: nextConfig.selected_reasoning_effort || '',
+        organization_id: nextConfig.organization_id || '',
+        project_id: nextConfig.project_id || ''
+      });
+      setMessage('OpenAI settings saved.');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function clearOpenAIKey() {
+    if (!window.confirm('Remove the saved OpenAI API key?')) return;
+    setSaving(true);
+    setError('');
+    setMessage('');
+    try {
+      const nextConfig = await request('/system-settings/openai', {
+        method: 'PATCH',
+        body: JSON.stringify({ clear_api_key: true })
+      });
+      setConfig(nextConfig);
+      setForm((current) => ({ ...current, api_key: '' }));
+      setMessage('OpenAI API key removed.');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function runOpenAITest(event) {
+    event.preventDefault();
+    setTesting(true);
+    setError('');
+    setMessage('');
+    setTestResult(null);
+    try {
+      const result = await request('/system-settings/openai/test', {
+        method: 'POST',
+        body: JSON.stringify({
+          model_id: form.selected_model,
+          reasoning_effort: activeReasoningEffortId,
+          prompt: testPrompt,
+          max_output_tokens: Number(maxOutputTokens)
+        })
+      });
+      setTestResult(result);
+      setMessage('OpenAI API test completed.');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  if (loading) return <div className="empty">Loading OpenAI settings...</div>;
+
+  return (
+    <div className="row row-cards system-settings-openai">
+      <div className="col-12">
+        <div className="alert alert-info">
+          OpenAI settings are stored server-side and the saved API key is masked after saving. Pricing shown is {pricingSource.unit || 'USD per 1M tokens'} from {pricingSource.label || 'OpenAI pricing'}.
+        </div>
+      </div>
+      {message && <div className="col-12"><div className="alert alert-success">{message}</div></div>}
+      {error && <div className="col-12"><div className="alert alert-danger">{error}</div></div>}
+      <KpiCard icon={IconKey} label="API Key" value={config?.api_key_configured ? 'Saved' : 'Missing'} tone={config?.api_key_configured ? 'green' : 'orange'} />
+      <KpiCard icon={IconRobot} label="Selected Model" value={selectedModel?.id || '-'} tone="blue" />
+      <KpiCard icon={IconSparkles} label="Reasoning" value={selectedReasoningEffort?.label || '-'} tone="cyan" />
+      <KpiCard icon={IconShieldLock} label="Output Price" value={`${formatUsdPerMTok(selectedModel?.prices?.output)} / 1M`} tone="purple" />
+
+      <div className="col-lg-5">
+        <Card title="API Configuration" icon={IconBrandOpenai}>
+          <form onSubmit={saveOpenAISettings}>
+            <div className="row g-3">
+              <div className="col-12">
+                <label className="form-label">OpenAI API Key</label>
+                <input
+                  className="form-control"
+                  type="password"
+                  autoComplete="off"
+                  value={form.api_key}
+                  onChange={(e) => setForm({ ...form, api_key: e.target.value })}
+                  placeholder={config?.api_key_configured ? `Saved key: ${config.api_key_hint}` : 'sk-...'}
+                />
+                <div className="form-hint">Leave blank to keep the saved key.</div>
+              </div>
+              <div className="col-md-6">
+                <label className="form-label">Model</label>
+                <select className="form-select" value={form.selected_model} onChange={(e) => updateSelectedModel(e.target.value)}>
+                  {(config?.models || []).map((model) => (
+                    <option value={model.id} key={model.id}>{model.label} - {model.category}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="col-md-6">
+                <label className="form-label">Reasoning Effort</label>
+                <select className="form-select" value={activeReasoningEffortId} onChange={(e) => setForm({ ...form, reasoning_effort: e.target.value })}>
+                  {selectedReasoningEfforts.map((effort) => (
+                    <option value={effort.id} key={effort.id}>{effort.label}</option>
+                  ))}
+                </select>
+                <div className="form-hint">{selectedReasoningEffort?.description || 'Controls reasoning token use for supported models.'}</div>
+              </div>
+              <div className="col-md-6">
+                <label className="form-label">Organization ID</label>
+                <input className="form-control" value={form.organization_id} onChange={(e) => setForm({ ...form, organization_id: e.target.value })} placeholder="Optional" />
+              </div>
+              <div className="col-md-6">
+                <label className="form-label">Project ID</label>
+                <input className="form-control" value={form.project_id} onChange={(e) => setForm({ ...form, project_id: e.target.value })} placeholder="Optional" />
+              </div>
+              {selectedModel && (
+                <div className="col-12">
+                  <div className="system-settings-openai-model-summary">
+                    <span className="badge bg-blue-lt text-blue">{selectedModel.category}</span>
+                    <div className="fw-semibold">{selectedModel.label}</div>
+                    <div className="text-muted small">{selectedModel.recommended_for}</div>
+                    <div className="system-settings-openai-model-meta">
+                      <span>Context: {selectedModel.context_window}</span>
+                      <span>Max output: {selectedModel.max_output}</span>
+                      <span>Reasoning choices: {selectedModel.reasoning}</span>
+                      <span>Selected effort: {selectedReasoningEffort?.label || '-'}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+              <div className="col-12">
+                <div className="btn-list justify-content-end">
+                  {config?.api_key_configured && (
+                    <button className="btn btn-outline-danger" type="button" onClick={clearOpenAIKey} disabled={saving}>
+                      <IconTrash size={18} className="me-2" />Clear Key
+                    </button>
+                  )}
+                  <button className="btn btn-primary" disabled={saving}>
+                    <IconDeviceFloppy size={18} className="me-2" />{saving ? 'Saving...' : 'Save OpenAI Settings'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </form>
+        </Card>
+      </div>
+
+      <div className="col-lg-7">
+        <Card title="Test API" icon={IconPlayerPlay}>
+          <form onSubmit={runOpenAITest}>
+            <div className="row g-3">
+              <div className="col-12">
+                <label className="form-label">Test Prompt</label>
+                <textarea className="form-control" rows="4" value={testPrompt} onChange={(e) => setTestPrompt(e.target.value)} />
+              </div>
+              <div className="col-md-4">
+                <label className="form-label">Max Output Tokens</label>
+                <input className="form-control" type="number" min="16" max="512" value={maxOutputTokens} onChange={(e) => setMaxOutputTokens(e.target.value)} />
+              </div>
+              <div className="col-md-8 d-flex align-items-end justify-content-end">
+                <button className="btn btn-primary" disabled={testing || !config?.api_key_configured || !testPrompt.trim()}>
+                  <IconPlayerPlay size={18} className="me-2" />{testing ? 'Testing...' : 'Run Test'}
+                </button>
+              </div>
+              {!config?.api_key_configured && (
+                <div className="col-12">
+                  <div className="alert alert-warning mb-0">Save an OpenAI API key before running a test.</div>
+                </div>
+              )}
+              {testResult && (
+                <div className="col-12">
+                  <div className="system-settings-openai-test-result">
+                    <div className="d-flex flex-wrap gap-2 mb-2">
+                      <span className="badge bg-green-lt text-green">Connected</span>
+                      <span className="badge bg-blue-lt text-blue">{testResult.model}</span>
+                      <span className="badge bg-purple-lt text-purple">{testResult.reasoning_effort}</span>
+                      <span className="badge bg-secondary-lt">{testResult.latency_ms} ms</span>
+                    </div>
+                    <pre>{testResult.output_text || 'No text output returned.'}</pre>
+                    {testResult.usage && (
+                      <div className="text-muted small">Usage: {JSON.stringify(testResult.usage)}</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </form>
+        </Card>
+      </div>
+
+      <div className="col-12">
+        <Card
+          title="Model Pricing"
+          icon={IconDatabase}
+          actions={pricingSource.url && <a className="btn btn-sm btn-outline-primary" href={pricingSource.url} target="_blank" rel="noreferrer">Open Pricing</a>}
+        >
+          <div className="table-responsive">
+            <table className="table card-table table-vcenter system-settings-openai-pricing-table">
+              <thead>
+                <tr>
+                  <th>Model</th>
+                  <th>Category</th>
+                  <th>Input</th>
+                  <th>Cached Input</th>
+                  <th>Output</th>
+                  <th>Context</th>
+                  <th>Reasoning</th>
+                  <th>Recommended For</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(config?.models || []).map((model) => (
+                  <tr key={model.id} className={model.id === form.selected_model ? 'table-active' : undefined}>
+                    <td className="fw-semibold">{model.id}</td>
+                    <td><span className="badge bg-blue-lt text-blue">{model.category}</span></td>
+                    <td>{formatUsdPerMTok(model.prices?.input)}</td>
+                    <td>{formatUsdPerMTok(model.prices?.cached_input)}</td>
+                    <td>{formatUsdPerMTok(model.prices?.output)}</td>
+                    <td>{model.context_window}</td>
+                    <td>{model.reasoning}</td>
+                    <td className="system-settings-openai-recommendation">{model.recommended_for}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="text-muted small mt-3">
+            Source checked {pricingSource.checked_at || 'recently'}. {pricingSource.note}
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
 export default function SystemSettingsPage({ refreshShell }) {
-  const tabs = ['General', 'Location Management', 'Ports', 'Access', 'Runtime'];
+  const tabs = ['General', 'Location Management', 'Avatar', 'OPENAI', 'Ports', 'Runtime'];
   const [tab, setTab] = useState('General');
   const [settings, setSettings] = useState(null);
   const [ports, setPorts] = useState([]);
@@ -485,15 +1287,12 @@ export default function SystemSettingsPage({ refreshShell }) {
         </Card>
       )}
       {tab === 'Location Management' && <LocationManagementTab />}
+      {tab === 'Avatar' && <AvatarTab />}
+      {tab === 'OPENAI' && <OpenAISettingsTab />}
       {tab === 'Ports' && (
         <Card title="System Port Registry" icon={IconNetwork} actions={<button className="btn btn-sm" onClick={load}><IconRefresh size={16} className="me-1" />Refresh</button>}>
           <div className="alert alert-info">Use this page to avoid port collisions with 3JCentralPisowifi and other services on the server.</div>
           <Table rows={ports} columns={['port', 'protocol', 'scope', 'owner', 'service', 'status', 'notes']} />
-        </Card>
-      )}
-      {tab === 'Access' && (
-        <Card title="Admin Access" icon={IconUserCog}>
-          <div className="alert alert-warning mb-0">The first shell has one local admin account. Role and permission management will live in the Account Admin module.</div>
         </Card>
       )}
       {tab === 'Runtime' && (

@@ -22,22 +22,22 @@ FastAPI router:
 - Package: `point_of_sale`
 - Router file: `api/point_of_sale/router.py`
 - Prefix: `/api/point-of-sale`
-- Storage: in-memory lists for first CRUD shell
+- Storage: in-memory lists for sales and payments. Sellable items come from the Inventory module when available. A hidden system-managed register record may be created per logged-in POS user to preserve backend compatibility, but sessions are not a user-facing workflow.
 
 Local routes:
 
 - `GET /api/point-of-sale/meta`
 - `GET /api/point-of-sale/overview`
 - `GET /api/point-of-sale/customers`
-- `GET /api/point-of-sale/items`
-- `POST /api/point-of-sale/items`
-- `PATCH /api/point-of-sale/items/{item_id}`
-- `DELETE /api/point-of-sale/items/{item_id}`
-- `GET /api/point-of-sale/sessions`
-- `POST /api/point-of-sale/sessions`
-- `PATCH /api/point-of-sale/sessions/{session_id}`
-- `POST /api/point-of-sale/sessions/{session_id}/close`
-- `DELETE /api/point-of-sale/sessions/{session_id}`
+- `GET /api/point-of-sale/items` reads active Inventory items marked `sellableInPos`
+- `POST /api/point-of-sale/items` legacy fallback only; returns `405` when Inventory is connected
+- `PATCH /api/point-of-sale/items/{item_id}` legacy fallback only; returns `405` when Inventory is connected
+- `DELETE /api/point-of-sale/items/{item_id}` legacy fallback only; returns `405` when Inventory is connected
+- `GET /api/point-of-sale/sessions` legacy/internal compatibility route
+- `POST /api/point-of-sale/sessions` legacy/internal compatibility route
+- `PATCH /api/point-of-sale/sessions/{session_id}` legacy/internal compatibility route
+- `POST /api/point-of-sale/sessions/{session_id}/close` legacy/internal compatibility route
+- `DELETE /api/point-of-sale/sessions/{session_id}` legacy/internal compatibility route
 - `GET /api/point-of-sale/sales`
 - `POST /api/point-of-sale/sales`
 - `PATCH /api/point-of-sale/sales/{sale_id}`
@@ -51,21 +51,38 @@ Local routes:
 
 Current in-memory CRUD scope:
 
-- Item catalog: SKU, name, category, unit price, stock on hand, reorder point, taxable flag, status, notes, soft archive
-- Cashier sessions: session number, cashier, register, opening float, opened date, closing cash, expected cash, variance, status, close/cancel flow
-- Sales: sale number, receipt number, session, optional customer, walk-in support, sale date, line items, discount, tax, payment status, void flow
-- Payments: payment number, sale link, amount, method, payment date, reference, status, notes, void flow
+- Sellable catalog: read-only in POS, sourced from Inventory item master by `sellableInPos`, status, sale price, barcode, tracking type, and available stock
+- POS operator attribution: sales store the logged-in account username/display name; the frontend no longer asks users to open or choose a cashier session.
+- Sales: sale number, receipt number, logged-in POS user, optional customer, walk-in support, sale date, line items, discount, tax, payment status, void flow, Inventory movement posting
+- Payments: backend sale-payment records created during checkout; no standalone frontend workspace
 
 ## Dependencies
 
 - Customer Profiling: optional lookup provider for named customers. Walk-in sales must remain valid without a customer.
-- Inventory: future source of durable item catalog, stock movements, reorder alerts, and assignment links. Current POS stock is local and temporary.
+- Inventory: canonical item master and stock ledger. POS reads sellable catalog items from Inventory and posts `ISSUE` movements on checkout, `RETURN` movements on sale void/reversal.
 - Billing: future handoff for invoice settlement or billing-related receipt posting. Current POS payments are local only.
-- Account Admin: future source of cashier/staff identity and permissions. Current session cashier is a free-text field.
+- Account Admin/shared auth: current source of POS operator identity. Sale records store the authenticated account username/display name.
+
+## Frontend
+
+- `Register` is the primary POS checkout screen. It shows the sellable Inventory catalog as a checkout menu, a cart, walk-in/customer selection, discount/tax fields, payment method/reference, and complete-checkout action.
+- `Catalog` is a read-only POS view of Inventory sellable items. Item creation and maintenance happen in Inventory.
+- `Sales` combines the old overview dashboard metrics with posted-receipt history, refresh, and void actions. The Low Stock KPI opens a right-side panel with low-stock items instead of rendering a persistent table in the Sales page.
+- There is no standalone `Payments` tab. Payment capture belongs in `Register`; payment status/balance belongs in `Sales`.
+- There is no standalone `Sessions` tab. Register checkout is attributed to the logged-in account automatically.
+
+## ISP Business Model Notes
+
+- Inventory must support both revenue items and internal assets. Examples: customer-sold routers/cable/service fees, customer-assigned CPE, office supplies, and technician-borrowed tools.
+- POS should only sell items explicitly marked `sellableInPos`. Technician borrow/return and office/internal assignment should stay in Inventory assignments, not POS sales.
+- Serialized items sold in POS require one line per unit with a serial number, validated by Inventory.
+- Customer equipment installs should eventually link Inventory assignments to Customer Profiling, Service, and Ticketing records. Current IDs remain placeholders.
+- Non-stock service charges, such as installation fees, may appear in POS without decrementing inventory.
 
 ## Integration Notes
 
 - Integration Codex should import `point_of_sale.router` into the shared API shell and call `configure_point_of_sale(...)`.
+- API shell must load `inventory/api` before `point-of-sale/api` if POS should use Inventory helpers in-process.
 - Integration Codex should import `web/PointOfSalePage.jsx` into the shared React shell and add the `/point-of-sale` route/navigation.
 - Dockerfiles, Vite allowlists, app-shell route wiring, and shared dashboard metrics are integration responsibilities, not module-local responsibilities.
 - Keep the module API free of direct imports from `app-shell`.
@@ -73,7 +90,7 @@ Current in-memory CRUD scope:
 ## Risks
 
 - Data is not durable; all POS data resets when the API process restarts.
-- Local stock decrement/restore is only a placeholder and can diverge from future Inventory records.
+- Inventory movement posting is still in-memory and not transactional across modules. A database-backed ledger is needed before production.
 - Payment records do not integrate with Billing, cash drawer hardware, receipt printing, or external gateways yet.
 - Customer lookup is optional and depends on integration wiring.
-- No role-based cashier permission checks are enforced in the module yet.
+- No role-based POS permission checks are enforced in the module yet.

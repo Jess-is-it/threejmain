@@ -112,6 +112,10 @@ const blankItem = {
   location: 'Main stockroom',
   supplier: '',
   unitCost: '0',
+  salePrice: '0',
+  taxable: false,
+  sellableInPos: false,
+  barcode: '',
   status: 'ACTIVE',
   serialNumbersText: '',
   notes: ''
@@ -122,6 +126,7 @@ const blankMovement = {
   itemId: '',
   type: 'RECEIVE',
   quantity: '1',
+  serialNumber: '',
   fromLocation: '',
   toLocation: 'Main stockroom',
   referenceType: 'MANUAL',
@@ -134,6 +139,7 @@ const blankAssignment = {
   itemId: '',
   serialNumber: '',
   quantity: '1',
+  assigneeType: 'CUSTOMER',
   assignedToName: '',
   customerId: '',
   serviceId: '',
@@ -141,13 +147,14 @@ const blankAssignment = {
   location: '',
   status: 'ASSIGNED',
   assignedDate: today(),
+  dueDate: '',
   returnedDate: '',
   notes: ''
 };
 
 export default function InventoryPage({ refreshShell = () => {} }) {
   const [activeTab, setActiveTab] = useState('Overview');
-  const [meta, setMeta] = useState({ itemCategories: [], trackingTypes: [], itemStatuses: [], movementTypes: [], assignmentStatuses: [] });
+  const [meta, setMeta] = useState({ itemCategories: [], trackingTypes: [], itemStatuses: [], movementTypes: [], assignmentStatuses: [], assigneeTypes: [] });
   const [overview, setOverview] = useState({ metrics: {}, lowStockItems: [], recentMovements: [], activeAssignments: [] });
   const [items, setItems] = useState([]);
   const [movements, setMovements] = useState([]);
@@ -201,6 +208,9 @@ export default function InventoryPage({ refreshShell = () => {} }) {
       quantityOnHand: Number(itemForm.quantityOnHand),
       reorderPoint: Number(itemForm.reorderPoint),
       unitCost: Number(itemForm.unitCost),
+      salePrice: Number(itemForm.salePrice),
+      taxable: Boolean(itemForm.taxable),
+      sellableInPos: Boolean(itemForm.sellableInPos),
       serialNumbers: itemForm.serialNumbersText.split(',').map((value) => value.trim()).filter(Boolean)
     };
     delete body.id;
@@ -269,6 +279,10 @@ export default function InventoryPage({ refreshShell = () => {} }) {
       quantityOnHand: String(item.quantityOnHand),
       reorderPoint: String(item.reorderPoint),
       unitCost: String(item.unitCost),
+      salePrice: String(item.salePrice || 0),
+      taxable: Boolean(item.taxable),
+      sellableInPos: Boolean(item.sellableInPos),
+      barcode: item.barcode || '',
       serialNumbersText: (item.serialNumbers || []).join(', ')
     });
     setActiveTab('Items');
@@ -375,6 +389,20 @@ export default function InventoryPage({ refreshShell = () => {} }) {
                   <TextField label="Unit Cost" type="number" min="0" step="0.01" value={itemForm.unitCost} onChange={(unitCost) => setItemForm({ ...itemForm, unitCost })} />
                 </div>
                 <div className="inventory-two-cols">
+                  <TextField label="POS Sale Price" type="number" min="0" step="0.01" value={itemForm.salePrice} onChange={(salePrice) => setItemForm({ ...itemForm, salePrice })} />
+                  <TextField label="Barcode" value={itemForm.barcode} onChange={(barcode) => setItemForm({ ...itemForm, barcode })} />
+                </div>
+                <div className="inventory-two-cols">
+                  <label className="form-check">
+                    <input className="form-check-input" type="checkbox" checked={itemForm.sellableInPos} onChange={(event) => setItemForm({ ...itemForm, sellableInPos: event.target.checked })} />
+                    <span className="form-check-label">Sell in POS</span>
+                  </label>
+                  <label className="form-check">
+                    <input className="form-check-input" type="checkbox" checked={itemForm.taxable} onChange={(event) => setItemForm({ ...itemForm, taxable: event.target.checked })} />
+                    <span className="form-check-label">Taxable</span>
+                  </label>
+                </div>
+                <div className="inventory-two-cols">
                   <TextField label="On Hand" type="number" min="0" step="0.01" value={itemForm.quantityOnHand} required onChange={(quantityOnHand) => setItemForm({ ...itemForm, quantityOnHand })} />
                   <TextField label="Reorder Point" type="number" min="0" step="0.01" value={itemForm.reorderPoint} onChange={(reorderPoint) => setItemForm({ ...itemForm, reorderPoint })} />
                 </div>
@@ -404,6 +432,7 @@ export default function InventoryPage({ refreshShell = () => {} }) {
                 }}>{itemOptions()}</SelectField>
                 <SelectField label="Type" value={movementForm.type} options={meta.movementTypes || ['RECEIVE']} onChange={(type) => setMovementForm({ ...movementForm, type })} />
                 <TextField label="Quantity" type="number" min="0.01" step="0.01" value={movementForm.quantity} required onChange={(quantity) => setMovementForm({ ...movementForm, quantity })} />
+                <TextField label="Serial Number" value={movementForm.serialNumber} onChange={(serialNumber) => setMovementForm({ ...movementForm, serialNumber })} />
                 <div className="inventory-two-cols">
                   <TextField label="From" value={movementForm.fromLocation} onChange={(fromLocation) => setMovementForm({ ...movementForm, fromLocation })} />
                   <TextField label="To" value={movementForm.toLocation} onChange={(toLocation) => setMovementForm({ ...movementForm, toLocation })} />
@@ -436,6 +465,7 @@ export default function InventoryPage({ refreshShell = () => {} }) {
                 <SelectField label="Item" value={assignmentForm.itemId} required onChange={(itemId) => setAssignmentForm({ ...assignmentForm, itemId })}>{itemOptions()}</SelectField>
                 <TextField label="Serial Number" value={assignmentForm.serialNumber} onChange={(serialNumber) => setAssignmentForm({ ...assignmentForm, serialNumber })} />
                 <TextField label="Quantity" type="number" min="0.01" step="0.01" value={assignmentForm.quantity} required onChange={(quantity) => setAssignmentForm({ ...assignmentForm, quantity })} />
+                <SelectField label="Assignee Type" value={assignmentForm.assigneeType} options={meta.assigneeTypes || ['CUSTOMER']} onChange={(assigneeType) => setAssignmentForm({ ...assignmentForm, assigneeType })} />
                 <TextField label="Assigned To" value={assignmentForm.assignedToName} required onChange={(assignedToName) => setAssignmentForm({ ...assignmentForm, assignedToName })} />
                 <div className="inventory-two-cols">
                   <TextField label="Customer ID" value={assignmentForm.customerId} onChange={(customerId) => setAssignmentForm({ ...assignmentForm, customerId })} />
@@ -445,9 +475,12 @@ export default function InventoryPage({ refreshShell = () => {} }) {
                   <TextField label="Ticket ID" value={assignmentForm.ticketId} onChange={(ticketId) => setAssignmentForm({ ...assignmentForm, ticketId })} />
                   <TextField label="Location" value={assignmentForm.location} onChange={(location) => setAssignmentForm({ ...assignmentForm, location })} />
                 </div>
-                <SelectField label="Status" value={assignmentForm.status} options={meta.assignmentStatuses || ['ASSIGNED']} onChange={(status) => setAssignmentForm({ ...assignmentForm, status })} />
                 <div className="inventory-two-cols">
                   <TextField label="Assigned Date" type="date" value={assignmentForm.assignedDate} onChange={(assignedDate) => setAssignmentForm({ ...assignmentForm, assignedDate })} />
+                  <TextField label="Due Date" type="date" value={assignmentForm.dueDate} onChange={(dueDate) => setAssignmentForm({ ...assignmentForm, dueDate })} />
+                </div>
+                <div className="inventory-two-cols">
+                  <SelectField label="Status" value={assignmentForm.status} options={meta.assignmentStatuses || ['ASSIGNED']} onChange={(status) => setAssignmentForm({ ...assignmentForm, status })} />
                   <TextField label="Returned Date" type="date" value={assignmentForm.returnedDate} onChange={(returnedDate) => setAssignmentForm({ ...assignmentForm, returnedDate })} />
                 </div>
                 <TextArea label="Notes" value={assignmentForm.notes} onChange={(notes) => setAssignmentForm({ ...assignmentForm, notes })} />
@@ -493,6 +526,7 @@ function ItemTable({ rows, onEdit, onDelete, compact = false }) {
             {!compact && <th>Category</th>}
             <th>On Hand</th>
             <th>Available</th>
+            {!compact && <th>POS</th>}
             {!compact && <th>Location</th>}
             <th>Status</th>
             <th />
@@ -506,8 +540,9 @@ function ItemTable({ rows, onEdit, onDelete, compact = false }) {
                 <div className="text-muted">{row.sku}</div>
               </td>
               {!compact && <td>{row.category.replaceAll('_', ' ')}</td>}
-              <td>{row.quantityOnHand} {row.unit}</td>
-              <td>{row.availableQuantity} {row.unit}</td>
+              <td>{row.stockTracked ? `${row.quantityOnHand} ${row.unit}` : 'Not tracked'}</td>
+              <td>{row.stockTracked ? `${row.availableQuantity} ${row.unit}` : '-'}</td>
+              {!compact && <td>{row.sellableInPos ? money(row.salePrice) : 'Not sold'}</td>}
               {!compact && <td>{row.location}</td>}
               <td><span className={`badge ${statusClass(row.lowStock ? 'low' : row.status)}`}>{row.lowStock ? 'LOW STOCK' : row.status}</span></td>
               <RowActions row={row} onEdit={onEdit} onDelete={onDelete} />
@@ -537,7 +572,10 @@ function MovementTable({ rows, onEdit, onDelete }) {
         <tbody>
           {rows.map((row) => (
             <tr key={row.id}>
-              <td>{itemLabel(row.item)}</td>
+              <td>
+                <div>{itemLabel(row.item)}</div>
+                {row.serialNumber && <div className="text-muted">{row.serialNumber}</div>}
+              </td>
               <td><span className={`badge ${statusClass(row.type)}`}>{row.type}</span></td>
               <td>{row.quantity} {row.item?.unit}</td>
               <td>{row.referenceType}{row.referenceId ? ` ${row.referenceId}` : ''}</td>
@@ -560,8 +598,10 @@ function AssignmentTable({ rows, onEdit, onDelete, compact = false }) {
           <tr>
             <th>Item</th>
             <th>Assigned To</th>
+            {!compact && <th>Type</th>}
             {!compact && <th>Links</th>}
             <th>Qty</th>
+            {!compact && <th>Due</th>}
             <th>Status</th>
             <th />
           </tr>
@@ -574,8 +614,10 @@ function AssignmentTable({ rows, onEdit, onDelete, compact = false }) {
                 {row.serialNumber && <div className="text-muted">{row.serialNumber}</div>}
               </td>
               <td>{row.assignedToName}</td>
+              {!compact && <td>{row.assigneeType || 'CUSTOMER'}</td>}
               {!compact && <td>{[row.customerId, row.serviceId, row.ticketId].filter(Boolean).join(' / ') || '-'}</td>}
               <td>{row.quantity}</td>
+              {!compact && <td>{row.dueDate || '-'}</td>}
               <td><span className={`badge ${statusClass(row.status)}`}>{row.status}</span></td>
               <RowActions row={row} onEdit={onEdit} onDelete={onDelete} />
             </tr>

@@ -1,8 +1,13 @@
+import base64
+import binascii
 import json
 import os
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -17,6 +22,8 @@ _audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None] | Non
 _settings: dict[str, Any] | None = None
 _port_registry: Callable[[], list[dict[str, Any]]] | None = None
 _locations: list[dict[str, Any]] = []
+_deleted_default_location_fingerprints: set[tuple[str, str, str, str]] = set()
+_system_settings_persistence_loaded = False
 
 
 class SettingsPayload(BaseModel):
@@ -51,6 +58,231 @@ class LocationPatchPayload(BaseModel):
     geocode_source: str | None = None
     raw_geocode: dict[str, Any] | None = None
     notes: str | None = None
+
+
+class LocationBulkDeletePayload(BaseModel):
+    ids: list[str] = Field(default_factory=list, min_length=1)
+
+
+class AvatarUploadPayload(BaseModel):
+    data_url: str = Field(..., max_length=1_500_000)
+    file_name: str | None = None
+    mime_type: str | None = None
+
+
+class AvatarEmotionSettingsPayload(BaseModel):
+    thresholds: dict[str, int | float] | None = None
+    weights: dict[str, int | float] | None = None
+
+
+class OpenAISettingsPayload(BaseModel):
+    api_key: str | None = Field(default=None, max_length=400)
+    clear_api_key: bool = False
+    selected_model: str | None = Field(default=None, max_length=80)
+    reasoning_effort: str | None = Field(default=None, max_length=20)
+    organization_id: str | None = Field(default=None, max_length=200)
+    project_id: str | None = Field(default=None, max_length=200)
+
+
+class OpenAITestPayload(BaseModel):
+    prompt: str = Field(default="Reply with one short sentence confirming this API key works.", max_length=4000)
+    model_id: str | None = Field(default=None, max_length=80)
+    reasoning_effort: str | None = Field(default=None, max_length=20)
+    max_output_tokens: int = Field(default=120, ge=16, le=512)
+
+
+ALLOWED_AVATAR_MIME_TYPES = {
+    "image/png": "PNG",
+    "image/jpeg": "JPG/JPEG",
+    "image/webp": "WebP",
+    "image/gif": "GIF",
+}
+MAX_AVATAR_BYTES = 1_048_576
+AVATAR_GENDERS = [
+    {"id": "male", "label": "Male"},
+    {"id": "female", "label": "Female"},
+]
+AVATAR_EMOTIONS = [
+    {
+        "id": "neutral",
+        "label": "Neutral",
+        "description": "Default avatar for normal customer profile viewing.",
+    },
+    {
+        "id": "happy",
+        "label": "Happy",
+        "description": "Use when service is active, paid, or the account has a good standing signal.",
+    },
+    {
+        "id": "sad",
+        "label": "Sad",
+        "description": "Use for customer concerns, hardship notes, or unresolved support context.",
+    },
+    {
+        "id": "angry",
+        "label": "Angry",
+        "description": "Use for escalated complaints or repeated poor-service reports.",
+    },
+    {
+        "id": "offline",
+        "label": "Offline",
+        "description": "Use when a customer has no connection, an outage, or a suspended line.",
+    },
+    {
+        "id": "support",
+        "label": "Support",
+        "description": "Use when a CSR, dispatcher, or technician is actively helping the customer.",
+    },
+    {
+        "id": "maintenance",
+        "label": "Maintenance",
+        "description": "Use for tower work, scheduled maintenance, repair tickets, or field visits.",
+    },
+    {
+        "id": "warning",
+        "label": "Warning",
+        "description": "Use for billing warnings, overdue notices, signal warnings, or account risk.",
+    },
+    {
+        "id": "resolved",
+        "label": "Resolved",
+        "description": "Use after a complaint, ticket, or installation issue has been resolved.",
+    },
+]
+DEFAULT_AVATAR_EMOTION_SETTINGS = {
+    "thresholds": {
+        "happy_min": 30,
+        "warning_max": -15,
+        "angry_max": -35,
+    },
+    "weights": {
+        "customer_active": 10,
+        "customer_pending": -6,
+        "customer_inactive": -18,
+        "customer_suspended": -35,
+        "service_active": 18,
+        "service_pending": -5,
+        "service_suspended": -38,
+        "service_disconnected": -45,
+        "no_service_account": -10,
+        "open_service_order": -12,
+        "completed_service_order": 8,
+        "overdue_billing": -30,
+        "open_invoice": -10,
+        "urgent_ticket": -35,
+        "high_ticket": -22,
+        "open_ticket": -16,
+        "resolved_ticket": 14,
+    },
+}
+AVATAR_EMOTION_GUIDE = [
+    {
+        "module": "Customer Profiling",
+        "signal": "Customer account status",
+        "description": "Active customers trend happy; pending, inactive, and suspended statuses reduce the mood score.",
+    },
+    {
+        "module": "Service",
+        "signal": "Service account and service order state",
+        "description": "Active internet service improves mood. Suspended, disconnected, or open service orders reduce mood and can show support, maintenance, or offline avatars.",
+    },
+    {
+        "module": "Billing",
+        "signal": "Overdue balance and open invoices",
+        "description": "Overdue balances and unpaid invoices push the customer toward warning or angry behavior.",
+    },
+    {
+        "module": "Ticketing",
+        "signal": "Open, urgent, or resolved tickets",
+        "description": "Open and urgent tickets reduce mood; recently resolved tickets can show the resolved or happy avatar.",
+    },
+]
+
+OPENAI_PRICING_SOURCE = {
+    "label": "OpenAI API pricing",
+    "url": "https://platform.openai.com/docs/pricing/",
+    "checked_at": "2026-05-11",
+    "unit": "USD per 1M tokens, Standard short-context pricing",
+    "note": "Long-context, Batch, Flex, Priority, regional processing, tool, image, audio, and video pricing can differ.",
+}
+OPENAI_REASONING_EFFORTS = [
+    {"id": "none", "label": "None", "description": "Fastest responses for models that support no explicit reasoning."},
+    {"id": "minimal", "label": "Minimal", "description": "Very light reasoning for simple checks and short responses."},
+    {"id": "low", "label": "Low", "description": "Lower latency and lower reasoning token use."},
+    {"id": "medium", "label": "Medium", "description": "Default balance between speed, cost, and reasoning quality."},
+    {"id": "high", "label": "High", "description": "More complete reasoning for complex tasks."},
+    {"id": "xhigh", "label": "Extra high", "description": "Maximum supported reasoning effort for the hardest tasks."},
+]
+OPENAI_MODEL_OPTIONS = [
+    {
+        "id": "gpt-5.5",
+        "label": "GPT-5.5",
+        "category": "Flagship",
+        "recommended_for": "Highest-quality customer workflows, complex automation, tool-heavy assistants, and long-context analysis.",
+        "context_window": "1M",
+        "max_output": "128K",
+        "reasoning": "none, minimal, low, medium, high, xhigh",
+        "reasoning_efforts": ["none", "minimal", "low", "medium", "high", "xhigh"],
+        "prices": {"input": 5.00, "cached_input": 0.50, "output": 30.00},
+    },
+    {
+        "id": "gpt-5.4",
+        "label": "GPT-5.4",
+        "category": "Balanced flagship",
+        "recommended_for": "Balanced quality and cost for production ISP back-office assistance.",
+        "context_window": "1M",
+        "max_output": "128K",
+        "reasoning": "none, minimal, low, medium, high, xhigh",
+        "reasoning_efforts": ["none", "minimal", "low", "medium", "high", "xhigh"],
+        "prices": {"input": 2.50, "cached_input": 0.25, "output": 15.00},
+    },
+    {
+        "id": "gpt-5.4-mini",
+        "label": "GPT-5.4 mini",
+        "category": "Default ISP operations pick",
+        "recommended_for": "Cost-conscious support drafting, summaries, classification, and routine customer/account tasks.",
+        "context_window": "400K",
+        "max_output": "128K",
+        "reasoning": "none, minimal, low, medium, high, xhigh",
+        "reasoning_efforts": ["none", "minimal", "low", "medium", "high", "xhigh"],
+        "prices": {"input": 0.75, "cached_input": 0.075, "output": 4.50},
+    },
+    {
+        "id": "gpt-5.4-nano",
+        "label": "GPT-5.4 nano",
+        "category": "Lowest cost",
+        "recommended_for": "Simple labels, fast checks, short rewrites, and low-cost helper tasks.",
+        "context_window": "400K",
+        "max_output": "128K",
+        "reasoning": "none, minimal, low, medium, high, xhigh",
+        "reasoning_efforts": ["none", "minimal", "low", "medium", "high", "xhigh"],
+        "prices": {"input": 0.20, "cached_input": 0.02, "output": 1.25},
+    },
+    {
+        "id": "gpt-5.5-pro",
+        "label": "GPT-5.5 pro",
+        "category": "Premium reasoning",
+        "recommended_for": "Rare high-stakes analysis where output quality matters more than speed or cost.",
+        "context_window": "1M",
+        "max_output": "128K",
+        "reasoning": "high, xhigh",
+        "reasoning_efforts": ["high", "xhigh"],
+        "prices": {"input": 30.00, "cached_input": None, "output": 180.00},
+    },
+    {
+        "id": "gpt-5.4-pro",
+        "label": "GPT-5.4 pro",
+        "category": "Premium balanced",
+        "recommended_for": "High-effort analysis with lower cost than GPT-5.5 pro.",
+        "context_window": "1M",
+        "max_output": "128K",
+        "reasoning": "high, xhigh",
+        "reasoning_efforts": ["high", "xhigh"],
+        "prices": {"input": 30.00, "cached_input": None, "output": 180.00},
+    },
+]
+DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
+DEFAULT_OPENAI_REASONING_EFFORT = "medium"
 
 
 DEFAULT_LOCATION_SEEDS = [
@@ -134,11 +366,12 @@ def configure_system_settings(
     settings_store: dict[str, Any],
     port_registry: Callable[[], list[dict[str, Any]]],
 ) -> None:
-    global _current_admin, _audit_logger, _settings, _port_registry
+    global _current_admin, _audit_logger, _settings, _port_registry, _system_settings_persistence_loaded
     _current_admin = current_admin
     _audit_logger = audit_logger
     _settings = settings_store
     _port_registry = port_registry
+    _system_settings_persistence_loaded = False
 
 
 def require_admin(authorization: str | None = Header(default=None)):
@@ -151,6 +384,100 @@ def settings_store() -> dict[str, Any]:
     if _settings is None:
         raise HTTPException(status_code=500, detail="System Settings store is not configured")
     return _settings
+
+
+def system_settings_persistence_path() -> Path:
+    return Path(os.getenv("SYSTEM_SETTINGS_DATA_PATH", "/app/data/system_settings.json"))
+
+
+def avatar_persistence_path() -> Path:
+    return system_settings_persistence_path()
+
+
+def read_persisted_system_settings() -> dict[str, Any]:
+    path = system_settings_persistence_path()
+    if not path.exists():
+        return {}
+    try:
+        persisted = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail="Stored System Settings data could not be loaded") from exc
+    if not isinstance(persisted, dict):
+        return {}
+    return persisted
+
+
+def load_persisted_system_settings() -> None:
+    global _system_settings_persistence_loaded
+    if _system_settings_persistence_loaded:
+        return
+    _system_settings_persistence_loaded = True
+    persisted = read_persisted_system_settings()
+    locations = persisted.get("locations")
+    if isinstance(locations, list):
+        _locations[:] = [normalize_persisted_location(location) for location in locations if isinstance(location, dict)]
+    deleted_default_location_fingerprints = persisted.get("deleted_default_location_fingerprints")
+    if isinstance(deleted_default_location_fingerprints, list):
+        _deleted_default_location_fingerprints.clear()
+        for fingerprint in deleted_default_location_fingerprints:
+            normalized = normalize_location_fingerprint(fingerprint)
+            if normalized:
+                _deleted_default_location_fingerprints.add(normalized)
+    avatar = persisted.get("avatar")
+    if isinstance(avatar, dict):
+        settings_store()["avatar"] = avatar
+    openai = persisted.get("openai")
+    if isinstance(openai, dict):
+        settings_store()["openai"] = openai
+
+
+def save_persisted_system_settings(*section_names: str) -> None:
+    path = system_settings_persistence_path()
+    try:
+        persisted = read_persisted_system_settings()
+        store = settings_store()
+        for section_name in section_names:
+            if section_name == "locations":
+                persisted["locations"] = [persisted_location(location) for location in _locations]
+                persisted["deleted_default_location_fingerprints"] = [
+                    list(fingerprint) for fingerprint in sorted(_deleted_default_location_fingerprints)
+                ]
+            else:
+                persisted[section_name] = store.get(section_name, {})
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = path.with_name(f".{path.name}.tmp")
+        temp_path.write_text(
+            json.dumps(persisted, ensure_ascii=True, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        os.replace(temp_path, path)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="System Settings data could not be saved to persistent storage") from exc
+
+
+def save_persisted_avatar_store() -> None:
+    save_persisted_system_settings("avatar")
+
+
+def save_persisted_location_store() -> None:
+    save_persisted_system_settings("locations")
+
+
+def avatar_store() -> dict[str, Any]:
+    load_persisted_system_settings()
+    store = settings_store()
+    avatar = store.setdefault("avatar", {})
+    old_emotions = avatar.setdefault("emotions", {})
+    uploads = avatar.setdefault("uploads", {})
+    for gender in AVATAR_GENDERS:
+        uploads.setdefault(gender["id"], {})
+    for emotion_id, record in list(old_emotions.items()):
+        if isinstance(record, dict) and record.get("data_url"):
+            uploads["male"].setdefault(emotion_id, record)
+    avatar.setdefault("accepted_formats", list(ALLOWED_AVATAR_MIME_TYPES.values()))
+    avatar.setdefault("max_bytes", MAX_AVATAR_BYTES)
+    avatar.setdefault("emotion_settings", default_avatar_emotion_settings())
+    return avatar
 
 
 def add_audit(action: str, target_type: str, target_id: str, details: dict[str, Any] | None, actor: str) -> None:
@@ -166,7 +493,8 @@ def sanitize_summary(value):
     if isinstance(value, dict):
         clean = {}
         for key, item in value.items():
-            if any(word in key.lower() for word in ["password", "secret", "token", "authorization", "csrf"]):
+            key_lower = key.lower()
+            if any(word in key_lower for word in ["password", "secret", "token", "authorization", "csrf", "api_key", "apikey"]):
                 clean[key] = "[REDACTED]"
             else:
                 clean[key] = sanitize_summary(item)
@@ -180,8 +508,232 @@ def sanitize_summary(value):
     return value
 
 
+def normalize_avatar_emotion(emotion_id: str) -> str:
+    normalized = normalize_location_text(emotion_id).lower().replace("_", "-")
+    allowed = {emotion["id"] for emotion in AVATAR_EMOTIONS}
+    if normalized not in allowed:
+        raise HTTPException(status_code=404, detail="Avatar emotion not found")
+    return normalized
+
+
+def normalize_avatar_gender(gender_id: str) -> str:
+    normalized = normalize_location_text(gender_id).lower().replace("_", "-")
+    allowed = {gender["id"] for gender in AVATAR_GENDERS}
+    if normalized not in allowed:
+        raise HTTPException(status_code=404, detail="Avatar gender not found")
+    return normalized
+
+
+def default_avatar_emotion_settings() -> dict[str, Any]:
+    return json.loads(json.dumps(DEFAULT_AVATAR_EMOTION_SETTINGS))
+
+
+def normalized_avatar_emotion_settings(settings: dict[str, Any] | None) -> dict[str, Any]:
+    merged = default_avatar_emotion_settings()
+    if isinstance(settings, dict):
+        for section in ["thresholds", "weights"]:
+            values = settings.get(section)
+            if isinstance(values, dict):
+                for key in merged[section]:
+                    if key in values:
+                        merged[section][key] = clamp_emotion_number(values[key], section)
+    return merged
+
+
+def clamp_emotion_number(value: Any, section: str) -> int:
+    try:
+        numeric = int(round(float(value)))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Emotion guide values must be numeric") from None
+    if section == "thresholds":
+        return max(-100, min(100, numeric))
+    return max(-75, min(75, numeric))
+
+
+def avatar_payload_summary(record: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not record:
+        return None
+    return {
+        "file_name": record.get("file_name"),
+        "mime_type": record.get("mime_type"),
+        "byte_size": record.get("byte_size"),
+        "data_url": record.get("data_url"),
+        "updated_at": record.get("updated_at"),
+        "updated_by_username": record.get("updated_by_username"),
+    }
+
+
+def openai_model_by_id(model_id: str | None) -> dict[str, Any] | None:
+    normalized = normalize_location_text(model_id)
+    return next((model for model in OPENAI_MODEL_OPTIONS if model["id"] == normalized), None)
+
+
+def normalize_openai_model(model_id: str | None) -> str:
+    model = openai_model_by_id(model_id or DEFAULT_OPENAI_MODEL)
+    if model is None:
+        allowed = ", ".join(model["id"] for model in OPENAI_MODEL_OPTIONS)
+        raise HTTPException(status_code=400, detail=f"Unknown OpenAI model. Choose one of: {allowed}")
+    return model["id"]
+
+
+def openai_reasoning_effort_ids_for_model(model_id: str | None) -> list[str]:
+    model = openai_model_by_id(model_id)
+    if not model:
+        return [DEFAULT_OPENAI_REASONING_EFFORT]
+    efforts = model.get("reasoning_efforts")
+    if isinstance(efforts, list) and efforts:
+        return [normalize_location_text(effort).lower() for effort in efforts if normalize_location_text(effort)]
+    reasoning = normalize_location_text(model.get("reasoning"))
+    return [effort.strip().lower() for effort in reasoning.split(",") if effort.strip()] or [DEFAULT_OPENAI_REASONING_EFFORT]
+
+
+def default_openai_reasoning_effort(model_id: str | None) -> str:
+    efforts = openai_reasoning_effort_ids_for_model(model_id)
+    if DEFAULT_OPENAI_REASONING_EFFORT in efforts:
+        return DEFAULT_OPENAI_REASONING_EFFORT
+    return efforts[0]
+
+
+def normalize_openai_reasoning_effort(model_id: str | None, effort_id: str | None, strict: bool = False) -> str:
+    model = normalize_openai_model(model_id)
+    efforts = openai_reasoning_effort_ids_for_model(model)
+    effort = normalize_location_text(effort_id).lower().replace("_", "-")
+    if not effort:
+        return default_openai_reasoning_effort(model)
+    if effort not in efforts:
+        if strict:
+            allowed = ", ".join(efforts)
+            raise HTTPException(status_code=400, detail=f"Unsupported reasoning effort for {model}. Choose one of: {allowed}")
+        return default_openai_reasoning_effort(model)
+    return effort
+
+
+def public_openai_reasoning_efforts(model_id: str | None) -> list[dict[str, Any]]:
+    effort_ids = set(openai_reasoning_effort_ids_for_model(model_id))
+    return [effort for effort in OPENAI_REASONING_EFFORTS if effort["id"] in effort_ids]
+
+
+def mask_openai_api_key(api_key: str | None) -> str | None:
+    value = normalize_location_text(api_key)
+    if not value:
+        return None
+    if len(value) <= 10:
+        return f"{value[:3]}..."
+    return f"{value[:7]}...{value[-4:]}"
+
+
+def openai_store() -> dict[str, Any]:
+    load_persisted_system_settings()
+    store = settings_store()
+    openai = store.setdefault("openai", {})
+    selected_model = normalize_location_text(openai.get("selected_model"))
+    if not openai_model_by_id(selected_model):
+        selected_model = DEFAULT_OPENAI_MODEL
+    openai["selected_model"] = selected_model
+    openai["reasoning_effort"] = normalize_openai_reasoning_effort(selected_model, openai.get("reasoning_effort"))
+    openai.setdefault("organization_id", "")
+    openai.setdefault("project_id", "")
+    return openai
+
+
+def public_openai_settings() -> dict[str, Any]:
+    openai = openai_store()
+    selected_model = normalize_openai_model(openai.get("selected_model"))
+    selected_reasoning_effort = normalize_openai_reasoning_effort(selected_model, openai.get("reasoning_effort"))
+    openai["reasoning_effort"] = selected_reasoning_effort
+    return {
+        "api_key_configured": bool(normalize_location_text(openai.get("api_key"))),
+        "api_key_hint": mask_openai_api_key(openai.get("api_key")),
+        "selected_model": selected_model,
+        "selected_reasoning_effort": selected_reasoning_effort,
+        "selected_model_config": openai_model_by_id(selected_model),
+        "organization_id": normalize_location_text(openai.get("organization_id")),
+        "project_id": normalize_location_text(openai.get("project_id")),
+        "models": OPENAI_MODEL_OPTIONS,
+        "reasoning_efforts": OPENAI_REASONING_EFFORTS,
+        "selected_model_reasoning_efforts": public_openai_reasoning_efforts(selected_model),
+        "pricing_source": OPENAI_PRICING_SOURCE,
+    }
+
+
+def extract_openai_response_text(response_data: dict[str, Any]) -> str:
+    output_text = response_data.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+    output = response_data.get("output")
+    texts: list[str] = []
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    text = part.get("text")
+                    if isinstance(text, str) and text.strip():
+                        texts.append(text.strip())
+    return "\n".join(texts).strip()
+
+
+def public_avatar_settings() -> dict[str, Any]:
+    store = avatar_store()
+    uploaded = store.get("uploads", {})
+    emotion_settings = normalized_avatar_emotion_settings(store.get("emotion_settings"))
+    store["emotion_settings"] = emotion_settings
+    return {
+        "accepted_formats": list(ALLOWED_AVATAR_MIME_TYPES.values()),
+        "accepted_mime_types": list(ALLOWED_AVATAR_MIME_TYPES.keys()),
+        "max_bytes": MAX_AVATAR_BYTES,
+        "genders": AVATAR_GENDERS,
+        "emotion_settings": emotion_settings,
+        "emotion_guide": AVATAR_EMOTION_GUIDE,
+        "emotions": [
+            {
+                **emotion,
+                "avatar": avatar_payload_summary(uploaded.get("male", {}).get(emotion["id"])),
+                "avatars": {
+                    gender["id"]: avatar_payload_summary(uploaded.get(gender["id"], {}).get(emotion["id"]))
+                    for gender in AVATAR_GENDERS
+                },
+            }
+            for emotion in AVATAR_EMOTIONS
+        ],
+    }
+
+
+def decode_avatar_data_url(payload: AvatarUploadPayload) -> tuple[str, bytes]:
+    data_url = payload.data_url.strip()
+    if not data_url.startswith("data:") or ";base64," not in data_url:
+        raise HTTPException(status_code=400, detail="Avatar must be uploaded as a base64 data URL")
+    header, encoded = data_url.split(",", 1)
+    mime_type = header[5:].split(";", 1)[0].strip().lower()
+    if payload.mime_type and payload.mime_type.lower() != mime_type:
+        raise HTTPException(status_code=400, detail="Avatar MIME type does not match the uploaded image")
+    if mime_type not in ALLOWED_AVATAR_MIME_TYPES:
+        raise HTTPException(status_code=400, detail="Accepted avatar formats are PNG, JPG/JPEG, WebP, and GIF")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Avatar image data is not valid base64") from exc
+    if not raw:
+        raise HTTPException(status_code=400, detail="Avatar image is empty")
+    if len(raw) > MAX_AVATAR_BYTES:
+        raise HTTPException(status_code=400, detail="Avatar image must be 1 MB or smaller")
+    return mime_type, raw
+
+
 def public_location(location: dict[str, Any]) -> dict[str, Any]:
-    return dict(location)
+    return {key: value for key, value in location.items() if not key.startswith("_")}
+
+
+def persisted_location(location: dict[str, Any]) -> dict[str, Any]:
+    record = dict(public_location(location))
+    fingerprint = normalize_location_fingerprint(location.get("_default_seed_fingerprint"))
+    if fingerprint:
+        record["_default_seed_fingerprint"] = list(fingerprint)
+    return record
 
 
 def normalize_location_text(value: Any) -> str:
@@ -212,6 +764,54 @@ def location_fingerprint(data: dict[str, Any]) -> tuple[str, str, str, str]:
         normalize_key(data.get("barangay")),
         normalize_key(data.get("province")),
     )
+
+
+def normalize_location_fingerprint(value: Any) -> tuple[str, str, str, str] | None:
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    normalized = tuple(normalize_key(part) for part in value)
+    if not any(normalized):
+        return None
+    return normalized
+
+
+def normalize_persisted_location(location: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(location)
+    fingerprint = normalize_location_fingerprint(normalized.get("_default_seed_fingerprint"))
+    if fingerprint:
+        normalized["_default_seed_fingerprint"] = fingerprint
+    elif "_default_seed_fingerprint" in normalized:
+        normalized.pop("_default_seed_fingerprint", None)
+    return normalized
+
+
+def default_location_seed(barangay: str, municipality: str, province: str) -> dict[str, Any]:
+    return {
+        "location_name": barangay,
+        "address": f"{barangay}, {municipality}, {province}",
+        "municipality": municipality,
+        "barangay": barangay,
+        "province": province,
+        "region": "REGION II",
+        "latitude": None,
+        "longitude": None,
+        "geocode_source": "PRELOADED",
+        "raw_geocode": {},
+        "notes": "Preloaded from existing Customer Profiling service-area values.",
+    }
+
+
+def default_location_fingerprints() -> set[tuple[str, str, str, str]]:
+    return {
+        location_fingerprint(default_location_seed(barangay, municipality, province))
+        for barangay, municipality, province in DEFAULT_LOCATION_SEEDS
+    }
+
+
+def remember_deleted_default_location(location: dict[str, Any]) -> None:
+    fingerprint = location.get("_default_seed_fingerprint") or location_fingerprint(location)
+    if fingerprint in default_location_fingerprints():
+        _deleted_default_location_fingerprints.add(fingerprint)
 
 
 def find_matching_location(data: dict[str, Any]) -> dict[str, Any] | None:
@@ -282,23 +882,17 @@ def merge_missing_location_fields(location: dict[str, Any], data: dict[str, Any]
 
 
 def seed_default_locations() -> None:
+    load_persisted_system_settings()
     for barangay, municipality, province in DEFAULT_LOCATION_SEEDS:
-        seed = {
-            "location_name": barangay,
-            "address": f"{barangay}, {municipality}, {province}",
-            "municipality": municipality,
-            "barangay": barangay,
-            "province": province,
-            "region": "REGION II",
-            "latitude": None,
-            "longitude": None,
-            "geocode_source": "PRELOADED",
-            "raw_geocode": {},
-            "notes": "Preloaded from existing Customer Profiling service-area values.",
-        }
+        seed = default_location_seed(barangay, municipality, province)
+        seed_fingerprint = location_fingerprint(seed)
+        if seed_fingerprint in _deleted_default_location_fingerprints:
+            continue
         if find_matching_location(seed):
             continue
-        _locations.append(location_record_from_data(seed, source="PRELOADED"))
+        location = location_record_from_data(seed, source="PRELOADED")
+        location["_default_seed_fingerprint"] = seed_fingerprint
+        _locations.append(location)
 
 
 def ensure_location_record(data: dict[str, Any], actor: dict[str, Any] | None = None) -> dict[str, Any] | None:
@@ -306,16 +900,19 @@ def ensure_location_record(data: dict[str, Any], actor: dict[str, Any] | None = 
     if data.get("locationId"):
         for location in _locations:
             if location["id"] == data["locationId"]:
-                merge_missing_location_fields(location, data)
+                if merge_missing_location_fields(location, data):
+                    save_persisted_location_store()
                 return public_location(location)
     if not synthesize_address(data):
         return None
     existing = find_matching_location(data)
     if existing:
-        merge_missing_location_fields(existing, data)
+        if merge_missing_location_fields(existing, data):
+            save_persisted_location_store()
         return public_location(existing)
     location = location_record_from_data(data, actor=actor, source=data.get("geocode_source") or "CUSTOMER_PROFILING")
     _locations.insert(0, location)
+    save_persisted_location_store()
     if actor:
         add_audit(
             "system_location_created",
@@ -383,6 +980,221 @@ def ports(admin=Depends(require_admin)):
     return _port_registry()
 
 
+@router.get("/api/system-settings/openai")
+def get_openai_settings(admin=Depends(require_admin)):
+    return public_openai_settings()
+
+
+@router.patch("/api/system-settings/openai")
+def update_openai_settings(payload: OpenAISettingsPayload, admin=Depends(require_admin)):
+    store = openai_store()
+    data = payload.model_dump(exclude_unset=True)
+    if data.get("clear_api_key"):
+        store.pop("api_key", None)
+    elif "api_key" in data:
+        api_key = normalize_location_text(data.get("api_key"))
+        if api_key:
+            if not api_key.startswith("sk-"):
+                raise HTTPException(status_code=400, detail="OpenAI API key should start with sk-")
+            store["api_key"] = api_key
+
+    model_id = normalize_openai_model(store.get("selected_model"))
+    if "selected_model" in data and data.get("selected_model") is not None:
+        model_id = normalize_openai_model(data.get("selected_model"))
+        store["selected_model"] = model_id
+    if "reasoning_effort" in data and data.get("reasoning_effort") is not None:
+        store["reasoning_effort"] = normalize_openai_reasoning_effort(model_id, data.get("reasoning_effort"), strict=True)
+    else:
+        store["reasoning_effort"] = normalize_openai_reasoning_effort(model_id, store.get("reasoning_effort"))
+    if "organization_id" in data:
+        store["organization_id"] = normalize_location_text(data.get("organization_id"))
+    if "project_id" in data:
+        store["project_id"] = normalize_location_text(data.get("project_id"))
+
+    save_persisted_system_settings("openai")
+    add_audit(
+        "system_openai_settings_updated",
+        "SystemOpenAI",
+        "openai",
+        {
+            "selected_model": store.get("selected_model"),
+            "reasoning_effort": store.get("reasoning_effort"),
+            "api_key_configured": bool(normalize_location_text(store.get("api_key"))),
+            "organization_id_configured": bool(normalize_location_text(store.get("organization_id"))),
+            "project_id_configured": bool(normalize_location_text(store.get("project_id"))),
+        },
+        admin["username"],
+    )
+    return public_openai_settings()
+
+
+@router.post("/api/system-settings/openai/test")
+def test_openai_settings(payload: OpenAITestPayload, admin=Depends(require_admin)):
+    store = openai_store()
+    api_key = normalize_location_text(store.get("api_key"))
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Save an OpenAI API key before running a test")
+
+    model_id = normalize_openai_model(payload.model_id or store.get("selected_model"))
+    reasoning_effort = normalize_openai_reasoning_effort(
+        model_id,
+        payload.reasoning_effort or store.get("reasoning_effort"),
+        strict=True,
+    )
+    prompt = normalize_location_text(payload.prompt)
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Test prompt is required")
+
+    request_body = {
+        "model": model_id,
+        "reasoning": {"effort": reasoning_effort},
+        "input": prompt,
+        "max_output_tokens": payload.max_output_tokens,
+    }
+    request_headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "User-Agent": "3JMain/0.1 system-settings-openai-test",
+    }
+    organization_id = normalize_location_text(store.get("organization_id"))
+    project_id = normalize_location_text(store.get("project_id"))
+    if organization_id:
+        request_headers["OpenAI-Organization"] = organization_id
+    if project_id:
+        request_headers["OpenAI-Project"] = project_id
+
+    started_at = time.perf_counter()
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/responses",
+        data=json.dumps(request_body).encode("utf-8"),
+        headers=request_headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            response_data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raw_body = exc.read().decode("utf-8", errors="replace")
+        try:
+            error_body = json.loads(raw_body)
+            message = error_body.get("error", {}).get("message") or error_body.get("detail") or raw_body
+        except json.JSONDecodeError:
+            message = raw_body or str(exc)
+        raise HTTPException(status_code=400, detail=f"OpenAI test failed: {message}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"OpenAI test failed: {exc}") from exc
+
+    latency_ms = int(round((time.perf_counter() - started_at) * 1000))
+    output_text = extract_openai_response_text(response_data)
+    add_audit(
+        "system_openai_tested",
+        "SystemOpenAI",
+        model_id,
+        {"model": model_id, "reasoning_effort": reasoning_effort, "latency_ms": latency_ms, "usage": sanitize_summary(response_data.get("usage") or {})},
+        admin["username"],
+    )
+    return {
+        "status": "ok",
+        "model": model_id,
+        "reasoning_effort": reasoning_effort,
+        "latency_ms": latency_ms,
+        "response_id": response_data.get("id"),
+        "output_text": output_text,
+        "usage": response_data.get("usage"),
+    }
+
+
+@router.get("/api/system-settings/avatars")
+def get_avatars(admin=Depends(require_admin)):
+    return public_avatar_settings()
+
+
+@router.patch("/api/system-settings/avatar-emotion-settings")
+def update_avatar_emotion_settings(payload: AvatarEmotionSettingsPayload, admin=Depends(require_admin)):
+    store = avatar_store()
+    current = normalized_avatar_emotion_settings(store.get("emotion_settings"))
+    incoming = payload.model_dump(exclude_unset=True)
+    for section in ["thresholds", "weights"]:
+        values = incoming.get(section)
+        if not isinstance(values, dict):
+            continue
+        for key, value in values.items():
+            if key not in current[section]:
+                raise HTTPException(status_code=400, detail=f"Unknown avatar emotion {section} key: {key}")
+            current[section][key] = clamp_emotion_number(value, section)
+    store["emotion_settings"] = current
+    save_persisted_avatar_store()
+    add_audit(
+        "system_avatar_emotion_settings_updated",
+        "SystemAvatar",
+        "emotion-settings",
+        current,
+        admin["username"],
+    )
+    return public_avatar_settings()
+
+
+@router.put("/api/system-settings/avatars/{gender_id}/{emotion_id}")
+def upload_gender_avatar(gender_id: str, emotion_id: str, payload: AvatarUploadPayload, admin=Depends(require_admin)):
+    gender = normalize_avatar_gender(gender_id)
+    emotion = normalize_avatar_emotion(emotion_id)
+    mime_type, raw = decode_avatar_data_url(payload)
+    file_name = normalize_location_text(payload.file_name) or f"{gender}-{emotion}-avatar"
+    record = {
+        "file_name": file_name[:180],
+        "mime_type": mime_type,
+        "byte_size": len(raw),
+        "data_url": payload.data_url.strip(),
+        "updated_at": now_iso(),
+        "updated_by_admin_id": admin.get("id"),
+        "updated_by_username": admin.get("username"),
+    }
+    store = avatar_store()
+    store["uploads"][gender][emotion] = record
+    if gender == "male":
+        store["emotions"][emotion] = record
+    save_persisted_avatar_store()
+    add_audit(
+        "system_avatar_uploaded",
+        "SystemAvatar",
+        f"{gender}:{emotion}",
+        {"gender": gender, "emotion": emotion, "file_name": record["file_name"], "mime_type": mime_type, "byte_size": len(raw)},
+        admin["username"],
+    )
+    return public_avatar_settings()
+
+
+@router.delete("/api/system-settings/avatars/{gender_id}/{emotion_id}")
+def delete_gender_avatar(gender_id: str, emotion_id: str, admin=Depends(require_admin)):
+    gender = normalize_avatar_gender(gender_id)
+    emotion = normalize_avatar_emotion(emotion_id)
+    store = avatar_store()
+    removed = store["uploads"][gender].pop(emotion, None)
+    if removed is None:
+        raise HTTPException(status_code=404, detail="Avatar image not found")
+    if gender == "male":
+        store["emotions"].pop(emotion, None)
+    save_persisted_avatar_store()
+    add_audit(
+        "system_avatar_deleted",
+        "SystemAvatar",
+        f"{gender}:{emotion}",
+        {"gender": gender, "emotion": emotion, "file_name": removed.get("file_name"), "mime_type": removed.get("mime_type")},
+        admin["username"],
+    )
+    return public_avatar_settings()
+
+
+@router.put("/api/system-settings/avatars/{emotion_id}")
+def upload_avatar(emotion_id: str, payload: AvatarUploadPayload, admin=Depends(require_admin)):
+    return upload_gender_avatar("male", emotion_id, payload, admin)
+
+
+@router.delete("/api/system-settings/avatars/{emotion_id}")
+def delete_avatar(emotion_id: str, admin=Depends(require_admin)):
+    return delete_gender_avatar("male", emotion_id, admin)
+
+
 @router.get("/api/system-settings/locations")
 @router.get("/api/locations")
 def list_locations(admin=Depends(require_admin)):
@@ -430,6 +1242,41 @@ def create_location(payload: LocationPayload, admin=Depends(require_admin)):
     return location
 
 
+@router.post("/api/system-settings/locations/bulk-delete")
+@router.post("/api/locations/bulk-delete")
+def bulk_delete_locations(payload: LocationBulkDeletePayload, admin=Depends(require_admin)):
+    seed_default_locations()
+    location_ids = []
+    seen_ids = set()
+    for raw_location_id in payload.ids:
+        location_id = normalize_location_text(raw_location_id)
+        if location_id and location_id not in seen_ids:
+            location_ids.append(location_id)
+            seen_ids.add(location_id)
+    if not location_ids:
+        raise HTTPException(status_code=400, detail="At least one location id is required")
+
+    selected_ids = set(location_ids)
+    deleted_locations = [location for location in _locations if location["id"] in selected_ids]
+    if not deleted_locations:
+        raise HTTPException(status_code=404, detail="No matching locations found")
+
+    deleted_ids = {location["id"] for location in deleted_locations}
+    for location in deleted_locations:
+        remember_deleted_default_location(location)
+    _locations[:] = [location for location in _locations if location["id"] not in deleted_ids]
+    save_persisted_location_store()
+    missing_ids = [location_id for location_id in location_ids if location_id not in deleted_ids]
+    add_audit(
+        "system_locations_bulk_deleted",
+        "SystemLocation",
+        "bulk",
+        {"deleted_ids": list(deleted_ids), "deleted_count": len(deleted_ids), "missing_ids": missing_ids},
+        admin["username"],
+    )
+    return {"status": "ok", "deleted": len(deleted_ids), "missing": missing_ids}
+
+
 @router.patch("/api/system-settings/locations/{location_id}")
 @router.patch("/api/locations/{location_id}")
 def update_location(location_id: str, payload: LocationPatchPayload, admin=Depends(require_admin)):
@@ -453,6 +1300,7 @@ def update_location(location_id: str, payload: LocationPatchPayload, admin=Depen
         raise HTTPException(status_code=400, detail="Address or location detail is required")
     location.update(candidate)
     location["updated_at"] = now_iso()
+    save_persisted_location_store()
     add_audit(
         "system_location_updated",
         "SystemLocation",
@@ -467,7 +1315,9 @@ def update_location(location_id: str, payload: LocationPatchPayload, admin=Depen
 @router.delete("/api/locations/{location_id}")
 def delete_location(location_id: str, admin=Depends(require_admin)):
     location = find_location(location_id)
+    remember_deleted_default_location(location)
     _locations.remove(location)
+    save_persisted_location_store()
     add_audit(
         "system_location_deleted",
         "SystemLocation",

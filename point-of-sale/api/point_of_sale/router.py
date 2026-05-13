@@ -5,6 +5,14 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
+try:
+    from inventory import get_pos_catalog_item, list_pos_catalog_items, record_pos_sale_movements, validate_pos_sale_inventory
+except ImportError:  # Allows module-local checks before app-shell adds inventory/api to PYTHONPATH.
+    get_pos_catalog_item = None
+    list_pos_catalog_items = None
+    record_pos_sale_movements = None
+    validate_pos_sale_inventory = None
+
 
 router = APIRouter(prefix="/api/point-of-sale", tags=["point-of-sale"])
 
@@ -27,8 +35,8 @@ PAYMENT_METHODS = ["CASH", "GCASH", "CARD", "BANK_TRANSFER", "CHECK", "OTHER"]
 DEPENDENCIES = [
     {
         "module": "Inventory",
-        "status": "placeholder",
-        "note": "POS uses local catalog/stock fields until Inventory exposes item and stock movement APIs.",
+        "status": "connected",
+        "note": "Inventory is the canonical item master. POS reads sellable inventory items and posts stock movements on checkout/void.",
     },
     {
         "module": "Customer Profiling",
@@ -67,6 +75,7 @@ class SessionPayload(BaseModel):
 
 class SaleLinePayload(BaseModel):
     itemId: str | None = None
+    serialNumber: str | None = None
     description: str | None = None
     quantity: float | None = Field(default=None, gt=0)
     unitPrice: float | None = Field(default=None, ge=0)
@@ -133,6 +142,21 @@ def normalize_upper(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
+def admin_username(admin: dict[str, Any]) -> str:
+    username = str(admin.get("username") or admin.get("email") or admin.get("id") or "pos-user").strip()
+    return username or "pos-user"
+
+
+def admin_display_name(admin: dict[str, Any]) -> str:
+    display_name = str(
+        admin.get("fullName")
+        or admin.get("full_name")
+        or admin.get("name")
+        or admin_username(admin)
+    ).strip()
+    return display_name or admin_username(admin)
+
+
 def money(value: Any) -> float:
     return round(float(value or 0), 2)
 
@@ -165,6 +189,12 @@ def find_item(item_id: str) -> dict[str, Any]:
 
 def find_session(session_id: str) -> dict[str, Any]:
     return find_row(cashier_sessions, session_id, "Cashier session")
+
+
+def find_session_or_none(session_id: str | None) -> dict[str, Any] | None:
+    if not session_id:
+        return None
+    return next((session for session in visible(cashier_sessions) if session["id"] == session_id), None)
 
 
 def find_sale(sale_id: str) -> dict[str, Any]:
@@ -217,6 +247,56 @@ def search_customers(search: str = "") -> list[dict[str, Any]]:
     return [customer_snapshot(customer) for customer in _customer_searcher(search)]
 
 
+def inventory_connected() -> bool:
+    return get_pos_catalog_item is not None and list_pos_catalog_items is not None
+
+
+def pos_catalog_items(search: str = "", status: str = "") -> list[dict[str, Any]]:
+    if inventory_connected():
+        rows = list_pos_catalog_items(search=search, status=status or "ACTIVE")
+        if status:
+            return [row for row in rows if normalize_upper(row.get("status")) == normalize_upper(status)]
+        return rows
+    return filter_rows(visible(items), search, status)
+
+
+def pos_catalog_item(item_id: str) -> dict[str, Any]:
+    if inventory_connected():
+        return get_pos_catalog_item(item_id)
+    return {
+        **find_item(item_id),
+        "unit": "pcs",
+        "availableQuantity": find_item(item_id)["stockOnHand"],
+        "stockTracked": True,
+        "sellableInPos": True,
+    }
+
+
+def validate_sale_inventory(line_items: list[dict[str, Any]], released_line_items: list[dict[str, Any]] | None = None) -> None:
+    if validate_pos_sale_inventory is not None:
+        validate_pos_sale_inventory(line_items, released_line_items=released_line_items)
+        return
+    required_by_item: dict[str, float] = {}
+    released_by_item: dict[str, float] = {}
+    for line in released_line_items or []:
+        if line.get("itemId"):
+            released_by_item[line["itemId"]] = money(released_by_item.get(line["itemId"], 0) + money(line.get("quantity")))
+    for line in line_items:
+        if line.get("itemId"):
+            required_by_item[line["itemId"]] = money(required_by_item.get(line["itemId"], 0) + money(line.get("quantity")))
+    for item_id, required in required_by_item.items():
+        item = find_item(item_id)
+        if required > money(item["stockOnHand"] + released_by_item.get(item_id, 0)):
+            raise HTTPException(status_code=400, detail=f"Not enough stock for {item['sku']}")
+
+
+def post_sale_inventory_movements(line_items: list[dict[str, Any]], sale_reference: str, receipt_number: str, actor: str, reverse: bool = False) -> list[dict[str, Any]]:
+    if record_pos_sale_movements is not None:
+        return record_pos_sale_movements(line_items, sale_reference, receipt_number, actor, reverse=reverse)
+    adjust_stock(line_items, 1 if reverse else -1)
+    return []
+
+
 def normalize_item_payload(payload: ItemPayload, current: dict[str, Any] | None = None) -> dict[str, Any]:
     data = payload.model_dump(exclude_unset=True)
     record = dict(current or {})
@@ -259,6 +339,32 @@ def normalize_session_payload(payload: SessionPayload, current: dict[str, Any] |
     return record
 
 
+def user_register_session(admin: dict[str, Any]) -> dict[str, Any]:
+    username = admin_username(admin)
+    for session in visible(cashier_sessions):
+        if session.get("systemManaged") and session.get("cashierUsername") == username and session["status"] == "OPEN":
+            return session
+    timestamp = now_iso()
+    session = {
+        "id": str(uuid4()),
+        "sessionNumber": next_number("POS", cashier_sessions),
+        "cashierName": admin_display_name(admin),
+        "cashierUsername": username,
+        "registerName": "POS Register",
+        "openingFloat": 0,
+        "openedAt": today_iso(),
+        "closingCash": 0,
+        "status": "OPEN",
+        "notes": "System-managed POS user register.",
+        "systemManaged": True,
+        "createdAt": timestamp,
+        "updatedAt": timestamp,
+        "deletedAt": None,
+    }
+    cashier_sessions.append(session)
+    return session
+
+
 def line_total(line: dict[str, Any]) -> float:
     return money(money(line.get("quantity", 0)) * money(line.get("unitPrice", 0)) - money(line.get("discountAmount", 0)))
 
@@ -267,7 +373,7 @@ def normalize_sale_lines(lines: list[SaleLinePayload] | None) -> list[dict[str, 
     normalized = []
     for line_payload in lines or []:
         line = line_payload.model_dump(exclude_unset=True)
-        item = find_item(line.get("itemId")) if line.get("itemId") else None
+        item = pos_catalog_item(line.get("itemId")) if line.get("itemId") else None
         description = str(line.get("description") or (item["name"] if item else "")).strip()
         if not description:
             raise HTTPException(status_code=400, detail="Sale line description is required")
@@ -283,10 +389,13 @@ def normalize_sale_lines(lines: list[SaleLinePayload] | None) -> list[dict[str, 
                 "id": str(uuid4()),
                 "itemId": item["id"] if item else None,
                 "sku": item["sku"] if item else "",
+                "serialNumber": line.get("serialNumber") or "",
                 "description": description,
                 "quantity": quantity,
                 "unitPrice": unit_price,
                 "discountAmount": discount,
+                "unit": item.get("unit", "") if item else "",
+                "stockTracked": item.get("stockTracked", False) if item else False,
                 "amount": line_total({"quantity": quantity, "unitPrice": unit_price, "discountAmount": discount}),
             }
         )
@@ -312,6 +421,10 @@ def sale_payments(sale_id: str) -> list[dict[str, Any]]:
 
 
 def sale_summary(sale: dict[str, Any]) -> dict[str, Any]:
+    if not sale.get("cashierName"):
+        session = find_session_or_none(sale.get("sessionId"))
+        sale["cashierName"] = session.get("cashierName", "POS user") if session else "POS user"
+        sale["cashierUsername"] = session.get("cashierUsername", sale["cashierName"]) if session else sale["cashierName"]
     subtotal = money(sum(line.get("amount", line_total(line)) for line in sale.get("lineItems", [])))
     discount = money(sale.get("discountAmount", 0))
     tax = money(sale.get("taxAmount", 0))
@@ -380,49 +493,31 @@ def normalize_payment_payload(payload: PaymentPayload, current: dict[str, Any] |
 
 
 def seed_point_of_sale_data() -> None:
-    if items:
-        return
     timestamp = now_iso()
-    seed_rows = [
-        ("RTR-001", "Home WiFi Router", "Network Equipment", 1450, 10, 2),
-        ("ONU-001", "Fiber ONU", "Network Equipment", 1650, 8, 2),
-        ("CAB-100", "Drop Cable per Meter", "Installation Materials", 18, 500, 100),
-        ("SVC-INSTALL", "Standard Installation Fee", "Services", 1500, 9999, 0),
-    ]
-    for sku, name, category, price, stock, reorder in seed_rows:
-        items.append(
-            {
-                "id": str(uuid4()),
-                "sku": sku,
-                "name": name,
-                "category": category,
-                "unitPrice": money(price),
-                "stockOnHand": money(stock),
-                "reorderPoint": money(reorder),
-                "taxable": False,
-                "status": "ACTIVE",
-                "notes": "Seed item for first working POS shell.",
-                "createdAt": timestamp,
-                "updatedAt": timestamp,
-                "deletedAt": None,
-            }
-        )
-    cashier_sessions.append(
-        {
-            "id": str(uuid4()),
-            "sessionNumber": next_number("SHIFT", cashier_sessions),
-            "cashierName": "Admin Cashier",
-            "registerName": "Main Counter",
-            "openingFloat": 1000,
-            "openedAt": today_iso(),
-            "closingCash": 0,
-            "status": "OPEN",
-            "notes": "Seed open cashier session.",
-            "createdAt": timestamp,
-            "updatedAt": timestamp,
-            "deletedAt": None,
-        }
-    )
+    if not inventory_connected() and not items:
+        seed_rows = [
+            ("RTR-001", "Home WiFi Router", "Network Equipment", 1450, 10, 2),
+            ("CAB-100", "Drop Cable per Meter", "Installation Materials", 18, 500, 100),
+            ("SVC-INSTALL", "Standard Installation Fee", "Services", 1500, 9999, 0),
+        ]
+        for sku, name, category, price, stock, reorder in seed_rows:
+            items.append(
+                {
+                    "id": str(uuid4()),
+                    "sku": sku,
+                    "name": name,
+                    "category": category,
+                    "unitPrice": money(price),
+                    "stockOnHand": money(stock),
+                    "reorderPoint": money(reorder),
+                    "taxable": False,
+                    "status": "ACTIVE",
+                    "notes": "Fallback seed item used only when Inventory is unavailable.",
+                    "createdAt": timestamp,
+                    "updatedAt": timestamp,
+                    "deletedAt": None,
+                }
+            )
 
 
 def point_of_sale_metrics() -> dict[str, float | int]:
@@ -430,12 +525,12 @@ def point_of_sale_metrics() -> dict[str, float | int]:
     today = today_iso()
     active_sales = [sale_summary(sale) for sale in visible(sales) if sale["status"] != "VOID"]
     today_sales = [sale for sale in active_sales if sale["saleDate"] == today]
+    catalog_items = pos_catalog_items(status="ACTIVE")
     return {
         "today_sales": money(sum(sale["total"] for sale in today_sales)),
         "transactions": len(today_sales),
-        "open_shift": sum(1 for session in visible(cashier_sessions) if session["status"] == "OPEN"),
-        "active_items": sum(1 for item in visible(items) if item["status"] == "ACTIVE"),
-        "low_stock": sum(1 for item in visible(items) if item["stockOnHand"] <= item["reorderPoint"]),
+        "active_items": len(catalog_items),
+        "low_stock": sum(1 for item in catalog_items if item.get("stockTracked") and item["stockOnHand"] <= item["reorderPoint"]),
     }
 
 
@@ -454,6 +549,8 @@ def filter_rows(rows: list[dict[str, Any]], search: str = "", status: str = "") 
             or needle in str(row.get("saleNumber", "")).lower()
             or needle in str(row.get("receiptNumber", "")).lower()
             or needle in str(row.get("paymentNumber", "")).lower()
+            or needle in str(row.get("cashierName", "")).lower()
+            or needle in str(row.get("cashierUsername", "")).lower()
             or needle in str(row.get("customer", {}).get("name", "")).lower()
         ]
     return filtered
@@ -480,24 +577,24 @@ def pos_customers(search: str = "", admin=Depends(require_admin)):
 def pos_overview(admin=Depends(require_admin)):
     seed_point_of_sale_data()
     sale_rows = [sale_summary(sale) for sale in visible(sales)]
+    catalog_items = pos_catalog_items(status="ACTIVE")
     return {
         "metrics": point_of_sale_metrics(),
-        "dependencies": DEPENDENCIES,
         "recentSales": sorted(sale_rows, key=lambda sale: sale["createdAt"], reverse=True)[:5],
-        "lowStock": [item for item in visible(items) if item["stockOnHand"] <= item["reorderPoint"]][:5],
-        "openSessions": [session_summary(session) for session in visible(cashier_sessions) if session["status"] == "OPEN"],
+        "lowStock": [item for item in catalog_items if item.get("stockTracked") and item["stockOnHand"] <= item["reorderPoint"]][:5],
     }
 
 
 @router.get("/items")
 def list_items(search: str = "", status: str = "", admin=Depends(require_admin)):
     seed_point_of_sale_data()
-    rows = filter_rows(visible(items), search, status)
-    return sorted(rows, key=lambda row: row["name"])
+    return pos_catalog_items(search, status)
 
 
 @router.post("/items")
 def create_item(payload: ItemPayload, admin=Depends(require_admin)):
+    if inventory_connected():
+        raise HTTPException(status_code=405, detail="Manage POS sellable items in Inventory")
     record = normalize_item_payload(payload)
     if any(item["sku"] == record["sku"] and not item.get("deletedAt") for item in items):
         raise HTTPException(status_code=400, detail="SKU already exists")
@@ -510,6 +607,8 @@ def create_item(payload: ItemPayload, admin=Depends(require_admin)):
 
 @router.patch("/items/{item_id}")
 def update_item(item_id: str, payload: ItemPayload, admin=Depends(require_admin)):
+    if inventory_connected():
+        raise HTTPException(status_code=405, detail="Manage POS sellable items in Inventory")
     current = find_item(item_id)
     record = normalize_item_payload(payload, current)
     if record["sku"] != current["sku"] and any(item["sku"] == record["sku"] and not item.get("deletedAt") for item in items):
@@ -522,6 +621,8 @@ def update_item(item_id: str, payload: ItemPayload, admin=Depends(require_admin)
 
 @router.delete("/items/{item_id}")
 def delete_item(item_id: str, admin=Depends(require_admin)):
+    if inventory_connected():
+        raise HTTPException(status_code=405, detail="Manage POS sellable items in Inventory")
     current = find_item(item_id)
     current["status"] = "ARCHIVED"
     current["deletedAt"] = now_iso()
@@ -540,7 +641,10 @@ def list_sessions(search: str = "", status: str = "", admin=Depends(require_admi
 @router.post("/sessions")
 def create_session(payload: SessionPayload, admin=Depends(require_admin)):
     record = normalize_session_payload(payload)
-    if record["status"] == "OPEN" and any(session["status"] == "OPEN" and not session.get("deletedAt") for session in cashier_sessions):
+    if record["status"] == "OPEN" and any(
+        session["status"] == "OPEN" and not session.get("systemManaged") and not session.get("deletedAt")
+        for session in cashier_sessions
+    ):
         raise HTTPException(status_code=400, detail="Close the current open session before opening another")
     timestamp = now_iso()
     session = {"id": str(uuid4()), "sessionNumber": next_number("SHIFT", cashier_sessions), "createdAt": timestamp, "updatedAt": timestamp, "deletedAt": None, **record}
@@ -596,7 +700,8 @@ def list_sales(search: str = "", status: str = "", admin=Depends(require_admin))
 
 @router.post("/sales")
 def create_sale(payload: SalePayload, admin=Depends(require_admin)):
-    session = find_session(payload.sessionId or "")
+    seed_point_of_sale_data()
+    session = find_session(payload.sessionId) if payload.sessionId else user_register_session(admin)
     if session["status"] != "OPEN":
         raise HTTPException(status_code=400, detail="Sales can only be posted to an open cashier session")
     status = normalize_upper(payload.status or "COMPLETED")
@@ -605,19 +710,29 @@ def create_sale(payload: SalePayload, admin=Depends(require_admin)):
     if status == "VOID":
         raise HTTPException(status_code=400, detail="New sales cannot be created as void")
     line_items = normalize_sale_lines(payload.lineItems)
-    adjust_stock(line_items, -1)
+    validate_sale_inventory(line_items)
     customer = resolve_customer(payload.customerId)
     timestamp = now_iso()
+    sale_id = str(uuid4())
+    sale_number = next_number("SALE", sales)
+    receipt_number = next_number("OR", sales)
+    actor_username = admin_username(admin)
+    actor_name = admin_display_name(admin)
+    movement_records = post_sale_inventory_movements(line_items, sale_number, receipt_number, actor_username)
     sale = {
-        "id": str(uuid4()),
-        "saleNumber": next_number("SALE", sales),
-        "receiptNumber": next_number("OR", sales),
+        "id": sale_id,
+        "saleNumber": sale_number,
+        "receiptNumber": receipt_number,
         "sessionId": session["id"],
         "sessionNumber": session["sessionNumber"],
+        "cashierUsername": actor_username,
+        "cashierName": actor_name,
+        "userId": admin.get("id", ""),
         "customerId": customer["id"] if customer else None,
         "customer": customer,
         "saleDate": parse_day(payload.saleDate, "saleDate").isoformat(),
         "lineItems": line_items,
+        "inventoryMovementIds": [movement["id"] for movement in movement_records],
         "discountAmount": money(payload.discountAmount),
         "taxAmount": money(payload.taxAmount),
         "status": status,
@@ -640,7 +755,7 @@ def create_sale(payload: SalePayload, admin=Depends(require_admin)):
                     **payment_record,
                 }
             )
-    add_audit("pos_sale_created", "POSSale", sale["id"], {"saleNumber": sale["saleNumber"]}, admin["username"])
+    add_audit("pos_sale_created", "POSSale", sale["id"], {"saleNumber": sale["saleNumber"]}, actor_username)
     return sale_summary(sale)
 
 
@@ -661,10 +776,12 @@ def update_sale(sale_id: str, payload: SalePayload, admin=Depends(require_admin)
         current["customerId"] = customer["id"] if customer else None
         current["customer"] = customer
     if "lineItems" in data and data["lineItems"] is not None:
-        adjust_stock(current["lineItems"], 1)
         next_lines = normalize_sale_lines(payload.lineItems)
-        adjust_stock(next_lines, -1)
+        validate_sale_inventory(next_lines, released_line_items=current["lineItems"])
+        reverse_movements = post_sale_inventory_movements(current["lineItems"], current["saleNumber"], current["receiptNumber"], admin["username"], reverse=True)
+        next_movements = post_sale_inventory_movements(next_lines, current["saleNumber"], current["receiptNumber"], admin["username"])
         current["lineItems"] = next_lines
+        current["inventoryMovementIds"] = [*(current.get("inventoryMovementIds") or []), *[movement["id"] for movement in reverse_movements], *[movement["id"] for movement in next_movements]]
     if "saleDate" in data and data["saleDate"] is not None:
         current["saleDate"] = parse_day(data["saleDate"], "saleDate").isoformat()
     for field_name in ["discountAmount", "taxAmount"]:
@@ -675,7 +792,8 @@ def update_sale(sale_id: str, payload: SalePayload, admin=Depends(require_admin)
         if status not in SALE_STATUSES:
             raise HTTPException(status_code=400, detail="Invalid sale status")
         if status == "VOID":
-            adjust_stock(current["lineItems"], 1)
+            reverse_movements = post_sale_inventory_movements(current["lineItems"], current["saleNumber"], current["receiptNumber"], admin["username"], reverse=True)
+            current["inventoryMovementIds"] = [*(current.get("inventoryMovementIds") or []), *[movement["id"] for movement in reverse_movements]]
             for payment in payments:
                 if payment["saleId"] == sale_id and not payment.get("deletedAt"):
                     payment["status"] = "VOID"
@@ -692,7 +810,8 @@ def update_sale(sale_id: str, payload: SalePayload, admin=Depends(require_admin)
 def delete_sale(sale_id: str, admin=Depends(require_admin)):
     current = find_sale(sale_id)
     if current["status"] != "VOID":
-        adjust_stock(current["lineItems"], 1)
+        reverse_movements = post_sale_inventory_movements(current["lineItems"], current["saleNumber"], current["receiptNumber"], admin["username"], reverse=True)
+        current["inventoryMovementIds"] = [*(current.get("inventoryMovementIds") or []), *[movement["id"] for movement in reverse_movements]]
     current["status"] = "VOID"
     current["deletedAt"] = now_iso()
     current["updatedAt"] = current["deletedAt"]

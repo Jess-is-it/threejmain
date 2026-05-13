@@ -67,6 +67,6 @@ Recommended rules:
 
 ## Codex Branches
 
-Codex branches under `codex/*` do not need branch protection because they are temporary work branches.
+Codex branches under `codex/*` are no longer part of the normal workflow. If the user explicitly requests an isolated experiment branch, it does not need branch protection because it is temporary and should not be promoted directly to production.
 
 If GitHub CLI is installed and authenticated, branch protection can be inspected with `gh api`. Do not apply remote branch protection changes unless the user explicitly approves them.

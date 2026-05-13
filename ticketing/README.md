@@ -30,6 +30,7 @@ Implemented in this module:
 - Compact priority-coded ticket cards that show status, ticket number, subject, and customer label for quick scanning.
 - Right-side ticket detail drawer opened by clicking a card, with full ticket information, edit/delete actions, resolution details, and notes.
 - Customer Profiling lookup hooks with manual requestor/contact fallback.
+- Customer avatar behavior using System Settings `CustomerEmotionAvatar`; urgent/open/resolved tickets influence the displayed customer mood.
 - Free-text assignee placeholder until Account Admin staff records are integrated.
 - Ticket notes with internal/customer-visible visibility in the right-side ticket detail drawer.
 - Metrics for total tickets, open tickets, urgent tickets, field jobs, and SLA risks.

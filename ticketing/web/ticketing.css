@@ -172,8 +172,11 @@
 }
 
 .ticketing-page .ticketing-customer {
+  align-items: center;
   color: var(--tblr-muted);
+  display: flex;
   font-size: 0.82rem;
+  gap: 0.5rem;
   line-height: 1.35;
 }
 

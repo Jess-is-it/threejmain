@@ -15,11 +15,12 @@ assignments: list[dict[str, Any]] = []
 _current_admin: Callable[[str | None], dict[str, Any]] | None = None
 _audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None] | None = None
 
-ITEM_CATEGORIES = ["ROUTER", "ONU_CPE", "CABLE", "INSTALLATION_MATERIAL", "CONSUMABLE", "TOOL", "OTHER"]
-TRACKING_TYPES = ["STOCK", "SERIALIZED"]
+ITEM_CATEGORIES = ["ROUTER", "ONU_CPE", "CABLE", "INSTALLATION_MATERIAL", "CONSUMABLE", "TOOL", "OFFICE_SUPPLY", "SERVICE", "OTHER"]
+TRACKING_TYPES = ["STOCK", "SERIALIZED", "NON_STOCK"]
 ITEM_STATUSES = ["ACTIVE", "INACTIVE", "ARCHIVED"]
 MOVEMENT_TYPES = ["RECEIVE", "ISSUE", "ADJUST", "TRANSFER", "RETURN"]
 ASSIGNMENT_STATUSES = ["ASSIGNED", "RETURNED", "LOST", "DAMAGED"]
+ASSIGNEE_TYPES = ["CUSTOMER", "TECHNICIAN", "OFFICE", "INTERNAL", "OTHER"]
 
 
 class ItemPayload(BaseModel):
@@ -33,6 +34,10 @@ class ItemPayload(BaseModel):
     location: str | None = None
     supplier: str | None = None
     unitCost: float | None = Field(default=None, ge=0)
+    salePrice: float | None = Field(default=None, ge=0)
+    taxable: bool | None = None
+    sellableInPos: bool | None = None
+    barcode: str | None = None
     status: str | None = None
     serialNumbers: list[str] | None = None
     notes: str | None = None
@@ -42,6 +47,7 @@ class MovementPayload(BaseModel):
     itemId: str | None = None
     type: str | None = None
     quantity: float | None = Field(default=None, gt=0)
+    serialNumber: str | None = None
     fromLocation: str | None = None
     toLocation: str | None = None
     referenceType: str | None = None
@@ -53,6 +59,7 @@ class AssignmentPayload(BaseModel):
     itemId: str | None = None
     serialNumber: str | None = None
     quantity: float | None = Field(default=None, gt=0)
+    assigneeType: str | None = None
     assignedToName: str | None = None
     customerId: str | None = None
     serviceId: str | None = None
@@ -60,6 +67,7 @@ class AssignmentPayload(BaseModel):
     location: str | None = None
     status: str | None = None
     assignedDate: str | None = None
+    dueDate: str | None = None
     returnedDate: str | None = None
     notes: str | None = None
 
@@ -143,18 +151,22 @@ def next_sku(category: str) -> str:
         "INSTALLATION_MATERIAL": "MAT",
         "CONSUMABLE": "CON",
         "TOOL": "TOL",
+        "OFFICE_SUPPLY": "OFF",
+        "SERVICE": "SVC",
     }.get(category, "INV")
     return f"{prefix}-{len(items) + 1:04d}"
 
 
 def item_summary(item: dict[str, Any]) -> dict[str, Any]:
-    available = number(item["quantityOnHand"] - assigned_quantity(item["id"]))
+    stock_tracked = item.get("trackingType") != "NON_STOCK"
+    available = number(item["quantityOnHand"] - assigned_quantity(item["id"])) if stock_tracked else 0
     return {
         **item,
+        "stockTracked": stock_tracked,
         "assignedQuantity": assigned_quantity(item["id"]),
         "availableQuantity": max(0, available),
-        "stockValue": number(item["quantityOnHand"] * item["unitCost"]),
-        "lowStock": item["status"] == "ACTIVE" and item["quantityOnHand"] <= item["reorderPoint"],
+        "stockValue": number(item["quantityOnHand"] * item["unitCost"]) if stock_tracked else 0,
+        "lowStock": stock_tracked and item["status"] == "ACTIVE" and item["quantityOnHand"] <= item["reorderPoint"],
     }
 
 
@@ -178,14 +190,22 @@ def normalize_item_payload(payload: ItemPayload, current: dict[str, Any] | None 
     duplicate = next((item for item in visible_items() if item["sku"].lower() == record["sku"].lower() and item.get("id") != record.get("id")), None)
     if duplicate:
         raise HTTPException(status_code=400, detail="SKU already exists")
-    record["unit"] = clean_text(record.get("unit")) or ("unit" if record["trackingType"] == "SERIALIZED" else "pcs")
+    record["unit"] = clean_text(record.get("unit")) or ("unit" if record["trackingType"] in ["SERIALIZED", "NON_STOCK"] else "pcs")
     record["quantityOnHand"] = number(record.get("quantityOnHand"))
     record["reorderPoint"] = number(record.get("reorderPoint"))
     record["unitCost"] = number(record.get("unitCost"))
+    record["salePrice"] = number(record.get("salePrice"))
+    record["taxable"] = bool(record.get("taxable", False))
+    record["sellableInPos"] = bool(record.get("sellableInPos", False))
+    record["barcode"] = clean_text(record.get("barcode"))
     record["location"] = clean_text(record.get("location")) or "Main stockroom"
     record["supplier"] = clean_text(record.get("supplier"))
     record["notes"] = clean_text(record.get("notes"))
     record["serialNumbers"] = [clean_text(value) for value in record.get("serialNumbers", []) if clean_text(value)]
+    if record["trackingType"] == "NON_STOCK":
+        record["quantityOnHand"] = 0
+        record["reorderPoint"] = 0
+        record["serialNumbers"] = []
     if record["trackingType"] == "SERIALIZED" and record["serialNumbers"]:
         record["quantityOnHand"] = max(record["quantityOnHand"], float(len(record["serialNumbers"])))
     return record
@@ -223,6 +243,8 @@ def apply_movement_changes(previous: dict[str, Any] | None = None, next_record: 
     timestamp = now_iso()
     for item_id, delta in deltas.items():
         item = items_by_id[item_id]
+        if item.get("trackingType") == "NON_STOCK":
+            continue
         item["quantityOnHand"] = number(item["quantityOnHand"] + delta)
         item["updatedAt"] = timestamp
 
@@ -234,6 +256,8 @@ def normalize_movement_payload(payload: MovementPayload, current: dict[str, Any]
     if not record.get("itemId"):
         raise HTTPException(status_code=400, detail="itemId is required")
     item = find_item(record["itemId"])
+    if item.get("trackingType") == "NON_STOCK":
+        raise HTTPException(status_code=400, detail="Non-stock items do not use inventory movements")
     record["item"] = {"id": item["id"], "sku": item["sku"], "name": item["name"], "unit": item["unit"]}
     record["type"] = normalize_upper(record.get("type") or "RECEIVE")
     if record["type"] not in MOVEMENT_TYPES:
@@ -241,6 +265,9 @@ def normalize_movement_payload(payload: MovementPayload, current: dict[str, Any]
     record["quantity"] = number(record.get("quantity"))
     if record["quantity"] <= 0:
         raise HTTPException(status_code=400, detail="Movement quantity must be greater than zero")
+    record["serialNumber"] = clean_text(record.get("serialNumber"))
+    if record["serialNumber"] and item.get("serialNumbers") and record["serialNumber"] not in item["serialNumbers"]:
+        raise HTTPException(status_code=400, detail="serialNumber is not registered on this item")
     record["fromLocation"] = clean_text(record.get("fromLocation"))
     record["toLocation"] = clean_text(record.get("toLocation")) or item["location"]
     record["referenceType"] = clean_text(record.get("referenceType")) or "MANUAL"
@@ -256,7 +283,12 @@ def normalize_assignment_payload(payload: AssignmentPayload, current: dict[str, 
     if not record.get("itemId"):
         raise HTTPException(status_code=400, detail="itemId is required")
     item = find_item(record["itemId"])
+    if item.get("trackingType") == "NON_STOCK":
+        raise HTTPException(status_code=400, detail="Non-stock items cannot be assigned")
     record["item"] = {"id": item["id"], "sku": item["sku"], "name": item["name"], "unit": item["unit"], "trackingType": item["trackingType"]}
+    record["assigneeType"] = normalize_upper(record.get("assigneeType") or "CUSTOMER")
+    if record["assigneeType"] not in ASSIGNEE_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid assignee type")
     record["status"] = normalize_upper(record.get("status") or "ASSIGNED")
     if record["status"] not in ASSIGNMENT_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid assignment status")
@@ -278,6 +310,7 @@ def normalize_assignment_payload(payload: AssignmentPayload, current: dict[str, 
     record["ticketId"] = clean_text(record.get("ticketId"))
     record["location"] = clean_text(record.get("location")) or item["location"]
     record["assignedDate"] = clean_text(record.get("assignedDate")) or today_iso()
+    record["dueDate"] = clean_text(record.get("dueDate"))
     record["returnedDate"] = clean_text(record.get("returnedDate"))
     record["notes"] = clean_text(record.get("notes"))
     return record
@@ -301,6 +334,7 @@ def filter_items(search: str = "", category: str = "", status: str = "", lowStoc
             or needle in item["category"].lower()
             or needle in item["location"].lower()
             or needle in item["supplier"].lower()
+            or needle in str(item.get("barcode", "")).lower()
         ]
     return rows
 
@@ -327,6 +361,173 @@ def filter_child_rows(rows: list[dict[str, Any]], search: str = "", itemId: str 
     return filtered
 
 
+def pos_item_snapshot(item: dict[str, Any]) -> dict[str, Any]:
+    summary = item_summary(item)
+    return {
+        "id": summary["id"],
+        "sku": summary["sku"],
+        "name": summary["name"],
+        "category": summary["category"],
+        "unit": summary["unit"],
+        "unitPrice": number(summary.get("salePrice")),
+        "unitCost": summary["unitCost"],
+        "salePrice": number(summary.get("salePrice")),
+        "taxable": bool(summary.get("taxable", False)),
+        "barcode": summary.get("barcode", ""),
+        "stockOnHand": summary["availableQuantity"],
+        "quantityOnHand": summary["quantityOnHand"],
+        "availableQuantity": summary["availableQuantity"],
+        "reorderPoint": summary["reorderPoint"],
+        "trackingType": summary["trackingType"],
+        "stockTracked": summary["stockTracked"],
+        "sellableInPos": bool(summary.get("sellableInPos", False)),
+        "location": summary["location"],
+        "status": summary["status"],
+        "notes": summary.get("notes", ""),
+    }
+
+
+def list_pos_catalog_items(search: str = "", status: str = "ACTIVE") -> list[dict[str, Any]]:
+    seed_inventory_data()
+    rows = [item_summary(item) for item in visible_items() if item.get("sellableInPos")]
+    if status:
+        rows = [item for item in rows if item["status"] == normalize_upper(status)]
+    if search:
+        needle = search.lower().strip()
+        rows = [
+            item
+            for item in rows
+            if needle in item["sku"].lower()
+            or needle in item["name"].lower()
+            or needle in item["category"].lower()
+            or needle in str(item.get("barcode", "")).lower()
+        ]
+    return [pos_item_snapshot(item) for item in sorted(rows, key=lambda row: row["name"])]
+
+
+def get_pos_catalog_item(item_id: str) -> dict[str, Any]:
+    seed_inventory_data()
+    item = find_item(item_id)
+    if not item.get("sellableInPos") or item.get("status") != "ACTIVE":
+        raise HTTPException(status_code=400, detail="Inventory item is not active in POS")
+    return pos_item_snapshot(item)
+
+
+def serialized_item_unavailable(item_id: str, serial_number: str) -> bool:
+    assigned_serial = next(
+        (
+            assignment
+            for assignment in visible_assignments()
+            if assignment["itemId"] == item_id
+            and assignment["status"] == "ASSIGNED"
+            and clean_text(assignment.get("serialNumber")) == serial_number
+        ),
+        None,
+    )
+    if assigned_serial:
+        return True
+    serial_delta = number(
+        sum(
+            movement_delta(movement["type"], movement["quantity"])
+            for movement in visible_movements()
+            if movement["itemId"] == item_id and clean_text(movement.get("serialNumber")) == serial_number
+        )
+    )
+    return serial_delta < 0
+
+
+def validate_pos_sale_inventory(line_items: list[dict[str, Any]], released_line_items: list[dict[str, Any]] | None = None) -> None:
+    seed_inventory_data()
+    required_by_item: dict[str, float] = {}
+    released_by_item: dict[str, float] = {}
+    released_serials = {
+        (line.get("itemId"), clean_text(line.get("serialNumber")))
+        for line in released_line_items or []
+        if line.get("itemId") and clean_text(line.get("serialNumber"))
+    }
+    for line in released_line_items or []:
+        item_id = line.get("itemId")
+        if not item_id:
+            continue
+        item = find_item(item_id)
+        if item.get("trackingType") != "NON_STOCK":
+            released_by_item[item_id] = number(released_by_item.get(item_id, 0) + number(line.get("quantity")))
+
+    serialized_lines: set[tuple[str, str]] = set()
+    for line in line_items:
+        item_id = line.get("itemId")
+        if not item_id:
+            continue
+        item = find_item(item_id)
+        snapshot = get_pos_catalog_item(item_id)
+        if not snapshot["stockTracked"]:
+            continue
+        quantity = number(line.get("quantity"))
+        if item.get("trackingType") == "SERIALIZED":
+            serial_number = clean_text(line.get("serialNumber"))
+            if quantity != 1:
+                raise HTTPException(status_code=400, detail=f"Serialized item {item['sku']} must be sold one unit per line")
+            if not serial_number:
+                raise HTTPException(status_code=400, detail=f"Serial number is required for {item['sku']}")
+            if item.get("serialNumbers") and serial_number not in item["serialNumbers"]:
+                raise HTTPException(status_code=400, detail=f"Serial number is not registered for {item['sku']}")
+            serial_key = (item_id, serial_number)
+            if serial_key in serialized_lines:
+                raise HTTPException(status_code=400, detail=f"Serial number {serial_number} is duplicated in this sale")
+            serialized_lines.add(serial_key)
+            if serial_key not in released_serials and serialized_item_unavailable(item_id, serial_number):
+                raise HTTPException(status_code=400, detail=f"Serial number {serial_number} is unavailable")
+        required_by_item[item_id] = number(required_by_item.get(item_id, 0) + quantity)
+
+    for item_id, required in required_by_item.items():
+        item = get_pos_catalog_item(item_id)
+        if required > number(item["availableQuantity"] + released_by_item.get(item_id, 0)):
+            raise HTTPException(status_code=400, detail=f"Not enough available inventory for {item['sku']}")
+
+
+def record_pos_sale_movements(
+    line_items: list[dict[str, Any]],
+    sale_reference: str,
+    receipt_number: str,
+    actor: str,
+    reverse: bool = False,
+) -> list[dict[str, Any]]:
+    seed_inventory_data()
+    if not reverse:
+        validate_pos_sale_inventory(line_items)
+    created: list[dict[str, Any]] = []
+    timestamp = now_iso()
+    movement_type = "RETURN" if reverse else "ISSUE"
+    reference_type = "POS_VOID" if reverse else "POS_SALE"
+    for line in line_items:
+        item_id = line.get("itemId")
+        if not item_id:
+            continue
+        item = find_item(item_id)
+        if item.get("trackingType") == "NON_STOCK":
+            continue
+        quantity = number(line.get("quantity"))
+        record = normalize_movement_payload(
+            MovementPayload(
+                itemId=item_id,
+                type=movement_type,
+                quantity=quantity,
+                serialNumber=clean_text(line.get("serialNumber")),
+                fromLocation=item["location"] if not reverse else "",
+                toLocation=item["location"],
+                referenceType=reference_type,
+                referenceId=receipt_number or sale_reference,
+                notes=f"{'Reversal for' if reverse else 'Posted from'} POS sale {sale_reference}{' serial ' + clean_text(line.get('serialNumber')) if clean_text(line.get('serialNumber')) else ''}",
+            )
+        )
+        apply_movement_changes(next_record=record)
+        movement = {"id": str(uuid4()), "createdAt": timestamp, "updatedAt": timestamp, "deletedAt": None, **record}
+        movements.append(movement)
+        created.append(movement)
+        add_audit("inventory_pos_sale_reversed" if reverse else "inventory_pos_sale_issued", "InventoryMovement", movement["id"], {"itemId": item_id, "referenceId": receipt_number}, actor)
+    return created
+
+
 def inventory_metrics() -> dict[str, float | int]:
     seed_inventory_data()
     item_rows = [item_summary(item) for item in visible_items()]
@@ -334,7 +535,7 @@ def inventory_metrics() -> dict[str, float | int]:
         "items": len(item_rows),
         "active_items": sum(1 for item in item_rows if item["status"] == "ACTIVE"),
         "low_stock": sum(1 for item in item_rows if item["lowStock"]),
-        "out_of_stock": sum(1 for item in item_rows if item["quantityOnHand"] <= 0),
+        "out_of_stock": sum(1 for item in item_rows if item["stockTracked"] and item["quantityOnHand"] <= 0),
         "assigned_assets": sum(1 for assignment in visible_assignments() if assignment["status"] == "ASSIGNED"),
         "stock_value": number(sum(item["stockValue"] for item in item_rows)),
     }
@@ -356,6 +557,10 @@ def seed_inventory_data() -> None:
             "location": "Main stockroom",
             "supplier": "Default supplier",
             "unitCost": 1250,
+            "salePrice": 0,
+            "taxable": False,
+            "sellableInPos": False,
+            "barcode": "ONU-0001",
             "status": "ACTIVE",
             "serialNumbers": ["ONU-A1001", "ONU-A1002", "ONU-A1003"],
             "notes": "Seed serialized CPE stock.",
@@ -371,6 +576,10 @@ def seed_inventory_data() -> None:
             "location": "Cable rack",
             "supplier": "Default supplier",
             "unitCost": 8.5,
+            "salePrice": 18,
+            "taxable": False,
+            "sellableInPos": True,
+            "barcode": "CBL-0002",
             "status": "ACTIVE",
             "serialNumbers": [],
             "notes": "Seed cable stock.",
@@ -386,9 +595,51 @@ def seed_inventory_data() -> None:
             "location": "Main stockroom",
             "supplier": "Default supplier",
             "unitCost": 950,
+            "salePrice": 1450,
+            "taxable": False,
+            "sellableInPos": True,
+            "barcode": "RTR-0003",
             "status": "ACTIVE",
             "serialNumbers": ["RTR-W1001", "RTR-W1002"],
             "notes": "Low-stock seed router line.",
+        },
+        {
+            "sku": "SVC-INSTALL",
+            "name": "Standard installation fee",
+            "category": "SERVICE",
+            "trackingType": "NON_STOCK",
+            "unit": "service",
+            "quantityOnHand": 0,
+            "reorderPoint": 0,
+            "location": "Service desk",
+            "supplier": "",
+            "unitCost": 0,
+            "salePrice": 1500,
+            "taxable": False,
+            "sellableInPos": True,
+            "barcode": "SVC-INSTALL",
+            "status": "ACTIVE",
+            "serialNumbers": [],
+            "notes": "Non-stock service charge available in POS.",
+        },
+        {
+            "sku": "TOL-0004",
+            "name": "Fiber crimping tool",
+            "category": "TOOL",
+            "trackingType": "SERIALIZED",
+            "unit": "unit",
+            "quantityOnHand": 4,
+            "reorderPoint": 1,
+            "location": "Technician cage",
+            "supplier": "Default supplier",
+            "unitCost": 1800,
+            "salePrice": 0,
+            "taxable": False,
+            "sellableInPos": False,
+            "barcode": "TOL-0004",
+            "status": "ACTIVE",
+            "serialNumbers": ["TOOL-CRIMP-01", "TOOL-CRIMP-02", "TOOL-CRIMP-03", "TOOL-CRIMP-04"],
+            "notes": "Technician-borrowable office/field tool, not a POS sale item.",
         },
     ]
     for row in seed_rows:
@@ -403,6 +654,7 @@ def inventory_meta(admin=Depends(require_admin)):
         "itemStatuses": ITEM_STATUSES,
         "movementTypes": MOVEMENT_TYPES,
         "assignmentStatuses": ASSIGNMENT_STATUSES,
+        "assigneeTypes": ASSIGNEE_TYPES,
         "integrationPlaceholders": {
             "customerId": "Customer Profiling link placeholder",
             "serviceId": "Customer service assignment link placeholder",

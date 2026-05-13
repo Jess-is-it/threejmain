@@ -5,74 +5,53 @@ This guide is for the dedicated Integration Codex terminal only.
 The Integration Codex has one job:
 
 ```text
-Integrate finished module folders into the shared app-shell.
+Integrate module work into the shared app-shell and shared test server.
 ```
 
-It must not accept normal module feature work, CRUD implementation, UI polishing, bug fixing inside a module, database redesign, deployment setup, GitHub administration, or unrelated coding tasks. The only GitHub write action it may perform is pushing the completed integrated result to `staging` after explicit user approval.
+It must not accept normal module CRUD implementation, UI polishing inside a module, GitHub release administration, database redesign, or unrelated tasks.
 
-If the user asks for anything that is not app-shell integration, decline briefly and redirect them to the correct Module Codex.
+## Accepted Commands
+
+The Integration Codex accepts:
+
+```text
+Integrate <module-name> into app-shell.
+Integrate these modules into app-shell: <module-a>, <module-b>.
+Wire <module-name> into shared navigation/API.
+Verify shared app-shell integration for <module-name>.
+Restart shared test server after integration.
+Prepare shared staging commit.
+Push shared staging commit to staging.
+```
+
+It must reject:
+
+```text
+Build Inventory CRUD.
+Fix Billing form styling.
+Create a database migration.
+Configure GitHub branch protection.
+Promote staging to master.
+```
 
 Example decline:
 
 ```text
-I am the Integration Codex, so I only handle wiring completed module folders into app-shell. Please send module CRUD or feature work to that module's Codex. I can accept: "Integrate <module> into app-shell" or "Integrate these completed modules into app-shell as a batch: ..."
-```
-
-## Accepted Commands
-
-The Integration Codex accepts these task shapes:
-
-```text
-Integrate <module-name> into app-shell.
-```
-
-```text
-Integrate these completed modules into app-shell as a batch: <module-a>, <module-b>, <module-c>.
-```
-
-```text
-Integrate completed module branches into staging-ready app.
-```
-
-```text
-Prepare one staging-ready integration commit.
-```
-
-```text
-Push integrated result to staging.
-```
-
-```text
-Verify app-shell integration for <module-name>.
-```
-
-```text
-Fix app-shell integration for <module-name>.
-```
-
-The Integration Codex must reject requests such as:
-
-```text
-Build Inventory CRUD.
-Add a new Billing screen.
-Change Customer Profiling fields.
-Design a new dashboard.
-Create a database migration.
-Configure GitHub branch protection.
-Deploy to production.
+I am the Integration Codex, so I only handle app-shell/shared-server integration. Please send module CRUD or feature work to that module's Codex.
 ```
 
 ## Required Startup
 
-Before doing integration work:
-
 ```bash
 cd /home/threejmain
+export AI_COORD_STATE_DIR=/home/threejmain/.ai_coord
 cat AGENTS.md
 cat Project_Context.md
 python3 scripts/ai_coord.py status
 python3 scripts/ai_coord.py recent
 python3 scripts/ai_coord.py locks
+git status --short
+git branch --show-current
 ```
 
 Use the assigned Codex identity for all coordination commands.
@@ -80,10 +59,10 @@ Use the assigned Codex identity for all coordination commands.
 Start the task:
 
 ```bash
-python3 scripts/ai_coord.py start <agent> "integrate-<module>" "Integrating <module> into app-shell"
+python3 scripts/ai_coord.py start <agent> "integrate-<module>" "Integrating <module> into shared app-shell"
 ```
 
-## Scope
+## Shared Integration Scope
 
 Integration Codex may edit shared integration files only after locking them:
 
@@ -97,132 +76,25 @@ docker-compose.yml
 Project_Context.md
 ```
 
-It may read module folders, but it should not modify module CRUD code unless the integration cannot compile without a tiny compatibility fix. If a module needs real feature or CRUD changes, stop and ask the module Codex to fix it.
+It may edit module files only when the integration cannot compile without a small compatibility fix. If a module needs real feature work, stop and ask the Module Codex to fix it.
 
-## Integration-First Staging Workflow
+## Shared Server Workflow
 
-This project uses an integration-first staging workflow for faster development:
-
-```text
-Module Codex branches -> Integration Codex staging-ready branch/commit -> staging -> master
-```
-
-Module Codex sessions push clean `codex/*` module branches for backup and for Integration Codex to fetch. Module Codex sessions do not need to open PRs by default.
-
-Integration Codex should:
-
-1. Fetch `origin`.
-2. Identify completed module branches named `codex/<agent>/<module>-...`.
-3. Confirm each module branch changes only that module folder.
-4. Copy or merge the completed module folders into the integration worktree.
-5. Wire modules into `app-shell/`.
-6. Update `Project_Context.md` with stable cross-project integration facts.
-7. Run syntax/build/runtime checks.
-8. Prepare one staging-ready integrated commit.
-9. Ask the user before pushing anything to `staging`.
-
-Before consuming a module branch, check its scope:
-
-```bash
-git fetch origin
-git diff --name-only origin/staging...origin/codex/<agent>/<module-branch>
-```
-
-Every changed file from a module branch must start with that module folder path:
+There is one shared test server:
 
 ```text
-<module>/
+Web: http://192.168.50.70:8180/
+API: http://192.168.50.70:8100/
 ```
 
-If a module branch contains `app-shell/`, Docker files, `Project_Context.md`, `AGENTS.md`, scripts, docs, another module folder, or broad customer-profiling deletions, do not consume it. Ask the Module Codex to create a clean replacement branch from latest `origin/staging`.
-
-Integration Codex may push directly to `staging` only after the user explicitly says:
-
-```text
-Push integrated result to staging.
-```
-
-Before pushing to `staging`, confirm:
-
-- current branch
-- integration commit SHA
-- changed files
-- checks run
-- runtime/server verification result, if used
-- exact target branch is `staging`
-
-Never push to `master`.
-
-## Relationship To Module Previews
-
-Module preview servers are for fast user review of one Codex branch at a time. They run from each Module Codex worktree on per-agent ports such as web `8303` and API `8203`.
-
-The Integration Codex does not need to manage every module preview. It may use a preview only to verify an integrated result, but normal integration verification should still use shared app-shell checks and the shared runtime when needed.
-
-Preview servers do not combine branches. Integration Codex is still required to fetch completed clean module branches, merge the selected module folder outputs, wire app-shell, run checks, and prepare the staging-ready result.
-
-If the user asks why a module preview is visible but staging does not show it yet, explain that preview is branch-local. It appears in staging only after Integration Codex integrates that module and the user explicitly approves pushing the integrated result to `staging`.
-
-## Module Context Merge
-
-Each module should keep its local project memory in:
-
-```text
-<module-name>/PROJECT_MODULE_CONTEXT.md
-```
-
-During integration, read the module context and merge only stable cross-project facts into the main `Project_Context.md`.
-
-Merge facts such as:
-
-- route path and API prefix
-- app-shell integration status
-- shared API contracts
-- shared database decisions
-- cross-module dependencies
-- runtime or deployment notes
-- risks that affect other modules
-
-Do not copy the whole module context into `Project_Context.md`. Keep detailed module notes in the module folder.
-
-## Integration Checklist
-
-For each completed module:
-
-1. Inspect `module.json`.
-2. Confirm the module follows the required module-folder pattern:
-
-```text
-<module-name>/
-  README.md
-  module.json
-  PROJECT_MODULE_CONTEXT.md
-  api/
-  web/
-```
-
-3. Read `<module>/PROJECT_MODULE_CONTEXT.md`.
-4. Confirm backend router exists under `<module>/api/.../router.py`.
-5. Confirm frontend page exists under `<module>/web/...`.
-6. Confirm module-specific CRUD code lives in the module folder, not `app-shell/`.
-7. Wire the API router into `app-shell/api/app/main.py`.
-8. Wire the React page into `app-shell/web/src/main.jsx`.
-9. Add Vite filesystem allowlist or alias updates if needed.
-10. Add Dockerfile copy paths if needed.
-11. Update `Project_Context.md` with stable cross-project integration details only.
-12. Run syntax/build checks.
-13. Use `runtime/server` lock before any shared build/start/restart.
-
-If the module does not follow the module-folder pattern, do not integrate it yet. Ask the module Codex to move or add the missing module files first.
-
-## Runtime Lock
+Do not start per-Codex preview servers. Do not use old per-Codex preview ports such as `8314`.
 
 Before building, starting, stopping, restarting, or recreating the shared runtime:
 
 ```bash
 python3 scripts/ai_coord.py recent
 python3 scripts/ai_coord.py locks
-python3 scripts/ai_coord.py lock runtime/server <agent> "<task-name>" "Build/restart shared runtime after module integration"
+python3 scripts/ai_coord.py lock runtime/server <agent> "<task-name>" "Build/restart shared runtime after integration"
 ```
 
 After runtime checks:
@@ -233,6 +105,44 @@ python3 scripts/ai_coord.py unlock runtime/server <agent>
 
 Read-only checks such as `docker compose ps` and `curl` health checks do not require `runtime/server`.
 
+## Integration Checklist
+
+For each module:
+
+1. Inspect `module.json`.
+2. Confirm the module follows the required module-folder pattern.
+3. Read `<module>/PROJECT_MODULE_CONTEXT.md`.
+4. Confirm backend router exists under `<module>/api/.../router.py`.
+5. Confirm frontend page exists under `<module>/web/...`.
+6. Confirm module-specific CRUD code lives in the module folder.
+7. Wire the API router into `app-shell/api/app/main.py`.
+8. Wire the React page into `app-shell/web/src/main.jsx`.
+9. Add Vite filesystem allowlist or alias updates if needed.
+10. Add Dockerfile copy paths if needed.
+11. Update `Project_Context.md` with stable cross-project integration details only.
+12. Run syntax/build checks.
+13. Restart/rebuild the shared server if needed, using `runtime/server`.
+14. Verify the shared server URL.
+
+## Git Rules
+
+Integration Codex may prepare a shared staging commit only after checking:
+
+```bash
+git status --short
+git diff --name-only
+```
+
+Stage only intended integrated files. Never include secrets or `.ai_coord/`.
+
+Integration Codex may push to `staging` only after the user explicitly confirms:
+
+```text
+Push shared staging commit to staging.
+```
+
+Never push to `master`.
+
 ## Final Output
 
 When finished, report:
@@ -240,14 +150,12 @@ When finished, report:
 - modules integrated
 - shared files changed
 - module files changed, if any
-- module context read and global context summary added
+- context updates
 - checks run
-- runtime/server lock used or not
-- whether the module now appears in the web app
-- whether the API route is available
-- any module-side fixes still needed
-- integration commit SHA, if created
-- whether the integrated result was pushed to `staging`
-- explicit user confirmation received before any `staging` push
+- shared server restart/build result
+- shared test URL verified
+- commit SHA, if created
+- whether anything was pushed to `staging`
+- explicit user confirmation received before any push
 
 Then release locks and post `done` through `scripts/ai_coord.py`.
