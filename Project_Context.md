@@ -241,7 +241,14 @@ Web: http://192.168.50.70:8180/
 API: http://192.168.50.70:8100/
 ```
 
-Production data is not shared with the old staging/test Compose project. The production Compose project has its own named Docker volumes, while the old `threejmain` Compose project volumes are preserved separately. Because production and staging use the same host ports, the deploy script stops the old `threejmain` Compose project before starting production. Do not restart the staging Compose project on ports `8180` and `8100` unless intentionally taking production down or moving staging to separate ports.
+Staging is deployed from the shared `/home/threejmain` checkout using `scripts/staging_deploy.sh`, Docker Compose project `threejmain-staging`, and separate host ports:
+
+```text
+Web: http://192.168.50.70:8280/
+API: http://192.168.50.70:8200/
+```
+
+Production, staging, and the old stopped `threejmain` Compose project do not share data. Each Compose project has its own named Docker volumes. Do not restart the old `threejmain` Compose project on ports `8180` and `8100`; use `scripts/staging_deploy.sh` for staging so it stays beside production.
 
 Production deployment commands:
 
@@ -249,8 +256,10 @@ Production deployment commands:
 scripts/install_production_autodeploy.sh
 scripts/production_auto_deploy.sh --once
 scripts/production_deploy.sh
+scripts/staging_deploy.sh
 systemctl status threejmain-production-auto-deploy.service
 docker compose --project-name threejmain-production -f /home/threejmain-production/docker-compose.yml ps
+docker compose --project-name threejmain-staging -f /home/threejmain/docker-compose.yml ps
 ```
 
 `master` remains the production branch. Production releases should still merge `staging` into `master` through a Pull Request; the watcher updates production after `master` moves. Remaining hardening work: production secrets, non-default admin credentials, domain/TLS/reverse-proxy, backup/restore automation, and durable PostgreSQL persistence for modules beyond Customer Profiling.
@@ -261,16 +270,16 @@ Normal Codex work happens in:
 /home/threejmain
 ```
 
-Normal visual review should use production URLs only when the user is asking about the live deployment. For staging/integration checks, coordinate before changing the runtime because the same ports are currently owned by production:
+Normal visual review for staging/integration should use:
 
 ```text
-http://192.168.50.70:8180/
+http://192.168.50.70:8280/
 ```
 
-All API review should use:
+Staging API review should use:
 
 ```text
-http://192.168.50.70:8100/
+http://192.168.50.70:8200/
 ```
 
 Module Codex sessions should not create per-Codex preview servers, per-Codex worktrees, or per-Codex task branches for normal work. They should coordinate through `scripts/ai_coord.py`, lock the module folders and shared files they need, and use `runtime/server` before restarting or rebuilding any shared runtime.

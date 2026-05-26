@@ -34,7 +34,7 @@ services:
     volumes:
       - threejmain_api_data:/app/data
     ports:
-      - "8100:8100"
+      - "${API_PORT:-8100}:8100"
 
   web:
     build:
@@ -43,7 +43,7 @@ services:
     depends_on:
       - api
     ports:
-      - "8180:80"
+      - "${WEB_PORT:-8180}:80"
 
 volumes:
   threejmain_pgdata:
