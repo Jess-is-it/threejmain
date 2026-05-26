@@ -22,6 +22,7 @@ MODULE_API_PATHS = [
     ("customer-service-management", "api"),
     ("ticketing", "api"),
     ("service", "api"),
+    ("network-settings", "api"),
     ("system-settings", "api"),
     ("logs", "api"),
 ]
@@ -43,11 +44,25 @@ from customer_service_management import (
     seed_customer_service_data,
 )
 from inventory import configure_inventory, inventory_metrics, router as inventory_router, seed_inventory_data
+from network_settings import (
+    configure_network_settings,
+    network_settings_metrics,
+    router as network_settings_router,
+    seed_network_settings_data,
+    start_network_settings_poller,
+    stop_network_settings_poller,
+)
 from point_of_sale import configure_point_of_sale, point_of_sale_metrics, router as point_of_sale_router, seed_point_of_sale_data
 from logs import configure_logs, router as logs_router
 from service import configure_service, router as service_router, seed_service_data, service_metrics
 from system_settings import configure_system_settings, router as system_settings_router
-from ticketing import configure_ticketing, router as ticketing_router, seed_ticketing_data, ticketing_metrics
+from ticketing import (
+    configure_ticketing,
+    create_ticket_from_service_order,
+    router as ticketing_router,
+    seed_ticketing_data,
+    ticketing_metrics,
+)
 
 
 APP_STARTED_AT = time.time()
@@ -156,6 +171,14 @@ modules = [
         "metrics": {"catalog_items": 0, "open_orders": 0, "active_orders": 0},
     },
     {
+        "slug": "network-settings",
+        "name": "Network Settings",
+        "folder": "network-settings",
+        "status": "functional-shell",
+        "description": "Network source-of-truth for OLTs, generated PON ports, NAP boxes, and FBT assignments.",
+        "metrics": {"olts": 0, "pon_ports": 0, "nap_boxes": 0, "fbts": 0},
+    },
+    {
         "slug": "system-settings",
         "name": "System Settings",
         "folder": "system-settings",
@@ -259,6 +282,7 @@ def seed_module_data() -> None:
     seed_customer_service_data()
     seed_ticketing_data()
     seed_service_data()
+    seed_network_settings_data()
 
 
 def sync_module_metrics() -> None:
@@ -271,6 +295,7 @@ def sync_module_metrics() -> None:
         "customer-service-management": customer_service_metrics,
         "ticketing": ticketing_metrics,
         "service": service_metrics,
+        "network-settings": network_settings_metrics,
         "system-settings": lambda: {"sections": len(settings), "registered_ports": len(port_registry())},
         "logs": lambda: {"audit_events": len(audit_logs)},
     }
@@ -374,7 +399,15 @@ configure_inventory(current_admin, add_audit)
 configure_account_admin(current_admin, add_audit)
 configure_customer_service_management(current_admin, add_audit, resolve_customer_for_modules, search_customers_for_modules, seed_customer_data)
 configure_ticketing(current_admin, add_audit, resolve_customer_for_modules, search_customers_for_modules, seed_customer_data)
-configure_service(current_admin, add_audit, resolve_customer_for_modules, search_customers_for_modules, seed_customer_data)
+configure_service(
+    current_admin,
+    add_audit,
+    resolve_customer_for_modules,
+    search_customers_for_modules,
+    seed_customer_data,
+    create_ticket_from_service_order,
+)
+configure_network_settings(current_admin, add_audit)
 configure_system_settings(current_admin, add_audit, settings, port_registry)
 configure_logs(current_admin, audit_logs)
 
@@ -386,6 +419,7 @@ app.include_router(account_admin_router)
 app.include_router(customer_service_router)
 app.include_router(ticketing_router)
 app.include_router(service_router)
+app.include_router(network_settings_router)
 app.include_router(system_settings_router)
 app.include_router(logs_router)
 
@@ -396,6 +430,12 @@ def seed_logs():
     sync_module_metrics()
     if not audit_logs:
         add_audit("system_started", "app", "app-shell", {"message": "ISP management shell started"})
+    start_network_settings_poller()
+
+
+@app.on_event("shutdown")
+def stop_module_workers():
+    stop_network_settings_poller()
 
 
 @app.get("/health")

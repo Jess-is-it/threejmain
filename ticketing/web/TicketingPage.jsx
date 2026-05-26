@@ -512,6 +512,8 @@ export default function TicketingPage({ refreshShell = () => {} }) {
                 <div><span>Assigned To</span><strong>{detailTicket.assignedTo || 'Unassigned'}</strong></div>
                 <div><span>Due Date</span><strong>{detailTicket.dueDate || 'No due date'}</strong></div>
                 <div><span>Service ID</span><strong>{detailTicket.serviceId || 'No service reference'}</strong></div>
+                <div><span>Service Order</span><strong>{detailTicket.serviceOrderNumber || 'No service order'}</strong></div>
+                <div><span>Source Module</span><strong>{detailTicket.sourceModule ? label(String(detailTicket.sourceModule).toUpperCase()) : 'Manual'}</strong></div>
                 <div><span>Outage ID</span><strong>{detailTicket.outageId || 'No outage reference'}</strong></div>
                 <div><span>Opened</span><strong>{detailTicket.openedAt ? new Date(detailTicket.openedAt).toLocaleString() : 'Not recorded'}</strong></div>
                 <div><span>Updated</span><strong>{detailTicket.updatedAt ? new Date(detailTicket.updatedAt).toLocaleString() : 'Not recorded'}</strong></div>

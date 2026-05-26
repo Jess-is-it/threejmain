@@ -170,6 +170,23 @@ If a requested module does not yet have a folder, create the folder using this p
 
 ---
 
+# New Feature Creation Research Rule
+
+This rule applies only to Codex sessions whose assigned task is to create a new feature or new module folder. It does not apply to Codex sessions doing bug fixes, UI refinements, integration work, CI work, documentation cleanup, or ordinary edits inside an existing feature. Codex sessions not assigned to create a new feature must not modify, relax, or bypass this rule unless the user explicitly assigns them a workflow-rule update task.
+
+Before creating a new feature folder, the assigned Codex must do proper enterprise-system research for that feature:
+
+- Understand how mature companies structure the feature in real business systems, with special attention to Internet Service Provider operations.
+- Review the project context and existing modules so the new feature is designed to fit this ISP management system instead of standing alone.
+- Identify expected feature functions, workflows, states, user roles, reports, audit needs, and operational edge cases.
+- Map how the new feature should connect with existing features such as Customer Profiling, Service, Billing, Point of Sale, Inventory, Account Admin, Customer Service Management, Ticketing, System Settings, and Logs.
+- Document the research summary, intended functions, integration points, and known boundaries in the new module `README.md` and `PROJECT_MODULE_CONTEXT.md`.
+- If the research reveals cross-module contracts or shared app-shell needs, document them for the Integration Codex, but do not edit other modules or `app-shell/` unless the user explicitly assigns that integration work and the needed files are locked.
+
+The new feature folder should not be created until this research summary and feature-to-feature connection plan are clear enough to guide implementation.
+
+---
+
 # Codex Identity Rules
 
 Every new Codex terminal must register before doing any work.

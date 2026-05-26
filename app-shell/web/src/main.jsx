@@ -21,6 +21,7 @@ import {
   IconMenu2,
   IconNetwork,
   IconPackage,
+  IconRouter,
   IconSettings,
   IconShieldLock,
   IconTicket,
@@ -36,6 +37,7 @@ import CustomerProfilingPage from '../../../customer-profiling/web/CustomerProfi
 import CustomerServiceManagementPage from '../../../customer-service-management/web/CustomerServiceManagementPage.jsx';
 import InventoryPage from '../../../inventory/web/InventoryPage.jsx';
 import LogsPage from '../../../logs/web/LogsPage.jsx';
+import NetworkSettingsPage from '../../../network-settings/web/NetworkSettingsPage.jsx';
 import PointOfSalePage from '../../../point-of-sale/web/PointOfSalePage.jsx';
 import ServicePage from '../../../service/web/ServicePage.jsx';
 import SystemSettingsPage from '../../../system-settings/web/SystemSettingsPage.jsx';
@@ -61,6 +63,35 @@ const moduleNav = [
     children: [
       { page: 'Service Catalog', slug: 'service/catalog', icon: IconPackage, tone: 'blue' },
       { page: 'Service Order', slug: 'service/order', icon: IconListDetails, tone: 'cyan' }
+    ]
+  },
+  {
+    page: 'Network Settings',
+    slug: 'network-settings',
+    icon: IconNetwork,
+    tone: 'indigo',
+    children: [
+      {
+        page: 'MikroTik',
+        icon: IconRouter,
+        tone: 'cyan',
+        children: [
+          { page: 'MikroTik Settings', label: 'Settings', slug: 'network-settings/mikrotik/settings', icon: IconSettings, tone: 'cyan' },
+          { page: 'PPPoE Accounts', slug: 'network-settings/pppoe-accounts', icon: IconKey, tone: 'cyan' }
+        ]
+      },
+      {
+        page: 'OLT',
+        icon: IconWifi,
+        tone: 'blue',
+        children: [
+          { page: 'OLT Settings', label: 'Settings', slug: 'network-settings/olt/settings', icon: IconSettings, tone: 'blue' },
+          { page: 'OLT & PON', slug: 'network-settings/olts', icon: IconWifi, tone: 'blue' },
+          { page: 'ONUs', slug: 'network-settings/onus', icon: IconRouter, tone: 'cyan' },
+          { page: 'NAP Boxes', slug: 'network-settings/nap-boxes', icon: IconBox, tone: 'orange' },
+          { page: 'FBT', slug: 'network-settings/fbts', icon: IconNetwork, tone: 'green' }
+        ]
+      }
     ]
   },
   { page: 'System Settings', slug: 'system-settings', icon: IconSettings, tone: 'secondary' },
@@ -98,17 +129,34 @@ async function publicRequest(path) {
 }
 
 function navItems() {
-  return moduleNav.flatMap((item) => [item, ...(item.children || [])]);
+  const flatten = (items) => items.flatMap((item) => [item, ...flatten(item.children || [])]);
+  return flatten(moduleNav);
 }
 
-function navParentForPage(page) {
-  return moduleNav.find((item) => item.children?.some((child) => child.page === page));
+function firstLeafNavItem(item) {
+  if (!item?.children?.length) return item;
+  return firstLeafNavItem(item.children[0]);
+}
+
+function navContainsPage(item, page) {
+  return item.page === page || Boolean(item.children?.some((child) => navContainsPage(child, page)));
+}
+
+function navParentChainForPage(page, items = moduleNav, chain = []) {
+  for (const item of items) {
+    if (item.page === page) return chain;
+    if (item.children?.length) {
+      const found = navParentChainForPage(page, item.children, [...chain, item]);
+      if (found.length) return found;
+    }
+  }
+  return [];
 }
 
 function routeForPage(page) {
   const item = navItems().find((navItem) => navItem.page === page);
-  if (item?.children?.length) return `/${item.children[0].slug}`;
-  if (item) return `/${item.slug}`;
+  if (item?.children?.length) return `/${firstLeafNavItem(item).slug}`;
+  if (item?.slug) return `/${item.slug}`;
   if (page === 'View Profile') return '/profile';
   if (page === 'Change Password') return '/change-password';
   return '/dashboard';
@@ -116,8 +164,9 @@ function routeForPage(page) {
 
 function pageFromLocation() {
   const slug = window.location.pathname.replace(/^\/+|\/+$/g, '') || 'dashboard';
-  const item = navItems().find((navItem) => navItem.slug === slug);
+  const item = navItems().find((navItem) => navItem.slug && navItem.slug === slug);
   if (item) return item.page;
+  if (slug === 'network-settings/devices') return 'MikroTik Settings';
   if (slug === 'profile') return 'View Profile';
   if (slug === 'change-password') return 'Change Password';
   return 'Dashboard';
@@ -240,9 +289,55 @@ function Sidebar({ page, setPage, me, logout, branding, collapsed }) {
   };
 
   useEffect(() => {
-    const parent = navParentForPage(page);
-    if (parent) setNavOpen((current) => ({ ...current, [parent.page]: true }));
+    const parents = navParentChainForPage(page);
+    if (parents.length) {
+      setNavOpen((current) => ({
+        ...current,
+        ...Object.fromEntries(parents.map((parent) => [parent.page, true]))
+      }));
+    }
   }, [page]);
+
+  const renderNavItem = (item, depth = 0) => {
+    const Icon = item.icon;
+    const hasChildren = Boolean(item.children?.length);
+    const activeChild = hasChildren && item.children.some((child) => navContainsPage(child, page));
+    const active = page === item.page || activeChild;
+    const expanded = navOpen[item.page] || activeChild;
+    if (hasChildren) {
+      return (
+        <li className={`nav-item nav-item-parent ${active ? 'active' : ''}`} key={item.page}>
+          <button
+            className={`nav-link ${depth > 0 ? 'nav-sub-link nav-sub-parent' : ''} ${active ? 'active' : ''}`}
+            onClick={() => {
+              if (collapsed) {
+                activate(firstLeafNavItem(item).page);
+                return;
+              }
+              setNavOpen((current) => ({ ...current, [item.page]: !expanded }));
+            }}
+          >
+            <span className="nav-link-icon d-md-none d-lg-inline-block"><Icon size={depth > 0 ? 18 : 20} /></span>
+            <span className="nav-link-title">{item.label || item.page}</span>
+            {!collapsed && <span className="nav-link-chevron ms-auto">{expanded ? <IconChevronUp size={16} /> : <IconChevronDown size={16} />}</span>}
+          </button>
+          {!collapsed && expanded && (
+            <ul className={`nav-submenu nav-submenu-depth-${depth + 1}`}>
+              {item.children.map((child) => renderNavItem(child, depth + 1))}
+            </ul>
+          )}
+        </li>
+      );
+    }
+    return (
+      <li className="nav-item" key={item.page}>
+        <button className={`nav-link ${depth > 0 ? 'nav-sub-link' : ''} ${page === item.page ? 'active' : ''}`} onClick={() => activate(item.page)}>
+          <span className="nav-link-icon d-md-none d-lg-inline-block"><Icon size={depth > 0 ? 18 : 20} /></span>
+          <span className="nav-link-title">{item.label || item.page}</span>
+        </button>
+      </li>
+    );
+  };
 
   return (
     <aside className="navbar navbar-vertical navbar-expand-lg" data-bs-theme="dark">
@@ -255,54 +350,7 @@ function Sidebar({ page, setPage, me, logout, branding, collapsed }) {
         </h1>
         <div className={`collapse navbar-collapse d-lg-flex flex-lg-column ${mobileOpen ? 'show' : ''}`}>
           <ul className="navbar-nav pt-lg-3">
-            {moduleNav.map((item) => {
-              const Icon = item.icon;
-              const activeChild = item.children?.some((child) => child.page === page);
-              const expanded = navOpen[item.page] || activeChild;
-              if (item.children?.length) {
-                return (
-                  <li className={`nav-item nav-item-parent ${activeChild ? 'active' : ''}`} key={item.page}>
-                    <button
-                      className={`nav-link ${activeChild ? 'active' : ''}`}
-                      onClick={() => {
-                        if (collapsed) {
-                          activate(item.children[0].page);
-                          return;
-                        }
-                        setNavOpen((current) => ({ ...current, [item.page]: !expanded }));
-                      }}
-                    >
-                      <span className="nav-link-icon d-md-none d-lg-inline-block"><Icon size={20} /></span>
-                      <span className="nav-link-title">{item.page}</span>
-                      {!collapsed && <span className="nav-link-chevron ms-auto">{expanded ? <IconChevronUp size={16} /> : <IconChevronDown size={16} />}</span>}
-                    </button>
-                    {!collapsed && expanded && (
-                      <ul className="nav-submenu">
-                        {item.children.map((child) => {
-                          const ChildIcon = child.icon;
-                          return (
-                            <li key={child.page}>
-                              <button className={`nav-link nav-sub-link ${page === child.page ? 'active' : ''}`} onClick={() => activate(child.page)}>
-                                <span className="nav-link-icon d-md-none d-lg-inline-block"><ChildIcon size={18} /></span>
-                                <span className="nav-link-title">{child.page}</span>
-                              </button>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    )}
-                  </li>
-                );
-              }
-              return (
-                <li className="nav-item" key={item.page}>
-                  <button className={`nav-link ${page === item.page ? 'active' : ''}`} onClick={() => activate(item.page)}>
-                    <span className="nav-link-icon d-md-none d-lg-inline-block"><Icon size={20} /></span>
-                    <span className="nav-link-title">{item.page}</span>
-                  </button>
-                </li>
-              );
-            })}
+            {moduleNav.map((item) => renderNavItem(item))}
           </ul>
           <div className="sidebar-user mt-auto">
             <button className="sidebar-user-trigger" type="button" onClick={() => !collapsed && setProfileOpen(!profileOpen)}>
@@ -332,7 +380,7 @@ function Header({ page, resources, onToggleSidebar, sidebarCollapsed }) {
   const meta = pageMeta(page);
   const PageIcon = meta.icon;
   return (
-    <header className="navbar navbar-expand-md navbar-light d-print-none sticky-top">
+    <header className="navbar navbar-expand-md navbar-light d-print-none sticky-top shell-header shell-header-content-aligned">
       <div className="container-xl">
         <div className="d-flex w-100 align-items-center">
           <button className="topnav-title" type="button" onClick={onToggleSidebar} aria-pressed={sidebarCollapsed}>
@@ -572,6 +620,14 @@ function App() {
             {page === 'Ticketing' && <TicketingPage refreshShell={refresh} />}
             {page === 'Service Catalog' && <ServicePage initialSection="catalog" refreshShell={refresh} />}
             {page === 'Service Order' && <ServicePage initialSection="orders" refreshShell={refresh} />}
+            {page === 'Network Settings' && <NetworkSettingsPage initialSection="overview" refreshShell={refresh} />}
+            {page === 'MikroTik Settings' && <NetworkSettingsPage initialSection="mikrotik-settings" refreshShell={refresh} />}
+            {page === 'PPPoE Accounts' && <NetworkSettingsPage initialSection="pppoe" refreshShell={refresh} />}
+            {page === 'OLT Settings' && <NetworkSettingsPage initialSection="olt-settings" refreshShell={refresh} />}
+            {page === 'OLT & PON' && <NetworkSettingsPage initialSection="olts" refreshShell={refresh} />}
+            {page === 'ONUs' && <NetworkSettingsPage initialSection="onus" refreshShell={refresh} />}
+            {page === 'NAP Boxes' && <NetworkSettingsPage initialSection="naps" refreshShell={refresh} />}
+            {page === 'FBT' && <NetworkSettingsPage initialSection="fbts" refreshShell={refresh} />}
             {moduleNav.filter((item) => ![
               'Dashboard',
               'Customer Profiling',
@@ -582,6 +638,7 @@ function App() {
               'Customer Service Management',
               'Ticketing',
               'Service',
+              'Network Settings',
               'System Settings',
               'Logs'
             ].includes(item.page)).map((item) => (

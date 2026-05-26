@@ -1,20 +1,34 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
-  IconCircleCheck,
-  IconCircleOff,
-  IconDeviceFloppy,
-  IconEdit,
-  IconPlus,
+  IconFilter,
   IconRefresh,
   IconSearch,
-  IconShieldLock,
-  IconTrash,
-  IconUserCog,
-  IconUsers
+  IconUsers,
+  IconX
 } from '@tabler/icons-react';
 import './accountAdmin.css';
 
 const API = '/api';
+
+const blankFilters = {
+  search: '',
+  lifecycle: '',
+  customerStatus: '',
+  pppoeStatus: ''
+};
+
+const PPPOE_ONU_MAPPING_TAB = 'PPPOE_ONU_MAPPING';
+const MAPPING_WITHOUT_ONUS = 'WITHOUT_ONUS';
+const MAPPING_MATCHED_ONUS = 'MATCHED_ONUS';
+
+const defaultTabs = [
+  { label: 'All', value: '', count: 0, tone: 'blue' },
+  { label: 'Customer w/ Tickets', value: 'WITH_TICKETS', count: 0, tone: 'orange' },
+  { label: 'PPPoE & ONUs', value: PPPOE_ONU_MAPPING_TAB, count: 0, tone: 'green' }
+];
+
+const customerStatuses = ['ACTIVE', 'PENDING', 'SUSPENDED', 'INACTIVE'];
+const pppoeStatuses = ['UNBOUND', 'ONLINE', 'OFFLINE', 'DISABLED'];
 
 function token() {
   return localStorage.getItem('threejmain_token');
@@ -34,18 +48,29 @@ async function request(path, options = {}) {
   return data;
 }
 
-function statusClass(status) {
-  return status === 'ACTIVE' ? 'bg-green-lt text-green' : 'bg-yellow-lt text-yellow';
+function titleize(value) {
+  return String(value || 'Unassigned')
+    .toLowerCase()
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
 }
 
-function fmt(value) {
-  if (!value) return '-';
-  return String(value);
+function badgeTone(value) {
+  const status = String(value || '').toUpperCase();
+  if (['ACTIVE', 'ONLINE', 'PROVISIONED', 'READY', 'MATCHED', 'MATCHED_EXACT', 'MATCHED_PROXIMITY', 'MATCHED_METADATA', 'SAMPLE_MATCH'].includes(status)) return 'success';
+  if (['FOR_ACTIVATION', 'FOR_INSTALLATION', 'INSTALLATION', 'PENDING_PROVISIONING', 'PENDING', 'PENDING_ACTIVATION'].includes(status)) return 'warning';
+  if (['SUSPENDED', 'DISCONNECTED', 'DISABLED', 'SYNC_ERROR', 'NEEDS_REVIEW', 'UNMATCHED_ONU'].includes(status)) return 'danger';
+  return 'secondary';
 }
 
-function Card({ title, icon: Icon, children, actions }) {
+function StatusBadge({ value }) {
+  return <span className={`badge bg-${badgeTone(value)}-lt text-${badgeTone(value)}`}>{titleize(value)}</span>;
+}
+
+function Card({ title, icon: Icon, children, actions, className = '' }) {
   return (
-    <div className="card">
+    <div className={`card ${className}`.trim()}>
       {(title || actions) && (
         <div className="card-header">
           <h3 className="card-title">
@@ -60,276 +85,374 @@ function Card({ title, icon: Icon, children, actions }) {
   );
 }
 
-function TextField({ label, value, onChange, type = 'text', required = false }) {
-  return (
-    <div>
-      <label className="form-label">{label}</label>
-      <input className="form-control" type={type} value={value ?? ''} required={required} onChange={(e) => onChange(e.target.value)} />
-    </div>
-  );
-}
-
-const blankAccount = {
-  id: '',
-  username: '',
-  password: '',
-  fullName: '',
-  email: '',
-  phone: '',
-  status: 'ACTIVE',
-  notes: ''
-};
-
-export default function AccountAdminPage({ refreshShell = () => {} }) {
-  const [activeTab, setActiveTab] = useState('Overview');
-  const [meta, setMeta] = useState({ accountStatuses: ['ACTIVE', 'INACTIVE'] });
-  const [overview, setOverview] = useState({ metrics: {}, recentAccounts: [], notes: [] });
-  const [accounts, setAccounts] = useState([]);
-  const [filters, setFilters] = useState({ search: '', status: '' });
-  const [form, setForm] = useState(blankAccount);
-  const [message, setMessage] = useState('');
+export default function AccountAdminPage() {
+  const [rows, setRows] = useState([]);
+  const [mappingRows, setMappingRows] = useState([]);
+  const [mappingMeta, setMappingMeta] = useState(null);
+  const [tabs, setTabs] = useState(defaultTabs);
+  const [filters, setFilters] = useState(blankFilters);
+  const [mappingView, setMappingView] = useState(MAPPING_WITHOUT_ONUS);
+  const [areFiltersOpen, setFiltersOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const latestFiltersRef = useRef(blankFilters);
+  const searchDebounceRef = useRef(null);
 
-  async function load(nextFilters = filters) {
+  const hasActiveFilters = ['customerStatus', 'pppoeStatus'].some((key) => Boolean(filters[key]));
+
+  async function load(nextFilters = latestFiltersRef.current, options = {}) {
+    setLoading(true);
     setError('');
-    try {
-      const params = new URLSearchParams();
-      if (nextFilters.search) params.set('search', nextFilters.search);
-      if (nextFilters.status) params.set('status', nextFilters.status);
-      const suffix = params.toString() ? `?${params.toString()}` : '';
-      const [nextOverview, nextAccounts, nextMeta] = await Promise.all([
-        request('/account-admin/overview'),
-        request(`/account-admin/accounts${suffix}`),
-        request('/account-admin/meta')
-      ]);
-      setOverview(nextOverview);
-      setAccounts(nextAccounts);
-      setMeta(nextMeta);
-    } catch (err) {
-      setError(err.message);
-    }
-  }
-
-  useEffect(() => { load(); }, []);
-
-  function resetForm() {
-    setForm(blankAccount);
-  }
-
-  function editAccount(account) {
-    setForm({
-      id: account.id,
-      username: account.username || '',
-      password: '',
-      fullName: account.fullName || '',
-      email: account.email || '',
-      phone: account.phone || '',
-      status: account.status || 'ACTIVE',
-      notes: account.notes || ''
+    const params = new URLSearchParams();
+    Object.entries(nextFilters).forEach(([key, value]) => {
+      if (value) params.set(key, value);
     });
-    setActiveTab('Accounts');
-  }
-
-  async function saveAccount(e) {
-    e.preventDefault();
-    setError('');
-    setMessage('');
-    const payload = {
-      username: form.username,
-      fullName: form.fullName,
-      email: form.email,
-      phone: form.phone,
-      status: form.status,
-      notes: form.notes
-    };
-    if (form.password) payload.password = form.password;
+    if (options.refresh) params.set('refreshPppoe', 'true');
     try {
-      if (form.id) {
-        await request(`/account-admin/accounts/${form.id}`, { method: 'PATCH', body: JSON.stringify(payload) });
-        setMessage('Account updated.');
+      const data = await request(`/account-admin/customer-accounts?${params.toString()}`);
+      setRows(data.data || []);
+      setTabs(data.tabs || defaultTabs);
+      if (nextFilters.lifecycle === PPPOE_ONU_MAPPING_TAB) {
+        const mappingParams = new URLSearchParams();
+        if (nextFilters.search) mappingParams.set('search', nextFilters.search);
+        if (nextFilters.pppoeStatus) mappingParams.set('status', nextFilters.pppoeStatus);
+        if (options.refresh) mappingParams.set('refresh', 'true');
+        const mapping = await request(`/account-admin/pppoe-onu-mapping?${mappingParams.toString()}`);
+        setMappingRows(mapping.mappings || []);
+        setMappingMeta(mapping);
       } else {
-        await request('/account-admin/accounts', { method: 'POST', body: JSON.stringify(payload) });
-        setMessage('Account created.');
+        setMappingRows([]);
+        setMappingMeta(null);
       }
-      resetForm();
-      await load();
-      refreshShell();
     } catch (err) {
       setError(err.message);
+    } finally {
+      setLoading(false);
     }
   }
 
-  async function changeStatus(account, action) {
-    setError('');
-    setMessage('');
-    try {
-      await request(`/account-admin/accounts/${account.id}/${action}`, { method: 'POST' });
-      setMessage(action === 'activate' ? 'Account activated.' : 'Account deactivated.');
-      await load();
-      refreshShell();
-    } catch (err) {
-      setError(err.message);
-    }
+  useEffect(() => {
+    load();
+    return () => window.clearTimeout(searchDebounceRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function updateFilters(next) {
+    const merged = { ...latestFiltersRef.current, ...next };
+    latestFiltersRef.current = merged;
+    setFilters(merged);
+    load(merged);
   }
 
-  async function archiveAccount(account) {
-    setError('');
-    setMessage('');
-    try {
-      await request(`/account-admin/accounts/${account.id}`, { method: 'DELETE' });
-      if (form.id === account.id) resetForm();
-      setMessage('Account archived.');
-      await load();
-      refreshShell();
-    } catch (err) {
-      setError(err.message);
-    }
+  function handleSearchChange(value) {
+    const merged = { ...latestFiltersRef.current, search: value };
+    latestFiltersRef.current = merged;
+    setFilters(merged);
+    window.clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = window.setTimeout(() => {
+      load(latestFiltersRef.current);
+    }, 350);
   }
 
-  function applyFilters(e) {
-    e.preventDefault();
-    load(filters);
+  function submitSearch() {
+    window.clearTimeout(searchDebounceRef.current);
+    load(latestFiltersRef.current);
   }
+
+  function clearSearch() {
+    window.clearTimeout(searchDebounceRef.current);
+    updateFilters({ search: '' });
+  }
+
+  function handleFilterButtonClick() {
+    if (areFiltersOpen && hasActiveFilters) {
+      updateFilters({ customerStatus: '', pppoeStatus: '' });
+      return;
+    }
+    setFiltersOpen((value) => !value);
+  }
+
+  const isPppoeOnuMappingTab = filters.lifecycle === PPPOE_ONU_MAPPING_TAB;
+  const unmatchedMappingRows = mappingRows.filter((row) => !row.matched);
+  const matchedMappingRows = mappingRows.filter((row) => row.matched);
+  const visibleMappingRows = mappingView === MAPPING_MATCHED_ONUS ? matchedMappingRows : unmatchedMappingRows;
+  const mappingViewLabel = mappingView === MAPPING_MATCHED_ONUS ? 'PPPoE with matched ONUs' : 'PPPoE without ONUs';
+  const tableTitle = isPppoeOnuMappingTab ? `${mappingViewLabel} (${visibleMappingRows.length})` : `Customer Accounts (${rows.length})`;
 
   return (
     <div className="account-admin-module">
-      {message && <div className="alert alert-info">{message}</div>}
       {error && <div className="alert alert-danger">{error}</div>}
-      <ul className="nav nav-tabs mb-3">
-        {['Overview', 'Accounts'].map((tab) => (
-          <li className="nav-item" key={tab}>
-            <button className={`nav-link ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>{tab}</button>
-          </li>
-        ))}
-      </ul>
 
-      {activeTab === 'Overview' && (
-        <div className="row row-cards">
-          {[
-            ['Accounts', overview.metrics.accounts, IconUsers, 'blue'],
-            ['Active', overview.metrics.active, IconCircleCheck, 'green'],
-            ['Inactive', overview.metrics.inactive, IconCircleOff, 'yellow']
-          ].map(([label, value, Icon, tone]) => (
-            <div className="col-sm-6 col-lg-4" key={label}>
-              <div className="card account-admin-stat">
-                <div className="card-body">
-                  <span className={`badge bg-${tone}-lt text-${tone} mb-3`}><Icon size={18} /></span>
-                  <div className="h1 mb-0">{value ?? 0}</div>
-                  <div className="text-muted">{label}</div>
+      <div className="row row-cards">
+        <div className="col-12">
+          <Card
+            className="account-admin-table-card"
+            title={tableTitle}
+            icon={IconUsers}
+            actions={(
+              <div className="btn-list account-admin-header-actions">
+                <div className="account-admin-header-search">
+                  <label className="visually-hidden" htmlFor="customer-account-search">Search customer accounts</label>
+                  <div className="input-icon account-admin-header-search-input">
+                    <span className="input-icon-addon"><IconSearch size={16} /></span>
+                    <input
+                      id="customer-account-search"
+                      className="form-control form-control-sm"
+                      placeholder="Search customer, account, PPPoE, router, ONU, ticket"
+                      value={filters.search}
+                      onChange={(event) => handleSearchChange(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          submitSearch();
+                        }
+                      }}
+                    />
+                    {filters.search && (
+                      <button type="button" className="account-admin-search-clear" title="Clear search" aria-label="Clear search" onClick={clearSearch}>
+                        <IconX size={14} />
+                      </button>
+                    )}
+                  </div>
                 </div>
+                <button
+                  className={`btn btn-outline-secondary btn-sm account-admin-header-icon-button ${areFiltersOpen ? 'active' : ''}`}
+                  title={areFiltersOpen ? (hasActiveFilters ? 'Clear Filters' : 'Close Filter') : 'Filter'}
+                  aria-label={areFiltersOpen ? (hasActiveFilters ? 'Clear Filters' : 'Close Filter') : 'Filter'}
+                  onClick={handleFilterButtonClick}
+                  aria-expanded={areFiltersOpen}
+                  type="button"
+                >
+                  {areFiltersOpen ? <IconX size={16} /> : <IconFilter size={16} />}
+                </button>
               </div>
-            </div>
-          ))}
-          <div className="col-lg-7">
-            <Card title="Recent Accounts" icon={IconUserCog}>
-              <AccountTable accounts={overview.recentAccounts || []} compact />
-            </Card>
-          </div>
-          <div className="col-lg-5">
-            <Card title="Current Scope" icon={IconShieldLock}>
-              {(overview.notes || []).map((note) => <div className="alert alert-info mb-2" key={note}>{note}</div>)}
-            </Card>
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'Accounts' && (
-        <div className="row row-cards">
-          <div className="col-12 col-xl-4">
-            <Card title={form.id ? 'Edit Account' : 'Create Account'} icon={form.id ? IconEdit : IconPlus}>
-              <form onSubmit={saveAccount}>
-                <div className="row g-3">
-                  <div className="col-12"><TextField label="Username" value={form.username} required onChange={(value) => setForm({ ...form, username: value })} /></div>
-                  <div className="col-12"><TextField label="Full Name" value={form.fullName} required onChange={(value) => setForm({ ...form, fullName: value })} /></div>
-                  <div className="col-12"><TextField label={form.id ? 'Password (leave blank to keep)' : 'Password'} type="password" value={form.password} required={!form.id} onChange={(value) => setForm({ ...form, password: value })} /></div>
-                  <div className="col-12"><TextField label="Email" value={form.email} onChange={(value) => setForm({ ...form, email: value })} /></div>
-                  <div className="col-12"><TextField label="Phone" value={form.phone} onChange={(value) => setForm({ ...form, phone: value })} /></div>
-                  <div className="col-12">
-                    <label className="form-label">Status</label>
-                    <select className="form-select" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
-                      {(meta.accountStatuses || ['ACTIVE', 'INACTIVE']).map((status) => <option key={status} value={status}>{status}</option>)}
+            )}
+          >
+            {areFiltersOpen && (
+              <div className="account-admin-table-filters">
+                <div className="row g-2 align-items-end">
+                  <div className="col-md-3">
+                    {!isPppoeOnuMappingTab && (
+                      <>
+                        <label className="form-label">Customer Status</label>
+                        <select className="form-select" value={filters.customerStatus} onChange={(event) => updateFilters({ customerStatus: event.target.value })}>
+                          <option value="">All</option>
+                          {customerStatuses.map((item) => <option key={item} value={item}>{titleize(item)}</option>)}
+                        </select>
+                      </>
+                    )}
+                  </div>
+                  <div className="col-md-3">
+                    <label className="form-label">PPPoE Status</label>
+                    <select className="form-select" value={filters.pppoeStatus} onChange={(event) => updateFilters({ pppoeStatus: event.target.value })}>
+                      <option value="">All</option>
+                      {pppoeStatuses.map((item) => <option key={item} value={item}>{titleize(item)}</option>)}
                     </select>
                   </div>
-                  <div className="col-12">
-                    <label className="form-label">Notes</label>
-                    <textarea className="form-control" rows="3" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
-                  </div>
-                  <div className="col-12 d-flex justify-content-end gap-2">
-                    {form.id && <button className="btn" type="button" onClick={resetForm}>Cancel</button>}
-                    <button className="btn btn-primary"><IconDeviceFloppy size={18} className="me-2" />Save Account</button>
+                  <div className="col-md-auto">
+                    <button className="btn" type="button" onClick={() => load(filters, { refresh: true })}>
+                      <IconRefresh size={18} className="me-2" />
+                      Refresh
+                    </button>
                   </div>
                 </div>
-              </form>
-            </Card>
-          </div>
-          <div className="col-12 col-xl-8">
-            <Card title="Admin Accounts" icon={IconUsers} actions={<button className="btn btn-sm" onClick={() => load()}><IconRefresh size={16} className="me-1" />Refresh</button>}>
-              <form className="account-admin-filters" onSubmit={applyFilters}>
-                <div className="input-icon">
-                  <span className="input-icon-addon"><IconSearch size={16} /></span>
-                  <input className="form-control" placeholder="Search username, name, email, phone" value={filters.search} onChange={(e) => setFilters({ ...filters, search: e.target.value })} />
-                </div>
-                <select className="form-select" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
-                  <option value="">All statuses</option>
-                  {(meta.accountStatuses || []).map((status) => <option key={status} value={status}>{status}</option>)}
-                </select>
-                <button className="btn btn-primary">Filter</button>
-              </form>
-              <AccountTable accounts={accounts} selectedId={form.id} onEdit={editAccount} onActivate={(account) => changeStatus(account, 'activate')} onDeactivate={(account) => changeStatus(account, 'deactivate')} onArchive={archiveAccount} />
-            </Card>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+              </div>
+            )}
 
-function AccountTable({ accounts, selectedId = '', onEdit, onActivate, onDeactivate, onArchive, compact = false }) {
-  if (!accounts?.length) return <div className="empty">No accounts found.</div>;
-  return (
-    <div className="table-responsive">
-      <table className="table card-table table-vcenter account-admin-table">
-        <thead>
-          <tr>
-            <th>Account</th>
-            {!compact && <th>Contact</th>}
-            <th>Status</th>
-            {!compact && <th>Last Login</th>}
-            {!compact && <th className="text-end">Actions</th>}
-          </tr>
-        </thead>
-        <tbody>
-          {accounts.map((account) => (
-            <tr key={account.id} className={selectedId === account.id ? 'table-active' : ''}>
-              <td>
-                <div className="fw-semibold">{account.fullName}</div>
-                <div className="text-muted">@{account.username}</div>
-              </td>
-              {!compact && (
-                <td>
-                  <div>{fmt(account.email)}</div>
-                  <div className="text-muted">{fmt(account.phone)}</div>
-                </td>
-              )}
-              <td><span className={`badge ${statusClass(account.status)}`}>{account.status}</span></td>
-              {!compact && <td>{fmt(account.lastLoginAt)}</td>}
-              {!compact && (
-                <td className="text-end">
-                  <div className="btn-list justify-content-end flex-nowrap">
-                    <button className="btn btn-sm" onClick={() => onEdit(account)}><IconEdit size={16} className="me-1" />Edit</button>
-                    {account.status === 'ACTIVE' ? (
-                      <button className="btn btn-sm btn-outline-warning" onClick={() => onDeactivate(account)}><IconCircleOff size={16} className="me-1" />Deactivate</button>
-                    ) : (
-                      <button className="btn btn-sm btn-outline-success" onClick={() => onActivate(account)}><IconCircleCheck size={16} className="me-1" />Activate</button>
+            <div className="account-admin-status-tabs" role="tablist" aria-label="Customer account status filter">
+              {tabs.map((item) => (
+                <button
+                  type="button"
+                  key={item.label}
+                  className={`account-admin-status-tab ${filters.lifecycle === item.value ? 'active' : ''}`}
+                  onClick={() => updateFilters({ lifecycle: item.value })}
+                  role="tab"
+                  aria-selected={filters.lifecycle === item.value}
+                >
+                  <span>{item.label}</span>
+                  <span className={`badge bg-${item.tone}-lt text-${item.tone}`}>{item.count}</span>
+                </button>
+              ))}
+            </div>
+
+            {isPppoeOnuMappingTab && (
+              <div className="account-admin-mapping-tabs" role="tablist" aria-label="PPPoE ONU match filter">
+                <button
+                  type="button"
+                  className={`account-admin-mapping-tab ${mappingView === MAPPING_WITHOUT_ONUS ? 'active' : ''}`}
+                  onClick={() => setMappingView(MAPPING_WITHOUT_ONUS)}
+                  role="tab"
+                  aria-selected={mappingView === MAPPING_WITHOUT_ONUS}
+                >
+                  <span>PPPoE without ONUs</span>
+                  <span className="badge bg-red-lt text-red">{unmatchedMappingRows.length}</span>
+                </button>
+                <button
+                  type="button"
+                  className={`account-admin-mapping-tab ${mappingView === MAPPING_MATCHED_ONUS ? 'active' : ''}`}
+                  onClick={() => setMappingView(MAPPING_MATCHED_ONUS)}
+                  role="tab"
+                  aria-selected={mappingView === MAPPING_MATCHED_ONUS}
+                >
+                  <span>PPPoE with matched ONUs</span>
+                  <span className="badge bg-green-lt text-green">{matchedMappingRows.length}</span>
+                </button>
+              </div>
+            )}
+
+            {isPppoeOnuMappingTab && mappingView === MAPPING_MATCHED_ONUS && mappingMeta?.sampleMatch?.customer && (
+              <div className="account-admin-mapping-sample">
+                <div>
+                  <div className="text-muted small">Sample matched customer</div>
+                  <div className="fw-bold">{mappingMeta.sampleMatch.customer.name}</div>
+                </div>
+                <div>
+                  <div className="text-muted small">PPPoE</div>
+                  <div>{mappingMeta.sampleMatch.pppoe?.username || '-'}</div>
+                </div>
+                <div>
+                  <div className="text-muted small">ONU</div>
+                  <div>{mappingMeta.sampleMatch.onu?.name || '-'} / {mappingMeta.sampleMatch.onu?.oltName || '-'}</div>
+                </div>
+              </div>
+            )}
+
+            <div className="table-responsive">
+              {isPppoeOnuMappingTab ? (
+                <table className="table table-vcenter card-table account-admin-table account-admin-mapping-table">
+                  <thead>
+                    <tr>
+                      <th>PPPoE Account</th>
+                      <th>Router</th>
+                      <th>Status</th>
+                      <th>Caller ID / MAC</th>
+                      <th>Active IP</th>
+                      <th>Matched ONU</th>
+                      <th>ONU Match</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {loading && (
+                      <tr>
+                        <td colSpan="7" className="text-muted">Loading PPPoE accounts...</td>
+                      </tr>
                     )}
-                    <button className="btn btn-sm btn-outline-danger" onClick={() => onArchive(account)}><IconTrash size={16} className="me-1" />Archive</button>
-                  </div>
-                </td>
+                    {!loading && mappingRows.length === 0 && (
+                      <tr>
+                        <td colSpan="7"><div className="empty">No PPPoE accounts match the current filters.</div></td>
+                      </tr>
+                    )}
+                    {!loading && mappingRows.length > 0 && visibleMappingRows.length === 0 && (
+                      <tr>
+                        <td colSpan="7"><div className="empty">No rows in {mappingViewLabel.toLowerCase()} for the current filters.</div></td>
+                      </tr>
+                    )}
+                    {!loading && visibleMappingRows.map((row) => (
+                      <tr key={row.id || row.pppoe?.id}>
+                        <td>
+                          <div className="fw-bold">{row.pppoe?.username || '-'}</div>
+                          <div className="text-muted small">{row.pppoe?.profile || row.pppoe?.service || '-'}</div>
+                        </td>
+                        <td>
+                          <div>{row.pppoe?.routerName || '-'}</div>
+                          <div className="text-muted small">{row.pppoe?.routerEndpoint || '-'}</div>
+                        </td>
+                        <td><StatusBadge value={row.pppoe?.status} /></td>
+                        <td>
+                          <div>{row.pppoe?.callerId || '-'}</div>
+                          <div className="text-muted small">{row.pppoe?.macAddress || row.pppoe?.lastCallerId || '-'}</div>
+                        </td>
+                        <td>
+                          <div>{row.pppoe?.activeAddress || row.pppoe?.remoteAddress || '-'}</div>
+                        </td>
+                        <td>
+                          <div className="fw-bold">{row.onu?.name || '-'}</div>
+                          <div className="text-muted small">
+                            {row.onu ? `${row.onu.oltName || '-'} / ${row.onu.ponLabel || '-'} / ONU ${row.onu.onuId || '-'}` : 'No captured ONU'}
+                          </div>
+                          <div className="text-muted small">{row.onu?.macAddress || row.onu?.learnedClientMacAddress || row.onu?.serialNumber || '-'}</div>
+                        </td>
+                        <td>
+                          <StatusBadge value={row.matchStatus} />
+                          <div className="text-muted small mt-1">{row.matchReason || '-'}</div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <table className="table table-vcenter card-table account-admin-table">
+                  <thead>
+                    <tr>
+                      <th>Customer</th>
+                      <th>Customer Status</th>
+                      <th>PPPoE Account</th>
+                      <th>Router</th>
+                      <th>Tickets</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {loading && (
+                      <tr>
+                        <td colSpan="5" className="text-muted">Loading customer accounts...</td>
+                      </tr>
+                    )}
+                    {!loading && rows.length === 0 && (
+                      <tr>
+                        <td colSpan="5"><div className="empty">No customer accounts match the current filters.</div></td>
+                      </tr>
+                    )}
+                    {!loading && rows.map((row) => (
+                      <tr key={row.customerId}>
+                        <td>
+                          <div className="fw-bold">{row.customer.name}</div>
+                          <div className="text-muted small">{row.customer.accountNumber || row.customer.contactNumber || '-'}</div>
+                        </td>
+                        <td><StatusBadge value={row.customer.status} /></td>
+                        <td>
+                          <div>{row.pppoeBinding?.username || row.desiredPppoeUsername || '-'}</div>
+                          <div className="mt-1"><StatusBadge value={row.pppoeStatus} /></div>
+                        </td>
+                        <td>
+                          <div>{row.pppoeBinding?.routerName || row.routerName || '-'}</div>
+                          <div className="text-muted small">{row.pppoeBinding?.activeAddress || row.pppoeBinding?.remoteAddress || row.staticIp || '-'}</div>
+                        </td>
+                        <td>
+                          <div className="d-flex align-items-center gap-2">
+                            <span className={`badge bg-${row.openTicketCount ? 'orange' : 'secondary'}-lt text-${row.openTicketCount ? 'orange' : 'secondary'}`}>
+                              {row.ticketCount || 0}
+                            </span>
+                            <span>{row.latestTicket?.ticketNumber || '-'}</span>
+                          </div>
+                          {row.latestTicket ? (
+                            <div className="account-admin-ticket-stack">
+                              <div className="account-admin-ticket-meta">
+                                <StatusBadge value={row.latestTicket.category || 'GENERAL'} />
+                                <StatusBadge value={row.latestTicket.status || 'OPEN'} />
+                                <StatusBadge value={row.latestTicket.priority || 'NORMAL'} />
+                              </div>
+                              <div className="text-muted small">{row.latestTicket.subject || 'No ticket subject'}</div>
+                              {(row.latestTicket.accountAdminActions || []).length > 0 && (
+                                <div className="account-admin-ticket-actions">
+                                  {(row.latestTicket.accountAdminActions || []).map((action) => (
+                                    <span className="badge bg-green-lt text-green" key={action.code}>{action.label}</span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="text-muted small">No assigned ticket</div>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               )}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+            </div>
+          </Card>
+        </div>
+      </div>
     </div>
   );
 }

@@ -14,7 +14,7 @@ Service owns the ISP-facing definition of offered internet services, customer se
 - Service Account: create, update, list, and archive customer internet lines/subscriptions with current catalog item, service address, account number, service reference, activation date, and lifecycle status.
 - Service Order: create, update, list, and cancel customer service orders with a request type and workflow status. Cancelled orders remain visible as historical records.
 - Customer lookup: Service Order uses Customer Profiling as the source of customer identity.
-- Cross-module references: Service Order IDs and service references are exposed for Billing subscriptions and Ticketing tickets.
+- Cross-module references: Service Order IDs and service references are exposed for Billing subscriptions and Ticketing tickets. Creating a Service Order now automatically creates a linked Ticketing ticket and stores the ticket reference on the Service Order.
 - Customer avatar behavior: Service customer views use System Settings `CustomerEmotionAvatar`; service account status and service order state affect the displayed mood.
 
 ## Service Order Phase 1 Workflow
@@ -49,7 +49,9 @@ The API exposes `orderDetailRequiredStatuses` in `/api/service/meta` and include
 
 ## Service Order Modal Rules
 
-The Service Order creation modal is organized as a guided staged flow, similar to Customer Profiling creation: Customer, Order Type, Order, Service Catalog, and Review. The modal uses a fixed viewport-constrained height so the dialog does not resize when stage content changes, and its bottom action band has a stable fixed height. Order Type starts unselected, card descriptions appear as hover tooltips, and the selected order type shows a green check mark. Progress starts at 0% and advances only after a stage is completed. Cancel, Previous, Next, and Save actions stay pinned at the bottom of the modal so the user does not need to scroll to proceed. Service catalog selection appears only when the order type needs a catalog decision: New Installation, Plan Upgrade, Plan Downgrade, and Add-on Service. Account-operation orders such as Relocation, Suspension, Reconnection, Disconnection, Change Ownership, and Equipment Replacement keep the existing Service Account catalog through a read-only catalog stage. The Review stage requires confirmation before Save is enabled.
+The Service Order creation modal is organized as a guided staged flow, similar to Customer Profiling creation: Customer, Order Type, Order, Service Catalog, Ticket, and Review. The modal uses a fixed viewport-constrained height so the dialog does not resize when stage content changes, and its bottom action band has a stable fixed height. Order Type starts unselected, card descriptions appear as hover tooltips, and the selected order type shows a green check mark. Progress starts at 0% and advances only after a stage is completed. Cancel, Previous, Next, and Save actions stay pinned at the bottom of the modal so the user does not need to scroll to proceed. The Order stage collects only fields relevant to the selected order type: New Installation shows Installation Address, Plan Upgrade/Downgrade collect effective date and plan-change details, Relocation collects current/new service address and target transfer date, Change Ownership selects the new owner from Customer Profiling, Suspension/Reconnection/Disconnection collect their own operational dates/reasons/balance fields, Add-on collects provisioning details, and Equipment Replacement collects replacement details. Service catalog selection appears only when the order type needs a catalog decision: New Installation, Plan Upgrade, Plan Downgrade, and Add-on Service. Account-operation orders such as Relocation, Suspension, Reconnection, Disconnection, Change Ownership, and Equipment Replacement keep the existing Service Account catalog through a read-only catalog stage. The Ticket stage previews the operations ticket that Ticketing will create when the Service Order is saved. The Review stage requires confirmation before Save is enabled.
+
+Current-state and catalog-derived Service Order detail fields are read-only in the modal. This includes current plan, current service address, catalog-selected installation fee, computed plan price difference, selected add-on name, selected add-on monthly charge, and generated Change Ownership customer snapshot fields.
 
 The Customer stage provides search with an inline clear button plus location and account-type filters. Customer rows show an avatar, customer label, and location as barangay plus municipality only. Selected customer cards show avatar, customer label, full customer address, customer status, and all Service Order records for that customer; contact numbers, account-type badges, and service account summaries are intentionally not shown in this stage.
 
@@ -58,6 +60,8 @@ The Service Accounts table in the Service Order page is customer-account centere
 Plan Downgrade is only available when the current active Service Catalog has a lower internet plan than the selected Service Account plan. If the customer is already on the lowest active plan, the type picker disables Plan Downgrade until a lower active plan is created. The API also rejects Plan Downgrade/Upgrade orders whose selected catalog item does not move lower/higher than the current Service Account plan.
 
 The modal only collects intake fields. Workflow status, service reference, and actual activation date are system-owned fields and are not editable in the modal. Actual activation should be set later by fulfillment workflow events, such as ticket/work-order completion.
+
+Change Ownership requires selecting a different Customer Profiling record as the new owner. On completed Change Ownership orders, the Service Account owner snapshot is moved to that selected customer.
 
 Seed catalog data includes internet plans plus add-on items such as Static IP and Mesh WiFi so Add-on Service orders can select a relevant catalog item. The catalog form adapts by item type: internet plans show speed, install, and contract fields; add-ons show add-on pricing and provisioning fields; one-time installation items show setup pricing.
 
@@ -86,6 +90,6 @@ Seed catalog data includes internet plans plus add-on items such as Static IP an
 
 Customer Profiling no longer owns service assignment. It may display Service-owned accounts and orders for a selected customer, but creation and lifecycle changes belong here.
 
-Billing should eventually subscribe against Service Account. Ticketing, inventory, and installation workflows should use Service Account plus Service Order references when those workflows are expanded.
+Billing should eventually subscribe against Service Account. Ticketing now receives an automatic ticket for each new Service Order through the shared app-shell wiring. Inventory and installation workflows should use Service Account plus Service Order references when those workflows are expanded.
 
 The current implementation is in-memory for the first working shell. Shared PostgreSQL persistence should replace the in-memory lists before production use.

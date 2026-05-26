@@ -29,7 +29,7 @@
 
 .pos-register-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(360px, 0.65fr);
+  grid-template-columns: minmax(0, 1.15fr) minmax(430px, 0.85fr);
   gap: 1rem;
   align-items: start;
 }
@@ -68,6 +68,10 @@
   text-transform: uppercase;
 }
 
+.pos-stock-badge {
+  width: fit-content;
+}
+
 .pos-cart-lines {
   display: grid;
   gap: 0.5rem;
@@ -75,9 +79,24 @@
 
 .pos-cart-line {
   display: grid;
-  grid-template-columns: minmax(130px, 1fr) 74px 96px minmax(90px, 0.6fr) 40px;
+  grid-template-columns: minmax(0, 1fr) minmax(56px, 0.38fr) minmax(70px, 0.5fr) minmax(76px, 0.55fr) 40px;
   gap: 0.5rem;
   align-items: center;
+  width: 100%;
+}
+
+.pos-cart-line > div {
+  min-width: 0;
+}
+
+.pos-cart-line strong,
+.pos-cart-line .text-muted {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.pos-office-cart-line {
+  grid-template-columns: minmax(0, 1fr) minmax(56px, 0.38fr) minmax(90px, 0.6fr) 40px;
 }
 
 .pos-total-panel {
@@ -92,6 +111,168 @@
 
 .pos-total-panel strong {
   font-size: 1.1rem;
+}
+
+.pos-mode-switch .btn {
+  min-height: 40px;
+}
+
+.pos-office-summary strong {
+  color: var(--tblr-primary);
+}
+
+.pos-invoice-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 1rem;
+}
+
+.pos-invoice-metric {
+  min-height: 96px;
+  border: 1px solid var(--tblr-border-color);
+  border-radius: 8px;
+  background: var(--tblr-bg-surface);
+  padding: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+}
+
+.pos-invoice-metric .badge {
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.pos-invoice-metric strong,
+.pos-invoice-metric span {
+  display: block;
+}
+
+.pos-invoice-metric strong {
+  font-size: 1.2rem;
+  line-height: 1.2;
+}
+
+.pos-invoice-metric span {
+  color: var(--tblr-muted);
+}
+
+.pos-invoice-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.8fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.pos-invoice-table tbody tr.is-selected td {
+  background: var(--tblr-primary-lt);
+}
+
+.pos-invoice-table td {
+  cursor: default;
+}
+
+.pos-history-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.pos-history-panel {
+  display: grid;
+  gap: 1rem;
+}
+
+.pos-history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.pos-history-header h4 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.pos-history-header p {
+  margin: 0.2rem 0 0;
+  color: var(--tblr-muted);
+}
+
+.pos-table-controls {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(160px, auto) minmax(150px, auto);
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.pos-table-search {
+  position: relative;
+}
+
+.pos-table-search svg {
+  position: absolute;
+  left: 0.65rem;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--tblr-muted);
+  pointer-events: none;
+}
+
+.pos-table-search .form-control {
+  padding-left: 2rem;
+}
+
+.pos-table-select {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+}
+
+.pos-table-select span {
+  color: var(--tblr-muted);
+  font-size: 0.75rem;
+}
+
+.pos-table-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: var(--tblr-muted);
+  font-size: 0.875rem;
+}
+
+.pos-payment-summary {
+  border: 1px solid var(--tblr-border-color);
+  border-radius: 8px;
+  background: var(--tblr-bg-surface-secondary);
+  padding: 0.85rem;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.pos-payment-summary div {
+  min-width: 0;
+  display: grid;
+  gap: 0.15rem;
+}
+
+.pos-payment-summary span {
+  color: var(--tblr-muted);
+  font-size: 0.76rem;
+  text-transform: uppercase;
+}
+
+.pos-payment-summary strong {
+  overflow-wrap: anywhere;
 }
 
 .pos-drawer-backdrop {
@@ -160,6 +341,22 @@
   .pos-cart-line {
     grid-template-columns: 1fr 1fr;
   }
+
+  .pos-office-cart-line {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .pos-invoice-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .pos-table-controls {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .pos-table-search {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 576px) {
@@ -173,5 +370,19 @@
 
   .pos-low-stock-counts {
     text-align: left;
+  }
+
+  .pos-payment-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .pos-history-header,
+  .pos-table-pagination {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .pos-table-controls {
+    grid-template-columns: 1fr;
   }
 }

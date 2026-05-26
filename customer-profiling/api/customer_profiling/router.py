@@ -178,6 +178,7 @@ BULK_UPLOAD_HEADERS = [
     "middleName",
     "lastName",
     "businessName",
+    "birthDate",
     "contactNumber",
     "alternateMobileNumber",
     "facebookAccountName",
@@ -210,6 +211,7 @@ class CustomerPayload(BaseModel):
     lastName: str | None = None
     middleName: str | None = None
     businessName: str | None = None
+    birthDate: str | None = None
     contactNumber: str | None = None
     alternateMobileNumber: str | None = None
     facebookAccountName: str | None = None
@@ -392,6 +394,7 @@ def customer_payload_to_record(payload: CustomerPayload, current: dict[str, Any]
     base["status"] = normalize_upper(base.get("status") or "ACTIVE")
     base["gender"] = normalize_upper(base.get("gender") or "MALE")
     base["businessName"] = clean_value(base.get("businessName")) or ""
+    base["birthDate"] = clean_value(base.get("birthDate")) or ""
     base["province"] = normalize_upper(base.get("province"))
     base["city"] = normalize_upper(base.get("city"))
     base["barangay"] = normalize_upper(base.get("barangay"))
@@ -430,6 +433,7 @@ def seed_customer_data() -> None:
             "firstName": "MARIA",
             "lastName": "SANTOS",
             "middleName": "LOPEZ",
+            "birthDate": "2002-05-18",
             "contactNumber": "09171234567",
             "alternateMobileNumber": "09180000001",
             "facebookAccountName": "MARIA SANTOS",
@@ -452,6 +456,7 @@ def seed_customer_data() -> None:
             "firstName": "JUAN",
             "lastName": "DELA CRUZ",
             "businessName": "DELA CRUZ SARI-SARI STORE",
+            "birthDate": "1995-09-12",
             "contactNumber": "09180000001",
             "facebookAccountName": "JUAN DELA CRUZ",
             "email": "juan.delacruz@example.com",
@@ -472,6 +477,7 @@ def seed_customer_data() -> None:
             "accountNumber": "83476195",
             "firstName": "ANGELA",
             "lastName": "REYES",
+            "birthDate": "1999-01-24",
             "contactNumber": "09180000002",
             "facebookAccountName": "ANGELA REYES",
             "email": "a.reyes@example.com",
@@ -491,6 +497,7 @@ def seed_customer_data() -> None:
             "accountNumber": "67921453",
             "firstName": "KERVIN",
             "lastName": "TAN",
+            "birthDate": "1988-07-03",
             "contactNumber": "09180000003",
             "facebookAccountName": "KERVIN TAN",
             "email": "kervin.tan@example.com",
@@ -510,6 +517,7 @@ def seed_customer_data() -> None:
             "accountNumber": "94573268",
             "firstName": "LIZA",
             "lastName": "GARCIA",
+            "birthDate": "2001-11-09",
             "contactNumber": "09180000004",
             "facebookAccountName": "LIZA GARCIA",
             "addressLine1": "24 MAPLE ST",
@@ -622,8 +630,40 @@ def list_customers(
     if barangay:
         rows = [customer for customer in rows if normalize_upper(barangay) in customer.get("barangay", "")]
 
+    sortable_fields = {
+        "accountNumber": lambda customer: str(customer.get("accountNumber") or "").lower(),
+        "fullName": lambda customer: customer_full_name(customer).lower(),
+        "businessName": lambda customer: str(customer.get("businessName") or "").lower(),
+        "birthDate": lambda customer: str(customer.get("birthDate") or "").lower(),
+        "contactNumber": lambda customer: str(customer.get("contactNumber") or "").lower(),
+        "alternateMobileNumber": lambda customer: str(customer.get("alternateMobileNumber") or "").lower(),
+        "facebookAccountName": lambda customer: str(customer.get("facebookAccountName") or "").lower(),
+        "facebookProfileLink": lambda customer: str(customer.get("facebookProfileLink") or "").lower(),
+        "email": lambda customer: str(customer.get("email") or "").lower(),
+        "secondaryContacts": lambda customer: " ".join(
+            str(contact.get(field) or "").lower()
+            for contact in customer.get("secondaryContacts", [])
+            for field in ["name", "relationship", "contactNumber"]
+        ),
+        "customerType": lambda customer: str(customer.get("customerType") or "").lower(),
+        "status": lambda customer: str(customer.get("status") or "").lower(),
+        "locationName": lambda customer: str(customer.get("locationName") or customer.get("locationId") or "").lower(),
+        "landmark": lambda customer: str(customer.get("landmark") or "").lower(),
+        "province": lambda customer: str(customer.get("province") or "").lower(),
+        "city": lambda customer: str(customer.get("city") or "").lower(),
+        "barangay": lambda customer: str(customer.get("barangay") or "").lower(),
+        "address": lambda customer: " ".join(
+            str(customer.get(field) or "").lower()
+            for field in ["province", "city", "barangay", "addressLine1", "addressLine2"]
+        ),
+        "coordinates": lambda customer: f"{customer.get('longitude') or ''} {customer.get('latitude') or ''}".lower(),
+        "longitude": lambda customer: str(customer.get("longitude") or "").lower(),
+        "latitude": lambda customer: str(customer.get("latitude") or "").lower(),
+        "createdAt": lambda customer: str(customer.get("createdAt") or "").lower(),
+    }
     reverse = sortDir.lower() != "asc"
-    rows = sorted(rows, key=lambda customer: str(customer.get(sortBy) or "").lower(), reverse=reverse)
+    sort_key = sortable_fields.get(sortBy, sortable_fields["createdAt"])
+    rows = sorted(rows, key=sort_key, reverse=reverse)
     total = len(rows)
     start = (page - 1) * pageSize
     end = start + pageSize
@@ -647,6 +687,7 @@ def customer_bulk_upload_template(admin=Depends(require_admin)):
             "middleName": "D",
             "lastName": "DELA CRUZ",
             "businessName": "",
+            "birthDate": "2002-05-18",
             "contactNumber": "09171234567",
             "alternateMobileNumber": "09180000001",
             "facebookAccountName": "JUAN DELA CRUZ",

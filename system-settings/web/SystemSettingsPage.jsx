@@ -1,11 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import {
   IconBrandOpenai,
+  IconCircleCheck,
+  IconCircleOff,
+  IconCopy,
   IconDatabase,
   IconDeviceFloppy,
   IconEdit,
   IconKey,
   IconMapPin,
+  IconMail,
   IconNetwork,
   IconPhoto,
   IconPlayerPlay,
@@ -14,10 +18,13 @@ import {
   IconRobot,
   IconSearch,
   IconSettings,
+  IconShieldCheck,
   IconShieldLock,
   IconSparkles,
   IconTrash,
-  IconUpload
+  IconUpload,
+  IconUserPlus,
+  IconUsers
 } from '@tabler/icons-react';
 import { CUSTOMER_AVATAR_GENDERS, DEFAULT_CUSTOMER_EMOTION_SETTINGS } from './avatarEmotion';
 import './systemSettings.css';
@@ -1215,8 +1222,544 @@ function OpenAISettingsTab() {
   );
 }
 
+const blankRole = {
+  id: '',
+  name: '',
+  description: '',
+  permissionCodes: []
+};
+
+const blankUser = {
+  id: '',
+  username: '',
+  email: '',
+  fullName: '',
+  roleId: '',
+  password: '',
+  isActive: true,
+  mustChangePassword: false
+};
+
+function PermissionSelector({ groups, selectedCodes, disabled = false, onToggle }) {
+  const [query, setQuery] = useState('');
+  const selected = new Set(selectedCodes || []);
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredGroups = (groups || [])
+    .map((group) => ({
+      ...group,
+      permissions: (group.permissions || []).filter((permission) => {
+        if (!normalizedQuery) return true;
+        return `${permission.code} ${permission.label} ${permission.description}`.toLowerCase().includes(normalizedQuery);
+      })
+    }))
+    .filter((group) => group.permissions.length);
+
+  return (
+    <div className="system-settings-permission-selector">
+      <div className="input-icon mb-3">
+        <span className="input-icon-addon"><IconSearch size={16} /></span>
+        <input className="form-control" placeholder="Search permissions" value={query} onChange={(event) => setQuery(event.target.value)} />
+      </div>
+      <div className="system-settings-permission-groups">
+        {filteredGroups.map((group) => (
+          <details className="system-settings-permission-group" open key={group.category}>
+            <summary>
+              <span className="fw-semibold">{group.category}</span>
+              <span className="badge bg-secondary-lt text-secondary ms-2">{group.permissions.length}</span>
+            </summary>
+            <div className="system-settings-permission-list">
+              {group.permissions.map((permission) => (
+                <label className="form-check system-settings-permission-row" key={permission.code}>
+                  <input
+                    className="form-check-input"
+                    type="checkbox"
+                    checked={selected.has(permission.code)}
+                    disabled={disabled}
+                    onChange={() => onToggle(permission.code)}
+                  />
+                  <span className="form-check-label">
+                    <span className="fw-semibold">{permission.label || permission.code}</span>
+                    <code className="ms-2">{permission.code}</code>
+                    <span className="text-muted d-block small">{permission.description}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </details>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AccessTab() {
+  const [accessTab, setAccessTab] = useState('Auth Settings');
+  const [access, setAccess] = useState(null);
+  const [authForm, setAuthForm] = useState(null);
+  const [roleForm, setRoleForm] = useState(blankRole);
+  const [userForm, setUserForm] = useState(blankUser);
+  const [roleModalOpen, setRoleModalOpen] = useState(false);
+  const [userModalOpen, setUserModalOpen] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [resetPassword, setResetPassword] = useState('');
+
+  async function loadAccess() {
+    setError('');
+    try {
+      const data = await request('/system-settings/access');
+      setAccess(data);
+      setAuthForm(data.authSettings);
+      if (!userForm.roleId && data.roles?.[0]?.id) {
+        setUserForm((current) => ({ ...current, roleId: data.roles[0].id }));
+      }
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  useEffect(() => {
+    loadAccess();
+  }, []);
+
+  if (!access || !authForm) return <div className="empty">Loading access settings...</div>;
+
+  const roleById = new Map((access.roles || []).map((role) => [role.id, role]));
+
+  function patchAuth(updates) {
+    setAuthForm({ ...authForm, ...updates });
+  }
+
+  function patchSmtp(updates) {
+    setAuthForm({ ...authForm, smtp: { ...(authForm.smtp || {}), ...updates } });
+  }
+
+  async function saveAuthSettings(event) {
+    event.preventDefault();
+    setMessage('');
+    setError('');
+    try {
+      const data = await request('/system-settings/access/auth-settings', { method: 'PATCH', body: JSON.stringify(authForm) });
+      setAccess(data);
+      setAuthForm(data.authSettings);
+      setMessage('Access settings saved.');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function testSmtpEmail() {
+    setMessage('');
+    setError('');
+    try {
+      const recipientEmail = window.prompt('Send test email to:') || '';
+      if (!recipientEmail.trim()) return;
+      const data = await request('/system-settings/access/auth-settings/test-email', {
+        method: 'POST',
+        body: JSON.stringify({ recipientEmail })
+      });
+      setMessage(data.message || 'SMTP test sent.');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  function openRole(role = null) {
+    setResetPassword('');
+    setRoleForm(role ? {
+      id: role.id,
+      name: role.name || '',
+      description: role.description || '',
+      permissionCodes: role.permissionCodes || []
+    } : blankRole);
+    setRoleModalOpen(true);
+  }
+
+  function toggleRolePermission(code) {
+    const selected = new Set(roleForm.permissionCodes || []);
+    if (selected.has(code)) selected.delete(code);
+    else selected.add(code);
+    setRoleForm({ ...roleForm, permissionCodes: Array.from(selected).sort() });
+  }
+
+  async function saveRole(event) {
+    event.preventDefault();
+    setMessage('');
+    setError('');
+    const path = roleForm.id ? `/system-settings/access/roles/${roleForm.id}` : '/system-settings/access/roles';
+    const method = roleForm.id ? 'PATCH' : 'POST';
+    try {
+      const data = await request(path, {
+        method,
+        body: JSON.stringify({
+          name: roleForm.name,
+          description: roleForm.description,
+          permissionCodes: roleForm.permissionCodes
+        })
+      });
+      setAccess(data);
+      setRoleModalOpen(false);
+      setMessage(data.autoAddedPermissionCodes?.length
+        ? `${data.message} Required permissions auto-added: ${data.autoAddedPermissionCodes.join(', ')}.`
+        : data.message || 'Role saved.');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function deleteRole(role) {
+    if (!window.confirm(`Delete role "${role.name}"?`)) return;
+    setMessage('');
+    setError('');
+    try {
+      setAccess(await request(`/system-settings/access/roles/${role.id}`, { method: 'DELETE' }));
+      setMessage('Role deleted.');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  function openUser(user = null) {
+    setResetPassword('');
+    setUserForm(user ? {
+      id: user.id,
+      username: user.username || '',
+      email: user.email || '',
+      fullName: user.fullName || '',
+      roleId: user.roleId || access.roles?.[0]?.id || '',
+      password: '',
+      isActive: Boolean(user.isActive),
+      mustChangePassword: Boolean(user.mustChangePassword)
+    } : { ...blankUser, roleId: access.roles?.[0]?.id || '' });
+    setUserModalOpen(true);
+  }
+
+  async function saveUser(event) {
+    event.preventDefault();
+    setMessage('');
+    setError('');
+    const path = userForm.id ? `/system-settings/access/users/${userForm.id}` : '/system-settings/access/users';
+    const method = userForm.id ? 'PATCH' : 'POST';
+    const payload = { ...userForm };
+    if (userForm.id && !payload.password) delete payload.password;
+    try {
+      setAccess(await request(path, { method, body: JSON.stringify(payload) }));
+      setUserModalOpen(false);
+      setMessage(userForm.id ? 'User updated.' : 'User created.');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function resetUserPassword(user, emailTemporaryPassword = false) {
+    const promptLabel = emailTemporaryPassword ? 'Optional explicit temporary password. Leave blank to generate and email one.' : 'Optional new password. Leave blank to generate one.';
+    const newPassword = window.prompt(promptLabel) || '';
+    setMessage('');
+    setError('');
+    setResetPassword('');
+    try {
+      const data = await request(`/system-settings/access/users/${user.id}/reset-password`, {
+        method: 'POST',
+        body: JSON.stringify({ newPassword: newPassword.trim() || null, emailTemporaryPassword })
+      });
+      setAccess(data);
+      if (data.temporaryPassword) setResetPassword(data.temporaryPassword);
+      setMessage(data.message || 'Password reset.');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function deleteUser(user) {
+    if (!window.confirm(`Delete user "${user.username}"?`)) return;
+    setMessage('');
+    setError('');
+    try {
+      setAccess(await request(`/system-settings/access/users/${user.id}`, { method: 'DELETE' }));
+      setMessage('User deleted.');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  const tabs = ['Auth Settings', 'Permissions', 'Roles', 'Users'];
+
+  return (
+    <div className="system-settings-access">
+      {message && <div className="alert alert-info">{message}</div>}
+      {error && <div className="alert alert-danger">{error}</div>}
+      {resetPassword && (
+        <div className="alert alert-warning d-flex align-items-center justify-content-between gap-2">
+          <div>
+            <div className="fw-semibold">Temporary password generated</div>
+            <code>{resetPassword}</code>
+          </div>
+          <button className="btn btn-sm" type="button" onClick={() => navigator.clipboard?.writeText(resetPassword)}>
+            <IconCopy size={16} className="me-1" />Copy
+          </button>
+        </div>
+      )}
+
+      <div className="row row-cards mb-3">
+        <KpiCard icon={IconShieldLock} label="Permissions" value={access.metrics.permissions} tone="blue" />
+        <KpiCard icon={IconShieldCheck} label="Roles" value={access.metrics.roles} tone="green" />
+        <KpiCard icon={IconUsers} label="Users" value={access.metrics.users} tone="purple" />
+        <KpiCard icon={IconCircleCheck} label="Active Users" value={access.metrics.activeUsers} tone="cyan" />
+      </div>
+
+      <ul className="nav nav-tabs mb-3">
+        {tabs.map((item) => (
+          <li className="nav-item" key={item}>
+            <button type="button" className={`nav-link ${accessTab === item ? 'active' : ''}`} onClick={() => setAccessTab(item)}>{item}</button>
+          </li>
+        ))}
+      </ul>
+
+      {accessTab === 'Auth Settings' && (
+        <Card title="Authentication & Session" icon={IconKey}>
+          <form onSubmit={saveAuthSettings}>
+            <div className="row g-3">
+              <div className="col-md-4">
+                <label className="form-label">Enable Authentication</label>
+                <label className="form-check form-switch">
+                  <input className="form-check-input" type="checkbox" checked={Boolean(authForm.enabled)} onChange={(event) => patchAuth({ enabled: event.target.checked })} />
+                  <span className="form-check-label">Require login for all pages</span>
+                </label>
+              </div>
+              <div className="col-md-4">
+                <label className="form-label">Session Timeout (hours)</label>
+                <input className="form-control" type="number" min="1" max="72" value={authForm.sessionIdleHours || 8} onChange={(event) => patchAuth({ sessionIdleHours: Number(event.target.value) })} />
+                <div className="form-hint">Idle timeout per user session.</div>
+              </div>
+              <div className="col-md-4">
+                <label className="form-label">Audit Retention (days)</label>
+                <input className="form-control" type="number" min="30" max="3650" value={authForm.auditRetentionDays || 180} onChange={(event) => patchAuth({ auditRetentionDays: Number(event.target.value) })} />
+                <div className="form-hint">System keeps access logs for this period.</div>
+              </div>
+            </div>
+            <hr />
+            <h4 className="mb-3">Forgot Password Email (SMTP)</h4>
+            <div className="row g-3">
+              <div className="col-md-4">
+                <label className="form-label">SMTP Host</label>
+                <input className="form-control" value={authForm.smtp?.host || ''} onChange={(event) => patchSmtp({ host: event.target.value })} />
+              </div>
+              <div className="col-md-2">
+                <label className="form-label">Port</label>
+                <input className="form-control" type="number" min="1" max="65535" value={authForm.smtp?.port || 587} onChange={(event) => patchSmtp({ port: Number(event.target.value) })} />
+              </div>
+              <div className="col-md-3">
+                <label className="form-label">Username</label>
+                <input className="form-control" value={authForm.smtp?.username || ''} onChange={(event) => patchSmtp({ username: event.target.value })} />
+              </div>
+              <div className="col-md-3">
+                <label className="form-label">Password</label>
+                <input className="form-control" type="password" placeholder={authForm.smtp?.passwordConfigured ? 'Saved (leave blank to keep)' : 'Enter password'} value={authForm.smtp?.password || ''} onChange={(event) => patchSmtp({ password: event.target.value, clearPassword: false })} />
+                <label className="form-check mt-2">
+                  <input className="form-check-input" type="checkbox" checked={Boolean(authForm.smtp?.clearPassword)} onChange={(event) => patchSmtp({ clearPassword: event.target.checked, password: '' })} />
+                  <span className="form-check-label">Clear saved password</span>
+                </label>
+              </div>
+              <div className="col-md-4">
+                <label className="form-label">From Email</label>
+                <input className="form-control" type="email" value={authForm.smtp?.fromEmail || ''} onChange={(event) => patchSmtp({ fromEmail: event.target.value })} />
+              </div>
+              <div className="col-md-4">
+                <label className="form-label">From Name</label>
+                <input className="form-control" value={authForm.smtp?.fromName || ''} onChange={(event) => patchSmtp({ fromName: event.target.value })} />
+              </div>
+              <div className="col-md-2">
+                <label className="form-label">TLS</label>
+                <label className="form-check form-switch">
+                  <input className="form-check-input" type="checkbox" checked={Boolean(authForm.smtp?.useTls)} onChange={(event) => patchSmtp({ useTls: event.target.checked })} />
+                  <span className="form-check-label">STARTTLS</span>
+                </label>
+              </div>
+              <div className="col-md-2">
+                <label className="form-label">SSL</label>
+                <label className="form-check form-switch">
+                  <input className="form-check-input" type="checkbox" checked={Boolean(authForm.smtp?.useSsl)} onChange={(event) => patchSmtp({ useSsl: event.target.checked })} />
+                  <span className="form-check-label">SMTPS</span>
+                </label>
+              </div>
+              <div className="col-12 text-end">
+                <button className="btn btn-outline-primary me-2" type="button" onClick={testSmtpEmail}><IconMail size={18} className="me-2" />Test SMTP Email</button>
+                <button className="btn btn-primary"><IconDeviceFloppy size={18} className="me-2" />Save Access Settings</button>
+              </div>
+            </div>
+          </form>
+        </Card>
+      )}
+
+      {accessTab === 'Permissions' && (
+        <Card title="Permission Catalog" icon={IconShieldLock}>
+          <div className="alert alert-info">Permissions are system-managed and predefined. Use the Roles tab to assign or remove permissions.</div>
+          <div className="table-responsive">
+            <table className="table card-table table-vcenter">
+              <thead><tr><th>Feature</th><th>Code</th><th>Description</th></tr></thead>
+              <tbody>
+                {(access.permissionGroups || []).flatMap((group) => group.permissions.map((permission, index) => (
+                  <tr key={permission.code}>
+                    <td>{index === 0 && <span className="badge bg-secondary-lt text-secondary">{group.category}</span>}</td>
+                    <td><code>{permission.code}</code></td>
+                    <td className="text-muted small">{permission.description}</td>
+                  </tr>
+                )))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {accessTab === 'Roles' && (
+        <Card title="Roles" icon={IconShieldCheck} actions={<button className="btn btn-primary btn-sm" type="button" onClick={() => openRole()}><IconPlus size={16} className="me-1" />Add Role</button>}>
+          <div className="alert alert-info">Pre-created roles: owner, admin, and viewer. Owner is locked with full permissions.</div>
+          <div className="table-responsive">
+            <table className="table card-table table-vcenter">
+              <thead><tr><th>Role</th><th>Description</th><th>Assigned Permissions</th><th className="text-end">Actions</th></tr></thead>
+              <tbody>
+                {(access.roles || []).map((role) => (
+                  <tr key={role.id}>
+                    <td>
+                      <div className="fw-semibold">{role.name}</div>
+                      {role.isLocked && <span className="badge bg-yellow-lt text-yellow me-1">Locked</span>}
+                      {role.isBuiltin && <span className="badge bg-secondary-lt text-secondary">Built-in</span>}
+                    </td>
+                    <td className="text-muted small">{role.description || '-'}</td>
+                    <td>
+                      <span className="text-muted small">{role.permissionPreview || 'No permissions'}</span>
+                      <span className="badge bg-secondary-lt text-secondary ms-2">{role.permissionCount}</span>
+                    </td>
+                    <td className="text-end">
+                      <div className="btn-list justify-content-end">
+                        <button className="btn btn-sm" type="button" onClick={() => openRole(role)}><IconEdit size={16} className="me-1" />Edit</button>
+                        {!role.isBuiltin && !role.isLocked && (
+                          <button className="btn btn-sm btn-outline-danger" type="button" onClick={() => deleteRole(role)}><IconTrash size={16} className="me-1" />Delete</button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {accessTab === 'Users' && (
+        <Card title="Users" icon={IconUsers} actions={<button className="btn btn-primary btn-sm" type="button" onClick={() => openUser()}><IconUserPlus size={16} className="me-1" />Add User</button>}>
+          <div className="table-responsive">
+            <table className="table card-table table-vcenter">
+              <thead><tr><th>User</th><th>Role</th><th>Status</th><th>Force Change</th><th>Last Login</th><th className="text-end">Actions</th></tr></thead>
+              <tbody>
+                {(access.users || []).map((user) => {
+                  const role = roleById.get(user.roleId);
+                  const ownerUser = role?.name === 'owner';
+                  return (
+                    <tr key={user.id}>
+                      <td>
+                        <div className="fw-semibold">{user.username}</div>
+                        <div className="text-muted small">{user.fullName || '-'}</div>
+                        <div className="text-muted small">{user.email || '-'}</div>
+                      </td>
+                      <td>{user.roleName || '-'}</td>
+                      <td><span className={`badge ${user.isActive ? 'bg-green-lt text-green' : 'bg-yellow-lt text-yellow'}`}>{user.isActive ? 'ACTIVE' : 'INACTIVE'}</span></td>
+                      <td>{user.mustChangePassword ? <IconCircleCheck size={18} className="text-green" /> : <IconCircleOff size={18} className="text-muted" />}</td>
+                      <td className="text-muted small">{user.lastLoginAt || 'n/a'}</td>
+                      <td className="text-end">
+                        <div className="btn-list justify-content-end">
+                          <button className="btn btn-sm" type="button" onClick={() => openUser(user)}><IconEdit size={16} className="me-1" />Edit</button>
+                          <button className="btn btn-sm btn-outline-primary" type="button" onClick={() => resetUserPassword(user, false)}><IconKey size={16} className="me-1" />Reset</button>
+                          <button className="btn btn-sm btn-outline-primary" type="button" onClick={() => resetUserPassword(user, true)}><IconMail size={16} className="me-1" />Email Reset</button>
+                          {!ownerUser && <button className="btn btn-sm btn-outline-danger" type="button" onClick={() => deleteUser(user)}><IconTrash size={16} className="me-1" />Delete</button>}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {roleModalOpen && (
+        <Modal title={roleForm.id ? `Edit Role - ${roleForm.name}` : 'Add Role'} onClose={() => setRoleModalOpen(false)}>
+          <form onSubmit={saveRole}>
+            <div className="row g-3">
+              <div className="col-md-4">
+                <label className="form-label">Role Name</label>
+                <input className="form-control" value={roleForm.name} required disabled={roleForm.name === 'owner'} onChange={(event) => setRoleForm({ ...roleForm, name: event.target.value })} />
+              </div>
+              <div className="col-md-8">
+                <label className="form-label">Description</label>
+                <input className="form-control" value={roleForm.description} disabled={roleForm.name === 'owner'} onChange={(event) => setRoleForm({ ...roleForm, description: event.target.value })} />
+              </div>
+              <div className="col-12">
+                {roleForm.name === 'owner' && <div className="alert alert-warning">Owner role is locked. It always keeps full permissions and cannot be edited.</div>}
+                <PermissionSelector groups={access.permissionGroups} selectedCodes={roleForm.permissionCodes} disabled={roleForm.name === 'owner'} onToggle={toggleRolePermission} />
+              </div>
+              <div className="col-12 text-end">
+                <button className="btn me-2" type="button" onClick={() => setRoleModalOpen(false)}>Cancel</button>
+                {roleForm.name !== 'owner' && <button className="btn btn-primary"><IconDeviceFloppy size={18} className="me-2" />Save Role</button>}
+              </div>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {userModalOpen && (
+        <Modal title={userForm.id ? `Edit User - ${userForm.username}` : 'Add User'} onClose={() => setUserModalOpen(false)}>
+          <form onSubmit={saveUser}>
+            <div className="row g-3">
+              <div className="col-md-4">
+                <label className="form-label">Username</label>
+                <input className="form-control" value={userForm.username} required disabled={Boolean(userForm.id)} onChange={(event) => setUserForm({ ...userForm, username: event.target.value })} />
+              </div>
+              <div className="col-md-4">
+                <label className="form-label">Email</label>
+                <input className="form-control" type="email" value={userForm.email} onChange={(event) => setUserForm({ ...userForm, email: event.target.value })} />
+              </div>
+              <div className="col-md-4">
+                <label className="form-label">Full Name</label>
+                <input className="form-control" value={userForm.fullName} onChange={(event) => setUserForm({ ...userForm, fullName: event.target.value })} />
+              </div>
+              <div className="col-md-6">
+                <label className="form-label">Role</label>
+                <select className="form-select" value={userForm.roleId} disabled={roleById.get(userForm.roleId)?.name === 'owner'} onChange={(event) => setUserForm({ ...userForm, roleId: event.target.value })}>
+                  {(access.roles || []).map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
+                </select>
+              </div>
+              <div className="col-md-6">
+                <label className="form-label">{userForm.id ? 'Password (leave blank to keep)' : 'Password'}</label>
+                <input className="form-control" type="password" value={userForm.password} required={!userForm.id} onChange={(event) => setUserForm({ ...userForm, password: event.target.value })} />
+              </div>
+              <div className="col-md-6">
+                <label className="form-check">
+                  <input className="form-check-input" type="checkbox" checked={Boolean(userForm.isActive)} disabled={roleById.get(userForm.roleId)?.name === 'owner'} onChange={(event) => setUserForm({ ...userForm, isActive: event.target.checked })} />
+                  <span className="form-check-label">Active</span>
+                </label>
+              </div>
+              <div className="col-md-6">
+                <label className="form-check">
+                  <input className="form-check-input" type="checkbox" checked={Boolean(userForm.mustChangePassword)} onChange={(event) => setUserForm({ ...userForm, mustChangePassword: event.target.checked })} />
+                  <span className="form-check-label">Require password change on next login</span>
+                </label>
+              </div>
+              <div className="col-12 text-end">
+                <button className="btn me-2" type="button" onClick={() => setUserModalOpen(false)}>Cancel</button>
+                <button className="btn btn-primary"><IconDeviceFloppy size={18} className="me-2" />Save User</button>
+              </div>
+            </div>
+          </form>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 export default function SystemSettingsPage({ refreshShell }) {
-  const tabs = ['General', 'Location Management', 'Avatar', 'OPENAI', 'Ports', 'Runtime'];
+  const tabs = ['General', 'Location Management', 'Avatar', 'OPENAI', 'Access', 'Ports', 'Runtime'];
   const [tab, setTab] = useState('General');
   const [settings, setSettings] = useState(null);
   const [ports, setPorts] = useState([]);
@@ -1289,6 +1832,7 @@ export default function SystemSettingsPage({ refreshShell }) {
       {tab === 'Location Management' && <LocationManagementTab />}
       {tab === 'Avatar' && <AvatarTab />}
       {tab === 'OPENAI' && <OpenAISettingsTab />}
+      {tab === 'Access' && <AccessTab />}
       {tab === 'Ports' && (
         <Card title="System Port Registry" icon={IconNetwork} actions={<button className="btn btn-sm" onClick={load}><IconRefresh size={16} className="me-1" />Refresh</button>}>
           <div className="alert alert-info">Use this page to avoid port collisions with 3JCentralPisowifi and other services on the server.</div>

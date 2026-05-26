@@ -1,24 +1,31 @@
 {
   "slug": "account-admin",
-  "name": "Account Admin",
-  "status": "functional-shell",
+  "name": "Customer Network",
+  "status": "phase-1-table-only",
   "owner": "threejmain",
-  "description": "Admin account CRUD, active/inactive lifecycle, account security, and future audit controls. Roles and permissions are deferred.",
+  "description": "Customer Accounts table with customer-level network service visibility and temporary PPPoE-to-ONU reconciliation.",
   "app_shell_route": "/account-admin",
   "api_prefix": "/api/account-admin",
   "frontend_entry": "account-admin/web/AccountAdminPage.jsx",
   "api_entry": "account-admin/api/account_admin/router.py",
   "features": [
-    "overview",
-    "list_search_filter",
-    "create_update_soft_archive",
-    "activate_deactivate",
-    "active_inactive_lifecycle"
+    "customer_accounts_table",
+    "customer_profile_sync",
+    "customer_ticket_visibility",
+    "customer_profiling_style_search",
+    "customer_profiling_style_filters",
+    "all_and_with_tickets_tabs",
+    "pppoe_status_visibility",
+    "pppoe_onu_mapping_snapshot",
+    "pppoe_onu_mapping_tab"
   ],
   "deferred_features": [
-    "roles",
-    "permissions",
-    "password_reset",
-    "session_administration"
+    "dedicated_activation_service_order_contract",
+    "network_configuration_forms",
+    "pppoe_discovery_binding",
+    "live_mikrotik_pppoe_create_update_disable",
+    "live_wifi_cpe_configuration",
+    "postgres_persistence",
+    "audit_grade_sync_history"
   ]
 }

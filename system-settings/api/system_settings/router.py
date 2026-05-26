@@ -1,12 +1,16 @@
 import base64
 import binascii
+import hashlib
 import json
 import os
+import secrets
+import smtplib
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
@@ -89,6 +93,50 @@ class OpenAITestPayload(BaseModel):
     model_id: str | None = Field(default=None, max_length=80)
     reasoning_effort: str | None = Field(default=None, max_length=20)
     max_output_tokens: int = Field(default=120, ge=16, le=512)
+
+
+class AccessSmtpPayload(BaseModel):
+    host: str | None = Field(default=None, max_length=160)
+    port: int | None = Field(default=587, ge=1, le=65535)
+    username: str | None = Field(default=None, max_length=160)
+    password: str | None = Field(default=None, max_length=400)
+    clearPassword: bool = False
+    fromEmail: str | None = Field(default=None, max_length=160)
+    fromName: str | None = Field(default=None, max_length=120)
+    useTls: bool = True
+    useSsl: bool = False
+
+
+class AccessAuthSettingsPayload(BaseModel):
+    enabled: bool = True
+    sessionIdleHours: int = Field(default=8, ge=1, le=72)
+    auditRetentionDays: int = Field(default=180, ge=30, le=3650)
+    smtp: AccessSmtpPayload = Field(default_factory=AccessSmtpPayload)
+
+
+class AccessEmailTestPayload(BaseModel):
+    recipientEmail: str | None = Field(default=None, max_length=160)
+
+
+class AccessRolePayload(BaseModel):
+    name: str = Field(..., min_length=2, max_length=80)
+    description: str | None = Field(default=None, max_length=240)
+    permissionCodes: list[str] = Field(default_factory=list)
+
+
+class AccessUserPayload(BaseModel):
+    username: str | None = Field(default=None, min_length=3, max_length=60)
+    email: str | None = Field(default=None, max_length=160)
+    fullName: str | None = Field(default=None, max_length=120)
+    roleId: str | None = Field(default=None, max_length=80)
+    password: str | None = Field(default=None, min_length=8, max_length=128)
+    isActive: bool = True
+    mustChangePassword: bool = False
+
+
+class AccessResetPasswordPayload(BaseModel):
+    newPassword: str | None = Field(default=None, min_length=8, max_length=128)
+    emailTemporaryPassword: bool = False
 
 
 ALLOWED_AVATAR_MIME_TYPES = {
@@ -284,6 +332,128 @@ OPENAI_MODEL_OPTIONS = [
 DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
 DEFAULT_OPENAI_REASONING_EFFORT = "medium"
 
+ACCESS_PASSWORD_MIN_LENGTH = 8
+ACCESS_PERMISSION_SEEDS = [
+    {
+        "code": "system.settings.view",
+        "label": "System Settings View",
+        "description": "View shared System Settings pages.",
+        "category": "System Settings",
+    },
+    {
+        "code": "system.settings.edit",
+        "label": "System Settings Edit",
+        "description": "Edit branding, business profile, runtime, and related system settings.",
+        "category": "System Settings",
+    },
+    {
+        "code": "system.access.auth.view",
+        "label": "Access Auth Settings View",
+        "description": "View authentication, session, audit, and SMTP settings under Access.",
+        "category": "Access",
+    },
+    {
+        "code": "system.access.auth.edit",
+        "label": "Access Auth Settings Edit",
+        "description": "Edit authentication, session, audit, and SMTP settings under Access.",
+        "category": "Access",
+    },
+    {
+        "code": "system.access.permissions.view",
+        "label": "Permission Catalog View",
+        "description": "View the system-managed permission catalog.",
+        "category": "Access",
+    },
+    {
+        "code": "system.access.roles.view",
+        "label": "Roles View",
+        "description": "View roles and assigned permissions.",
+        "category": "Access",
+    },
+    {
+        "code": "system.access.roles.edit",
+        "label": "Roles Edit",
+        "description": "Create, edit, delete, and assign permissions to roles.",
+        "category": "Access",
+    },
+    {
+        "code": "system.access.users.view",
+        "label": "Users View",
+        "description": "View system login users.",
+        "category": "Access",
+    },
+    {
+        "code": "system.access.users.edit",
+        "label": "Users Edit",
+        "description": "Create, edit, activate, deactivate, reset passwords, and delete system login users.",
+        "category": "Access",
+    },
+    {
+        "code": "customer-profiling.view",
+        "label": "Customer Profiling View",
+        "description": "View Customer Profiling.",
+        "category": "Customer Profiling",
+    },
+    {
+        "code": "customer-profiling.edit",
+        "label": "Customer Profiling Edit",
+        "description": "Create and update customer profiles.",
+        "category": "Customer Profiling",
+    },
+    {"code": "billing.view", "label": "Billing View", "description": "View Billing.", "category": "Billing"},
+    {"code": "billing.edit", "label": "Billing Edit", "description": "Create and update Billing records.", "category": "Billing"},
+    {"code": "point-of-sale.view", "label": "Point of Sale View", "description": "View Point of Sale.", "category": "Point of Sale"},
+    {"code": "point-of-sale.edit", "label": "Point of Sale Edit", "description": "Create and update Point of Sale records.", "category": "Point of Sale"},
+    {"code": "inventory.view", "label": "Inventory View", "description": "View Inventory.", "category": "Inventory"},
+    {"code": "inventory.edit", "label": "Inventory Edit", "description": "Create and update Inventory records.", "category": "Inventory"},
+    {"code": "service.view", "label": "Service View", "description": "View Service Catalog and Service Orders.", "category": "Service"},
+    {"code": "service.edit", "label": "Service Edit", "description": "Create and update Service Catalog and Service Orders.", "category": "Service"},
+    {"code": "ticketing.view", "label": "Ticketing View", "description": "View Ticketing.", "category": "Ticketing"},
+    {"code": "ticketing.edit", "label": "Ticketing Edit", "description": "Create and update Ticketing records.", "category": "Ticketing"},
+    {
+        "code": "customer-service-management.view",
+        "label": "Customer Service View",
+        "description": "View customer-service workflows.",
+        "category": "Customer Service",
+    },
+    {
+        "code": "customer-service-management.edit",
+        "label": "Customer Service Edit",
+        "description": "Create and update customer-service workflows.",
+        "category": "Customer Service",
+    },
+    {"code": "network-settings.view", "label": "Network Settings View", "description": "View network settings.", "category": "Network Settings"},
+    {"code": "network-settings.edit", "label": "Network Settings Edit", "description": "Create and update network settings.", "category": "Network Settings"},
+    {"code": "logs.view", "label": "Logs View", "description": "View audit and system logs.", "category": "Logs"},
+    {
+        "code": "account-admin.customer.view",
+        "label": "Customer Account Admin View",
+        "description": "View customer account administration when the module is implemented.",
+        "category": "Customer Account Admin",
+    },
+    {
+        "code": "account-admin.customer.edit",
+        "label": "Customer Account Admin Edit",
+        "description": "Edit customer account administration when the module is implemented.",
+        "category": "Customer Account Admin",
+    },
+]
+ACCESS_PERMISSION_DEPENDENCIES = {
+    "system.settings.edit": ["system.settings.view"],
+    "system.access.auth.edit": ["system.access.auth.view"],
+    "system.access.roles.edit": ["system.access.roles.view", "system.access.permissions.view"],
+    "system.access.users.edit": ["system.access.users.view", "system.access.roles.view"],
+    "customer-profiling.edit": ["customer-profiling.view"],
+    "billing.edit": ["billing.view"],
+    "point-of-sale.edit": ["point-of-sale.view"],
+    "inventory.edit": ["inventory.view"],
+    "service.edit": ["service.view"],
+    "ticketing.edit": ["ticketing.view"],
+    "customer-service-management.edit": ["customer-service-management.view"],
+    "network-settings.edit": ["network-settings.view"],
+    "account-admin.customer.edit": ["account-admin.customer.view"],
+}
+
 
 DEFAULT_LOCATION_SEEDS = [
     ("ALIBAGO", "ENRILE", "CAGAYAN"),
@@ -429,6 +599,9 @@ def load_persisted_system_settings() -> None:
     openai = persisted.get("openai")
     if isinstance(openai, dict):
         settings_store()["openai"] = openai
+    access = persisted.get("access")
+    if isinstance(access, dict):
+        settings_store()["access"] = normalize_access_store(access)
 
 
 def save_persisted_system_settings(*section_names: str) -> None:
@@ -442,6 +615,8 @@ def save_persisted_system_settings(*section_names: str) -> None:
                 persisted["deleted_default_location_fingerprints"] = [
                     list(fingerprint) for fingerprint in sorted(_deleted_default_location_fingerprints)
                 ]
+            elif section_name == "access":
+                persisted["access"] = access_store()
             else:
                 persisted[section_name] = store.get(section_name, {})
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -461,6 +636,341 @@ def save_persisted_avatar_store() -> None:
 
 def save_persisted_location_store() -> None:
     save_persisted_system_settings("locations")
+
+
+def save_persisted_access_store() -> None:
+    save_persisted_system_settings("access")
+
+
+def normalize_access_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def normalize_access_role_name(value: Any) -> str:
+    name = normalize_access_text(value).lower().replace(" ", "_")
+    if len(name) < 2:
+        raise HTTPException(status_code=400, detail="Role name must be at least 2 characters")
+    return name
+
+
+def access_default_auth_settings() -> dict[str, Any]:
+    return {
+        "enabled": True,
+        "sessionIdleHours": 8,
+        "auditRetentionDays": 180,
+        "smtp": {
+            "host": "",
+            "port": 587,
+            "username": "",
+            "password": "",
+            "fromEmail": "",
+            "fromName": "3J ISP Management",
+            "useTls": True,
+            "useSsl": False,
+        },
+    }
+
+
+def normalize_access_auth_settings(raw: dict[str, Any] | None) -> dict[str, Any]:
+    merged = access_default_auth_settings()
+    raw = raw if isinstance(raw, dict) else {}
+    merged["enabled"] = bool(raw.get("enabled", merged["enabled"]))
+    try:
+        merged["sessionIdleHours"] = max(1, min(int(raw.get("sessionIdleHours", merged["sessionIdleHours"]) or 8), 72))
+    except Exception:
+        merged["sessionIdleHours"] = 8
+    try:
+        merged["auditRetentionDays"] = max(30, min(int(raw.get("auditRetentionDays", merged["auditRetentionDays"]) or 180), 3650))
+    except Exception:
+        merged["auditRetentionDays"] = 180
+    smtp = raw.get("smtp") if isinstance(raw.get("smtp"), dict) else {}
+    merged["smtp"].update(
+        {
+            "host": normalize_access_text(smtp.get("host")),
+            "port": max(1, min(int(smtp.get("port") or 587), 65535)),
+            "username": normalize_access_text(smtp.get("username")),
+            "password": normalize_access_text(smtp.get("password")),
+            "fromEmail": normalize_access_text(smtp.get("fromEmail")),
+            "fromName": normalize_access_text(smtp.get("fromName")) or "3J ISP Management",
+            "useTls": bool(smtp.get("useTls", True)),
+            "useSsl": bool(smtp.get("useSsl", False)),
+        }
+    )
+    return merged
+
+
+def access_permission_codes() -> list[str]:
+    return [permission["code"] for permission in ACCESS_PERMISSION_SEEDS]
+
+
+def expand_access_permission_codes(codes: list[str]) -> tuple[list[str], list[str]]:
+    allowed = set(access_permission_codes())
+    selected: list[str] = []
+    seen: set[str] = set()
+    pending = [normalize_access_text(code) for code in codes or []]
+    auto_added: list[str] = []
+    while pending:
+        code = pending.pop(0)
+        if not code or code not in allowed or code in seen:
+            continue
+        seen.add(code)
+        selected.append(code)
+        for dependency in ACCESS_PERMISSION_DEPENDENCIES.get(code, []):
+            if dependency not in seen:
+                pending.append(dependency)
+                auto_added.append(dependency)
+    return sorted(selected, key=str.lower), sorted(set(auto_added), key=str.lower)
+
+
+def normalize_access_store(raw: dict[str, Any] | None) -> dict[str, Any]:
+    raw = raw if isinstance(raw, dict) else {}
+    permission_codes = access_permission_codes()
+    permission_map = {permission["code"]: dict(permission) for permission in ACCESS_PERMISSION_SEEDS}
+    roles = raw.get("roles") if isinstance(raw.get("roles"), list) else []
+    users = raw.get("users") if isinstance(raw.get("users"), list) else []
+    normalized_roles = []
+    for role in roles:
+        if not isinstance(role, dict):
+            continue
+        role_id = normalize_access_text(role.get("id")) or f"role-{uuid4()}"
+        name = normalize_access_text(role.get("name")).lower()
+        if not name:
+            continue
+        expanded, _ = expand_access_permission_codes(role.get("permissionCodes") or [])
+        normalized_roles.append(
+            {
+                "id": role_id,
+                "name": name,
+                "description": normalize_access_text(role.get("description")),
+                "isBuiltin": bool(role.get("isBuiltin")),
+                "isLocked": bool(role.get("isLocked")) or name == "owner",
+                "permissionCodes": permission_codes if name == "owner" else expanded,
+                "createdAt": normalize_access_text(role.get("createdAt")) or now_iso(),
+                "updatedAt": normalize_access_text(role.get("updatedAt")) or now_iso(),
+            }
+        )
+    role_names = {role["name"] for role in normalized_roles}
+    default_roles = [
+        {
+            "id": "role-owner",
+            "name": "owner",
+            "description": "System owner. Full access and immutable permissions.",
+            "isBuiltin": True,
+            "isLocked": True,
+            "permissionCodes": permission_codes,
+        },
+        {
+            "id": "role-admin",
+            "name": "admin",
+            "description": "Full operational access except locked owner controls.",
+            "isBuiltin": True,
+            "isLocked": False,
+            "permissionCodes": permission_codes,
+        },
+        {
+            "id": "role-viewer",
+            "name": "viewer",
+            "description": "Read-only operator for dashboards and records.",
+            "isBuiltin": True,
+            "isLocked": False,
+            "permissionCodes": [code for code in permission_codes if code.endswith(".view") or code.endswith(".permissions.view")],
+        },
+    ]
+    for role in default_roles:
+        if role["name"] not in role_names:
+            timestamp = now_iso()
+            normalized_roles.append({**role, "createdAt": timestamp, "updatedAt": timestamp})
+    role_ids = {role["id"] for role in normalized_roles}
+    normalized_users = []
+    for user in users:
+        if not isinstance(user, dict):
+            continue
+        user_id = normalize_access_text(user.get("id")) or f"user-{uuid4()}"
+        username = normalize_access_text(user.get("username")).lower()
+        if len(username) < 3:
+            continue
+        role_id = normalize_access_text(user.get("roleId"))
+        if role_id not in role_ids:
+            role_id = "role-viewer"
+        normalized_users.append(
+            {
+                "id": user_id,
+                "username": username,
+                "email": normalize_access_text(user.get("email")).lower(),
+                "fullName": normalize_access_text(user.get("fullName")),
+                "roleId": role_id,
+                "password": normalize_access_text(user.get("password")),
+                "passwordHash": normalize_access_text(user.get("passwordHash")),
+                "isActive": bool(user.get("isActive", True)),
+                "mustChangePassword": bool(user.get("mustChangePassword")),
+                "lastLoginAt": user.get("lastLoginAt"),
+                "createdAt": normalize_access_text(user.get("createdAt")) or now_iso(),
+                "updatedAt": normalize_access_text(user.get("updatedAt")) or now_iso(),
+            }
+        )
+    if not normalized_users:
+        timestamp = now_iso()
+        normalized_users.append(
+            {
+                "id": os.getenv("DEFAULT_ADMIN_ID", "admin-1"),
+                "username": os.getenv("DEFAULT_ADMIN_USERNAME", "admin").strip().lower() or "admin",
+                "email": os.getenv("DEFAULT_ADMIN_EMAIL", "admin@example.local").strip().lower(),
+                "fullName": os.getenv("DEFAULT_ADMIN_NAME", "System Administrator").strip() or "System Administrator",
+                "roleId": "role-owner",
+                "password": os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123"),
+                "passwordHash": "",
+                "isActive": True,
+                "mustChangePassword": False,
+                "lastLoginAt": None,
+                "createdAt": timestamp,
+                "updatedAt": timestamp,
+            }
+        )
+    return {
+        "authSettings": normalize_access_auth_settings(raw.get("authSettings")),
+        "permissions": list(permission_map.values()),
+        "roles": normalized_roles,
+        "users": normalized_users,
+    }
+
+
+def access_store() -> dict[str, Any]:
+    load_persisted_system_settings()
+    store = settings_store()
+    access = normalize_access_store(store.get("access"))
+    store["access"] = access
+    return access
+
+
+def public_access_auth_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    smtp = dict((settings or {}).get("smtp") or {})
+    password = normalize_access_text(smtp.pop("password", ""))
+    smtp["passwordConfigured"] = bool(password)
+    return {**settings, "smtp": smtp}
+
+
+def role_by_id(access: dict[str, Any], role_id: str) -> dict[str, Any]:
+    for role in access.get("roles", []):
+        if role["id"] == role_id:
+            return role
+    raise HTTPException(status_code=404, detail="Role not found")
+
+
+def user_by_id(access: dict[str, Any], user_id: str) -> dict[str, Any]:
+    for user in access.get("users", []):
+        if user["id"] == user_id:
+            return user
+    raise HTTPException(status_code=404, detail="User not found")
+
+
+def access_role_public(role: dict[str, Any], permissions: list[dict[str, Any]]) -> dict[str, Any]:
+    codes = role.get("permissionCodes") or []
+    by_code = {permission["code"]: permission for permission in permissions}
+    groups: dict[str, list[str]] = {}
+    for code in codes:
+        permission = by_code.get(code)
+        category = permission.get("category") if permission else "Other"
+        groups.setdefault(category, []).append(code)
+    permission_groups = [
+        {"category": category, "codes": sorted(values, key=str.lower)}
+        for category, values in sorted(groups.items(), key=lambda item: item[0].lower())
+    ]
+    preview = ", ".join(sorted(codes, key=str.lower)[:3])
+    if len(codes) > 3:
+        preview = f"{preview}, +{len(codes) - 3} more"
+    return {
+        **role,
+        "permissionCount": len(codes),
+        "permissionPreview": preview,
+        "permissionGroups": permission_groups,
+    }
+
+
+def access_user_public(user: dict[str, Any], roles: list[dict[str, Any]]) -> dict[str, Any]:
+    role = next((item for item in roles if item["id"] == user.get("roleId")), None)
+    return {
+        key: value
+        for key, value in {
+            **user,
+            "roleName": role.get("name") if role else "",
+            "password": None,
+            "passwordConfigured": bool(user.get("password") or user.get("passwordHash")),
+        }.items()
+        if key != "passwordHash"
+    }
+
+
+def public_access_store(access: dict[str, Any]) -> dict[str, Any]:
+    permissions = access.get("permissions", [])
+    roles = [access_role_public(role, permissions) for role in access.get("roles", [])]
+    users = [access_user_public(user, roles) for user in access.get("users", [])]
+    return {
+        "authSettings": public_access_auth_settings(access.get("authSettings", {})),
+        "permissions": permissions,
+        "permissionGroups": access_permission_groups(permissions),
+        "roles": roles,
+        "users": users,
+        "metrics": {
+            "permissions": len(permissions),
+            "roles": len(roles),
+            "users": len(users),
+            "activeUsers": sum(1 for user in users if user.get("isActive")),
+        },
+    }
+
+
+def access_permission_groups(permissions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for permission in permissions:
+        grouped.setdefault(permission.get("category") or "Other", []).append(permission)
+    return [
+        {
+            "category": category,
+            "permissions": sorted(items, key=lambda item: item["code"].lower()),
+        }
+        for category, items in sorted(grouped.items(), key=lambda item: item[0].lower())
+    ]
+
+
+def hash_access_password(password: str) -> str:
+    salt = secrets.token_hex(12)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000)
+    return f"pbkdf2_sha256${salt}${digest.hex()}"
+
+
+def generated_access_password(length: int = 14) -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%+-"
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def send_access_email(auth_settings: dict[str, Any], to_email: str, subject: str, body_text: str) -> None:
+    smtp = auth_settings.get("smtp") if isinstance(auth_settings.get("smtp"), dict) else {}
+    host = normalize_access_text(smtp.get("host"))
+    if not host:
+        raise HTTPException(status_code=400, detail="SMTP host is required before sending email")
+    from_email = normalize_access_text(smtp.get("fromEmail")) or normalize_access_text(smtp.get("username"))
+    if not from_email:
+        raise HTTPException(status_code=400, detail="SMTP from email is required before sending email")
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = f"{normalize_access_text(smtp.get('fromName')) or '3J ISP Management'} <{from_email}>"
+    message["To"] = to_email
+    message.set_content(body_text)
+    port = int(smtp.get("port") or 587)
+    username = normalize_access_text(smtp.get("username"))
+    password = normalize_access_text(smtp.get("password"))
+    if smtp.get("useSsl"):
+        client = smtplib.SMTP_SSL(host, port, timeout=12)
+    else:
+        client = smtplib.SMTP(host, port, timeout=12)
+    try:
+        if smtp.get("useTls") and not smtp.get("useSsl"):
+            client.starttls()
+        if username:
+            client.login(username, password)
+        client.send_message(message)
+    finally:
+        client.quit()
 
 
 def avatar_store() -> dict[str, Any]:
@@ -951,6 +1461,240 @@ def extract_geocode_suggestion(item: dict[str, Any]) -> dict[str, Any]:
         "geocode_source": "NOMINATIM",
         "raw_geocode": sanitize_summary(item),
     }
+
+
+@router.get("/api/system-settings/access")
+def get_access(admin=Depends(require_admin)):
+    return public_access_store(access_store())
+
+
+@router.patch("/api/system-settings/access/auth-settings")
+def update_access_auth_settings(payload: AccessAuthSettingsPayload, admin=Depends(require_admin)):
+    access = access_store()
+    current_smtp = access["authSettings"].get("smtp", {})
+    incoming = payload.model_dump()
+    smtp = incoming.get("smtp") or {}
+    if smtp.get("clearPassword"):
+        smtp["password"] = ""
+    elif not normalize_access_text(smtp.get("password")):
+        smtp["password"] = current_smtp.get("password", "")
+    smtp.pop("clearPassword", None)
+    incoming["smtp"] = smtp
+    access["authSettings"] = normalize_access_auth_settings(incoming)
+    save_persisted_access_store()
+    add_audit(
+        "system_access_auth_settings_updated",
+        "SystemAccess",
+        "auth-settings",
+        {"enabled": access["authSettings"]["enabled"]},
+        admin["username"],
+    )
+    return public_access_store(access)
+
+
+@router.post("/api/system-settings/access/auth-settings/test-email")
+def test_access_email(payload: AccessEmailTestPayload, admin=Depends(require_admin)):
+    access = access_store()
+    recipient = normalize_access_text(payload.recipientEmail) or normalize_access_text(admin.get("email"))
+    if not recipient:
+        raise HTTPException(status_code=400, detail="Recipient email is required")
+    send_access_email(
+        access["authSettings"],
+        recipient,
+        "3J ISP Management SMTP test",
+        "SMTP test successful. This email was sent from System Settings -> Access.",
+    )
+    add_audit("system_access_smtp_tested", "SystemAccess", recipient, {"recipient": recipient}, admin["username"])
+    return {"status": "ok", "message": f"SMTP test email sent to {recipient}."}
+
+
+@router.post("/api/system-settings/access/roles")
+def create_access_role(payload: AccessRolePayload, admin=Depends(require_admin)):
+    access = access_store()
+    name = normalize_access_role_name(payload.name)
+    if any(role["name"].lower() == name.lower() for role in access["roles"]):
+        raise HTTPException(status_code=400, detail="Role already exists")
+    permission_codes, auto_added = expand_access_permission_codes(payload.permissionCodes)
+    timestamp = now_iso()
+    role = {
+        "id": f"role-{uuid4()}",
+        "name": name,
+        "description": normalize_access_text(payload.description),
+        "isBuiltin": False,
+        "isLocked": False,
+        "permissionCodes": permission_codes,
+        "createdAt": timestamp,
+        "updatedAt": timestamp,
+    }
+    access["roles"].append(role)
+    save_persisted_access_store()
+    add_audit("system_access_role_created", "SystemRole", role["id"], {"name": name}, admin["username"])
+    response = public_access_store(access)
+    response["message"] = "Role created."
+    response["autoAddedPermissionCodes"] = auto_added
+    return response
+
+
+@router.patch("/api/system-settings/access/roles/{role_id}")
+def update_access_role(role_id: str, payload: AccessRolePayload, admin=Depends(require_admin)):
+    access = access_store()
+    role = role_by_id(access, role_id)
+    if role.get("isLocked") or role.get("name") == "owner":
+        raise HTTPException(status_code=400, detail="Owner role is locked")
+    name = normalize_access_role_name(payload.name)
+    if any(item["id"] != role_id and item["name"].lower() == name.lower() for item in access["roles"]):
+        raise HTTPException(status_code=400, detail="Role name already exists")
+    permission_codes, auto_added = expand_access_permission_codes(payload.permissionCodes)
+    role.update(
+        {
+            "name": name,
+            "description": normalize_access_text(payload.description),
+            "permissionCodes": permission_codes,
+            "updatedAt": now_iso(),
+        }
+    )
+    save_persisted_access_store()
+    add_audit("system_access_role_updated", "SystemRole", role["id"], {"name": name}, admin["username"])
+    response = public_access_store(access)
+    response["message"] = "Role updated."
+    response["autoAddedPermissionCodes"] = auto_added
+    return response
+
+
+@router.delete("/api/system-settings/access/roles/{role_id}")
+def delete_access_role(role_id: str, admin=Depends(require_admin)):
+    access = access_store()
+    role = role_by_id(access, role_id)
+    if role.get("isBuiltin") or role.get("isLocked") or role.get("name") == "owner":
+        raise HTTPException(status_code=400, detail="Built-in roles cannot be deleted")
+    if any(user.get("roleId") == role_id for user in access["users"]):
+        raise HTTPException(status_code=400, detail="Role is assigned to one or more users")
+    access["roles"] = [item for item in access["roles"] if item["id"] != role_id]
+    save_persisted_access_store()
+    add_audit("system_access_role_deleted", "SystemRole", role_id, {"name": role["name"]}, admin["username"])
+    return public_access_store(access)
+
+
+@router.post("/api/system-settings/access/users")
+def create_access_user(payload: AccessUserPayload, admin=Depends(require_admin)):
+    access = access_store()
+    username = normalize_access_text(payload.username).lower()
+    if len(username) < 3:
+        raise HTTPException(status_code=400, detail="Username must be at least 3 characters")
+    if any(user["username"].lower() == username.lower() for user in access["users"]):
+        raise HTTPException(status_code=400, detail="Username already exists")
+    email = normalize_access_text(payload.email).lower()
+    if email and any(user.get("email", "").lower() == email for user in access["users"]):
+        raise HTTPException(status_code=400, detail="Email already exists")
+    role = role_by_id(access, normalize_access_text(payload.roleId))
+    password = normalize_access_text(payload.password)
+    if len(password) < ACCESS_PASSWORD_MIN_LENGTH:
+        raise HTTPException(status_code=400, detail=f"Password must be at least {ACCESS_PASSWORD_MIN_LENGTH} characters")
+    timestamp = now_iso()
+    user = {
+        "id": f"user-{uuid4()}",
+        "username": username,
+        "email": email,
+        "fullName": normalize_access_text(payload.fullName),
+        "roleId": role["id"],
+        "password": "",
+        "passwordHash": hash_access_password(password),
+        "isActive": bool(payload.isActive),
+        "mustChangePassword": bool(payload.mustChangePassword),
+        "lastLoginAt": None,
+        "createdAt": timestamp,
+        "updatedAt": timestamp,
+    }
+    access["users"].append(user)
+    save_persisted_access_store()
+    add_audit("system_access_user_created", "SystemUser", user["id"], {"username": username, "role": role["name"]}, admin["username"])
+    return public_access_store(access)
+
+
+@router.patch("/api/system-settings/access/users/{user_id}")
+def update_access_user(user_id: str, payload: AccessUserPayload, admin=Depends(require_admin)):
+    access = access_store()
+    user = user_by_id(access, user_id)
+    current_role = role_by_id(access, user["roleId"])
+    owner_user = current_role["name"] == "owner"
+    role_id = normalize_access_text(payload.roleId) or user["roleId"]
+    next_role = role_by_id(access, role_id)
+    if owner_user and next_role["name"] != "owner":
+        raise HTTPException(status_code=400, detail="Owner user role cannot be changed")
+    if owner_user and not payload.isActive:
+        raise HTTPException(status_code=400, detail="Owner user cannot be deactivated")
+    email = normalize_access_text(payload.email).lower()
+    if email and any(item["id"] != user_id and item.get("email", "").lower() == email for item in access["users"]):
+        raise HTTPException(status_code=400, detail="Email already exists")
+    user.update(
+        {
+            "email": email,
+            "fullName": normalize_access_text(payload.fullName),
+            "roleId": next_role["id"],
+            "isActive": bool(payload.isActive),
+            "mustChangePassword": bool(payload.mustChangePassword),
+            "updatedAt": now_iso(),
+        }
+    )
+    if payload.password:
+        user["password"] = ""
+        user["passwordHash"] = hash_access_password(payload.password)
+        user["mustChangePassword"] = bool(payload.mustChangePassword)
+    save_persisted_access_store()
+    add_audit("system_access_user_updated", "SystemUser", user["id"], {"username": user["username"]}, admin["username"])
+    return public_access_store(access)
+
+
+@router.post("/api/system-settings/access/users/{user_id}/reset-password")
+def reset_access_user_password(user_id: str, payload: AccessResetPasswordPayload, admin=Depends(require_admin)):
+    access = access_store()
+    user = user_by_id(access, user_id)
+    password = normalize_access_text(payload.newPassword) or generated_access_password()
+    if len(password) < ACCESS_PASSWORD_MIN_LENGTH:
+        raise HTTPException(status_code=400, detail=f"Password must be at least {ACCESS_PASSWORD_MIN_LENGTH} characters")
+    user["password"] = ""
+    user["passwordHash"] = hash_access_password(password)
+    user["mustChangePassword"] = True
+    user["updatedAt"] = now_iso()
+    email_sent = False
+    if payload.emailTemporaryPassword:
+        recipient = normalize_access_text(user.get("email"))
+        if not recipient:
+            raise HTTPException(status_code=400, detail="User has no email configured")
+        send_access_email(
+            access["authSettings"],
+            recipient,
+            "3J ISP Management temporary password",
+            (
+                "A temporary password was generated for your 3J ISP Management account.\n\n"
+                f"Username: {user['username']}\n"
+                f"Temporary password: {password}\n\n"
+                "Sign in and change your password immediately."
+            ),
+        )
+        email_sent = True
+    save_persisted_access_store()
+    add_audit("system_access_user_password_reset", "SystemUser", user["id"], {"username": user["username"], "emailSent": email_sent}, admin["username"])
+    response = public_access_store(access)
+    response["message"] = "Temporary password emailed." if email_sent else "Password reset."
+    if not email_sent:
+        response["temporaryPassword"] = password
+    return response
+
+
+@router.delete("/api/system-settings/access/users/{user_id}")
+def delete_access_user(user_id: str, admin=Depends(require_admin)):
+    access = access_store()
+    user = user_by_id(access, user_id)
+    role = role_by_id(access, user["roleId"])
+    if user["id"] == admin.get("id"):
+        raise HTTPException(status_code=400, detail="You cannot delete your own account")
+    if role["name"] == "owner":
+        raise HTTPException(status_code=400, detail="Owner user cannot be deleted")
+    access["users"] = [item for item in access["users"] if item["id"] != user_id]
+    save_persisted_access_store()
+    add_audit("system_access_user_deleted", "SystemUser", user_id, {"username": user["username"]}, admin["username"])
+    return public_access_store(access)
 
 
 @router.get("/api/system-settings/settings")

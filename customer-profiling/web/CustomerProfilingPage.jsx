@@ -2,23 +2,30 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   IconActivity,
   IconAddressBook,
+  IconCalendarEvent,
   IconCheck,
   IconChevronLeft,
   IconChevronRight,
   IconClipboardCheck,
   IconClipboardList,
   IconClock,
+  IconColumns,
   IconCurrentLocation,
   IconDeviceFloppy,
+  IconDotsVertical,
   IconEdit,
   IconEye,
   IconFileSpreadsheet,
   IconFilter,
+  IconHome,
   IconMapPin,
   IconMinus,
   IconPlus,
   IconRefresh,
   IconSearch,
+  IconSortAscending,
+  IconSortDescending,
+  IconArrowsSort,
   IconTrash,
   IconUpload,
   IconUser,
@@ -30,12 +37,14 @@ import './customerProfiling.css';
 
 const API = '/api';
 const CUSTOMER_DRAFT_STORAGE_KEY = 'threejmain_customer_profile_drafts';
+const CUSTOMER_TABLE_COLUMN_STORAGE_PREFIX = 'threejmain_customer_profile_table_columns';
 const DEFAULT_CAPTURE_COORDINATES = { latitude: 17.559311, longitude: 121.684928 };
 const COORDINATE_CAPTURE_ZOOM = 15;
 const COORDINATE_CAPTURE_MIN_ZOOM = 12;
 const COORDINATE_CAPTURE_MAX_ZOOM = 19;
 const MAP_TILE_SIZE = 256;
 const MAP_TILE_COUNT = 3;
+const CUSTOMER_COLUMN_MENU_WIDTH = 304;
 
 function token() {
   return localStorage.getItem('threejmain_token');
@@ -231,6 +240,30 @@ function formatCustomerLocation(customer) {
   ].map((part) => String(part || '').trim()).filter(Boolean).join(', ') || '-';
 }
 
+function formatCustomerResidence(customer) {
+  return [
+    customer.barangay,
+    customer.city,
+    customer.province
+  ].map((part) => String(part || '').trim()).filter(Boolean).join(', ') || '-';
+}
+
+function formatDisplayDate(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '-';
+  const dateOnly = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateOnly) {
+    return `${Number(dateOnly[2])}/${Number(dateOnly[3])}/${dateOnly[1]}`;
+  }
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return raw;
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'numeric',
+    day: 'numeric',
+    year: 'numeric'
+  }).format(parsed);
+}
+
 function coordinateNumber(value) {
   if (value === null || value === undefined || value === '') return null;
   const number = Number(value);
@@ -321,9 +354,9 @@ function formatDraftDate(value) {
   }).format(date);
 }
 
-function Card({ title, icon: Icon, children, actions }) {
+function Card({ title, icon: Icon, children, actions, className = '' }) {
   return (
-    <div className="card">
+    <div className={`card ${className}`.trim()}>
       {(title || actions) && (
         <div className="card-header">
           <h3 className="card-title">
@@ -344,6 +377,7 @@ const blankCustomerForm = {
   middleName: '',
   lastName: '',
   businessName: '',
+  birthDate: '',
   contactNumber: '',
   alternateMobileNumber: '',
   facebookAccountName: '',
@@ -375,13 +409,47 @@ const blankCustomerFilters = {
   province: '',
   city: '',
   barangay: '',
+  sortBy: 'createdAt',
+  sortDir: 'desc',
   page: 1,
   pageSize: 10
 };
 
+const customerTableColumns = [
+  { key: 'name', label: 'Name', sortBy: 'fullName', group: 'Profile' },
+  { key: 'account', label: 'Account', sortBy: 'accountNumber', group: 'Profile' },
+  { key: 'status', label: 'Status', sortBy: 'status', group: 'Profile' },
+  { key: 'type', label: 'Type', sortBy: 'customerType', group: 'Profile' },
+  { key: 'businessName', label: 'Business Name', sortBy: 'businessName', group: 'Profile', defaultVisible: false },
+  { key: 'birthDate', label: 'Birth Date', sortBy: 'birthDate', group: 'Profile', defaultVisible: false },
+  { key: 'contact', label: 'Primary Contact', sortBy: 'contactNumber', group: 'Contact' },
+  { key: 'alternateMobileNumber', label: 'Alternate Mobile', sortBy: 'alternateMobileNumber', group: 'Contact', defaultVisible: false },
+  { key: 'facebookAccountName', label: 'Facebook', sortBy: 'facebookAccountName', group: 'Contact', defaultVisible: false },
+  { key: 'facebookProfileLink', label: 'Facebook Link', sortBy: 'facebookProfileLink', group: 'Contact', defaultVisible: false },
+  { key: 'email', label: 'Email', sortBy: 'email', group: 'Contact', defaultVisible: false },
+  { key: 'secondaryContacts', label: 'Secondary Contacts', sortBy: 'secondaryContacts', group: 'Contact', defaultVisible: false },
+  { key: 'residence', label: 'Lives In', sortBy: 'address', group: 'Location', defaultVisible: false },
+  { key: 'locationName', label: 'Customer Location', sortBy: 'locationName', group: 'Location', defaultVisible: false },
+  { key: 'landmark', label: 'Landmark', sortBy: 'landmark', group: 'Location', defaultVisible: false },
+  { key: 'address', label: 'Address', sortBy: 'address', group: 'Location' },
+  { key: 'province', label: 'Province', sortBy: 'province', group: 'Location', defaultVisible: false },
+  { key: 'city', label: 'City', sortBy: 'city', group: 'Location', defaultVisible: false },
+  { key: 'barangay', label: 'Barangay', sortBy: 'barangay', group: 'Location', defaultVisible: false },
+  { key: 'coordinates', label: 'Coordinates', sortBy: 'coordinates', group: 'Location', defaultVisible: false },
+  { key: 'longitude', label: 'Longitude', sortBy: 'longitude', group: 'Location', defaultVisible: false },
+  { key: 'latitude', label: 'Latitude', sortBy: 'latitude', group: 'Location', defaultVisible: false }
+];
+
+const defaultCustomerTableColumnVisibility = customerTableColumns.reduce((columns, column) => ({
+  ...columns,
+  [column.key]: column.defaultVisible !== false
+}), {});
+
+const customerTableColumnGroups = Array.from(new Set(customerTableColumns.map((column) => column.group)));
+
 const customerFormStages = [
   { title: 'Profile', description: 'Account identity and lifecycle' },
-  { title: 'Contact', description: 'Primary and secondary contact information' },
+  { title: 'Contact', description: 'Customer and relative contact information' },
   { title: 'Location', description: 'Service address and coordinates' },
   { title: 'Review', description: 'Confirm before saving' }
 ];
@@ -441,6 +509,39 @@ function readCustomerDrafts() {
   }
 }
 
+function normalizeCustomerTableColumns(value) {
+  return customerTableColumns.reduce((columns, column) => ({
+    ...columns,
+    [column.key]: value?.[column.key] !== undefined
+      ? value[column.key] !== false
+      : defaultCustomerTableColumnVisibility[column.key]
+  }), {});
+}
+
+function customerColumnStatusKey(statusValue) {
+  return statusValue || 'ALL';
+}
+
+function customerColumnUserKey(user) {
+  return encodeURIComponent(String(user?.id || user?.username || 'local'));
+}
+
+function customerColumnStorageKey(userKey, statusValue) {
+  return `${CUSTOMER_TABLE_COLUMN_STORAGE_PREFIX}:${userKey || 'local'}:${customerColumnStatusKey(statusValue)}`;
+}
+
+function readCustomerTableColumns(userKey = 'local', statusValue = '') {
+  try {
+    const scoped = localStorage.getItem(customerColumnStorageKey(userKey, statusValue));
+    if (scoped) return normalizeCustomerTableColumns(JSON.parse(scoped));
+    const legacy = localStorage.getItem(CUSTOMER_TABLE_COLUMN_STORAGE_PREFIX);
+    if (legacy) return normalizeCustomerTableColumns(JSON.parse(legacy));
+    return normalizeCustomerTableColumns({});
+  } catch {
+    return normalizeCustomerTableColumns({});
+  }
+}
+
 export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const [overview, setOverview] = useState(null);
   const [meta, setMeta] = useState({ customerTypes: [], customerStatuses: [], customerGenders: [], provinces: [], cities: [], citiesByProvince: {}, barangays: [], barangaysByProvinceCity: {}, bulkUploadHeaders: [] });
@@ -459,18 +560,32 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const [bulkUploadResult, setBulkUploadResult] = useState(null);
   const [isBulkUploading, setBulkUploading] = useState(false);
   const [isDetailsPanelOpen, setDetailsPanelOpen] = useState(false);
+  const [customerDetailTab, setCustomerDetailTab] = useState('basic');
   const [areFiltersOpen, setFiltersOpen] = useState(false);
   const [formStage, setFormStage] = useState(0);
-  const [contactStageTab, setContactStageTab] = useState('primary');
   const [customerDrafts, setCustomerDrafts] = useState([]);
   const [activeDraftId, setActiveDraftId] = useState('');
   const [isDraftPanelOpen, setDraftPanelOpen] = useState(false);
   const [selectedDraftIds, setSelectedDraftIds] = useState([]);
   const [coordinateCapture, setCoordinateCapture] = useState(null);
   const [coordinatePan, setCoordinatePan] = useState(null);
+  const [locationSearch, setLocationSearch] = useState('');
+  const [isLocationPickerOpen, setLocationPickerOpen] = useState(false);
+  const [isMobileDetailsView, setMobileDetailsView] = useState(() => (
+    typeof window !== 'undefined' && window.matchMedia('(max-width: 767.98px)').matches
+  ));
+  const [visibleCustomerColumns, setVisibleCustomerColumns] = useState(readCustomerTableColumns);
+  const [columnPreferenceUserKey, setColumnPreferenceUserKey] = useState('local');
+  const [isColumnMenuOpen, setColumnMenuOpen] = useState(false);
+  const [columnMenuPosition, setColumnMenuPosition] = useState({ top: 0, left: 0, width: CUSTOMER_COLUMN_MENU_WIDTH, maxHeight: 360 });
+  const [columnMenuSearch, setColumnMenuSearch] = useState('');
+  const [openCustomerActionMenuId, setOpenCustomerActionMenuId] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const coordinateDragMovedRef = useRef(false);
+  const columnMenuButtonRef = useRef(null);
+  const latestFiltersRef = useRef(blankCustomerFilters);
+  const searchDebounceRef = useRef(null);
 
   const savedProvinces = uniqueValues(locations.map((location) => normalizeUpper(location.province)));
   const provinceOptions = uniqueValues([...savedProvinces, ...(meta.provinces || [])]);
@@ -508,6 +623,20 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const customerWizardProgress = Math.round((displayedCompletedFormStages.filter(Boolean).length / customerFormStages.length) * 100);
   const selectedFormLocation = locations.find((item) => item.id === form.locationId);
   const canCaptureCoordinates = Boolean(selectedFormLocation);
+  const locationSearchQuery = locationSearch.trim().toLowerCase();
+  const filteredLocationRecords = locations
+    .filter((location) => {
+      if (!locationSearchQuery) return true;
+      return [
+        locationLabel(location),
+        location.address,
+        location.location_name,
+        location.barangay,
+        location.municipality,
+        location.province
+      ].some((part) => String(part || '').toLowerCase().includes(locationSearchQuery));
+    })
+    .slice(0, 12);
   const coordinateMap = coordinateCapture
     ? coordinateTileData(
       coordinateCapture.centerLatitude,
@@ -535,6 +664,25 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       tone: 'secondary'
     }
   ];
+  const customerDetailTabs = [
+    { label: 'Basic Info', value: 'basic' },
+    { label: 'Location', value: 'location' }
+  ];
+  const activeColumnPreferenceLabel = statusTabs.find((item) => item.value === filters.status)?.label || 'All';
+  const activeColumnPreferenceStorageKey = customerColumnStorageKey(columnPreferenceUserKey, filters.status);
+  const columnMenuSearchQuery = columnMenuSearch.trim().toLowerCase();
+  const filteredCustomerTableColumnGroups = customerTableColumnGroups
+    .map((group) => ({
+      group,
+      columns: customerTableColumns.filter((column) => (
+        column.group === group
+        && (!columnMenuSearchQuery || [column.label, column.key, column.group]
+          .some((part) => String(part || '').toLowerCase().includes(columnMenuSearchQuery)))
+      ))
+    }))
+    .filter((item) => item.columns.length);
+  const activeCustomerColumns = customerTableColumns.filter((column) => visibleCustomerColumns[column.key]);
+  const visibleCustomerColumnCount = activeCustomerColumns.length;
 
   async function load(nextFilters = filters) {
     setError('');
@@ -565,6 +713,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     try {
       const customer = await request(`/customer-profiling/customers/${id}`);
       setSelected(customer);
+      setCustomerDetailTab('basic');
       setDetailsPanelOpen(true);
     } catch (err) {
       setError(err.message);
@@ -572,22 +721,125 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   }
 
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    let cancelled = false;
+    request('/me')
+      .then((user) => {
+        if (!cancelled) setColumnPreferenceUserKey(customerColumnUserKey(user));
+      })
+      .catch(() => {
+        if (!cancelled) setColumnPreferenceUserKey('local');
+      });
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    latestFiltersRef.current = filters;
+  }, [filters]);
+  useEffect(() => {
+    setVisibleCustomerColumns(readCustomerTableColumns(columnPreferenceUserKey, filters.status));
+  }, [columnPreferenceUserKey, filters.status]);
   useEffect(() => { setCustomerDrafts(readCustomerDrafts()); }, []);
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(max-width: 767.98px)');
+    const syncMobileDetails = () => setMobileDetailsView(mediaQuery.matches);
+    syncMobileDetails();
+    mediaQuery.addEventListener?.('change', syncMobileDetails);
+    return () => mediaQuery.removeEventListener?.('change', syncMobileDetails);
+  }, []);
   useEffect(() => {
     if (!message) return undefined;
     const timeout = window.setTimeout(() => setMessage(''), 6000);
     return () => window.clearTimeout(timeout);
   }, [message]);
+  useEffect(() => () => window.clearTimeout(searchDebounceRef.current), []);
+  useEffect(() => {
+    if (!isColumnMenuOpen) return undefined;
+    syncColumnMenuPosition();
+    const handleReposition = () => syncColumnMenuPosition();
+    window.addEventListener('resize', handleReposition);
+    window.addEventListener('scroll', handleReposition, true);
+    return () => {
+      window.removeEventListener('resize', handleReposition);
+      window.removeEventListener('scroll', handleReposition, true);
+    };
+  }, [isColumnMenuOpen]);
 
   function updateFilters(next) {
-    const merged = { ...filters, ...next, page: 1 };
+    const merged = { ...latestFiltersRef.current, ...next, page: 1 };
+    latestFiltersRef.current = merged;
     setFilters(merged);
     load(merged);
+  }
+
+  function handleSearchChange(value) {
+    const merged = { ...latestFiltersRef.current, search: value, page: 1 };
+    latestFiltersRef.current = merged;
+    setFilters(merged);
+    window.clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = window.setTimeout(() => {
+      load(latestFiltersRef.current);
+    }, 350);
+  }
+
+  function submitSearch() {
+    window.clearTimeout(searchDebounceRef.current);
+    load(latestFiltersRef.current);
+  }
+
+  function clearSearch() {
+    window.clearTimeout(searchDebounceRef.current);
+    updateFilters({ search: '' });
+  }
+
+  function syncColumnMenuPosition() {
+    if (!columnMenuButtonRef.current || typeof window === 'undefined') return;
+    const rect = columnMenuButtonRef.current.getBoundingClientRect();
+    const viewportPadding = 12;
+    const width = Math.min(CUSTOMER_COLUMN_MENU_WIDTH, window.innerWidth - (viewportPadding * 2));
+    const left = Math.max(
+      viewportPadding,
+      Math.min(window.innerWidth - width - viewportPadding, rect.right - width)
+    );
+    const top = Math.min(rect.bottom + 8, Math.max(viewportPadding, window.innerHeight - 180));
+    setColumnMenuPosition({
+      top,
+      left,
+      width,
+      maxHeight: Math.max(180, window.innerHeight - top - viewportPadding)
+    });
+  }
+
+  function toggleColumnMenu() {
+    setColumnMenuOpen((value) => {
+      const nextValue = !value;
+      if (nextValue) {
+        syncColumnMenuPosition();
+        window.requestAnimationFrame(syncColumnMenuPosition);
+      }
+      return nextValue;
+    });
+  }
+
+  function toggleSort(sortBy) {
+    const nextDirection = filters.sortBy === sortBy && filters.sortDir === 'asc' ? 'desc' : 'asc';
+    updateFilters({ sortBy, sortDir: nextDirection });
+  }
+
+  function toggleCustomerColumn(columnKey) {
+    setVisibleCustomerColumns((current) => {
+      const currentlyVisible = current[columnKey] !== false;
+      const visibleCount = customerTableColumns.filter((column) => current[column.key] !== false).length;
+      if (currentlyVisible && visibleCount <= 1) return current;
+      const nextColumns = { ...current, [columnKey]: !currentlyVisible };
+      localStorage.setItem(activeColumnPreferenceStorageKey, JSON.stringify(nextColumns));
+      return nextColumns;
+    });
   }
 
   function handleFilterButtonClick() {
     if (areFiltersOpen && hasActiveTableFilters) {
       const resetFilters = { ...blankCustomerFilters, pageSize: filters.pageSize };
+      latestFiltersRef.current = resetFilters;
       setFilters(resetFilters);
       setFiltersOpen(false);
       load(resetFilters);
@@ -639,11 +891,14 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   }
 
   function continueDraft(draft) {
+    const draftForm = { ...blankCustomerForm, ...(draft.form || {}) };
+    const draftLocation = locations.find((location) => location.id === draftForm.locationId);
     setEditingId('');
     setActiveDraftId(draft.id);
-    setForm({ ...blankCustomerForm, ...(draft.form || {}) });
+    setForm(draftForm);
+    setLocationSearch(draftLocation ? locationLabel(draftLocation) : draftForm.locationName || '');
+    setLocationPickerOpen(false);
     setFormStage(Math.min(Math.max(Number(draft.stage) || 0, 0), lastFormStage));
-    setContactStageTab('primary');
     setFormModalOpen(true);
     setDraftPanelOpen(false);
     setMessage(`Continuing ${draftTitle(draft)}.`);
@@ -658,10 +913,12 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
 
   function editCustomer(customer) {
     const firstSecondary = customer.secondaryContacts?.[0] || {};
+    const customerLocation = locations.find((location) => location.id === customer.locationId);
     setEditingId(customer.id);
     setActiveDraftId('');
     setFormStage(0);
-    setContactStageTab('primary');
+    setLocationSearch(customerLocation ? locationLabel(customerLocation) : customer.locationName || '');
+    setLocationPickerOpen(false);
     setForm({
       ...blankCustomerForm,
       ...customer,
@@ -679,7 +936,8 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     setEditingId('');
     setActiveDraftId('');
     setFormStage(0);
-    setContactStageTab('primary');
+    setLocationSearch('');
+    setLocationPickerOpen(false);
     setForm({ ...blankCustomerForm });
     setFormModalOpen(true);
     setMessage('');
@@ -692,7 +950,8 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     setEditingId('');
     setActiveDraftId('');
     setFormStage(0);
-    setContactStageTab('primary');
+    setLocationSearch('');
+    setLocationPickerOpen(false);
     setForm({ ...blankCustomerForm });
     if (savedDraft) setMessage('Customer draft saved. Open Drafts to continue later.');
   }
@@ -718,6 +977,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   function closeDetailsPanel() {
     setDetailsPanelOpen(false);
     setSelected(null);
+    setCustomerDetailTab('basic');
   }
 
   function viewCustomer(customer) {
@@ -741,7 +1001,8 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     setEditingId('');
     setActiveDraftId('');
     setFormStage(0);
-    setContactStageTab('primary');
+    setLocationSearch('');
+    setLocationPickerOpen(false);
     setForm({ ...blankCustomerForm });
   }
 
@@ -771,6 +1032,8 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     const location = locations.find((item) => item.id === locationId);
     if (!location) {
       setForm({ ...form, locationId: '', locationName: '' });
+      setLocationSearch('');
+      setLocationPickerOpen(false);
       return;
     }
     setForm({
@@ -785,6 +1048,25 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       latitude: location.latitude ?? form.latitude ?? '',
       longitude: location.longitude ?? form.longitude ?? ''
     });
+    setLocationSearch(locationLabel(location));
+    setLocationPickerOpen(false);
+  }
+
+  function handleLocationSearchChange(value) {
+    const selectedLabel = selectedFormLocation ? locationLabel(selectedFormLocation) : form.locationName || '';
+    setLocationSearch(value);
+    setLocationPickerOpen(true);
+    if (!value.trim() || value.trim() !== selectedLabel) setForm({ ...form, locationId: '', locationName: '' });
+  }
+
+  function handleLocationSearchKeyDown(event) {
+    if (event.key === 'Escape') {
+      setLocationPickerOpen(false);
+      return;
+    }
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    if (filteredLocationRecords[0]) applyLocation(filteredLocationRecords[0].id);
   }
 
   function openCoordinateCapture() {
@@ -946,7 +1228,6 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       setEditingId('');
       setActiveDraftId('');
       setFormStage(0);
-      setContactStageTab('primary');
       setForm({ ...blankCustomerForm });
       setFormModalOpen(false);
       await load(filters);
@@ -1080,6 +1361,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
               <div className="col-md-4"><label className="form-label">First Name</label><input className="form-control" value={form.firstName || ''} onChange={(e) => setForm({ ...form, firstName: e.target.value })} /></div>
               <div className="col-md-4"><label className="form-label">Middle Name</label><input className="form-control" value={form.middleName || ''} onChange={(e) => setForm({ ...form, middleName: e.target.value })} /></div>
               <div className="col-md-4"><label className="form-label">Last Name</label><input className="form-control" value={form.lastName || ''} onChange={(e) => setForm({ ...form, lastName: e.target.value })} /></div>
+              <div className="col-md-4"><label className="form-label">Birth Date</label><input className="form-control" type="date" value={form.birthDate || ''} onChange={(e) => setForm({ ...form, birthDate: e.target.value })} /></div>
             </div>
           </section>
         </div>
@@ -1089,29 +1371,28 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       return (
         <div className="customer-contact-stage">
           <section className="customer-form-section-panel">
-            <div className="customer-form-section-heading customer-contact-section-heading">
-              <h5>Contact Details</h5>
-              <div className="customer-contact-tabs" role="tablist" aria-label="Contact sections">
-                <button type="button" className={contactStageTab === 'primary' ? 'active' : ''} onClick={() => setContactStageTab('primary')} role="tab" aria-selected={contactStageTab === 'primary'}>Primary</button>
-                <button type="button" className={contactStageTab === 'secondary' ? 'active' : ''} onClick={() => setContactStageTab('secondary')} role="tab" aria-selected={contactStageTab === 'secondary'}>Secondary</button>
-              </div>
+            <div className="customer-form-section-heading">
+              <h5>Primary Contact</h5>
             </div>
-            {contactStageTab === 'primary' ? (
-              <div className="row g-3">
-                <div className="col-md-6"><label className="form-label">Contact Number</label><input className="form-control" value={form.contactNumber || ''} onChange={(e) => setForm({ ...form, contactNumber: e.target.value })} /></div>
-                <div className="col-md-6"><label className="form-label">Alternate Mobile</label><input className="form-control" value={form.alternateMobileNumber || ''} onChange={(e) => setForm({ ...form, alternateMobileNumber: e.target.value })} /></div>
-                <div className="col-md-6"><label className="form-label">Facebook Account</label><input className="form-control" value={form.facebookAccountName || ''} onChange={(e) => setForm({ ...form, facebookAccountName: e.target.value })} /></div>
-                <div className="col-md-6"><label className="form-label">Facebook Profile Link</label><input className="form-control" value={form.facebookProfileLink || ''} onChange={(e) => setForm({ ...form, facebookProfileLink: e.target.value })} /></div>
-                <div className="col-md-6"><label className="form-label">Email</label><input className="form-control" type="email" value={form.email || ''} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
-              </div>
-            ) : (
-              <div className="row g-3">
-                <div className="col-md-6"><label className="form-label">Secondary Contact</label><input className="form-control" value={form.secondaryContactName || ''} onChange={(e) => setForm({ ...form, secondaryContactName: e.target.value })} /></div>
-                <div className="col-md-6"><label className="form-label">Secondary Number</label><input className="form-control" value={form.secondaryContactNumber || ''} onChange={(e) => setForm({ ...form, secondaryContactNumber: e.target.value })} /></div>
-                <div className="col-md-6"><label className="form-label">Secondary Facebook</label><input className="form-control" value={form.secondaryContactFacebookAccount || ''} onChange={(e) => setForm({ ...form, secondaryContactFacebookAccount: e.target.value })} /></div>
-                <div className="col-md-6"><label className="form-label">Relationship</label><input className="form-control" value={form.secondaryContactRelationship || ''} onChange={(e) => setForm({ ...form, secondaryContactRelationship: e.target.value })} /></div>
-              </div>
-            )}
+            <div className="row g-3">
+              <div className="col-md-6"><label className="form-label">Contact Number</label><input className="form-control" value={form.contactNumber || ''} onChange={(e) => setForm({ ...form, contactNumber: e.target.value })} /></div>
+              <div className="col-md-6"><label className="form-label">Alternate Mobile</label><input className="form-control" value={form.alternateMobileNumber || ''} onChange={(e) => setForm({ ...form, alternateMobileNumber: e.target.value })} /></div>
+              <div className="col-md-6"><label className="form-label">Facebook Account</label><input className="form-control" value={form.facebookAccountName || ''} onChange={(e) => setForm({ ...form, facebookAccountName: e.target.value })} /></div>
+              <div className="col-md-6"><label className="form-label">Facebook Profile Link</label><input className="form-control" value={form.facebookProfileLink || ''} onChange={(e) => setForm({ ...form, facebookProfileLink: e.target.value })} /></div>
+              <div className="col-md-6"><label className="form-label">Email</label><input className="form-control" type="email" value={form.email || ''} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
+            </div>
+          </section>
+          <section className="customer-form-section-panel">
+            <div className="customer-form-section-heading">
+              <h5>Secondary Contact</h5>
+              <p>Customer relative or emergency contact</p>
+            </div>
+            <div className="row g-3">
+              <div className="col-md-6"><label className="form-label">Relative Full Name</label><input className="form-control" value={form.secondaryContactName || ''} onChange={(e) => setForm({ ...form, secondaryContactName: e.target.value })} /></div>
+              <div className="col-md-6"><label className="form-label">Relative Contact Number</label><input className="form-control" value={form.secondaryContactNumber || ''} onChange={(e) => setForm({ ...form, secondaryContactNumber: e.target.value })} /></div>
+              <div className="col-md-6"><label className="form-label">Relative Facebook Account</label><input className="form-control" value={form.secondaryContactFacebookAccount || ''} onChange={(e) => setForm({ ...form, secondaryContactFacebookAccount: e.target.value })} /></div>
+              <div className="col-md-6"><label className="form-label">Relationship to Customer</label><input className="form-control" value={form.secondaryContactRelationship || ''} onChange={(e) => setForm({ ...form, secondaryContactRelationship: e.target.value })} /></div>
+            </div>
           </section>
         </div>
       );
@@ -1121,27 +1402,73 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
         <div className="customer-stage-fields">
           <section className="customer-form-section-panel">
             <div className="customer-form-section-heading">
-              <h5>Location Management</h5>
+              <h5>Customer Location</h5>
             </div>
             <div className="row g-3">
-              <div className="col-md-6">
-                <label className="form-label">Location Management Record</label>
-                <select className="form-select" value={form.locationId || ''} onChange={(e) => applyLocation(e.target.value)}>
-                  <option value="">Manual / create location on save</option>
-                  {locations.map((location) => <option key={location.id} value={location.id}>{locationLabel(location)}</option>)}
-                </select>
+              <div className="col-md-8">
+                <label className="form-label">Customer Location Record</label>
+                <div className="customer-location-picker">
+                  <IconSearch size={16} className="customer-location-search-icon" aria-hidden="true" />
+                  <input
+                    className="form-control customer-location-search-input"
+                    value={locationSearch}
+                    onChange={(e) => handleLocationSearchChange(e.target.value)}
+                    onFocus={() => setLocationPickerOpen(true)}
+                    onBlur={() => window.setTimeout(() => setLocationPickerOpen(false), 120)}
+                    onKeyDown={handleLocationSearchKeyDown}
+                    placeholder="Search saved customer locations"
+                    role="combobox"
+                    aria-expanded={isLocationPickerOpen}
+                    aria-controls="customer-location-options"
+                    aria-autocomplete="list"
+                  />
+                  {(form.locationId || locationSearch) && (
+                    <button
+                      type="button"
+                      className="btn btn-icon btn-sm customer-location-clear"
+                      title="Clear customer location"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => applyLocation('')}
+                    >
+                      <IconX size={14} />
+                    </button>
+                  )}
+                  {isLocationPickerOpen && (
+                    <div className="customer-location-options" id="customer-location-options" role="listbox">
+                      <button
+                        type="button"
+                        className={`customer-location-option ${!form.locationId ? 'active' : ''}`}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => applyLocation('')}
+                        role="option"
+                        aria-selected={!form.locationId}
+                      >
+                        <strong>Manual / add on save</strong>
+                        <span>Use the customer address below.</span>
+                      </button>
+                      {filteredLocationRecords.map((location) => (
+                        <button
+                          type="button"
+                          className={`customer-location-option ${form.locationId === location.id ? 'active' : ''}`}
+                          key={location.id}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => applyLocation(location.id)}
+                          role="option"
+                          aria-selected={form.locationId === location.id}
+                        >
+                          <strong>{locationLabel(location)}</strong>
+                          <span>{location.address || [location.barangay, location.municipality, location.province].filter(Boolean).join(', ') || 'Saved customer location'}</span>
+                        </button>
+                      ))}
+                      {!filteredLocationRecords.length && (
+                        <div className="customer-location-empty">No matching customer location.</div>
+                      )}
+                    </div>
+                  )}
+                </div>
                 <div className="form-hint">Missing customer locations are added to System Settings for completion later.</div>
               </div>
-              <div className="col-md-6"><label className="form-label">Landmark</label><input className="form-control" value={form.landmark || ''} onChange={(e) => setForm({ ...form, landmark: e.target.value })} placeholder="Nearest landmark or service-area note" /></div>
-            </div>
-          </section>
-          <section className="customer-form-section-panel">
-            <div className="customer-form-section-heading">
-              <h5>Service Address</h5>
-            </div>
-            <div className="row g-3">
-              <div className="col-md-6"><label className="form-label">Address Line 1</label><input className="form-control" value={form.addressLine1 || ''} onChange={(e) => setForm({ ...form, addressLine1: e.target.value })} /></div>
-              <div className="col-md-6"><label className="form-label">Address Line 2</label><input className="form-control" value={form.addressLine2 || ''} onChange={(e) => setForm({ ...form, addressLine2: e.target.value })} /></div>
+              <div className="col-md-4"><label className="form-label">Landmark</label><input className="form-control" value={form.landmark || ''} onChange={(e) => setForm({ ...form, landmark: e.target.value })} placeholder="Nearest landmark or service-area note" /></div>
               <div className="col-md-4">
                 <label className="form-label">Province</label>
                 <input className="form-control" list="customer-province-options" value={form.province || ''} onChange={(e) => setForm({ ...form, province: normalizeUpper(e.target.value), city: '', barangay: '' })} />
@@ -1154,6 +1481,8 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                 <label className="form-label">Barangay</label>
                 <input className="form-control" list="customer-barangay-options" value={form.barangay || ''} onChange={(e) => setForm({ ...form, barangay: normalizeUpper(e.target.value) })} />
               </div>
+              <div className="col-md-6"><label className="form-label">Address Line 1</label><input className="form-control" value={form.addressLine1 || ''} onChange={(e) => setForm({ ...form, addressLine1: e.target.value })} /></div>
+              <div className="col-md-6"><label className="form-label">Address Line 2</label><input className="form-control" value={form.addressLine2 || ''} onChange={(e) => setForm({ ...form, addressLine2: e.target.value })} /></div>
               <datalist id="customer-province-options">{provinceOptions.map((item) => <option key={item} value={item} />)}</datalist>
               <datalist id="customer-city-options">{formCities.map((item) => <option key={item} value={item} />)}</datalist>
               <datalist id="customer-barangay-options">{formBarangays.map((item) => <option key={item} value={item} />)}</datalist>
@@ -1166,7 +1495,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
             <div className="row g-3">
               <div className="col-md-4"><label className="form-label">Longitude</label><input className="form-control" value={form.longitude || ''} onChange={(e) => setForm({ ...form, longitude: e.target.value })} /></div>
               <div className="col-md-4"><label className="form-label">Latitude</label><input className="form-control" value={form.latitude || ''} onChange={(e) => setForm({ ...form, latitude: e.target.value })} /></div>
-              <div className="col-md-4 d-flex align-items-end"><button type="button" className="btn btn-outline-primary w-100" disabled={!canCaptureCoordinates} title={canCaptureCoordinates ? 'Capture coordinates from the selected Location Management record' : 'Select a Location Management record first'} onClick={openCoordinateCapture}><IconMapPin size={18} className="me-2" />Capture Coordinates</button></div>
+              <div className="col-md-4 d-flex align-items-end"><button type="button" className="btn btn-outline-primary w-100" disabled={!canCaptureCoordinates} title={canCaptureCoordinates ? 'Capture coordinates from the selected customer location record' : 'Select a customer location record first'} onClick={openCoordinateCapture}><IconMapPin size={18} className="me-2" />Capture Coordinates</button></div>
             </div>
           </section>
         </div>
@@ -1184,7 +1513,8 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
             ...(normalizeUpper(form.customerType) === 'BUSINESS' ? [['Business Name', form.businessName]] : []),
             ['First Name', form.firstName],
             ['Middle Name', form.middleName],
-            ['Last Name', form.lastName]
+            ['Last Name', form.lastName],
+            ['Birth Date', formatDisplayDate(form.birthDate)]
           ].map(([label, value]) => renderReviewItem(label, value))}
         </section>
         <section>
@@ -1200,7 +1530,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
         <section>
           <h4>Location</h4>
           {[
-            ['Location Management Record', form.locationName || form.locationId],
+            ['Customer Location Record', form.locationName || form.locationId],
             ['Landmark', form.landmark],
             ['Address Line 1', form.addressLine1],
             ['Address Line 2', form.addressLine2],
@@ -1223,8 +1553,9 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     );
   }
 
-  function renderCustomerDetailsPanel() {
+  function renderCustomerDetailsPanel({ asModal = false } = {}) {
     if (!selected) return null;
+    const DetailPanelTag = asModal ? 'div' : 'aside';
     const detailsCoordinates = customerCoordinates(selected);
     const detailsMap = detailsCoordinates
       ? coordinateTileData(
@@ -1235,70 +1566,261 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
         COORDINATE_CAPTURE_ZOOM
       )
       : null;
+    const basicInfoRows = [
+      { label: 'Lives in', value: formatCustomerResidence(selected), icon: IconHome },
+      { label: 'Birth Date', value: formatDisplayDate(selected.birthDate), icon: IconCalendarEvent },
+      ...(normalizeUpper(selected.customerType) === 'BUSINESS'
+        ? [{ label: 'Business Name', value: selected.businessName, icon: IconActivity }]
+        : [])
+    ];
+    const contactInfoRows = [
+      { label: 'Primary contact', value: selected.contactNumber, icon: IconAddressBook },
+      { label: 'Alternate mobile', value: selected.alternateMobileNumber, icon: IconAddressBook },
+      { label: 'Facebook', value: selected.facebookAccountName, icon: IconUsers },
+      { label: 'Email', value: selected.email, icon: IconAddressBook }
+    ];
+    const locationInfoRows = [
+      { label: 'Customer location', value: selected.locationName || selected.locationId, icon: IconMapPin },
+      { label: 'Landmark', value: selected.landmark, icon: IconMapPin },
+      { label: 'Address', value: formatCustomerAddress(selected), icon: IconHome },
+      { label: 'Coordinates', value: [selected.longitude, selected.latitude].filter(Boolean).join(', '), icon: IconMapPin }
+    ];
+    const renderInfoRow = ({ label, value, icon: InfoIcon }) => (
+      <div className="customer-info-row" key={label}>
+        <span className="customer-info-icon" aria-hidden="true"><InfoIcon size={17} /></span>
+        <span className="customer-info-text">
+          <span>{label}:</span>
+          <strong>{String(value || '').trim() || '-'}</strong>
+        </span>
+      </div>
+    );
     return (
-      <aside className="customer-detail-panel customer-inline-detail-panel" aria-label="Selected customer details">
+      <DetailPanelTag className={`customer-detail-panel ${asModal ? 'customer-detail-modal-panel' : 'customer-inline-detail-panel'}`} aria-label="Selected customer details">
         <div className="customer-detail-panel-header">
-          <div className="d-flex align-items-center gap-3">
-            <CustomerEmotionAvatar customer={selected} avatarConfig={avatarConfig} size={48} showLabel />
-            <div>
-              <div className="text-muted small">Selected Customer</div>
+          <div className="customer-detail-identity">
+            <CustomerEmotionAvatar customer={selected} avatarConfig={avatarConfig} size={74} className="customer-detail-avatar" />
+            <div className="customer-detail-heading">
               <h3 className="customer-modal-title">{selected.fullName}</h3>
-              <div className="text-muted">{selected.accountNumber}</div>
+              <div className="customer-detail-badges">
+                <span className="badge bg-secondary-lt text-secondary">{selected.accountNumber}</span>
+                <span className={`badge ${statusClass(selected.status)}`}>{selected.status}</span>
+                <span className="badge bg-blue-lt text-blue">{selected.customerType}</span>
+              </div>
             </div>
           </div>
           <button type="button" className="btn btn-icon btn-sm" title="Close" onClick={closeDetailsPanel}><IconX size={18} /></button>
         </div>
         <div className="customer-detail-panel-body">
           <div className="customer-detail">
-            <div className="d-flex flex-wrap justify-content-between gap-2 mb-3">
-              <span className="badge bg-blue-lt text-blue">{selected.customerType}</span>
-              <span className={`badge ${statusClass(selected.status)}`}>{selected.status}</span>
+            <div className="customer-status-tabs customer-detail-tabs" role="tablist" aria-label="Customer detail sections">
+              {customerDetailTabs.map((tab) => (
+                <button
+                  type="button"
+                  key={tab.value}
+                  className={`customer-status-tab customer-detail-tab ${customerDetailTab === tab.value ? 'active' : ''}`}
+                  onClick={() => setCustomerDetailTab(tab.value)}
+                  role="tab"
+                  aria-selected={customerDetailTab === tab.value}
+                >
+                  {tab.label}
+                </button>
+              ))}
             </div>
-            <dl className="detail-list">
-              {normalizeUpper(selected.customerType) === 'BUSINESS' && (
-                <>
-                  <dt>Business name</dt><dd>{selected.businessName || '-'}</dd>
-                </>
-              )}
-              <dt>Primary contact</dt><dd>{selected.contactNumber}</dd>
-              <dt>Alternate mobile</dt><dd>{selected.alternateMobileNumber || '-'}</dd>
-              <dt>Facebook</dt><dd>{selected.facebookAccountName || '-'}</dd>
-              <dt>Email</dt><dd>{selected.email || '-'}</dd>
-              <dt>Location record</dt><dd>{selected.locationName || selected.locationId || '-'}</dd>
-              <dt>Landmark</dt><dd>{selected.landmark || '-'}</dd>
-              <dt>Address</dt><dd>{formatCustomerAddress(selected)}</dd>
-              <dt>Coordinates</dt><dd>{selected.longitude || '-'}, {selected.latitude || '-'}</dd>
-            </dl>
-            {detailsCoordinates && detailsMap && (
-              <a
-                className="customer-detail-map-preview"
-                href={googleMapsUrl(detailsCoordinates.latitude, detailsCoordinates.longitude)}
-                target="_blank"
-                rel="noreferrer"
-                aria-label="Open customer coordinates in Google Maps"
-              >
-                <span className="customer-detail-map-preview-heading">
-                  <strong>Location Map</strong>
-                  <small>Open in Google Maps</small>
-                </span>
-                <span className="customer-detail-map-tiles" aria-hidden="true">
-                  {detailsMap.tiles.map((tile) => <img key={tile.key} src={tile.url} alt="" draggable="false" />)}
-                  <span className="customer-detail-map-marker" style={detailsMap.marker}><IconMapPin size={20} /></span>
-                </span>
-              </a>
-            )}
-            <div className="border-top pt-3 mt-3">
-              <div className="fw-semibold mb-2">Secondary contacts</div>
-              {selected.secondaryContacts?.length ? selected.secondaryContacts.map((contact, index) => (
-                <div className="secondary-contact" key={`${contact.name}-${index}`}>
-                  <div>{contact.name}</div>
-                  <small>{contact.relationship || '-'} | {contact.contactNumber || '-'}</small>
+            {customerDetailTab === 'basic' && (
+              <section className="customer-info-panel">
+                <h4>Basic Info</h4>
+                <div className="customer-info-list">{basicInfoRows.map(renderInfoRow)}</div>
+                <div className="customer-secondary-section">
+                  <h4>Contact Info</h4>
+                  <div className="customer-info-list">{contactInfoRows.map(renderInfoRow)}</div>
                 </div>
-              )) : <div className="text-muted">No secondary contacts.</div>}
-            </div>
+                <div className="customer-secondary-section">
+                  <h4>Secondary Contacts</h4>
+                  {selected.secondaryContacts?.length ? selected.secondaryContacts.map((contact, index) => (
+                    <div className="secondary-contact" key={`${contact.name}-${index}`}>
+                      <div>{contact.name}</div>
+                      <small>{contact.relationship || '-'} | {contact.contactNumber || '-'}</small>
+                    </div>
+                  )) : <div className="text-muted">No secondary contacts.</div>}
+                </div>
+              </section>
+            )}
+            {customerDetailTab === 'location' && (
+              <section className="customer-info-panel">
+                <h4>Location Info</h4>
+                <div className="customer-info-list">{locationInfoRows.map(renderInfoRow)}</div>
+                {detailsCoordinates && detailsMap && (
+                  <div className="customer-detail-map-panel">
+                    <a
+                      className="customer-detail-map-preview"
+                      href={googleMapsUrl(detailsCoordinates.latitude, detailsCoordinates.longitude)}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label="Open customer coordinates in Google Maps"
+                    >
+                      <span className="customer-detail-map-preview-heading">
+                        <strong>Location Map</strong>
+                        <small>Open in Google Maps</small>
+                      </span>
+                      <span className="customer-detail-map-tiles" aria-hidden="true">
+                        {detailsMap.tiles.map((tile) => <img key={tile.key} src={tile.url} alt="" draggable="false" />)}
+                        <span className="customer-detail-map-marker" style={detailsMap.marker}><IconMapPin size={20} /></span>
+                      </span>
+                    </a>
+                  </div>
+                )}
+              </section>
+            )}
           </div>
         </div>
-      </aside>
+      </DetailPanelTag>
+    );
+  }
+
+  function renderSortIcon(column) {
+    if (filters.sortBy !== column.sortBy) return <IconArrowsSort size={14} />;
+    return filters.sortDir === 'asc' ? <IconSortAscending size={14} /> : <IconSortDescending size={14} />;
+  }
+
+  function renderCustomerHeader(column) {
+    return (
+      <th key={column.key}>
+        <button
+          type="button"
+          className={`customer-sort-button ${filters.sortBy === column.sortBy ? 'active' : ''}`}
+          onClick={() => toggleSort(column.sortBy)}
+          aria-label={`Sort by ${column.label}`}
+        >
+          <span>{column.label}</span>
+          {renderSortIcon(column)}
+        </button>
+      </th>
+    );
+  }
+
+  function formatSecondaryContacts(customer) {
+    const contacts = customer.secondaryContacts || [];
+    if (!contacts.length) return '-';
+    return contacts
+      .map((contact) => [
+        contact.name,
+        contact.relationship,
+        contact.contactNumber
+      ].map((part) => String(part || '').trim()).filter(Boolean).join(' - '))
+      .filter(Boolean)
+      .join('; ') || '-';
+  }
+
+  function formatCustomerCoordinates(customer) {
+    return [customer.longitude, customer.latitude].filter(Boolean).join(', ') || '-';
+  }
+
+  function renderPlainCustomerCell(columnKey, value) {
+    return (
+      <td key={columnKey}>
+        <span className="customer-table-value">{String(value || '').trim() || '-'}</span>
+      </td>
+    );
+  }
+
+  function renderCustomerCell(customer, columnKey) {
+    if (columnKey === 'name') {
+      return (
+        <td key={columnKey}>
+          <div className="d-flex align-items-center gap-2">
+            <CustomerEmotionAvatar customer={customer} avatarConfig={avatarConfig} size={34} />
+            <div className="customer-name-cell">
+              <div className="fw-semibold">{customer.fullName}</div>
+            </div>
+          </div>
+        </td>
+      );
+    }
+    if (columnKey === 'account') {
+      return <td key={columnKey}><span className="fw-semibold">{customer.accountNumber}</span></td>;
+    }
+    if (columnKey === 'contact') return renderPlainCustomerCell(columnKey, customer.contactNumber);
+    if (columnKey === 'type') {
+      return <td key={columnKey}><span className="badge bg-blue-lt text-blue">{customer.customerType}</span></td>;
+    }
+    if (columnKey === 'status') {
+      return <td key={columnKey}><span className={`badge ${statusClass(customer.status)}`}>{customer.status}</span></td>;
+    }
+    if (columnKey === 'businessName') return renderPlainCustomerCell(columnKey, customer.businessName);
+    if (columnKey === 'birthDate') return renderPlainCustomerCell(columnKey, formatDisplayDate(customer.birthDate));
+    if (columnKey === 'alternateMobileNumber') return renderPlainCustomerCell(columnKey, customer.alternateMobileNumber);
+    if (columnKey === 'facebookAccountName') return renderPlainCustomerCell(columnKey, customer.facebookAccountName);
+    if (columnKey === 'facebookProfileLink') return renderPlainCustomerCell(columnKey, customer.facebookProfileLink);
+    if (columnKey === 'email') return renderPlainCustomerCell(columnKey, customer.email);
+    if (columnKey === 'secondaryContacts') return renderPlainCustomerCell(columnKey, formatSecondaryContacts(customer));
+    if (columnKey === 'residence') return renderPlainCustomerCell(columnKey, formatCustomerResidence(customer));
+    if (columnKey === 'locationName') return renderPlainCustomerCell(columnKey, customer.locationName || customer.locationId);
+    if (columnKey === 'landmark') return renderPlainCustomerCell(columnKey, customer.landmark);
+    if (columnKey === 'address') return renderPlainCustomerCell(columnKey, formatCustomerLocation(customer));
+    if (columnKey === 'province') return renderPlainCustomerCell(columnKey, customer.province);
+    if (columnKey === 'city') return renderPlainCustomerCell(columnKey, customer.city);
+    if (columnKey === 'barangay') return renderPlainCustomerCell(columnKey, customer.barangay);
+    if (columnKey === 'coordinates') return renderPlainCustomerCell(columnKey, formatCustomerCoordinates(customer));
+    if (columnKey === 'longitude') return renderPlainCustomerCell(columnKey, customer.longitude);
+    if (columnKey === 'latitude') return renderPlainCustomerCell(columnKey, customer.latitude);
+    return null;
+  }
+
+  function renderCustomerActionButtons(customer, compact = false) {
+    const actions = [
+      { label: 'View', icon: IconEye, tone: 'blue', onClick: viewCustomer },
+      { label: 'Edit', icon: IconEdit, tone: 'azure', onClick: editCustomer },
+      { label: 'Archive', icon: IconTrash, tone: 'red', onClick: deleteCustomer }
+    ];
+    return actions.map(({ label, icon: ActionIcon, tone, onClick }) => (
+      <button
+        type="button"
+        key={label}
+        className={`badge customer-action-badge bg-${tone}-lt text-${tone} border-0 ${compact ? 'compact' : ''}`}
+        title={label}
+        aria-label={`${label} ${customer.fullName}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpenCustomerActionMenuId('');
+          onClick(customer);
+        }}
+      >
+        <ActionIcon size={compact ? 18 : 21} />
+        {compact && <span>{label}</span>}
+      </button>
+    ));
+  }
+
+  function renderCustomerActions(customer) {
+    const menuOpen = openCustomerActionMenuId === customer.id;
+    return (
+      <td className="customer-actions-column">
+        <div className="customer-row-actions" onClick={(event) => event.stopPropagation()}>
+          <div className="customer-actions-inline">
+            {renderCustomerActionButtons(customer)}
+          </div>
+          <div className="customer-actions-overflow">
+            <button
+              type="button"
+              className="badge customer-action-badge bg-secondary-lt text-secondary border-0"
+              title="More actions"
+              aria-label={`More actions for ${customer.fullName}`}
+              aria-expanded={menuOpen}
+              onClick={(event) => {
+                event.stopPropagation();
+                setOpenCustomerActionMenuId(menuOpen ? '' : customer.id);
+              }}
+            >
+              <IconDotsVertical size={21} />
+            </button>
+            {menuOpen && (
+              <div className="customer-row-action-menu">
+                {renderCustomerActionButtons(customer, true)}
+              </div>
+            )}
+          </div>
+        </div>
+      </td>
     );
   }
 
@@ -1308,10 +1830,11 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     ['Pending', overview?.pendingCustomers, IconClock, 'yellow'],
     ['Enrile Customers', overview?.enrileCustomers, IconMapPin, 'blue']
   ];
+  const ActiveCustomerFormStageIcon = customerFormStageIcons[formStage] || IconClipboardCheck;
 
   return (
     <>
-    <div className={`customer-profile-workspace ${isDetailsPanelOpen && selected ? 'has-detail-panel' : ''}`}>
+    <div className={`customer-profile-workspace ${isDetailsPanelOpen && selected && !isMobileDetailsView ? 'has-detail-panel' : ''}`}>
       <div className="customer-profile-main">
         <div className="row row-cards customer-profile-page">
           {message && (
@@ -1337,56 +1860,134 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
 
           <div className="col-12">
             <Card
+              className="customer-table-card"
               title={`Customers (${customers.total})`}
               icon={IconUsers}
               actions={(
-                <div className="btn-list">
+                <div className="btn-list customer-header-actions">
+                  <div className="customer-header-search">
+                    <label className="visually-hidden" htmlFor="customer-table-search">Search customers</label>
+                    <div className="input-icon customer-header-search-input">
+                      <span className="input-icon-addon"><IconSearch size={16} /></span>
+                      <input
+                        id="customer-table-search"
+                        className="form-control form-control-sm"
+                        placeholder="Search name, account, contact, Facebook"
+                        value={filters.search}
+                        onChange={(event) => handleSearchChange(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            submitSearch();
+                          }
+                        }}
+                      />
+                      {filters.search && (
+                        <button type="button" className="customer-search-clear" title="Clear search" aria-label="Clear search" onClick={clearSearch}>
+                          <IconX size={14} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
                   <button className="btn btn-outline-primary btn-sm" onClick={openBulkUploadModal}>
                     <IconUpload size={16} className="me-1" />Bulk Upload
                   </button>
-                  <button className="btn btn-primary btn-sm" onClick={openNewCustomerModal}>
-                    <IconPlus size={16} className="me-1" />New Customer
+                  <button className="btn btn-primary btn-sm customer-header-icon-button" title="New Customer" aria-label="New Customer" onClick={openNewCustomerModal}>
+                    <IconPlus size={16} />
                   </button>
-                  <button className="btn btn-outline-secondary btn-sm" onClick={openDraftPanel}>
-                    <IconClipboardList size={16} className="me-1" />Drafts
-                    <span className="badge bg-blue-lt text-blue ms-1">{customerDrafts.length}</span>
+                  <button className="btn btn-outline-secondary btn-sm customer-header-icon-button customer-draft-icon-button" title="Drafts" aria-label={`Drafts, ${customerDrafts.length} saved`} onClick={openDraftPanel}>
+                    <IconClipboardList size={16} />
+                    <span className="badge bg-blue-lt text-blue customer-header-icon-count">{customerDrafts.length}</span>
                   </button>
                   <button
-                    className={`btn btn-outline-secondary btn-sm ${areFiltersOpen ? 'active' : ''}`}
+                    className={`btn btn-outline-secondary btn-sm customer-header-icon-button ${areFiltersOpen ? 'active' : ''}`}
+                    title={areFiltersOpen ? (hasActiveTableFilters ? 'Clear Filters' : 'Close Filter') : 'Filter'}
+                    aria-label={areFiltersOpen ? (hasActiveTableFilters ? 'Clear Filters' : 'Close Filter') : 'Filter'}
                     onClick={handleFilterButtonClick}
                     aria-expanded={areFiltersOpen}
                   >
-                    {areFiltersOpen ? <IconX size={16} className="me-1" /> : <IconFilter size={16} className="me-1" />}
-                    {areFiltersOpen ? (hasActiveTableFilters ? 'Clear Filters' : 'Close Filter') : 'Filter'}
+                    {areFiltersOpen ? <IconX size={16} /> : <IconFilter size={16} />}
                   </button>
+                  <div className="customer-column-menu-wrapper">
+                    <button
+                      type="button"
+                      ref={columnMenuButtonRef}
+                      className={`btn btn-outline-secondary btn-sm customer-header-icon-button ${isColumnMenuOpen ? 'active' : ''}`}
+                      title={`Column display for ${activeColumnPreferenceLabel}`}
+                      aria-label={`Column display for ${activeColumnPreferenceLabel}`}
+                      aria-expanded={isColumnMenuOpen}
+                      onClick={toggleColumnMenu}
+                    >
+                      <IconColumns size={16} />
+                    </button>
+                    {isColumnMenuOpen && (
+                      <div className="customer-column-menu" role="menu" style={columnMenuPosition}>
+                        <div>
+                          <div className="customer-column-menu-title">Display columns</div>
+                          <div className="customer-column-menu-subtitle">Saved for {activeColumnPreferenceLabel} customers</div>
+                        </div>
+                        <div className="customer-column-search">
+                          <label className="visually-hidden" htmlFor="customer-column-search">Search display columns</label>
+                          <input
+                            id="customer-column-search"
+                            className="form-control form-control-sm"
+                            placeholder="Search columns"
+                            value={columnMenuSearch}
+                            onChange={(event) => setColumnMenuSearch(event.target.value)}
+                          />
+                          {columnMenuSearch && (
+                            <button type="button" className="btn btn-icon btn-sm" title="Clear column search" aria-label="Clear column search" onClick={() => setColumnMenuSearch('')}>
+                              <IconX size={15} />
+                            </button>
+                          )}
+                        </div>
+                        {filteredCustomerTableColumnGroups.map(({ group, columns }) => (
+                          <div className="customer-column-group" key={group}>
+                            <div className="customer-column-group-title">{group}</div>
+                            {columns.map((column) => {
+                              const checked = visibleCustomerColumns[column.key] !== false;
+                              return (
+                                <label className="form-check customer-column-option" key={column.key}>
+                                  <input
+                                    className="form-check-input"
+                                    type="checkbox"
+                                    checked={checked}
+                                    disabled={checked && visibleCustomerColumnCount <= 1}
+                                    onChange={() => toggleCustomerColumn(column.key)}
+                                  />
+                                  <span className="form-check-label">{column.label}</span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        ))}
+                        {!filteredCustomerTableColumnGroups.length && (
+                          <div className="customer-column-empty">No matching columns.</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             >
               {areFiltersOpen && (
                 <div className="customer-table-filters">
                   <div className="row g-2 align-items-end">
-                    <div className="col-md-4">
-                      <label className="form-label">Search</label>
-                      <div className="input-icon">
-                        <span className="input-icon-addon"><IconSearch size={16} /></span>
-                        <input className="form-control" placeholder="Name, account, contact, Facebook" value={filters.search} onChange={(e) => setFilters({ ...filters, search: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && updateFilters({ search: e.currentTarget.value })} />
-                      </div>
-                    </div>
-                    <div className="col-md-2">
+                    <div className="col-md-3">
                       <label className="form-label">Type</label>
                       <select className="form-select" value={filters.customerType} onChange={(e) => updateFilters({ customerType: e.target.value })}>
                         <option value="">All</option>
                         {meta.customerTypes.map((item) => <option key={item}>{item}</option>)}
                       </select>
                     </div>
-                    <div className="col-md-2">
+                    <div className="col-md-3">
                       <label className="form-label">Province</label>
                       <select className="form-select" value={filters.province} onChange={(e) => updateFilters({ province: e.target.value, city: '', barangay: '' })}>
                         <option value="">All</option>
                         {provinceOptions.map((item) => <option key={item}>{item}</option>)}
                       </select>
                     </div>
-                    <div className="col-md-2">
+                    <div className="col-md-3">
                       <label className="form-label">City</label>
                       <select className="form-select" value={filters.city} onChange={(e) => updateFilters({ city: e.target.value, barangay: '' })}>
                         <option value="">All</option>
@@ -1399,9 +2000,6 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                         <option value="">All</option>
                         {barangays.map((item) => <option key={item}>{item}</option>)}
                       </select>
-                    </div>
-                    <div className="col-md-auto">
-                      <button className="btn btn-primary" onClick={() => updateFilters({ search: filters.search })}><IconSearch size={18} className="me-2" />Apply</button>
                     </div>
                     <div className="col-md-auto">
                       <button className="btn" onClick={() => load(filters)}><IconRefresh size={18} className="me-2" />Refresh</button>
@@ -1428,13 +2026,8 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                 <table className="table card-table table-vcenter customer-table">
                   <thead>
                     <tr>
-                      <th>Account</th>
-                      <th>Name</th>
-                      <th>Contact</th>
-                      <th>Type</th>
-                      <th>Status</th>
-                      <th>Address</th>
-                      <th className="w-1">Actions</th>
+                      {activeCustomerColumns.map(renderCustomerHeader)}
+                      <th className="customer-actions-column">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1447,31 +2040,12 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                         tabIndex={0}
                         aria-label={`View ${customer.fullName}`}
                       >
-                        <td><span className="fw-semibold">{customer.accountNumber}</span></td>
-                        <td>
-                          <div className="d-flex align-items-center gap-2">
-                            <CustomerEmotionAvatar customer={customer} avatarConfig={avatarConfig} size={34} />
-                            <div>
-                              <div className="fw-semibold">{customer.fullName}</div>
-                              <div className="text-muted small">{customer.facebookAccountName || '-'}</div>
-                            </div>
-                          </div>
-                        </td>
-                        <td>{customer.contactNumber}</td>
-                        <td><span className="badge bg-blue-lt text-blue">{customer.customerType}</span></td>
-                        <td><span className={`badge ${statusClass(customer.status)}`}>{customer.status}</span></td>
-                        <td>{formatCustomerLocation(customer)}</td>
-                        <td>
-                          <div className="btn-list flex-nowrap">
-                            <button className="btn btn-icon btn-sm" title="View" onClick={(event) => { event.stopPropagation(); viewCustomer(customer); }}><IconEye size={16} /></button>
-                            <button className="btn btn-icon btn-sm" title="Edit" onClick={(event) => { event.stopPropagation(); editCustomer(customer); }}><IconEdit size={16} /></button>
-                            <button className="btn btn-icon btn-sm text-danger" title="Archive" onClick={(event) => { event.stopPropagation(); deleteCustomer(customer); }}><IconTrash size={16} /></button>
-                          </div>
-                        </td>
+                        {activeCustomerColumns.map((column) => renderCustomerCell(customer, column.key))}
+                        {renderCustomerActions(customer)}
                       </tr>
                     ))}
                     {!customers.data.length && (
-                      <tr><td colSpan="7"><div className="empty">No customers match the current filters.</div></td></tr>
+                      <tr><td colSpan={visibleCustomerColumnCount + 1}><div className="empty">No customers match the current filters.</div></td></tr>
                     )}
                   </tbody>
                 </table>
@@ -1480,8 +2054,15 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
           </div>
         </div>
       </div>
-      {isDetailsPanelOpen && selected && renderCustomerDetailsPanel()}
+      {isDetailsPanelOpen && selected && !isMobileDetailsView && renderCustomerDetailsPanel()}
     </div>
+    {isDetailsPanelOpen && selected && isMobileDetailsView && (
+      <div className="customer-modal-backdrop customer-detail-modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeDetailsPanel()}>
+        <div className="customer-modal customer-detail-modal" role="dialog" aria-modal="true" aria-label="Customer details">
+          {renderCustomerDetailsPanel({ asModal: true })}
+        </div>
+      </div>
+    )}
     {isBulkUploadModalOpen && (
       <div className="customer-modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeBulkUploadModal()}>
         <div className="customer-modal customer-bulk-upload-modal" role="dialog" aria-modal="true" aria-labelledby="customer-bulk-upload-title">
@@ -1643,8 +2224,13 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                   )}
                   <div className="customer-stage-panel">
                     <div className="customer-stage-heading">
-                      <h4>{customerFormStages[formStage].title}</h4>
-                      <p>{customerFormStages[formStage].description}</p>
+                      <span className="customer-stage-title-badge" aria-hidden="true">
+                        <ActiveCustomerFormStageIcon size={28} />
+                      </span>
+                      <div>
+                        <h4>{customerFormStages[formStage].title}</h4>
+                        <p>{customerFormStages[formStage].description}</p>
+                      </div>
                     </div>
                     {renderCustomerFormStage()}
                   </div>

@@ -36,6 +36,11 @@ class TicketPayload(BaseModel):
     source: str | None = None
     assignedTo: str | None = None
     serviceId: str | None = None
+    serviceOrderId: str | None = None
+    serviceOrderNumber: str | None = None
+    serviceOrderType: str | None = None
+    sourceModule: str | None = None
+    sourceReference: str | None = None
     outageId: str | None = None
     dueDate: str | None = None
     resolutionSummary: str | None = None
@@ -77,6 +82,10 @@ def today_iso() -> str:
 
 def normalize_upper(value: Any) -> str:
     return str(value or "").strip().upper()
+
+
+def display_label(value: Any) -> str:
+    return str(value or "").replace("_", " ").title()
 
 
 def parse_day(value: str | None, field_name: str) -> str:
@@ -192,6 +201,11 @@ def normalize_ticket_payload(payload: TicketPayload, current: dict[str, Any] | N
     record["source"] = validate_choice(record.get("source") or "PHONE", TICKET_SOURCES, "ticket source")
     record["assignedTo"] = str(record.get("assignedTo") or "").strip()
     record["serviceId"] = str(record.get("serviceId") or "").strip()
+    record["serviceOrderId"] = str(record.get("serviceOrderId") or "").strip()
+    record["serviceOrderNumber"] = str(record.get("serviceOrderNumber") or "").strip()
+    record["serviceOrderType"] = str(record.get("serviceOrderType") or "").strip()
+    record["sourceModule"] = str(record.get("sourceModule") or "").strip()
+    record["sourceReference"] = str(record.get("sourceReference") or "").strip()
     record["outageId"] = str(record.get("outageId") or "").strip()
     record["dueDate"] = parse_day(record.get("dueDate") or "", "dueDate")
     record["resolutionSummary"] = str(record.get("resolutionSummary") or "").strip()
@@ -242,6 +256,11 @@ def ticket_matches(
                 ticket.get("contactNumber"),
                 ticket.get("assignedTo"),
                 ticket.get("serviceId"),
+                ticket.get("serviceOrderId"),
+                ticket.get("serviceOrderNumber"),
+                ticket.get("serviceOrderType"),
+                ticket.get("sourceModule"),
+                ticket.get("sourceReference"),
                 ticket.get("outageId"),
                 customer.get("accountNumber"),
                 customer.get("name"),
@@ -302,6 +321,111 @@ def seed_ticketing_data() -> None:
         }
     )
     tickets.append(record)
+
+
+def ticket_category_for_service_order(order_type: str) -> str:
+    if order_type == "EQUIPMENT_REPLACEMENT":
+        return "EQUIPMENT"
+    if order_type in {"NEW_INSTALLATION", "PLAN_UPGRADE", "PLAN_DOWNGRADE", "RELOCATION", "RECONNECTION", "ADD_ON_SERVICE"}:
+        return "INSTALLATION"
+    return "GENERAL"
+
+
+def service_order_ticket_description(order: dict[str, Any]) -> str:
+    customer = order.get("customer") or {}
+    catalog = order.get("catalog") or {}
+    account = order.get("serviceAccount") or {}
+    parts = [
+        f"Service Order: {order.get('orderNumber') or order.get('id') or '-'}",
+        f"Order Type: {display_label(order.get('orderType') or 'NEW_INSTALLATION')}",
+        f"Customer: {customer.get('name') or order.get('customerName') or '-'}",
+        f"Service Reference: {order.get('serviceReference') or account.get('serviceReference') or '-'}",
+        f"Service Account: {account.get('serviceAccountNumber') or order.get('serviceAccountNumber') or '-'}",
+        f"Service Catalog: {catalog.get('name') or order.get('catalogName') or '-'}",
+        f"Service Address: {order.get('installAddress') or account.get('serviceAddress') or '-'}",
+    ]
+    notes = str(order.get("notes") or "").strip()
+    if notes:
+        parts.append(f"Order Notes: {notes}")
+    return "\n".join(parts)
+
+
+def create_ticket_record(
+    payload: TicketPayload,
+    actor: str,
+    extra_fields: dict[str, Any] | None = None,
+    audit_action: str = "ticket_created",
+    audit_details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    record = normalize_ticket_payload(payload)
+    record.update(extra_fields or {})
+    timestamp = now_iso()
+    record.update(
+        {
+            "id": str(uuid4()),
+            "ticketNumber": next_ticket_number(),
+            "openedAt": timestamp,
+            "updatedAt": timestamp,
+            "resolvedAt": "",
+            "closedAt": "",
+            "deletedAt": "",
+            "notes": [],
+        }
+    )
+    apply_status_dates(record)
+    tickets.append(record)
+    add_audit(
+        audit_action,
+        record["id"],
+        audit_details or {"ticketNumber": record["ticketNumber"], "subject": record["subject"]},
+        actor,
+    )
+    return record
+
+
+def create_ticket_from_service_order(order: dict[str, Any], actor: str) -> dict[str, Any]:
+    for ticket in visible_tickets():
+        if ticket.get("sourceModule") == "service" and ticket.get("serviceOrderId") == order.get("id"):
+            return ticket
+
+    customer = order.get("customer") or {}
+    order_type = normalize_upper(order.get("orderType") or "NEW_INSTALLATION")
+    order_number = order.get("orderNumber") or "Service Order"
+    service_reference = order.get("serviceReference") or order_number
+    payload = TicketPayload(
+        customerId=order.get("customerId"),
+        requestorName=customer.get("name") or order.get("customerName") or "Service customer",
+        contactNumber=customer.get("contactNumber") or "",
+        subject=f"{display_label(order_type)} - {order_number}",
+        description=service_order_ticket_description(order),
+        category=ticket_category_for_service_order(order_type),
+        priority=order.get("priority") or "NORMAL",
+        status="OPEN",
+        source="INTERNAL",
+        serviceId=service_reference,
+        serviceOrderId=order.get("id"),
+        serviceOrderNumber=order_number,
+        serviceOrderType=order_type,
+        sourceModule="service",
+        sourceReference=order_number,
+        dueDate=order.get("targetActivationDate") or order.get("requestedDate") or "",
+    )
+    return create_ticket_record(
+        payload,
+        actor,
+        {
+            "sourceModule": "service",
+            "sourceReference": order_number,
+            "serviceOrderId": order.get("id") or "",
+            "serviceOrderNumber": order_number,
+            "serviceOrderType": order_type,
+            "serviceAccountId": order.get("serviceAccountId") or "",
+            "serviceAccountNumber": (order.get("serviceAccount") or {}).get("serviceAccountNumber", ""),
+            "serviceReference": service_reference,
+        },
+        audit_action="ticket_created_from_service_order",
+        audit_details={"serviceOrderId": order.get("id"), "serviceOrderNumber": order_number},
+    )
 
 
 @router.get("/meta")
@@ -366,23 +490,7 @@ def get_ticket(ticket_id: str, admin=Depends(require_admin)):
 
 @router.post("/tickets")
 def create_ticket(payload: TicketPayload, admin=Depends(require_admin)):
-    record = normalize_ticket_payload(payload)
-    record.update(
-        {
-            "id": str(uuid4()),
-            "ticketNumber": next_ticket_number(),
-            "openedAt": now_iso(),
-            "updatedAt": now_iso(),
-            "resolvedAt": "",
-            "closedAt": "",
-            "deletedAt": "",
-            "notes": [],
-        }
-    )
-    apply_status_dates(record)
-    tickets.append(record)
-    add_audit("ticket_created", record["id"], {"ticketNumber": record["ticketNumber"], "subject": record["subject"]}, admin["username"])
-    return record
+    return create_ticket_record(payload, admin["username"])
 
 
 @router.patch("/tickets/{ticket_id}")

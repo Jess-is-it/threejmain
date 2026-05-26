@@ -133,6 +133,8 @@ Module-specific work belongs inside the module folder first:
 
 Use `customer-profiling/` as the reference pattern.
 
+If the task is only to create a new feature or new module folder, first follow the `AGENTS.md` New Feature Creation Research Rule. Research how mature enterprise systems and ISP operators handle the feature, review the existing modules, map required functions and cross-feature connections, then capture the summary in the new module `README.md` and `PROJECT_MODULE_CONTEXT.md`.
+
 For module-local lasting notes, update:
 
 ```text

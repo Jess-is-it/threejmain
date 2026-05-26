@@ -154,6 +154,16 @@ button.nav-link {
   font-size: 0.9rem;
 }
 
+.navbar-vertical .nav-submenu-depth-2 .nav-sub-link {
+  margin-left: 2.35rem;
+  width: calc(100% - 2.8rem);
+  font-size: 0.86rem;
+}
+
+.navbar-vertical .nav-sub-parent {
+  font-weight: 700;
+}
+
 .navbar-vertical .nav-sub-link .nav-link-icon {
   opacity: 0.78;
 }
@@ -238,6 +248,30 @@ button.nav-link {
   align-items: center;
   gap: 0.35rem;
   white-space: nowrap;
+}
+
+@media (min-width: 1200px) {
+  .page-body > .container-xl,
+  .shell-header-content-aligned > .container-xl {
+    width: calc(100vw - var(--tblr-navbar-width, 18rem) - 200px);
+    max-width: none;
+    margin-left: 100px;
+    margin-right: 100px;
+    padding-left: 0;
+    padding-right: 0;
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1199.98px) {
+  .page-body > .container-xl,
+  .shell-header-content-aligned > .container-xl {
+    width: auto;
+    max-width: none;
+    margin-left: 2rem;
+    margin-right: 2rem;
+    padding-left: 0;
+    padding-right: 0;
+  }
 }
 
 .login-page {

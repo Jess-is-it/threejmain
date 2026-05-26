@@ -17,6 +17,7 @@ _audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None] | Non
 _customer_resolver: Callable[[str], dict[str, Any]] | None = None
 _customer_searcher: Callable[[str], list[dict[str, Any]]] | None = None
 _customer_seed: Callable[[], None] | None = None
+_ticket_creator: Callable[[dict[str, Any], str], dict[str, Any]] | None = None
 
 SERVICE_TYPES = ["FIBER_INTERNET", "WIRELESS_INTERNET", "DEDICATED_INTERNET", "STATIC_IP", "INSTALLATION", "OTHER"]
 INTERNET_SERVICE_TYPES = {"FIBER_INTERNET", "WIRELESS_INTERNET", "DEDICATED_INTERNET"}
@@ -60,24 +61,24 @@ ORDER_STATUS_ALIASES = {
 ORDER_DETAIL_SCHEMAS = {
     "NEW_INSTALLATION": [
         {"name": "preferredSchedule", "label": "Preferred Schedule", "type": "date", "required": True},
-        {"name": "installationFee", "label": "Installation Fee", "type": "money"},
+        {"name": "installationFee", "label": "Installation Fee", "type": "money", "readOnly": True},
         {"name": "coverageArea", "label": "Coverage Area", "type": "text", "required": True},
         {"name": "coverageCheckRequired", "label": "Coverage Check Required", "type": "boolean"},
     ],
     "PLAN_UPGRADE": [
-        {"name": "currentPlan", "label": "Current Plan", "type": "text", "required": True},
+        {"name": "currentPlan", "label": "Current Plan", "type": "text", "required": True, "readOnly": True},
         {"name": "effectiveDate", "label": "Effective Date", "type": "date", "required": True},
-        {"name": "priceDifference", "label": "Price Difference", "type": "money", "required": True},
+        {"name": "priceDifference", "label": "Price Difference", "type": "money", "required": True, "readOnly": True},
         {"name": "approvalReference", "label": "Approval Reference", "type": "text"},
     ],
     "PLAN_DOWNGRADE": [
-        {"name": "currentPlan", "label": "Current Plan", "type": "text", "required": True},
+        {"name": "currentPlan", "label": "Current Plan", "type": "text", "required": True, "readOnly": True},
         {"name": "effectiveDate", "label": "Effective Date", "type": "date", "required": True},
-        {"name": "priceDifference", "label": "Price Difference", "type": "money", "required": True},
+        {"name": "priceDifference", "label": "Price Difference", "type": "money", "required": True, "readOnly": True},
         {"name": "downgradeReason", "label": "Downgrade Reason", "type": "text", "required": True},
     ],
     "RELOCATION": [
-        {"name": "currentServiceAddress", "label": "Current Service Address", "type": "text", "required": True},
+        {"name": "currentServiceAddress", "label": "Current Service Address", "type": "text", "required": True, "readOnly": True},
         {"name": "newServiceAddress", "label": "New Service Address", "type": "text", "required": True},
         {"name": "targetTransferDate", "label": "Target Transfer Date", "type": "date", "required": True},
         {"name": "coverageCheckRequired", "label": "Coverage Check Required", "type": "boolean"},
@@ -100,14 +101,17 @@ ORDER_DETAIL_SCHEMAS = {
         {"name": "equipmentRetrievalRequired", "label": "Equipment Retrieval Required", "type": "boolean"},
     ],
     "CHANGE_OWNERSHIP": [
-        {"name": "newOwnerName", "label": "New Owner Name", "type": "text", "required": True},
-        {"name": "newOwnerContact", "label": "New Owner Contact", "type": "text", "required": True},
+        {"name": "newOwnerCustomerId", "label": "New Owner", "type": "customer", "required": True},
+        {"name": "newOwnerName", "label": "New Owner Name", "type": "text", "required": True, "readOnly": True},
+        {"name": "newOwnerAccountNumber", "label": "New Owner Account No.", "type": "text", "readOnly": True},
+        {"name": "newOwnerContact", "label": "New Owner Contact", "type": "text", "readOnly": True},
+        {"name": "transferReason", "label": "Transfer Reason", "type": "text", "required": True},
         {"name": "effectiveDate", "label": "Effective Date", "type": "date", "required": True},
         {"name": "approvalReference", "label": "Approval Reference", "type": "text"},
     ],
     "ADD_ON_SERVICE": [
-        {"name": "addOnName", "label": "Add-on Service", "type": "text", "required": True},
-        {"name": "monthlyCharge", "label": "Monthly Charge", "type": "money", "required": True},
+        {"name": "addOnName", "label": "Add-on Service", "type": "text", "required": True, "readOnly": True},
+        {"name": "monthlyCharge", "label": "Monthly Charge", "type": "money", "required": True, "readOnly": True},
         {"name": "effectiveDate", "label": "Effective Date", "type": "date", "required": True},
         {"name": "provisioningNotes", "label": "Provisioning Notes", "type": "text"},
     ],
@@ -170,13 +174,15 @@ def configure_service(
     customer_resolver: Callable[[str], dict[str, Any]] | None = None,
     customer_searcher: Callable[[str], list[dict[str, Any]]] | None = None,
     customer_seed: Callable[[], None] | None = None,
+    ticket_creator: Callable[[dict[str, Any], str], dict[str, Any]] | None = None,
 ) -> None:
-    global _current_admin, _audit_logger, _customer_resolver, _customer_searcher, _customer_seed
+    global _current_admin, _audit_logger, _customer_resolver, _customer_searcher, _customer_seed, _ticket_creator
     _current_admin = current_admin
     _audit_logger = audit_logger
     _customer_resolver = customer_resolver
     _customer_searcher = customer_searcher
     _customer_seed = customer_seed
+    _ticket_creator = ticket_creator
 
 
 def require_admin(authorization: str | None = Header(default=None)):
@@ -256,9 +262,28 @@ def sanitize_order_details(order_type: str, details: Any) -> dict[str, Any]:
             sanitized[name] = parse_day(clean_text(value), name)
         elif field_type == "money":
             sanitized[name] = None if clean_text(value) == "" else money(value, field["label"])
+        elif field_type == "customer":
+            sanitized[name] = clean_text(value)
         else:
             sanitized[name] = clean_text(value)
     return sanitized
+
+
+def enrich_order_details(order_type: str, details: dict[str, Any], current_customer_id: str) -> dict[str, Any]:
+    if order_type != "CHANGE_OWNERSHIP":
+        return details
+    new_owner_id = clean_text(details.get("newOwnerCustomerId"))
+    if not new_owner_id:
+        return details
+    if new_owner_id == current_customer_id:
+        raise HTTPException(status_code=400, detail="New owner must be a different Customer Profiling record")
+    new_owner = resolve_customer(new_owner_id)
+    return {
+        **details,
+        "newOwnerName": new_owner.get("name", ""),
+        "newOwnerAccountNumber": new_owner.get("accountNumber", ""),
+        "newOwnerContact": new_owner.get("contactNumber", ""),
+    }
 
 
 def missing_required_order_details(order_type: str, details: dict[str, Any]) -> list[str]:
@@ -500,7 +525,11 @@ def order_payload_to_record(payload: ServiceOrderPayload, current: dict[str, Any
     record["status"] = validate_order_status(record.get("status"))
     record["priority"] = validate_choice(record.get("priority"), ORDER_PRIORITIES, "order priority", "NORMAL")
     record["serviceReference"] = clean_text(record.get("serviceReference")) or (linked_account.get("serviceReference") if linked_account else "") or service_reference(customer)
-    record["orderDetails"] = sanitize_order_details(record["orderType"], record.get("orderDetails"))
+    record["orderDetails"] = enrich_order_details(
+        record["orderType"],
+        sanitize_order_details(record["orderType"], record.get("orderDetails")),
+        record["customerId"],
+    )
     validate_order_readiness(record)
     record["notes"] = clean_text(record.get("notes"))
     return record
@@ -561,6 +590,7 @@ def validate_plan_change_catalog(order_type: str, catalog: dict[str, Any], linke
 
 def order_summary(order: dict[str, Any]) -> dict[str, Any]:
     account = order.get("serviceAccount") or {}
+    ticket = order.get("ticket") or {}
     return {
         **order,
         "orderType": order.get("orderType") or "NEW_INSTALLATION",
@@ -572,6 +602,9 @@ def order_summary(order: dict[str, Any]) -> dict[str, Any]:
         "accountNumber": order.get("customer", {}).get("accountNumber", ""),
         "serviceAccountNumber": account.get("serviceAccountNumber", ""),
         "serviceAccountStatus": account.get("status", ""),
+        "ticketId": order.get("ticketId", ""),
+        "ticketNumber": order.get("ticketNumber") or ticket.get("ticketNumber", ""),
+        "ticketStatus": order.get("ticketStatus") or ticket.get("status", ""),
     }
 
 
@@ -656,6 +689,39 @@ def ensure_no_conflicting_open_order(record: dict[str, Any], current_id: str | N
             raise HTTPException(status_code=409, detail="This service account already has an open service order")
 
 
+def ticket_snapshot(ticket: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": ticket.get("id", ""),
+        "ticketNumber": ticket.get("ticketNumber", ""),
+        "status": ticket.get("status", ""),
+        "priority": ticket.get("priority", ""),
+        "category": ticket.get("category", ""),
+        "subject": ticket.get("subject", ""),
+        "serviceId": ticket.get("serviceId", ""),
+        "serviceOrderId": ticket.get("serviceOrderId", ""),
+        "openedAt": ticket.get("openedAt", ""),
+        "updatedAt": ticket.get("updatedAt", ""),
+    }
+
+
+def attach_ticket(order: dict[str, Any], ticket: dict[str, Any] | None) -> None:
+    if not ticket:
+        return
+    snapshot = ticket_snapshot(ticket)
+    order["ticketId"] = snapshot["id"]
+    order["ticketNumber"] = snapshot["ticketNumber"]
+    order["ticketStatus"] = snapshot["status"]
+    order["ticket"] = snapshot
+
+
+def create_ticket_for_order(order: dict[str, Any], actor: str) -> dict[str, Any] | None:
+    if _ticket_creator is None:
+        return None
+    ticket = _ticket_creator(order_summary(order), actor)
+    attach_ticket(order, ticket)
+    return ticket
+
+
 def create_or_activate_service_account_from_order(order: dict[str, Any], actor: str) -> dict[str, Any]:
     account = find_account(order["serviceAccountId"]) if order.get("serviceAccountId") else find_account_by_reference(order.get("serviceReference", ""))
     payload = ServiceAccountPayload(
@@ -718,6 +784,13 @@ def apply_completed_order_effects(order: dict[str, Any], actor: str) -> None:
     elif order_type == "DISCONNECTION":
         account["status"] = "DISCONNECTED"
         changed = True
+    elif order_type == "CHANGE_OWNERSHIP":
+        details = order.get("orderDetails") or {}
+        new_owner_id = clean_text(details.get("newOwnerCustomerId"))
+        if new_owner_id:
+            account["customerId"] = new_owner_id
+            account["customer"] = resolve_customer(new_owner_id)
+            changed = True
     if changed:
         account["updatedAt"] = now_iso()
         add_audit("service_account_updated_from_order", "ServiceAccount", account["id"], {"orderId": order["id"], "orderType": order_type}, actor)
@@ -1109,8 +1182,19 @@ def create_service_order(payload: ServiceOrderPayload, admin=Depends(require_adm
         **record,
     }
     service_orders.append(order)
+    try:
+        create_ticket_for_order(order, admin["username"])
+    except Exception:
+        service_orders.remove(order)
+        raise
     apply_completed_order_effects(order, admin["username"])
-    add_audit("service_order_created", "ServiceOrder", order["id"], {"customerId": order["customerId"]}, admin["username"])
+    add_audit(
+        "service_order_created",
+        "ServiceOrder",
+        order["id"],
+        {"customerId": order["customerId"], "ticketNumber": order.get("ticketNumber", "")},
+        admin["username"],
+    )
     return order_summary(order)
 
 

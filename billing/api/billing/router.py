@@ -72,6 +72,7 @@ class PaymentPayload(BaseModel):
     method: str | None = None
     paymentDate: str | None = None
     referenceNumber: str | None = None
+    collectionChannel: str | None = None
     status: str | None = None
     notes: str | None = None
 
@@ -122,6 +123,17 @@ def add_audit(action: str, target_type: str, target_id: str, details: dict[str, 
 
 def normalize_upper(value: Any) -> str:
     return str(value or "").strip().upper()
+
+
+def admin_display_name(admin: dict[str, Any]) -> str:
+    display_name = str(
+        admin.get("fullName")
+        or admin.get("full_name")
+        or admin.get("name")
+        or admin.get("username")
+        or "Billing user"
+    ).strip()
+    return display_name or "Billing user"
 
 
 def money(value: Any) -> float:
@@ -409,6 +421,18 @@ def derived_invoice_status(invoice: dict[str, Any], amounts: dict[str, float] | 
     if due < date.today():
         return "OVERDUE"
     return "ISSUED"
+
+
+def validate_invoice_payment(invoice: dict[str, Any], amount: float, current_payment: dict[str, Any] | None = None) -> dict[str, Any]:
+    summary = invoice_summary(invoice)
+    if summary["status"] in ["VOID", "DRAFT"]:
+        raise HTTPException(status_code=400, detail="Invoice is not payable")
+    available_balance = summary["balance"]
+    if current_payment and current_payment.get("invoiceId") == invoice["id"] and current_payment.get("status") == "POSTED":
+        available_balance = money(available_balance + current_payment["amount"])
+    if amount > available_balance:
+        raise HTTPException(status_code=400, detail="Payment amount cannot exceed invoice balance")
+    return summary
 
 
 def invoice_summary(invoice: dict[str, Any]) -> dict[str, Any]:
@@ -813,6 +837,8 @@ def create_payment(payload: PaymentPayload, admin=Depends(require_admin)):
         raise HTTPException(status_code=400, detail="Invalid payment method")
     if status not in PAYMENT_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid payment status")
+    if invoice is not None and status == "POSTED":
+        validate_invoice_payment(invoice, amount)
     timestamp = now_iso()
     payment = {
         "id": str(uuid4()),
@@ -825,6 +851,9 @@ def create_payment(payload: PaymentPayload, admin=Depends(require_admin)):
         "method": method,
         "paymentDate": parse_day(payload.paymentDate, "paymentDate").isoformat(),
         "referenceNumber": payload.referenceNumber or "",
+        "collectionChannel": clean_text(payload.collectionChannel) or "BILLING",
+        "postedByUsername": admin["username"],
+        "postedByName": admin_display_name(admin),
         "status": status,
         "notes": payload.notes or "",
         "createdAt": timestamp,
@@ -842,12 +871,13 @@ def create_payment(payload: PaymentPayload, admin=Depends(require_admin)):
 def update_payment(payment_id: str, payload: PaymentPayload, admin=Depends(require_admin)):
     current = find_payment(payment_id)
     data = payload.model_dump(exclude_unset=True)
+    target_invoice: dict[str, Any] | None = None
     if "invoiceId" in data and data["invoiceId"]:
-        invoice = find_invoice(data["invoiceId"])
-        current["invoiceId"] = invoice["id"]
-        current["invoiceNumber"] = invoice["invoiceNumber"]
-        current["customerId"] = invoice["customerId"]
-        current["customer"] = invoice["customer"]
+        target_invoice = find_invoice(data["invoiceId"])
+        current["invoiceId"] = target_invoice["id"]
+        current["invoiceNumber"] = target_invoice["invoiceNumber"]
+        current["customerId"] = target_invoice["customerId"]
+        current["customer"] = target_invoice["customer"]
     elif "customerId" in data and data["customerId"]:
         current["customerId"] = data["customerId"]
         current["customer"] = resolve_customer(data["customerId"])
@@ -869,6 +899,11 @@ def update_payment(payment_id: str, payload: PaymentPayload, admin=Depends(requi
     for field_name in ["paymentDate", "referenceNumber", "notes"]:
         if field_name in data and data[field_name] is not None:
             current[field_name] = parse_day(data[field_name], field_name).isoformat() if field_name == "paymentDate" else data[field_name]
+    if "collectionChannel" in data and data["collectionChannel"] is not None:
+        current["collectionChannel"] = clean_text(data["collectionChannel"]) or current.get("collectionChannel", "BILLING")
+    target_invoice = target_invoice or (find_invoice(current["invoiceId"]) if current.get("invoiceId") else None)
+    if target_invoice is not None and current["status"] == "POSTED":
+        validate_invoice_payment(target_invoice, current["amount"], current)
     current["updatedAt"] = now_iso()
     add_audit("billing_payment_updated", "BillingPayment", current["id"], {"customerId": current["customerId"]}, admin["username"])
     return current

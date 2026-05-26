@@ -1,28 +1,205 @@
-.account-admin-module .account-admin-stat {
-  min-height: 132px;
+.account-admin-table-card > .card-header {
+  align-items: center;
+  gap: 0.75rem;
 }
 
-.account-admin-filters {
-  display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(150px, 190px) auto;
-  gap: 0.75rem;
+.account-admin-table-card > .card-header .card-title {
+  align-items: center;
+  display: inline-flex;
+  line-height: 1.2;
+  margin: 0;
+  min-height: 1.875rem;
+  white-space: nowrap;
+}
+
+.account-admin-table-card > .card-header .card-actions {
+  align-items: center;
+  display: flex;
+  flex: 1 1 auto;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.account-admin-header-actions {
+  align-items: center;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  min-height: 1.875rem;
+  width: 100%;
+}
+
+.account-admin-header-search {
+  flex: 1 1 18rem;
+  max-width: 28rem;
+  min-width: min(18rem, 100%);
+}
+
+.account-admin-header-search-input {
+  position: relative;
+  width: 100%;
+}
+
+.account-admin-header-search-input .form-control {
+  padding-right: 2rem;
+}
+
+.account-admin-header-icon-button {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 1.875rem;
+  justify-content: center;
+  min-height: 1.875rem;
+  padding: 0 !important;
+  position: relative;
+  width: 1.875rem;
+}
+
+.account-admin-search-clear {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 0.35rem;
+  color: #64748b;
+  display: flex;
+  height: 1.35rem;
+  justify-content: center;
+  padding: 0;
+  position: absolute;
+  right: 0.35rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1.35rem;
+}
+
+.account-admin-search-clear:hover,
+.account-admin-search-clear:focus-visible {
+  background: #f1f5f9;
+  color: #1e293b;
+}
+
+.account-admin-table-filters {
+  border-bottom: 1px solid var(--admin-border);
   margin-bottom: 1rem;
+  padding: 0 0 1rem;
+}
+
+.account-admin-status-tabs {
+  border-bottom: 1px solid var(--admin-border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.account-admin-status-tab {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: #64748b;
+  display: inline-flex;
+  font-weight: 600;
+  gap: 0.45rem;
+  min-height: 2.25rem;
+  padding: 0 0.25rem 0.65rem;
+}
+
+.account-admin-status-tab.active {
+  border-bottom-color: #206bc4;
+  color: #1e293b;
+}
+
+.account-admin-mapping-sample {
+  align-items: center;
+  background: #f8fafc;
+  border: 1px solid var(--admin-border);
+  border-radius: 0.5rem;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(12rem, 1.2fr) minmax(10rem, 1fr) minmax(10rem, 1fr);
+  margin-bottom: 1rem;
+  padding: 0.85rem 1rem;
+}
+
+.account-admin-mapping-tabs {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.account-admin-mapping-tab {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid var(--admin-border);
+  border-radius: 0.45rem;
+  color: #475569;
+  display: inline-flex;
+  font-weight: 600;
+  gap: 0.45rem;
+  min-height: 2.1rem;
+  padding: 0.35rem 0.7rem;
+}
+
+.account-admin-mapping-tab.active {
+  border-color: #206bc4;
+  color: #1e293b;
+  box-shadow: inset 0 0 0 1px #206bc4;
+}
+
+.account-admin-table {
+  min-width: 920px;
+}
+
+.account-admin-mapping-table {
+  min-width: 1180px;
+}
+
+.account-admin-table th {
+  white-space: nowrap;
 }
 
 .account-admin-table td {
   vertical-align: middle;
 }
 
-.account-admin-table .btn-list {
-  min-width: max-content;
+.account-admin-ticket-stack {
+  display: grid;
+  gap: 0.3rem;
+  margin-top: 0.35rem;
+}
+
+.account-admin-ticket-meta,
+.account-admin-ticket-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
 }
 
 @media (max-width: 768px) {
-  .account-admin-filters {
-    grid-template-columns: 1fr;
+  .account-admin-table-card > .card-header {
+    align-items: flex-start;
   }
 
-  .account-admin-table .btn-list {
+  .account-admin-table-card > .card-header .card-actions {
+    width: 100%;
+  }
+
+  .account-admin-header-actions {
+    align-items: stretch;
     flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .account-admin-header-search {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+
+  .account-admin-mapping-sample {
+    grid-template-columns: 1fr;
   }
 }

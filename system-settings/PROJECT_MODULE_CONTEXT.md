@@ -18,6 +18,11 @@ System Settings manages shell configuration pages for branding, business profile
 - Manage customer-information avatar moods for neutral, happy, sad, angry, offline, support, maintenance, warning, and resolved account contexts, with separate Male and Female upload slots.
 - Manage the customer avatar emotion guide under Avatar -> Settings. The guide stores score thresholds and module signal weights used by shared customer mood resolution.
 - Manage OPENAI settings, including masked API key status, selected model, selected reasoning effort, model pricing reference, and a live Responses API test.
+- Manage system-login access controls under Access:
+  - Auth Settings for login enablement, session timeout, audit retention, SMTP forgot-password email, and SMTP test email.
+  - Permissions catalog with system-managed permission codes grouped by feature.
+  - Roles CRUD with permission assignment and automatic required view-permission dependencies.
+  - Users CRUD with role assignment, active/inactive status, force password change, password reset, email reset, and owner lockouts.
 - Manage reusable Location Management records with address, municipality, barangay, province, region, coordinates, geocoder source, and notes.
 - Preload known Customer Profiling service-area barangays into Location Management.
 - Suppress deleted preloaded Location Management rows from automatic reseeding across API restarts.
@@ -38,6 +43,8 @@ System Settings manages shell configuration pages for branding, business profile
 - `PATCH /api/system-settings/avatar-emotion-settings` updates the reusable scoring thresholds/weights returned by `GET /api/system-settings/avatars`.
 - Shared reusable frontend code lives in `system-settings/web/avatarEmotion.js` and `system-settings/web/CustomerEmotionAvatar.jsx`. Customer-facing modules can import `CustomerEmotionAvatar` or `customerAvatarViewModel` to display the configured avatar and current behavior score.
 - OPENAI endpoints are `GET/PATCH /api/system-settings/openai` for configuration and `POST /api/system-settings/openai/test` for a live Responses API test. API keys are never returned in full to the frontend. The test request sends `reasoning: {"effort": <selected effort>}` for the selected model, limited to that model's supported efforts.
+- Access endpoints are under `/api/system-settings/access`. System-login administration was moved here from Account Admin to match the old `/home/threejmon` System Settings -> Access pattern.
+- Access data persists to `SYSTEM_SETTINGS_DATA_PATH` in this first shell. It is not yet wired into app-shell login/session enforcement; app-shell still uses the existing single-admin login until a shared auth integration pass updates the shell.
 - Location endpoints are module-owned under `/api/system-settings/locations` with `/api/locations` compatibility routes for workflows copied from 3JCentralPisowifi. Create, edit, delete, bulk delete, and customer-created minimal location records are persisted.
 - `PATCH /api/system-settings/locations/{location_id}` updates saved location metadata.
 - `POST /api/system-settings/locations/bulk-delete` removes selected location ids and has `/api/locations/bulk-delete` compatibility.

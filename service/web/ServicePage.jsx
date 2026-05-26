@@ -14,6 +14,7 @@ import {
   IconPlus,
   IconRefresh,
   IconSearch,
+  IconTicket,
   IconTrash,
   IconUsers,
   IconWifi,
@@ -54,6 +55,10 @@ function label(value) {
   return String(value || '').replaceAll('_', ' ');
 }
 
+function titleLabel(value) {
+  return label(value).toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 function statusClass(value) {
   const normalized = String(value || '').toLowerCase();
   if (['completed', 'approved', 'active'].includes(normalized)) return 'bg-green-lt text-green';
@@ -69,6 +74,19 @@ const SERVICE_PAGE_SIZE_OPTIONS = ['10', '25', '50', 'ALL'];
 const INTERNET_CATALOG_TYPES = ['FIBER_INTERNET', 'WIRELESS_INTERNET', 'DEDICATED_INTERNET'];
 const ADD_ON_CATALOG_TYPES = ['STATIC_IP', 'OTHER'];
 const CATALOG_SELECTION_ORDER_TYPES = ['NEW_INSTALLATION', 'PLAN_UPGRADE', 'PLAN_DOWNGRADE', 'ADD_ON_SERVICE'];
+const INSTALL_ADDRESS_ORDER_TYPES = ['NEW_INSTALLATION'];
+const SERVICE_ORDER_TICKET_CATEGORY_BY_TYPE = {
+  NEW_INSTALLATION: 'INSTALLATION',
+  PLAN_UPGRADE: 'INSTALLATION',
+  PLAN_DOWNGRADE: 'INSTALLATION',
+  RELOCATION: 'INSTALLATION',
+  RECONNECTION: 'INSTALLATION',
+  ADD_ON_SERVICE: 'INSTALLATION',
+  EQUIPMENT_REPLACEMENT: 'EQUIPMENT',
+  TEMPORARY_SUSPENSION: 'GENERAL',
+  DISCONNECTION: 'GENERAL',
+  CHANGE_OWNERSHIP: 'GENERAL'
+};
 const ORDER_CREATION_STAGE_DEFS = {
   customer: {
     id: 'customer',
@@ -90,6 +108,11 @@ const ORDER_CREATION_STAGE_DEFS = {
     title: 'Service Catalog',
     description: 'Choose the plan or add-on this request will use.'
   },
+  ticket: {
+    id: 'ticket',
+    title: 'Ticket',
+    description: 'Confirm the operations ticket that will be created with this service order.'
+  },
   review: {
     id: 'review',
     title: 'Review',
@@ -99,24 +122,24 @@ const ORDER_CREATION_STAGE_DEFS = {
 const ORDER_DETAIL_SCHEMAS = {
   NEW_INSTALLATION: [
     { name: 'preferredSchedule', label: 'Preferred Schedule', type: 'date', required: true },
-    { name: 'installationFee', label: 'Installation Fee', type: 'money' },
+    { name: 'installationFee', label: 'Installation Fee', type: 'money', readOnly: true },
     { name: 'coverageArea', label: 'Coverage Area', type: 'text', required: true },
     { name: 'coverageCheckRequired', label: 'Coverage Check Required', type: 'boolean' }
   ],
   PLAN_UPGRADE: [
-    { name: 'currentPlan', label: 'Current Plan', type: 'text', required: true },
+    { name: 'currentPlan', label: 'Current Plan', type: 'text', required: true, readOnly: true },
     { name: 'effectiveDate', label: 'Effective Date', type: 'date', required: true },
-    { name: 'priceDifference', label: 'Price Difference', type: 'money', required: true },
+    { name: 'priceDifference', label: 'Price Difference', type: 'money', required: true, readOnly: true },
     { name: 'approvalReference', label: 'Approval Reference', type: 'text' }
   ],
   PLAN_DOWNGRADE: [
-    { name: 'currentPlan', label: 'Current Plan', type: 'text', required: true },
+    { name: 'currentPlan', label: 'Current Plan', type: 'text', required: true, readOnly: true },
     { name: 'effectiveDate', label: 'Effective Date', type: 'date', required: true },
-    { name: 'priceDifference', label: 'Price Difference', type: 'money', required: true },
+    { name: 'priceDifference', label: 'Price Difference', type: 'money', required: true, readOnly: true },
     { name: 'downgradeReason', label: 'Downgrade Reason', type: 'text', required: true }
   ],
   RELOCATION: [
-    { name: 'currentServiceAddress', label: 'Current Service Address', type: 'text', required: true },
+    { name: 'currentServiceAddress', label: 'Current Service Address', type: 'text', required: true, readOnly: true },
     { name: 'newServiceAddress', label: 'New Service Address', type: 'text', required: true },
     { name: 'targetTransferDate', label: 'Target Transfer Date', type: 'date', required: true },
     { name: 'coverageCheckRequired', label: 'Coverage Check Required', type: 'boolean' }
@@ -139,14 +162,17 @@ const ORDER_DETAIL_SCHEMAS = {
     { name: 'equipmentRetrievalRequired', label: 'Equipment Retrieval Required', type: 'boolean' }
   ],
   CHANGE_OWNERSHIP: [
-    { name: 'newOwnerName', label: 'New Owner Name', type: 'text', required: true },
-    { name: 'newOwnerContact', label: 'New Owner Contact', type: 'text', required: true },
+    { name: 'newOwnerCustomerId', label: 'New Owner', type: 'customer', required: true },
+    { name: 'newOwnerName', label: 'New Owner Name', type: 'text', required: true, readOnly: true },
+    { name: 'newOwnerAccountNumber', label: 'New Owner Account No.', type: 'text', readOnly: true },
+    { name: 'newOwnerContact', label: 'New Owner Contact', type: 'text', readOnly: true },
+    { name: 'transferReason', label: 'Transfer Reason', type: 'text', required: true },
     { name: 'effectiveDate', label: 'Effective Date', type: 'date', required: true },
     { name: 'approvalReference', label: 'Approval Reference', type: 'text' }
   ],
   ADD_ON_SERVICE: [
-    { name: 'addOnName', label: 'Add-on Service', type: 'text', required: true },
-    { name: 'monthlyCharge', label: 'Monthly Charge', type: 'money', required: true },
+    { name: 'addOnName', label: 'Add-on Service', type: 'text', required: true, readOnly: true },
+    { name: 'monthlyCharge', label: 'Monthly Charge', type: 'money', required: true, readOnly: true },
     { name: 'effectiveDate', label: 'Effective Date', type: 'date', required: true },
     { name: 'provisioningNotes', label: 'Provisioning Notes', type: 'text' }
   ],
@@ -339,6 +365,27 @@ function orderUsesCatalogSelection(orderType) {
   return CATALOG_SELECTION_ORDER_TYPES.includes(orderType || 'NEW_INSTALLATION');
 }
 
+function orderShowsInstallAddressField(orderType) {
+  return INSTALL_ADDRESS_ORDER_TYPES.includes(orderType || 'NEW_INSTALLATION');
+}
+
+function orderAddressLabel(orderType) {
+  if (orderType === 'NEW_INSTALLATION') return 'Installation Address';
+  if (orderType === 'RELOCATION') return 'New Service Address';
+  return 'Service Address';
+}
+
+function orderAddressSummary(orderLike = {}, account = null) {
+  const details = orderLike.orderDetails || {};
+  if (orderLike.orderType === 'RELOCATION') {
+    return details.newServiceAddress || orderLike.installAddress || account?.serviceAddress || '';
+  }
+  if (orderLike.orderType === 'NEW_INSTALLATION') {
+    return orderLike.installAddress || '';
+  }
+  return account?.serviceAddress || orderLike.serviceAccount?.serviceAddress || orderLike.installAddress || '';
+}
+
 function isInternetCatalog(item) {
   return INTERNET_CATALOG_TYPES.includes(item?.serviceType);
 }
@@ -473,6 +520,16 @@ function detailFieldsForType(orderType, schemas = ORDER_DETAIL_SCHEMAS) {
   return schemas?.[orderType] || ORDER_DETAIL_SCHEMAS[orderType] || [];
 }
 
+function missingRequiredOrderDetailLabels(orderType, details = {}, schemas = ORDER_DETAIL_SCHEMAS) {
+  return detailFieldsForType(orderType, schemas)
+    .filter((field) => field.required)
+    .filter((field) => {
+      const value = details[field.name];
+      return value === null || value === undefined || (typeof value === 'string' ? value.trim() === '' : value === '');
+    })
+    .map((field) => field.label);
+}
+
 function defaultDetailValue(field) {
   if (field.type === 'boolean') return false;
   if (field.type === 'money') return '';
@@ -496,10 +553,18 @@ function seedDetailsForAccount(orderType, account = null) {
   if (orderType === 'RELOCATION') {
     return { currentServiceAddress: serviceAddress };
   }
+  if (orderType === 'CHANGE_OWNERSHIP') {
+    return { currentServiceAddress: serviceAddress };
+  }
   return {};
 }
 
-function formatOrderDetailValue(field, value) {
+function formatOrderDetailValue(field, value, details = {}) {
+  if (field.type === 'customer') {
+    const name = details.newOwnerName || '';
+    const account = details.newOwnerAccountNumber || '';
+    return name ? `${account ? `${account} - ` : ''}${name}` : valueOrDash(value);
+  }
   if (field.type === 'boolean') return value ? 'Yes' : 'No';
   if (field.type === 'money') return value === null || value === undefined || value === '' ? '-' : money(value);
   return valueOrDash(value);
@@ -511,13 +576,7 @@ function statusRequiresOrderDetails(status, requiredStatuses = DETAIL_REQUIRED_S
 
 function missingRequiredOrderDetails(orderType, details = {}, status = 'DRAFT', schemas = ORDER_DETAIL_SCHEMAS, requiredStatuses = DETAIL_REQUIRED_STATUSES) {
   if (!statusRequiresOrderDetails(status, requiredStatuses)) return [];
-  return detailFieldsForType(orderType, schemas)
-    .filter((field) => field.required)
-    .filter((field) => {
-      const value = details[field.name];
-      return value === null || value === undefined || (typeof value === 'string' ? value.trim() === '' : value === '');
-    })
-    .map((field) => field.label);
+  return missingRequiredOrderDetailLabels(orderType, details, schemas);
 }
 
 function orderReadinessFromOrder(order, schemas = ORDER_DETAIL_SCHEMAS, requiredStatuses = DETAIL_REQUIRED_STATUSES) {
@@ -623,11 +682,11 @@ function TextField({ label: fieldLabel, value, onChange, type = 'text', required
   );
 }
 
-function SelectField({ label: fieldLabel, value, onChange, options = [], required = false, children }) {
+function SelectField({ label: fieldLabel, value, onChange, options = [], required = false, disabled = false, children }) {
   return (
     <div>
       <label className="form-label">{fieldLabel}</label>
-      <select className="form-select" required={required} value={value ?? ''} onChange={(event) => onChange(event.target.value)}>
+      <select className="form-select" required={required} disabled={disabled} value={value ?? ''} onChange={(event) => onChange(event.target.value)}>
         {children || options.map((option) => <option key={option} value={option}>{label(option)}</option>)}
       </select>
     </div>
@@ -930,8 +989,8 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
   );
   const orderDetailRequiredStatuses = meta.orderDetailRequiredStatuses || DETAIL_REQUIRED_STATUSES;
   const orderDetailMissingFields = useMemo(
-    () => missingRequiredOrderDetails(orderForm.orderType, orderForm.orderDetails || {}, orderForm.status, meta.orderDetailSchemas, orderDetailRequiredStatuses),
-    [meta.orderDetailSchemas, orderDetailRequiredStatuses, orderForm.orderDetails, orderForm.orderType, orderForm.status]
+    () => missingRequiredOrderDetailLabels(orderForm.orderType, orderForm.orderDetails || {}, meta.orderDetailSchemas),
+    [meta.orderDetailSchemas, orderForm.orderDetails, orderForm.orderType]
   );
   const shouldShowOrderCatalog = orderUsesCatalogSelection(orderForm.orderType);
   const orderCatalogRows = useMemo(
@@ -958,6 +1017,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
     ORDER_CREATION_STAGE_DEFS.type,
     ORDER_CREATION_STAGE_DEFS.order,
     ORDER_CREATION_STAGE_DEFS.catalog,
+    ORDER_CREATION_STAGE_DEFS.ticket,
     ORDER_CREATION_STAGE_DEFS.review
   ], []);
   const orderWizardStageIndex = Math.max(0, orderWizardStages.findIndex((stage) => stage.id === orderWizardStage));
@@ -977,6 +1037,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
       if (stage.id === 'type') return Boolean(orderForm.orderType);
       if (stage.id === 'order') return Boolean(orderForm.customerId && orderForm.requestedDate);
       if (stage.id === 'catalog') return orderCatalogIsValid;
+      if (stage.id === 'ticket') return Boolean(orderForm.customerId && orderForm.orderType);
       if (stage.id === 'review') return orderDetailMissingFields.length === 0;
     }
     return completedOrderWizardStageSet.has(stage.id);
@@ -1374,7 +1435,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
     try {
       const path = orderForm.id ? `/service/orders/${orderForm.id}` : '/service/orders';
       const saved = await request(path, { method: orderForm.id ? 'PATCH' : 'POST', body: JSON.stringify(body) });
-      setMessage(`${saved.orderNumber} saved.`);
+      setMessage(`${saved.orderNumber} saved${saved.ticketNumber ? ` with ${saved.ticketNumber}` : ''}.`);
       setOrderForm(blankOrder);
       setIsOrderModalOpen(false);
       setOrderCustomerSearch('');
@@ -1455,13 +1516,22 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
     setOrderForm(nextForm);
   }
 
-  function setOrderDetail(name, value) {
-    setOrderForm({
-      ...orderForm,
-      orderDetails: {
-        ...(orderForm.orderDetails || {}),
+  function setOrderDetail(name, value, field = null) {
+    setOrderForm((current) => {
+      const nextDetails = {
+        ...(current.orderDetails || {}),
         [name]: value
+      };
+      if (field?.type === 'customer' && name === 'newOwnerCustomerId') {
+        const owner = customers.find((customer) => customer.id === value);
+        nextDetails.newOwnerName = owner ? (owner.name || customerLabel(owner)) : '';
+        nextDetails.newOwnerAccountNumber = owner?.accountNumber || '';
+        nextDetails.newOwnerContact = owner?.contactNumber || '';
       }
+      return {
+        ...current,
+        orderDetails: nextDetails
+      };
     });
   }
 
@@ -1494,8 +1564,9 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
     if (stageId === 'customer') return true;
     if (stageId === 'type') return Boolean(selectedOrderPickerCustomer || selectedOrderTypePickerCustomer || orderForm.customerId);
     if (stageId === 'order') return Boolean(orderForm.customerId && orderForm.orderType);
-    if (stageId === 'catalog') return Boolean(orderForm.customerId && orderForm.orderType && orderForm.requestedDate);
-    if (stageId === 'review') return Boolean(orderForm.customerId && orderForm.orderType && orderForm.requestedDate && (!shouldShowOrderCatalog || orderCatalogIsValid));
+    if (stageId === 'catalog') return Boolean(orderForm.customerId && orderForm.orderType && orderForm.requestedDate && orderDetailMissingFields.length === 0);
+    if (stageId === 'ticket') return Boolean(orderForm.customerId && orderForm.orderType && orderForm.requestedDate && orderDetailMissingFields.length === 0 && (!shouldShowOrderCatalog || orderCatalogIsValid));
+    if (stageId === 'review') return Boolean(orderForm.customerId && orderForm.orderType && orderForm.requestedDate && orderDetailMissingFields.length === 0 && (!shouldShowOrderCatalog || orderCatalogIsValid));
     return false;
   }
 
@@ -1522,6 +1593,9 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
     }
     if (currentOrderWizardStage.id === 'catalog') {
       setCompletedOrderWizardStageIds((current) => Array.from(new Set([...current, 'catalog'])));
+    }
+    if (currentOrderWizardStage.id === 'ticket') {
+      setCompletedOrderWizardStageIds((current) => Array.from(new Set([...current, 'ticket'])));
     }
     const nextIndex = Math.min(orderWizardStages.length - 1, orderWizardStageIndex + 1);
     setOrderWizardStage(orderWizardStages[nextIndex].id);
@@ -1779,6 +1853,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
   }
 
   function renderOrderInfoStage() {
+    const showInstallAddress = orderShowsInstallAddressField(orderForm.orderType);
     return (
       <div className="service-order-tab-panel">
         {renderOrderContextCards()}
@@ -1801,8 +1876,21 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
           </div>
           <div className="service-two-cols">
             <SelectField label="Priority" value={orderForm.priority} options={meta.orderPriorities || ['NORMAL']} onChange={(priority) => setOrderForm({ ...orderForm, priority })} />
-            <TextField label="Install Address" value={orderForm.installAddress} onChange={(installAddress) => setOrderForm({ ...orderForm, installAddress })} />
+            {showInstallAddress && (
+              <TextField label={orderAddressLabel(orderForm.orderType)} value={orderForm.installAddress} onChange={(installAddress) => setOrderForm({ ...orderForm, installAddress })} />
+            )}
           </div>
+          <ServiceOrderTypeFields
+            orderType={orderForm.orderType}
+            details={orderForm.orderDetails || {}}
+            schemas={meta.orderDetailSchemas}
+            status={orderForm.status}
+            requiredStatuses={orderDetailRequiredStatuses}
+            forceRequired
+            customers={customers}
+            currentCustomerId={orderForm.customerId}
+            onChange={setOrderDetail}
+          />
           <TextField label="Notes" value={orderForm.notes} onChange={(notes) => setOrderForm({ ...orderForm, notes })} />
         </div>
       </div>
@@ -1853,8 +1941,43 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
     );
   }
 
+  function renderOrderTicketStage() {
+    const selectedCatalog = catalog.find((item) => item.id === orderForm.catalogId) || selectedOrderAccount?.catalog || {};
+    const ticketCategory = SERVICE_ORDER_TICKET_CATEGORY_BY_TYPE[orderForm.orderType] || 'GENERAL';
+    const ticketSubject = `${titleLabel(orderForm.orderType || 'NEW_INSTALLATION')} - Service order`;
+    return (
+      <div className="service-order-tab-panel">
+        {renderOrderContextCards()}
+        <div className="service-order-form-panel">
+          <div className="service-order-type-heading">
+            <div>
+              <div className="fw-semibold">Ticket</div>
+              <div className="text-muted small">Ticketing receives the operations work item after save.</div>
+            </div>
+            <span className="badge bg-red-lt text-red service-header-icon-badge" title="Ticket" aria-label="Ticket">
+              <IconTicket size={16} />
+            </span>
+          </div>
+          <div className="service-detail-grid">
+            <DetailRow label="Subject" value={ticketSubject} />
+            <DetailRow label="Category" value={label(ticketCategory)} />
+            <DetailRow label="Priority" value={label(orderForm.priority || 'NORMAL')} />
+            <DetailRow label="Source" value="INTERNAL" />
+            <DetailRow label="Due Date" value={orderForm.targetActivationDate || orderForm.requestedDate || '-'} />
+            <DetailRow label="Service Reference" value={selectedOrderAccount?.serviceReference || 'Generated on save'} />
+            <DetailRow label="Service Catalog" value={selectedCatalog.name || selectedOrderAccount?.catalogName || '-'} />
+            <DetailRow label="Ticket Status" value="OPEN" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   function renderOrderReviewStage() {
     const selectedCatalog = catalog.find((item) => item.id === orderForm.catalogId) || selectedOrderAccount?.catalog || {};
+    const ticketCategory = SERVICE_ORDER_TICKET_CATEGORY_BY_TYPE[orderForm.orderType] || 'GENERAL';
+    const linkedTicketNumber = orderForm.ticketNumber || orderForm.ticket?.ticketNumber;
+    const linkedTicketStatus = orderForm.ticketStatus || orderForm.ticket?.status;
     return (
       <div className="service-order-tab-panel">
         {renderOrderContextCards()}
@@ -1871,17 +1994,21 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
           <div className="service-order-form-panel">
             <div className="fw-semibold">Service Summary</div>
             <DetailRow label="Service Catalog" value={selectedCatalog.name || selectedOrderAccount?.catalogName || '-'} />
-            <DetailRow label="Service Address" value={orderForm.installAddress || selectedOrderAccount?.serviceAddress || '-'} />
+            <DetailRow label={orderAddressLabel(orderForm.orderType)} value={orderAddressSummary(orderForm, selectedOrderAccount) || '-'} />
             <DetailRow label="Notes" value={orderForm.notes || '-'} />
           </div>
+          <div className="service-order-form-panel">
+            <div className="fw-semibold">Ticket Summary</div>
+            <DetailRow label="Ticket" value={isEditingOrder ? valueOrDash(linkedTicketNumber) : 'Created on save'} />
+            <DetailRow label="Category" value={label(ticketCategory)} />
+            <DetailRow label="Status" value={isEditingOrder ? (linkedTicketStatus ? label(linkedTicketStatus) : '-') : 'OPEN'} />
+            <DetailRow label="Source" value="INTERNAL" />
+          </div>
         </div>
-        <ServiceOrderTypeFields
+        <OrderTypeDetailsPreview
           orderType={orderForm.orderType}
           details={orderForm.orderDetails || {}}
           schemas={meta.orderDetailSchemas}
-          status={orderForm.status}
-          requiredStatuses={orderDetailRequiredStatuses}
-          onChange={setOrderDetail}
         />
         {shouldShowOrderCatalog && !orderCatalogIsValid && (
           <div className="alert alert-warning mb-0">Select a matching service catalog item in the Service catalog stage.</div>
@@ -1902,7 +2029,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
               }
             }}
           />
-          <span>I reviewed the customer, order type, service catalog, and order details.</span>
+          <span>I reviewed the customer, order type, service catalog, ticket, and order details.</span>
         </label>
       </div>
     );
@@ -1912,6 +2039,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
     if (currentOrderWizardStage.id === 'customer') return renderOrderCustomerStage();
     if (currentOrderWizardStage.id === 'type') return renderOrderTypeStage();
     if (currentOrderWizardStage.id === 'catalog') return renderOrderCatalogStage();
+    if (currentOrderWizardStage.id === 'ticket') return renderOrderTicketStage();
     if (currentOrderWizardStage.id === 'review') return renderOrderReviewStage();
     return renderOrderInfoStage();
   }
@@ -2313,7 +2441,6 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
           <div className={`service-modal service-order-modal ${isEditingOrder ? '' : 'service-order-wizard-modal'}`} role="dialog" aria-modal="true" aria-labelledby="service-order-modal-title">
             <div className="service-modal-header">
               <div>
-                {isEditingOrder && <div className="text-muted small">Update existing service request</div>}
                 <h3 className="service-order-modal-title" id="service-order-modal-title">
                   <span className="service-order-title-icon"><OrderModalTypeIcon size={18} /></span>
                   <span>{isEditingOrder ? 'Edit Service Order' : 'New Service Order'}</span>
@@ -2408,7 +2535,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
                       <button
                         type="button"
                         className="btn btn-primary"
-                        disabled={(currentOrderWizardStage.id === 'customer' && !selectedOrderPickerCustomer) || (currentOrderWizardStage.id === 'type' && !orderTypePickerCanContinue) || (currentOrderWizardStage.id === 'order' && !orderForm.requestedDate) || (currentOrderWizardStage.id === 'catalog' && !orderCatalogIsValid)}
+                        disabled={(currentOrderWizardStage.id === 'customer' && !selectedOrderPickerCustomer) || (currentOrderWizardStage.id === 'type' && !orderTypePickerCanContinue) || (currentOrderWizardStage.id === 'order' && (!orderForm.requestedDate || orderDetailMissingFields.length > 0)) || (currentOrderWizardStage.id === 'catalog' && !orderCatalogIsValid)}
                         onClick={nextOrderWizardStage}
                       >
                         Next<IconChevronRight size={16} className="ms-1" />
@@ -2599,14 +2726,17 @@ function ServiceCatalogPicker({ rows, selectedId, onSelect, emptyMessage = 'No a
   );
 }
 
-function ServiceOrderTypeFields({ orderType, details, schemas, status, requiredStatuses, onChange }) {
+function ServiceOrderTypeFields({ orderType, details, schemas, status, requiredStatuses, forceRequired = false, customers = [], currentCustomerId = '', onChange }) {
   const fields = detailFieldsForType(orderType, schemas);
   if (!fields.length) return null;
-  const requiredNow = statusRequiresOrderDetails(status, requiredStatuses);
-  const missingFields = missingRequiredOrderDetails(orderType, details, status, schemas, requiredStatuses);
+  const requiredNow = forceRequired || statusRequiresOrderDetails(status, requiredStatuses);
+  const missingFields = forceRequired
+    ? missingRequiredOrderDetailLabels(orderType, details, schemas)
+    : missingRequiredOrderDetails(orderType, details, status, schemas, requiredStatuses);
   const readinessClass = requiredNow && missingFields.length
     ? 'bg-red-lt text-red'
     : requiredNow ? 'bg-green-lt text-green' : 'bg-secondary-lt text-secondary';
+  const customerOptions = customers.filter((customer) => customer.id !== currentCustomerId);
   return (
     <div className="service-order-type-fields">
       <div className="service-order-type-heading">
@@ -2627,6 +2757,23 @@ function ServiceOrderTypeFields({ orderType, details, schemas, status, requiredS
         {fields.map((field) => {
           const required = requiredNow && Boolean(field.required) && field.type !== 'boolean';
           const fieldLabel = `${field.label}${required ? ' *' : ''}`;
+          if (field.type === 'customer') {
+            return (
+              <SelectField
+                key={field.name}
+                label={fieldLabel}
+                value={details[field.name] ?? ''}
+                required={required}
+                disabled={Boolean(field.readOnly)}
+                onChange={(value) => onChange(field.name, value, field)}
+              >
+                <option value="">Select Customer Profiling record</option>
+                {customerOptions.map((customer) => (
+                  <option key={customer.id} value={customer.id}>{customerLabel(customer)}</option>
+                ))}
+              </SelectField>
+            );
+          }
           if (field.type === 'boolean') {
             return (
               <label className="form-check service-form-check" key={field.name}>
@@ -2634,7 +2781,8 @@ function ServiceOrderTypeFields({ orderType, details, schemas, status, requiredS
                   className="form-check-input"
                   type="checkbox"
                   checked={Boolean(details[field.name])}
-                  onChange={(event) => onChange(field.name, event.target.checked)}
+                  disabled={Boolean(field.readOnly)}
+                  onChange={(event) => onChange(field.name, event.target.checked, field)}
                 />
                 <span className="form-check-label">{fieldLabel}</span>
               </label>
@@ -2648,12 +2796,26 @@ function ServiceOrderTypeFields({ orderType, details, schemas, status, requiredS
               min={field.type === 'money' ? '0' : undefined}
               step={field.type === 'money' ? '0.01' : undefined}
               required={required}
+              disabled={Boolean(field.readOnly)}
               value={details[field.name] ?? ''}
-              onChange={(value) => onChange(field.name, value)}
+              onChange={(value) => onChange(field.name, value, field)}
             />
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function OrderTypeDetailsPreview({ orderType, details, schemas }) {
+  const fields = detailFieldsForType(orderType, schemas);
+  if (!fields.length) return null;
+  return (
+    <div className="service-order-form-panel">
+      <div className="fw-semibold">{label(orderType)} Details</div>
+      {fields.map((field) => (
+        <DetailRow key={field.name} label={field.label} value={formatOrderDetailValue(field, details[field.name], details)} />
+      ))}
     </div>
   );
 }
@@ -2860,17 +3022,6 @@ function CustomerAccountDetailPanel({ row, selectedOrderId, onAddOrder, onSelect
             </div>
           </div>
 
-          <section className="service-detail-section service-customer-detail-section">
-            <h4>Customer Details</h4>
-            <div className="service-detail-grid">
-              <DetailRow label="Customer" value={customerLabel(customer)} />
-              <DetailRow label="Account Number" value={valueOrDash(customer.accountNumber)} />
-              <DetailRow label="Contact" value={valueOrDash(customer.contactNumber)} />
-              <DetailRow label="Address" value={valueOrDash(customerFullAddressLabel(customer))} />
-              <DetailRow label="Status" value={label(customer.status || 'UNKNOWN')} />
-            </div>
-          </section>
-
           <section className="service-detail-section">
             <h4>Service Accounts</h4>
             {accounts.length ? (
@@ -2926,6 +3077,8 @@ function CustomerAccountDetailPanel({ row, selectedOrderId, onAddOrder, onSelect
                           <div className="service-detail-grid">
                             <DetailRow label="Order Number" value={valueOrDash(order.orderNumber)} />
                             <DetailRow label="Service Reference" value={valueOrDash(order.serviceReference)} />
+                            <DetailRow label="Ticket" value={valueOrDash(order.ticketNumber || order.ticket?.ticketNumber)} />
+                            <DetailRow label="Ticket Status" value={order.ticketStatus || order.ticket?.status ? label(order.ticketStatus || order.ticket?.status) : '-'} />
                             <DetailRow label="Order Type" value={label(order.orderType || 'NEW_INSTALLATION')} />
                             <DetailRow label="Status" value={label(order.status || 'DRAFT')} />
                             <DetailRow label="Priority" value={label(order.priority || 'NORMAL')} />
@@ -3262,6 +3415,13 @@ function ServiceOrderDetailPanel({ order, onEdit, onCancel, onClose }) {
           <OrderTypeDetailsSection order={order} />
 
           <section className="service-detail-section">
+            <h4>Ticket</h4>
+            <DetailRow label="Ticket Number" value={valueOrDash(order.ticketNumber || order.ticket?.ticketNumber)} />
+            <DetailRow label="Ticket Status" value={order.ticketStatus || order.ticket?.status ? label(order.ticketStatus || order.ticket?.status) : '-'} />
+            <DetailRow label="Ticket Subject" value={valueOrDash(order.ticket?.subject)} />
+          </section>
+
+          <section className="service-detail-section">
             <h4>Order Readiness</h4>
             <DetailRow
               label="Validation"
@@ -3277,7 +3437,7 @@ function ServiceOrderDetailPanel({ order, onEdit, onCancel, onClose }) {
             <DetailRow label="Target Completion" value={valueOrDash(order.targetActivationDate)} />
             <DetailRow label="Activation Date" value={valueOrDash(order.activationDate)} />
             <DetailRow label="Billing Start" value={valueOrDash(order.billingStartDate)} />
-            <DetailRow label="Install Address" value={valueOrDash(order.installAddress)} />
+            <DetailRow label={orderAddressLabel(order.orderType)} value={valueOrDash(orderAddressSummary(order, account))} />
             <DetailRow label="Notes" value={valueOrDash(order.notes)} />
             <DetailRow label="Created" value={valueOrDash(order.createdAt)} />
             <DetailRow label="Updated" value={valueOrDash(order.updatedAt)} />
@@ -3306,7 +3466,7 @@ function OrderTypeDetailsSection({ order }) {
     <section className="service-detail-section">
       <h4>{label(orderType)} Details</h4>
       {fields.map((field) => (
-        <DetailRow key={field.name} label={field.label} value={formatOrderDetailValue(field, details[field.name])} />
+        <DetailRow key={field.name} label={field.label} value={formatOrderDetailValue(field, details[field.name], details)} />
       ))}
     </section>
   );

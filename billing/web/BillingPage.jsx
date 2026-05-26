@@ -236,18 +236,6 @@ const blankInvoice = {
   notes: ''
 };
 
-const blankPayment = {
-  id: '',
-  invoiceId: '',
-  customerId: '',
-  amount: '',
-  method: 'CASH',
-  paymentDate: today(),
-  referenceNumber: '',
-  status: 'POSTED',
-  notes: ''
-};
-
 const blankAdjustment = {
   id: '',
   invoiceId: '',
@@ -270,18 +258,15 @@ export default function BillingPage({ refreshShell = () => {} }) {
   const [customerSearch, setCustomerSearch] = useState('');
   const [subscriptions, setSubscriptions] = useState([]);
   const [invoices, setInvoices] = useState([]);
-  const [payments, setPayments] = useState([]);
   const [adjustments, setAdjustments] = useState([]);
   const [balances, setBalances] = useState([]);
   const [subscriptionForm, setSubscriptionForm] = useState(blankSubscription);
   const [invoiceForm, setInvoiceForm] = useState(blankInvoice);
-  const [paymentForm, setPaymentForm] = useState(blankPayment);
   const [adjustmentForm, setAdjustmentForm] = useState(blankAdjustment);
   const [modal, setModal] = useState(null);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
-  const invoiceById = useMemo(() => new Map(invoices.map((invoice) => [invoice.id, invoice])), [invoices]);
   const subscriptionByServiceAccountId = useMemo(() => new Map(subscriptions.filter((subscription) => subscription.serviceAccountId).map((subscription) => [subscription.serviceAccountId, subscription])), [subscriptions]);
   const serviceOrderById = useMemo(() => new Map(serviceOrders.map((order) => [order.id, order])), [serviceOrders]);
   const serviceAccountById = useMemo(() => new Map(serviceAccounts.map((account) => [account.id, account])), [serviceAccounts]);
@@ -304,7 +289,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
   async function load(search = customerSearch) {
     setError('');
     try {
-      const [nextMeta, nextOverview, nextCustomers, nextServiceOrders, nextServiceCatalog, nextServiceAccounts, nextSubscriptions, nextInvoices, nextPayments, nextAdjustments, nextBalances, nextAvatarConfig] = await Promise.all([
+      const [nextMeta, nextOverview, nextCustomers, nextServiceOrders, nextServiceCatalog, nextServiceAccounts, nextSubscriptions, nextInvoices, nextAdjustments, nextBalances, nextAvatarConfig] = await Promise.all([
         request('/billing/meta'),
         request('/billing/overview'),
         request(`/billing/customers?search=${encodeURIComponent(search)}`),
@@ -313,7 +298,6 @@ export default function BillingPage({ refreshShell = () => {} }) {
         request('/service/accounts?activeOnly=true'),
         request('/billing/subscriptions'),
         request('/billing/invoices'),
-        request('/billing/payments'),
         request('/billing/adjustments'),
         request('/billing/balances'),
         request('/system-settings/avatars').catch(() => null)
@@ -326,7 +310,6 @@ export default function BillingPage({ refreshShell = () => {} }) {
       setServiceAccounts(nextServiceAccounts);
       setSubscriptions(nextSubscriptions);
       setInvoices(nextInvoices);
-      setPayments(nextPayments);
       setAdjustments(nextAdjustments);
       setBalances(nextBalances);
       setAvatarConfig(nextAvatarConfig);
@@ -445,19 +428,6 @@ export default function BillingPage({ refreshShell = () => {} }) {
     };
   }
 
-  function invoiceOptions() {
-    return (
-      <>
-        <option value="">Customer-level payment</option>
-        {invoices.filter((invoice) => invoice.status !== 'VOID').map((invoice) => (
-          <option key={invoice.id} value={invoice.id}>
-            {invoice.invoiceNumber} - {customerLabel(invoice.customer)} - {currency(invoice.balance)}
-          </option>
-        ))}
-      </>
-    );
-  }
-
   function closeModal() {
     setModal(null);
   }
@@ -513,15 +483,6 @@ export default function BillingPage({ refreshShell = () => {} }) {
     });
     setActiveTab('Invoices');
     setModal('invoice');
-  }
-
-  function openPaymentForm(payment = null) {
-    setPaymentForm(payment ? {
-      ...blankPayment,
-      ...payment,
-      amount: String(payment.amount)
-    } : blankPayment);
-    setModal('payment');
   }
 
   function openAdjustmentForm(adjustment = null) {
@@ -604,26 +565,6 @@ export default function BillingPage({ refreshShell = () => {} }) {
     refreshShell();
   }
 
-  async function submitPayment(e) {
-    e.preventDefault();
-    const body = { ...paymentForm, amount: Number(paymentForm.amount) };
-    const path = paymentForm.id ? `/billing/payments/${paymentForm.id}` : '/billing/payments';
-    await request(path, { method: paymentForm.id ? 'PATCH' : 'POST', body: JSON.stringify(body) });
-    setPaymentForm(blankPayment);
-    closeModal();
-    setMessage(paymentForm.id ? 'Payment saved.' : 'Payment posted.');
-    await load();
-    refreshShell();
-  }
-
-  async function voidPayment(id) {
-    if (!window.confirm('Void this payment?')) return;
-    await request(`/billing/payments/${id}`, { method: 'DELETE' });
-    setMessage('Payment voided.');
-    await load();
-    refreshShell();
-  }
-
   async function submitAdjustment(e) {
     e.preventDefault();
     const body = { ...adjustmentForm, amount: Number(adjustmentForm.amount) };
@@ -646,16 +587,6 @@ export default function BillingPage({ refreshShell = () => {} }) {
 
   function editInvoice(invoice) {
     openInvoiceForm(invoice);
-  }
-
-  function setPaymentInvoice(invoiceId) {
-    const invoice = invoiceById.get(invoiceId);
-    setPaymentForm({
-      ...paymentForm,
-      invoiceId,
-      customerId: invoice?.customerId || paymentForm.customerId,
-      amount: invoice ? String(invoice.balance || invoice.total || '') : paymentForm.amount
-    });
   }
 
   function metricCards() {
@@ -697,7 +628,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
       </div>
 
       <ul className="nav nav-tabs mb-3">
-        {['Overview', 'Subscriptions', 'Invoices', 'Payments', 'Adjustments', 'Balances'].map((tab) => (
+        {['Overview', 'Subscriptions', 'Invoices', 'Adjustments', 'Balances'].map((tab) => (
           <li className="nav-item" key={tab}>
             <button className={`nav-link ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>{tab}</button>
           </li>
@@ -779,24 +710,6 @@ export default function BillingPage({ refreshShell = () => {} }) {
               actions={<button className="btn btn-primary btn-sm" type="button" onClick={() => openInvoiceForm()}><IconPlus size={16} className="me-1" />New Invoice</button>}
             >
               <InvoiceTable rows={invoices} onEdit={editInvoice} onVoid={voidInvoice} avatarConfig={avatarConfig} />
-            </Card>
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'Payments' && (
-        <div className="row row-cards">
-          <div className="col-12">
-            <Card
-              title="Payments"
-              icon={IconReceipt}
-              actions={<button className="btn btn-primary btn-sm" type="button" onClick={() => openPaymentForm()}><IconPlus size={16} className="me-1" />Post Payment</button>}
-            >
-              <PaymentTable
-                rows={payments}
-                onEdit={openPaymentForm}
-                onVoid={voidPayment}
-              />
             </Card>
           </div>
         </div>
@@ -889,23 +802,6 @@ export default function BillingPage({ refreshShell = () => {} }) {
           <TextField label="Amount" type="number" min="0" step="0.01" value={invoiceForm.amount} required onChange={(amount) => setInvoiceForm({ ...invoiceForm, amount })} />
           <SelectField label="Status" value={invoiceForm.status} options={meta.invoiceStatuses || ['ISSUED']} onChange={(status) => setInvoiceForm({ ...invoiceForm, status })} />
           <TextField label="Notes" value={invoiceForm.notes} onChange={(notes) => setInvoiceForm({ ...invoiceForm, notes })} />
-          <div className="billing-form-actions">
-            <button className="btn" type="button" onClick={closeModal}>Cancel</button>
-            <button className="btn btn-primary"><IconDeviceFloppy size={16} className="me-1" />Save</button>
-          </div>
-        </form>
-      </Modal>
-
-      <Modal title={paymentForm.id ? 'Edit Payment' : 'Post Payment'} icon={IconCreditCard} open={modal === 'payment'} onClose={closeModal}>
-        <form className="billing-form" onSubmit={submitPayment}>
-          <SelectField label="Invoice" value={paymentForm.invoiceId} onChange={setPaymentInvoice}>{invoiceOptions()}</SelectField>
-          {!paymentForm.invoiceId && <SelectField label="Customer" value={paymentForm.customerId} required onChange={(customerId) => setPaymentForm({ ...paymentForm, customerId })}>{customerOptions()}</SelectField>}
-          <TextField label="Amount" type="number" min="0" step="0.01" value={paymentForm.amount} required onChange={(amount) => setPaymentForm({ ...paymentForm, amount })} />
-          <SelectField label="Method" value={paymentForm.method} options={meta.paymentMethods || ['CASH']} onChange={(method) => setPaymentForm({ ...paymentForm, method })} />
-          <TextField label="Payment Date" type="date" value={paymentForm.paymentDate} required onChange={(paymentDate) => setPaymentForm({ ...paymentForm, paymentDate })} />
-          <TextField label="Reference Number" value={paymentForm.referenceNumber} onChange={(referenceNumber) => setPaymentForm({ ...paymentForm, referenceNumber })} />
-          <SelectField label="Status" value={paymentForm.status} options={meta.paymentStatuses || ['POSTED']} onChange={(status) => setPaymentForm({ ...paymentForm, status })} />
-          <TextField label="Notes" value={paymentForm.notes} onChange={(notes) => setPaymentForm({ ...paymentForm, notes })} />
           <div className="billing-form-actions">
             <button className="btn" type="button" onClick={closeModal}>Cancel</button>
             <button className="btn btn-primary"><IconDeviceFloppy size={16} className="me-1" />Save</button>
@@ -1141,43 +1037,6 @@ function InvoiceTable({ rows, onEdit, onVoid, avatarConfig, compact = false }) {
               <td>{currency(row.total)}</td>
               <td>{currency(row.balance)}</td>
               <td><span className={`badge ${statusClass(row.status)}`}>{row.status.replaceAll('_', ' ')}</span></td>
-              <td className="text-end">
-                <button className="btn btn-sm me-1" onClick={() => onEdit(row)}><IconEdit size={14} /></button>
-                <button className="btn btn-sm btn-outline-danger" onClick={() => onVoid(row.id)}><IconTrash size={14} /></button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function PaymentTable({ rows, onEdit, onVoid }) {
-  if (!rows.length) return <Empty />;
-  return (
-    <div className="table-responsive">
-      <table className="table card-table table-vcenter">
-        <thead>
-          <tr>
-            <th>Receipt</th>
-            <th>Customer</th>
-            <th>Invoice</th>
-            <th>Method</th>
-            <th>Amount</th>
-            <th>Status</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.id}>
-              <td>{row.receiptNumber}</td>
-              <td>{customerLabel(row.customer)}</td>
-              <td>{row.invoiceNumber || '-'}</td>
-              <td>{row.method}</td>
-              <td>{currency(row.amount)}</td>
-              <td><span className={`badge ${statusClass(row.status)}`}>{row.status}</span></td>
               <td className="text-end">
                 <button className="btn btn-sm me-1" onClick={() => onEdit(row)}><IconEdit size={14} /></button>
                 <button className="btn btn-sm btn-outline-danger" onClick={() => onVoid(row.id)}><IconTrash size={14} /></button>

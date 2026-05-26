@@ -30,6 +30,7 @@ python3 scripts/ai_coord.py update <agent> "<task-name>" "<what changed>" --file
 - Shared backend shell: FastAPI under `app-shell/api`
 - Database target: one shared PostgreSQL database via Docker Compose
 - Common shell features: side navigation, top header with page name and system metrics, profile, and change password
+- Shared app pages use aligned content gutters in `app-shell`: page body containers and top headers share the same desktop/tablet horizontal spacing so module pages line up with the sidebar consistently.
 
 ## Architecture Pattern
 
@@ -59,6 +60,7 @@ account-admin/
 customer-service-management/
 ticketing/
 service/
+network-settings/
   web/        module-owned React pages/styles
   api/        module-owned FastAPI routers
 ```
@@ -71,11 +73,12 @@ Root-level business module folders:
 - `billing`: invoices, subscriptions, payments, adjustments, balances, and billing cycles
 - `point-of-sale`: counter sales, receipts, payment capture, cashier sessions, and sales reports
 - `inventory`: routers, ONUs/CPEs, cables, installation materials, stock movement, and reorder alerts
-- `account-admin`: admin users, roles, permissions, access, and account security
+- `account-admin`: customer account administration placeholder; customer-account lifecycle/configuration work belongs here next
 - `customer-service-management`: customer interactions, service requests, follow-ups, callbacks, and care workflows
 - `ticketing`: trouble tickets, outage tracking, field jobs, dispatch, notes, and resolution history
 - `service`: ISP service catalog, speed plans, customer Service Orders, installation requirements, and canonical service references for Billing and Ticketing
-- `system-settings`: branding, business profile, reusable locations, Avatar settings, OPENAI settings, runtime paths, access reminders, and system port registry
+- `network-settings`: OLTs, generated/editable PON ports, NAP boxes, and FBT assignments for ISP access-network source-of-truth
+- `system-settings`: branding, business profile, reusable locations, Avatar settings, OPENAI settings, system Access controls, runtime paths, and system port registry
 - `logs`: shared audit log viewer for app-shell and module activity
 
 New business modules must get their own root-level folder and follow the module-folder pattern used by `customer-profiling/`.
@@ -154,14 +157,26 @@ The Integration Codex wired these completed module folders into `app-shell` as f
 | Ticketing | `/ticketing` | `/api/ticketing` | `ticketing/web/TicketingPage.jsx` | `ticketing/api/ticketing` |
 | Service Catalog | `/service/catalog` | `/api/service` | `service/web/ServicePage.jsx` | `service/api/service` |
 | Service Order | `/service/order` | `/api/service` | `service/web/ServicePage.jsx` | `service/api/service` |
+| Network Settings | `/network-settings` | `/api/network-settings` | `network-settings/web/NetworkSettingsPage.jsx` | `network-settings/api/network_settings` |
+| Network Settings - MikroTik Settings | `/network-settings/mikrotik/settings` | `/api/network-settings` | `network-settings/web/NetworkSettingsPage.jsx` | `network-settings/api/network_settings` |
+| Network Settings - PPPoE Accounts | `/network-settings/pppoe-accounts` | `/api/network-settings` | `network-settings/web/NetworkSettingsPage.jsx` | `network-settings/api/network_settings` |
+| Network Settings - OLT Settings | `/network-settings/olt/settings` | `/api/network-settings` | `network-settings/web/NetworkSettingsPage.jsx` | `network-settings/api/network_settings` |
+| Network Settings - OLT & PON | `/network-settings/olts` | `/api/network-settings` | `network-settings/web/NetworkSettingsPage.jsx` | `network-settings/api/network_settings` |
+| Network Settings - ONUs | `/network-settings/onus` | `/api/network-settings` | `network-settings/web/NetworkSettingsPage.jsx` | `network-settings/api/network_settings` |
+| Network Settings - NAP Boxes | `/network-settings/nap-boxes` | `/api/network-settings` | `network-settings/web/NetworkSettingsPage.jsx` | `network-settings/api/network_settings` |
+| Network Settings - FBT | `/network-settings/fbts` | `/api/network-settings` | `network-settings/web/NetworkSettingsPage.jsx` | `network-settings/api/network_settings` |
 | System Settings | `/system-settings` | `/api/system-settings` | `system-settings/web/SystemSettingsPage.jsx` | `system-settings/api/system_settings` |
 | Logs | `/logs` | `/api/logs` | `logs/web/LogsPage.jsx` | `logs/api/logs` |
 
 Shared app-shell wiring now imports each module page in `app-shell/web/src/main.jsx`, includes each router in `app-shell/api/app/main.py`, injects shared auth/audit hooks, and exposes module metrics through `/api/modules` and `/api/dashboard`.
 
-Customer-dependent modules receive Customer Profiling provider hooks from the app shell for customer lookup/search where supported. Most integrated module data remains in memory and resets on API restart. System Settings Location Management records, deleted preloaded-location markers, avatar images, avatar emotion settings, and OPENAI settings persist separately in the API data volume. Durable shared PostgreSQL persistence, migrations, role/permission enforcement, and production-grade cross-module relationships are still future work.
+Customer-dependent modules receive Customer Profiling provider hooks from the app shell for customer lookup/search where supported. Most integrated module data remains in memory and resets on API restart. System Settings Location Management records, deleted preloaded-location markers, avatar images, avatar emotion settings, OPENAI settings, and Access settings persist separately in the API data volume. Durable shared PostgreSQL persistence, migrations, role/permission enforcement, and production-grade cross-module relationships are still future work.
 
-Service is now integrated as a functional in-memory module with separate app-shell pages for Service Catalog and Service Order. Create/edit workflows open in module-owned modals. Service owns catalog CRUD, Service Account records, Service Order CRUD, customer lookup, catalog list pricing, and canonical `serviceReference` values. Billing subscriptions use active Service Accounts as the billable target, keep Service Catalog plan/rate fields locked for linked subscriptions, and require an explicit override amount and reason when Billing charges a non-catalog monthly rate. Ticketing can select active Service Orders to populate ticket service references. Customer Profiling does not display or manage Service Orders.
+Service is now integrated as a functional in-memory module with separate app-shell pages for Service Catalog and Service Order. Create/edit workflows open in module-owned modals. Service owns catalog CRUD, Service Account records, Service Order CRUD, customer lookup, catalog list pricing, and canonical `serviceReference` values. Billing subscriptions use active Service Accounts as the billable target, keep Service Catalog plan/rate fields locked for linked subscriptions, and require an explicit override amount and reason when Billing charges a non-catalog monthly rate. Ticketing can select active Service Orders to populate ticket service references, and new Service Orders automatically create linked Ticketing tickets through the shared app-shell configuration. Customer Profiling does not display or manage Service Orders.
+
+Network Settings is integrated as a functional module under the shared navigation. It currently provides MikroTik Settings for MikroTik API device records, a MikroTik-grouped PPPoE Accounts page that reads RouterOS PPP secrets and active sessions through saved MikroTik API devices, OLT Settings for SNMP OLT device records, OLT CRUD with generated default PON ports, PON add/edit/delete under an OLT, a captured ONUs page populated from SNMP OLT capture when ONU/ONT interfaces are exposed through IF-MIB, NAP box CRUD assigned to PON ports, and FBT CRUD assigned to NAP boxes. The old standalone Devices sidebar page has been removed; the legacy `/network-settings/devices` URL loads MikroTik Settings for bookmark compatibility. The shared sidebar nests Settings and PPPoE Accounts under MikroTik, and Settings, OLT & PON, ONUs, NAP Boxes, and FBT under OLT. OLT creation defaults to four PON ports unless the operator chooses a different target. Decreasing the target PON count does not silently delete ports; operators can delete unassigned PON rows manually. SNMP v1/v2c OLT capture stores system/interface data, updates device vendor/model, reconciles OLT/PON/ONU inventory, and the shared API startup now starts a Network Settings poller that runs due SNMP captures based on each device `pollIntervalSeconds` value. The ONUs page auto-refreshes while open; the PPPoE Accounts page auto-refreshes every 30 seconds while open. Live MikroTik/OLT provisioning, PPPoE-to-ONU/customer mapping, SNMPv3 capture, vendor-specific ONU optical metrics, topology visualization, and PostgreSQL persistence remain future work.
+
+Account Admin is not the system-login admin area. It is now reserved for customer account administration and currently shows a placeholder plus planned customer-account work. The previous system-login user CRUD under Account Admin was moved to System Settings -> Access. Old `/api/account-admin/accounts` routes return `410 Gone` with a message pointing callers to System Settings -> Access.
 
 `app-shell/web/vite.config.js`, `app-shell/api/Dockerfile`, and `app-shell/web/Dockerfile` include module allowlist/copy entries for the integrated module folders.
 
@@ -187,7 +202,9 @@ System Settings now lives in the `system-settings/` module folder. Logs now live
 
 System Settings includes Location Management under `/api/system-settings/locations`, with Nominatim-compatible geocoder lookup configurable through `GEOCODER_SEARCH_URL`. Location Management preloads known Customer Profiling service-area barangays, supports `PATCH /api/system-settings/locations/{location_id}` for edits, and exposes an internal helper that Customer Profiling uses to create or link minimal locations during customer saves. Location records persist to the System Settings data file for restart safety until shared PostgreSQL persistence is added.
 
-System Settings Location Management records, deleted preloaded-location markers, Avatar uploads, avatar emotion guide settings, and OPENAI settings persist to `SYSTEM_SETTINGS_DATA_PATH`, which Docker Compose sets to `/app/data/system_settings.json` in the `threejmain_api_data` named volume. This keeps reusable locations, uploaded avatar images, and AI integration configuration across API container restarts/rebuilds. OPENAI stores the selected model, optional organization/project ids, and server-side API key; API responses expose only masked key metadata to the frontend.
+System Settings -> Access now owns the system-login access UI copied from the old `/home/threejmon` System Settings -> Access flow: Auth Settings, Permissions, Roles, and Users. API routes live under `/api/system-settings/access`. Access data persists to `SYSTEM_SETTINGS_DATA_PATH`, but it is not yet wired into app-shell login/session enforcement; app-shell still uses the current single-admin login until a shared auth integration pass updates it.
+
+System Settings Location Management records, deleted preloaded-location markers, Avatar uploads, avatar emotion guide settings, OPENAI settings, and Access settings persist to `SYSTEM_SETTINGS_DATA_PATH`, which Docker Compose sets to `/app/data/system_settings.json` in the `threejmain_api_data` named volume. This keeps reusable locations, uploaded avatar images, AI integration configuration, and first-shell access configuration across API container restarts/rebuilds. OPENAI stores the selected model, optional organization/project ids, and server-side API key; API responses expose only masked key metadata to the frontend.
 
 ## Runtime Coordination
 

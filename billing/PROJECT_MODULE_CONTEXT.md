@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Billing manages ISP monthly subscriptions, invoices, payments, adjustments, balances, billing cycles, and collection workflow surfaces.
+Billing manages ISP monthly subscriptions, invoices, adjustments, balances, billing cycles, and collection-accounting records. Customer invoice payment intake is handled by Point of Sale.
 
 ## Module Layout
 
@@ -38,7 +38,7 @@ billing/
 - Editing an existing subscription keeps the customer and Service Account target fixed in the modal. Service Account selection is only shown when creating a new subscription.
 - Invoices: create, list, update, void, derive status from due date/payments/adjustments
 - Invoices generated or created from subscriptions carry service account, service order, catalog, pricing source, and service reference fields for traceability back to Service.
-- Payments: create, list, update, void; supports invoice-level and customer-level payments
+- Payments: API ledger only. `POST /api/billing/payments` remains the canonical way to settle Billing invoices, but the Billing frontend no longer exposes a Payments tab. Customer invoice payment intake belongs in Point of Sale -> Invoice Payments.
 - Adjustments: create, list, update, void; supports invoice credits and debits
 - Balances: customer balance summaries with invoiced total, paid total, outstanding balance, credit, overdue total, and open invoice count
 - Customer-facing Billing tables display System Settings customer emotion avatars. Balance and invoice context can move the displayed mood toward warning or angry when balances are overdue or invoices remain open.
@@ -51,6 +51,7 @@ billing/
 - Invoice totals are calculated from line items plus posted debit adjustments minus posted credit adjustments.
 - Invoice paid/balance values are calculated from posted payments.
 - Voided invoices, payments, and adjustments are retained in memory but excluded from active totals.
+- Invoice payments posted from Point of Sale use Billing payment records with `collectionChannel=POS`, authenticated operator attribution, and invoice-balance validation.
 
 ## API Routes
 
@@ -83,6 +84,7 @@ billing/
 - Billing customer snapshots include `gender` from Customer Profiling so male/female avatar slots resolve correctly.
 - Service is the source of service account, catalog, and order identity. Billing reads `GET /api/service/accounts?activeOnly=true`, `GET /api/service/orders?activeOnly=true`, and `GET /api/service/catalog?status=ACTIVE`.
 - Billing subscription creation selects a Service Account to populate customer, plan name, service reference, catalog fields, monthly list price, billing start date, due-days default, and billing mode.
+- Point of Sale owns the customer-facing invoice payment workspace. POS reads Billing invoices/payments and posts Billing payment records; Billing remains the accounting ledger and invoice owner.
 - Integration must provide Billing with:
   - authenticated admin dependency
   - audit logger
