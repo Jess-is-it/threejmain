@@ -13,5 +13,6 @@ fi
 
 install -m 0644 "$UNIT_SOURCE" "$UNIT_TARGET"
 systemctl daemon-reload
-systemctl enable --now "$UNIT_NAME"
+systemctl enable "$UNIT_NAME"
+systemctl restart "$UNIT_NAME"
 systemctl --no-pager --full status "$UNIT_NAME"

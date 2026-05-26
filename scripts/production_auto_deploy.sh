@@ -16,12 +16,18 @@ MODE="${1:-watch}"
 mkdir -p "$STATE_DIR"
 
 check_once() {
-  git -C "$SOURCE_REPO" fetch --quiet --prune "$REMOTE" "+refs/heads/$BRANCH:refs/remotes/$REMOTE/$BRANCH"
+  if ! git -C "$SOURCE_REPO" fetch --quiet --prune "$REMOTE" "+refs/heads/$BRANCH:refs/remotes/$REMOTE/$BRANCH"; then
+    log "Failed to fetch $REMOTE/$BRANCH"
+    return 1
+  fi
 
   local target_commit
   local deployed_commit
   local previous_commit
-  target_commit="$(git -C "$SOURCE_REPO" rev-parse "$REMOTE/$BRANCH^{commit}")"
+  if ! target_commit="$(git -C "$SOURCE_REPO" rev-parse "$REMOTE/$BRANCH^{commit}")"; then
+    log "Failed to resolve $REMOTE/$BRANCH"
+    return 1
+  fi
   deployed_commit="$(cat "$STATE_DIR/deployed-master" 2>/dev/null || true)"
 
   if [[ "$target_commit" == "$deployed_commit" ]]; then
