@@ -406,18 +406,22 @@ Release `runtime/server` as soon as the build/start/restart operation and immedi
 
 This project uses one shared local working tree and one shared test server for normal Codex development.
 
+Production now also uses this host when enabled. The live production stack deploys from `origin/master` into `/home/threejmain-production` as Docker Compose project `threejmain-production`, and it owns ports `8180` and `8100`. Production data is separate from the old staging/test Compose project because the production Compose project uses separate Docker volumes.
+
 Normal Codex work happens in:
 
 ```text
 /home/threejmain
 ```
 
-The shared test URLs are:
+The shared URLs are:
 
 ```text
 Web: http://192.168.50.70:8180/
 API: http://192.168.50.70:8100/
 ```
+
+When production is running, those URLs are production URLs, not staging preview URLs. Do not rebuild, restart, or replace the staging Compose stack on those ports unless the user explicitly asks to take over the live runtime or move staging to separate ports.
 
 Do not create per-Codex preview servers for normal work. Do not use per-Codex ports such as `8303`, `8314`, `8203`, or `8214`.
 
@@ -460,7 +464,7 @@ runtime/server
 
 Release `runtime/server` immediately after restart/build and basic verification. Other Codex sessions should keep coding on unlocked files while one Codex briefly owns the runtime lock.
 
-All visual review happens on the shared server at `http://192.168.50.70:8180/`.
+All visual review happens on the shared server at `http://192.168.50.70:8180/`; confirm whether the user expects production or staging before changing the runtime.
 
 ---
 

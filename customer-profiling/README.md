@@ -41,4 +41,27 @@ Current shell API route prefix:
 /api/customer-profiling
 ```
 
-The current implementation is an in-memory FastAPI shell so the workflow is visible and testable while the durable PostgreSQL models are added.
+## Real-Data Readiness
+
+Customer Profiling Stage 2 persists customer records to the shared PostgreSQL database when these environment variables are active:
+
+```text
+CUSTOMER_PROFILING_STORAGE=postgres
+DATABASE_URL=postgresql://...
+```
+
+The app-shell API startup migration runner creates and versions the `customer_profiles` table with migration `2026052601_customer_profiles`. Customer Profiling stores the full API payload in JSONB and maintains indexed columns for account number, status, type, location, contact number, and email. Demo seed customers are disabled by default; set `CUSTOMER_PROFILING_SEED_DEMO=true` only for disposable demo environments.
+
+Readiness endpoint:
+
+```text
+GET /api/customer-profiling/readiness
+```
+
+Shared migration status endpoint:
+
+```text
+GET /api/system/database-migrations
+```
+
+Remaining production stages include role/permission enforcement, server-side draft storage if customer drafts must roam across devices, backup/restore runbooks, and final customer lookup contracts for dependent modules.

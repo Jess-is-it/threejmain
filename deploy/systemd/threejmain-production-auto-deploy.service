@@ -1,0 +1,21 @@
+[Unit]
+Description=threejmain production auto deploy from origin/master
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/threejmain
+Environment=THREEJMAIN_SOURCE_REPO=/home/threejmain
+Environment=THREEJMAIN_PROD_DIR=/home/threejmain-production
+Environment=THREEJMAIN_PROD_BRANCH=master
+Environment=THREEJMAIN_PROD_COMPOSE_PROJECT=threejmain-production
+Environment=THREEJMAIN_PROD_STOP_PROJECT=threejmain
+Environment=THREEJMAIN_PROD_POLL_SECONDS=60
+ExecStart=/home/threejmain/scripts/production_auto_deploy.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

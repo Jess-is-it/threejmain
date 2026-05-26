@@ -24,6 +24,8 @@ services:
       DEFAULT_ADMIN_NAME: ${DEFAULT_ADMIN_NAME:-System Administrator}
       DEFAULT_ADMIN_EMAIL: ${DEFAULT_ADMIN_EMAIL:-admin@example.local}
       DATABASE_URL: ${DATABASE_URL:-postgresql://threejmain:threejmain@postgres:5432/threejmain}
+      CUSTOMER_PROFILING_STORAGE: ${CUSTOMER_PROFILING_STORAGE:-postgres}
+      CUSTOMER_PROFILING_SEED_DEMO: ${CUSTOMER_PROFILING_SEED_DEMO:-false}
       CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:8180,http://127.0.0.1:8180}
       SYSTEM_SETTINGS_DATA_PATH: /app/data/system_settings.json
     depends_on:

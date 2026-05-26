@@ -1,3 +1,5 @@
+import logging
+import os
 from datetime import datetime, timezone
 from typing import Any, Callable
 from uuid import uuid4
@@ -6,12 +8,22 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 try:
+    import psycopg
+    from psycopg.rows import dict_row
+    from psycopg.types.json import Json
+except Exception:  # pragma: no cover - allows local syntax checks without optional DB client.
+    psycopg = None
+    dict_row = None
+    Json = None
+
+try:
     from system_settings import ensure_location_record
 except Exception:  # pragma: no cover - keeps module usable before System Settings is wired.
     ensure_location_record = None
 
 
 router = APIRouter(prefix="/api/customer-profiling", tags=["customer-profiling"])
+logger = logging.getLogger(__name__)
 
 customers: list[dict[str, Any]] = []
 
@@ -204,6 +216,9 @@ REQUIRED_BULK_UPLOAD_HEADERS = [
     "contactNumber",
 ]
 
+CUSTOMER_STORAGE_MODE = os.getenv("CUSTOMER_PROFILING_STORAGE") or ("postgres" if os.getenv("DATABASE_URL") else "memory")
+CUSTOMER_SEED_DEMO = os.getenv("CUSTOMER_PROFILING_SEED_DEMO", "false").strip().lower() in {"1", "true", "yes", "on"}
+
 
 class CustomerPayload(BaseModel):
     accountNumber: str | None = None
@@ -235,6 +250,182 @@ class CustomerPayload(BaseModel):
     gender: str | None = None
     customerType: str | None = None
     status: str | None = None
+
+
+class CustomerProfileStore:
+    def __init__(self) -> None:
+        self.database_url = os.getenv("DATABASE_URL", "").strip()
+        self.storage_mode = CUSTOMER_STORAGE_MODE.strip().lower()
+        self._schema_ready = False
+
+    @property
+    def postgres_enabled(self) -> bool:
+        return self.storage_mode == "postgres"
+
+    def _connect(self):
+        if not self.postgres_enabled:
+            return None
+        if psycopg is None or dict_row is None:
+            raise HTTPException(status_code=503, detail="Customer Profiling database driver is not installed")
+        if not self.database_url:
+            raise HTTPException(status_code=503, detail="Customer Profiling database URL is not configured")
+        return psycopg.connect(self.database_url, autocommit=True, row_factory=dict_row)
+
+    def ensure_schema(self) -> bool:
+        if not self.postgres_enabled:
+            return False
+        if self._schema_ready:
+            return True
+        try:
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT to_regclass('public.customer_profiles') AS table_name")
+                    row = cursor.fetchone() or {}
+                    if not row.get("table_name"):
+                        raise HTTPException(status_code=503, detail="Customer Profiling database migration has not run")
+            self._schema_ready = True
+            return True
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Customer Profiling database schema initialization failed")
+            raise HTTPException(status_code=503, detail=f"Customer Profiling database is unavailable: {exc}") from exc
+
+    def _row_to_customer(self, row: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(row.get("data") or {})
+        payload.update(
+            {
+                "id": row.get("id"),
+                "accountNumber": row.get("account_number") or payload.get("accountNumber"),
+                "createdAt": (row.get("created_at").isoformat() if hasattr(row.get("created_at"), "isoformat") else row.get("created_at")) or payload.get("createdAt"),
+                "updatedAt": (row.get("updated_at").isoformat() if hasattr(row.get("updated_at"), "isoformat") else row.get("updated_at")) or payload.get("updatedAt"),
+                "deletedAt": (row.get("deleted_at").isoformat() if hasattr(row.get("deleted_at"), "isoformat") else row.get("deleted_at")) or payload.get("deletedAt"),
+                "createdByUserId": row.get("created_by_user_id") or payload.get("createdByUserId"),
+                "updatedByUserId": row.get("updated_by_user_id") or payload.get("updatedByUserId"),
+            },
+        )
+        return payload
+
+    def list_customers(self) -> list[dict[str, Any]] | None:
+        if not self.ensure_schema():
+            return None
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT * FROM customer_profiles ORDER BY created_at DESC, id")
+                return [self._row_to_customer(row) for row in cursor.fetchall()]
+
+    def save_customer(self, customer: dict[str, Any]) -> bool:
+        if not self.ensure_schema():
+            return False
+        if Json is None:
+            raise HTTPException(status_code=503, detail="Customer Profiling JSON database adapter is not installed")
+        payload = dict(customer)
+        created_at = payload.get("createdAt") or now_iso()
+        updated_at = payload.get("updatedAt") or created_at
+        deleted_at = payload.get("deletedAt") or None
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO customer_profiles (
+                        id,
+                        account_number,
+                        full_name,
+                        customer_type,
+                        status,
+                        gender,
+                        province,
+                        city,
+                        barangay,
+                        contact_number,
+                        email,
+                        location_id,
+                        data,
+                        created_at,
+                        updated_at,
+                        deleted_at,
+                        created_by_user_id,
+                        updated_by_user_id
+                    )
+                    VALUES (
+                        %(id)s,
+                        %(account_number)s,
+                        %(full_name)s,
+                        %(customer_type)s,
+                        %(status)s,
+                        %(gender)s,
+                        %(province)s,
+                        %(city)s,
+                        %(barangay)s,
+                        %(contact_number)s,
+                        %(email)s,
+                        %(location_id)s,
+                        %(data)s,
+                        %(created_at)s,
+                        %(updated_at)s,
+                        %(deleted_at)s,
+                        %(created_by_user_id)s,
+                        %(updated_by_user_id)s
+                    )
+                    ON CONFLICT (id) DO UPDATE SET
+                        account_number = EXCLUDED.account_number,
+                        full_name = EXCLUDED.full_name,
+                        customer_type = EXCLUDED.customer_type,
+                        status = EXCLUDED.status,
+                        gender = EXCLUDED.gender,
+                        province = EXCLUDED.province,
+                        city = EXCLUDED.city,
+                        barangay = EXCLUDED.barangay,
+                        contact_number = EXCLUDED.contact_number,
+                        email = EXCLUDED.email,
+                        location_id = EXCLUDED.location_id,
+                        data = EXCLUDED.data,
+                        updated_at = EXCLUDED.updated_at,
+                        deleted_at = EXCLUDED.deleted_at,
+                        updated_by_user_id = EXCLUDED.updated_by_user_id
+                    """,
+                    {
+                        "id": payload["id"],
+                        "account_number": payload.get("accountNumber") or "",
+                        "full_name": customer_full_name(payload),
+                        "customer_type": payload.get("customerType") or "",
+                        "status": payload.get("status") or "",
+                        "gender": payload.get("gender") or "",
+                        "province": payload.get("province") or "",
+                        "city": payload.get("city") or "",
+                        "barangay": payload.get("barangay") or "",
+                        "contact_number": payload.get("contactNumber") or "",
+                        "email": payload.get("email") or "",
+                        "location_id": payload.get("locationId") or "",
+                        "data": Json(payload),
+                        "created_at": created_at,
+                        "updated_at": updated_at,
+                        "deleted_at": deleted_at,
+                        "created_by_user_id": payload.get("createdByUserId") or "",
+                        "updated_by_user_id": payload.get("updatedByUserId") or "",
+                    },
+                )
+        return True
+
+    def status(self) -> dict[str, Any]:
+        if not self.postgres_enabled:
+            return {"mode": "memory", "ready": False, "reason": "CUSTOMER_PROFILING_STORAGE is not postgres"}
+        self.ensure_schema()
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT count(*) AS total, count(*) FILTER (WHERE deleted_at IS NULL) AS active FROM customer_profiles")
+                row = cursor.fetchone()
+        return {
+            "mode": "postgres",
+            "ready": True,
+            "table": "customer_profiles",
+            "totalRows": int(row.get("total") or 0),
+            "activeRows": int(row.get("active") or 0),
+            "demoSeedEnabled": CUSTOMER_SEED_DEMO,
+        }
+
+
+customer_store = CustomerProfileStore()
 
 
 def configure_customer_profiling(
@@ -279,7 +470,7 @@ def customer_full_name(customer: dict[str, Any]) -> str:
 
 
 def visible_customers() -> list[dict[str, Any]]:
-    return [customer for customer in customers if not customer.get("deletedAt")]
+    return [customer for customer in all_customers() if not customer.get("deletedAt")]
 
 
 def customer_summary(customer: dict[str, Any]) -> dict[str, Any]:
@@ -287,6 +478,24 @@ def customer_summary(customer: dict[str, Any]) -> dict[str, Any]:
         **customer,
         "fullName": customer_full_name(customer),
     }
+
+
+def all_customers() -> list[dict[str, Any]]:
+    stored_customers = customer_store.list_customers()
+    if stored_customers is not None:
+        customers[:] = stored_customers
+    return customers
+
+
+def save_customer_record(customer: dict[str, Any]) -> None:
+    if customer_store.save_customer(customer):
+        customers[:] = customer_store.list_customers() or []
+        return
+    for index, existing in enumerate(customers):
+        if existing["id"] == customer["id"]:
+            customers[index] = customer
+            return
+    customers.append(customer)
 
 
 def count_by(rows: list[dict[str, Any]], field: str) -> list[dict[str, Any]]:
@@ -307,7 +516,7 @@ def customer_metrics() -> dict[str, int]:
 
 
 def generate_account_number() -> str:
-    existing = {customer["accountNumber"] for customer in customers}
+    existing = {customer["accountNumber"] for customer in all_customers()}
     seed = 58392741
     candidate = seed + len(existing) * 7919
     while True:
@@ -318,7 +527,7 @@ def generate_account_number() -> str:
 
 
 def find_customer(customer_id: str) -> dict[str, Any]:
-    for customer in customers:
+    for customer in all_customers():
         if customer["id"] == customer_id and not customer.get("deletedAt"):
             return customer
     raise HTTPException(status_code=404, detail="Customer not found")
@@ -424,7 +633,9 @@ def customer_payload_to_record(payload: CustomerPayload, current: dict[str, Any]
 
 
 def seed_customer_data() -> None:
-    if customers:
+    if all_customers():
+        return
+    if not CUSTOMER_SEED_DEMO:
         return
     created_at = now_iso()
     seed_rows = [
@@ -535,7 +746,7 @@ def seed_customer_data() -> None:
     ]
     for row in seed_rows:
         ensure_customer_location(row, {"id": "seed", "username": "seed"})
-        customers.append(
+        save_customer_record(
             {
                 "id": str(uuid4()),
                 "createdAt": created_at,
@@ -561,6 +772,21 @@ def customer_profiling_meta(admin=Depends(require_admin)):
         "barangaysByProvinceCity": BARANGAYS_BY_PROVINCE_CITY,
         "bulkUploadHeaders": BULK_UPLOAD_HEADERS,
         "requiredBulkUploadHeaders": REQUIRED_BULK_UPLOAD_HEADERS,
+    }
+
+
+@router.get("/readiness")
+def customer_profiling_readiness(admin=Depends(require_admin)):
+    storage = customer_store.status()
+    return {
+        "module": "customer-profiling",
+        "realDataReady": storage.get("ready") is True and storage.get("mode") == "postgres",
+        "storage": storage,
+        "remainingProductionStages": [
+            "Add role/permission enforcement beyond the current shared admin guard.",
+            "Move browser-local customer drafts to authenticated server-side draft storage if drafts must survive device changes.",
+            "Add backup/restore runbooks and operational monitoring before live customer import.",
+        ],
     }
 
 
@@ -727,7 +953,7 @@ def create_customer(payload: CustomerPayload, request: Request, admin=Depends(re
     seed_customer_data()
     record = customer_payload_to_record(payload)
     if record.get("accountNumber") and any(
-        customer["accountNumber"] == record["accountNumber"] and not customer.get("deletedAt") for customer in customers
+        customer["accountNumber"] == record["accountNumber"] and not customer.get("deletedAt") for customer in all_customers()
     ):
         raise HTTPException(status_code=409, detail="Account number already exists")
     record["accountNumber"] = record.get("accountNumber") or generate_account_number()
@@ -743,7 +969,7 @@ def create_customer(payload: CustomerPayload, request: Request, admin=Depends(re
         "updatedByUserId": admin["id"],
         **record,
     }
-    customers.append(customer)
+    save_customer_record(customer)
     add_audit(
         "customer_created",
         "Customer",
@@ -761,7 +987,7 @@ def update_customer(customer_id: str, payload: CustomerPayload, admin=Depends(re
     record = customer_payload_to_record(payload, current)
     if record.get("accountNumber") and any(
         customer["accountNumber"] == record["accountNumber"] and customer["id"] != customer_id and not customer.get("deletedAt")
-        for customer in customers
+        for customer in all_customers()
     ):
         raise HTTPException(status_code=409, detail="Account number already exists")
     assert_no_duplicate_customer(record, ignore_id=customer_id)
@@ -769,6 +995,7 @@ def update_customer(customer_id: str, payload: CustomerPayload, admin=Depends(re
     current.update(record)
     current["updatedAt"] = now_iso()
     current["updatedByUserId"] = admin["id"]
+    save_customer_record(current)
     add_audit("customer_updated", "Customer", current["id"], {"accountNumber": current["accountNumber"]}, admin["username"])
     return customer_summary(current)
 
@@ -780,5 +1007,6 @@ def delete_customer(customer_id: str, admin=Depends(require_admin)):
     current["deletedAt"] = now_iso()
     current["updatedAt"] = now_iso()
     current["updatedByUserId"] = admin["id"]
+    save_customer_record(current)
     add_audit("customer_deleted", "Customer", current["id"], {"accountNumber": current["accountNumber"]}, admin["username"])
     return {"status": "ok"}
