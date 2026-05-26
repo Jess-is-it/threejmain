@@ -141,7 +141,7 @@ The current module includes:
 - Service Orders are owned by the Service module and are not displayed in Customer Profiling
 - Bulk upload CSV modal with template download, preview validation, duplicate checks, guarded import, and required customer upload headers
 
-Current API prefix: `/api/customer-profiling`. The implementation is in-memory for the first working shell; durable PostgreSQL tables in the shared database should be added before production use.
+Current API prefix: `/api/customer-profiling`. Customer Profiling Stage 1 real-data readiness is backed by the shared PostgreSQL database when `CUSTOMER_PROFILING_STORAGE=postgres` and `DATABASE_URL` are configured. The API creates and upserts a `customer_profiles` table with JSONB payload storage plus indexed customer columns, and `/api/customer-profiling/readiness` reports storage readiness. Demo seed customers are disabled by default and only load when `CUSTOMER_PROFILING_SEED_DEMO=true`.
 
 ## Integrated Functional Module Shells
 
@@ -170,7 +170,7 @@ The Integration Codex wired these completed module folders into `app-shell` as f
 
 Shared app-shell wiring now imports each module page in `app-shell/web/src/main.jsx`, includes each router in `app-shell/api/app/main.py`, injects shared auth/audit hooks, and exposes module metrics through `/api/modules` and `/api/dashboard`.
 
-Customer-dependent modules receive Customer Profiling provider hooks from the app shell for customer lookup/search where supported. Most integrated module data remains in memory and resets on API restart. System Settings Location Management records, deleted preloaded-location markers, avatar images, avatar emotion settings, OPENAI settings, and Access settings persist separately in the API data volume. Durable shared PostgreSQL persistence, migrations, role/permission enforcement, and production-grade cross-module relationships are still future work.
+Customer-dependent modules receive Customer Profiling provider hooks from the app shell for customer lookup/search where supported. Customer Profiling now uses shared PostgreSQL persistence for customer records when the database is configured. Most other integrated module data remains in memory and resets on API restart. System Settings Location Management records, deleted preloaded-location markers, avatar images, avatar emotion settings, OPENAI settings, Access settings, and Network Settings staging data persist separately in API data files/volumes. Durable shared PostgreSQL persistence for the remaining modules, migrations, role/permission enforcement, and production-grade cross-module relationships are still future work.
 
 Service is now integrated as a functional in-memory module with separate app-shell pages for Service Catalog and Service Order. Create/edit workflows open in module-owned modals. Service owns catalog CRUD, Service Account records, Service Order CRUD, customer lookup, catalog list pricing, and canonical `serviceReference` values. Billing subscriptions use active Service Accounts as the billable target, keep Service Catalog plan/rate fields locked for linked subscriptions, and require an explicit override amount and reason when Billing charges a non-catalog monthly rate. Ticketing can select active Service Orders to populate ticket service references, and new Service Orders automatically create linked Ticketing tickets through the shared app-shell configuration. Customer Profiling does not display or manage Service Orders.
 
@@ -206,6 +206,8 @@ System Settings -> Access now owns the system-login access UI copied from the ol
 
 System Settings Location Management records, deleted preloaded-location markers, Avatar uploads, avatar emotion guide settings, OPENAI settings, and Access settings persist to `SYSTEM_SETTINGS_DATA_PATH`, which Docker Compose sets to `/app/data/system_settings.json` in the `threejmain_api_data` named volume. This keeps reusable locations, uploaded avatar images, AI integration configuration, and first-shell access configuration across API container restarts/rebuilds. OPENAI stores the selected model, optional organization/project ids, and server-side API key; API responses expose only masked key metadata to the frontend.
 
+Customer Profiling real-data Stage 1 uses the shared PostgreSQL database through `DATABASE_URL`. Docker Compose sets `CUSTOMER_PROFILING_STORAGE=postgres` by default and `CUSTOMER_PROFILING_SEED_DEMO=false` so new deployments start empty for real customer entry instead of demo records. Set `CUSTOMER_PROFILING_SEED_DEMO=true` only for disposable demo environments.
+
 ## Runtime Coordination
 
 All Codex sessions share the same local runtime ports and Docker resources. Before any Codex builds, starts, stops, restarts, recreates, or otherwise changes the shared web/API/database runtime, it must lock:
@@ -229,6 +231,8 @@ Release `runtime/server` after the build/start/restart and immediate health chec
 ## Shared Test Server Workflow
 
 The project is back to one shared working tree and one shared test server for normal Codex development.
+
+There is no separate production server definition in the repo yet. Current verified runtime is the shared Docker Compose stack on ports `8180` and `8100`; `master` is the production branch, but production deployment hardening still needs explicit environment/secrets, domain/TLS/reverse-proxy, backup/restore, and module persistence work.
 
 Normal Codex work happens in:
 

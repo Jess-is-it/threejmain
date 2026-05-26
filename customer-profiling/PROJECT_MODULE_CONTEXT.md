@@ -11,6 +11,7 @@ Customer Profiling manages customer records, account identity, service addresses
 - API prefix: `/api/customer-profiling`
 - Frontend entry: `customer-profiling/web/CustomerProfilingPage.jsx`
 - API entry: `customer-profiling/api/customer_profiling/router.py`
+- Persistence stage: Stage 1 real-data storage uses shared PostgreSQL table `customer_profiles` when `CUSTOMER_PROFILING_STORAGE=postgres` and `DATABASE_URL` are configured.
 
 ## Current CRUD Scope
 
@@ -30,6 +31,7 @@ Customer Profiling manages customer records, account identity, service addresses
 - Business customer profiles include a required `businessName` field on final save, and customer details show a compact coordinates map preview that opens Google Maps when clicked.
 - Secondary contacts
 - Bulk upload CSV modal with template download, preview validation, duplicate checks, and guarded import
+- `/api/customer-profiling/readiness` reports whether Customer Profiling is using PostgreSQL storage and lists remaining production-hardening stages.
 
 ## Integration Notes
 
@@ -44,5 +46,5 @@ Customer Profiling manages customer records, account identity, service addresses
 
 ## Follow-Up Notes
 
-- Replace in-memory state with shared PostgreSQL persistence before production.
+- Stage 1 persistence is complete for customer profile records through shared PostgreSQL. Remaining production hardening: shared migration/versioning runner, server-side customer draft persistence if needed, role/permission enforcement, backup/restore runbook, monitoring, and final cross-module lookup contracts.
 - Document final customer lookup contracts for Billing, Customer Service Management, Ticketing, and Point of Sale.
