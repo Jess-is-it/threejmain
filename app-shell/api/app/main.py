@@ -12,6 +12,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from .db_migrations import database_migration_status, run_database_migrations
+
 
 MODULE_API_PATHS = [
     ("customer-profiling", "api"),
@@ -426,6 +428,7 @@ app.include_router(logs_router)
 
 @app.on_event("startup")
 def seed_logs():
+    run_database_migrations()
     seed_module_data()
     sync_module_metrics()
     if not audit_logs:
@@ -536,3 +539,8 @@ def resources(admin=Depends(current_admin)):
         "uptime_seconds": int(time.time() - psutil.boot_time()),
         "app_uptime_seconds": int(time.time() - APP_STARTED_AT),
     }
+
+
+@app.get("/api/system/database-migrations")
+def database_migrations(admin=Depends(current_admin)):
+    return database_migration_status()

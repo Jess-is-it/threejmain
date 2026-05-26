@@ -279,41 +279,10 @@ class CustomerProfileStore:
         try:
             with self._connect() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS customer_profiles (
-                            id text PRIMARY KEY,
-                            account_number text,
-                            full_name text NOT NULL DEFAULT '',
-                            customer_type text NOT NULL DEFAULT '',
-                            status text NOT NULL DEFAULT '',
-                            gender text NOT NULL DEFAULT '',
-                            province text NOT NULL DEFAULT '',
-                            city text NOT NULL DEFAULT '',
-                            barangay text NOT NULL DEFAULT '',
-                            contact_number text NOT NULL DEFAULT '',
-                            email text NOT NULL DEFAULT '',
-                            location_id text NOT NULL DEFAULT '',
-                            data jsonb NOT NULL,
-                            created_at timestamptz NOT NULL,
-                            updated_at timestamptz NOT NULL,
-                            deleted_at timestamptz,
-                            created_by_user_id text,
-                            updated_by_user_id text
-                        )
-                        """,
-                    )
-                    cursor.execute(
-                        """
-                        CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_profiles_account_active
-                        ON customer_profiles (account_number)
-                        WHERE deleted_at IS NULL
-                        """,
-                    )
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_customer_profiles_deleted_at ON customer_profiles (deleted_at)")
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_customer_profiles_status ON customer_profiles (status)")
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_customer_profiles_type ON customer_profiles (customer_type)")
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_customer_profiles_location ON customer_profiles (province, city, barangay)")
+                    cursor.execute("SELECT to_regclass('public.customer_profiles') AS table_name")
+                    row = cursor.fetchone() or {}
+                    if not row.get("table_name"):
+                        raise HTTPException(status_code=503, detail="Customer Profiling database migration has not run")
             self._schema_ready = True
             return True
         except HTTPException:
@@ -814,7 +783,6 @@ def customer_profiling_readiness(admin=Depends(require_admin)):
         "realDataReady": storage.get("ready") is True and storage.get("mode") == "postgres",
         "storage": storage,
         "remainingProductionStages": [
-            "Add migration/versioning runner for shared database schema changes.",
             "Add role/permission enforcement beyond the current shared admin guard.",
             "Move browser-local customer drafts to authenticated server-side draft storage if drafts must survive device changes.",
             "Add backup/restore runbooks and operational monitoring before live customer import.",

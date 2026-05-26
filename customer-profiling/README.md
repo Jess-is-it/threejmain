@@ -43,14 +43,14 @@ Current shell API route prefix:
 
 ## Real-Data Readiness
 
-Customer Profiling Stage 1 now persists customer records to the shared PostgreSQL database when these environment variables are active:
+Customer Profiling Stage 2 persists customer records to the shared PostgreSQL database when these environment variables are active:
 
 ```text
 CUSTOMER_PROFILING_STORAGE=postgres
 DATABASE_URL=postgresql://...
 ```
 
-The module creates the `customer_profiles` table automatically, stores the full API payload in JSONB, and maintains indexed columns for account number, status, type, location, contact number, and email. Demo seed customers are disabled by default; set `CUSTOMER_PROFILING_SEED_DEMO=true` only for disposable demo environments.
+The app-shell API startup migration runner creates and versions the `customer_profiles` table with migration `2026052601_customer_profiles`. Customer Profiling stores the full API payload in JSONB and maintains indexed columns for account number, status, type, location, contact number, and email. Demo seed customers are disabled by default; set `CUSTOMER_PROFILING_SEED_DEMO=true` only for disposable demo environments.
 
 Readiness endpoint:
 
@@ -58,4 +58,10 @@ Readiness endpoint:
 GET /api/customer-profiling/readiness
 ```
 
-Remaining production stages include a shared migration/versioning runner, role/permission enforcement, server-side draft storage if customer drafts must roam across devices, backup/restore runbooks, and final customer lookup contracts for dependent modules.
+Shared migration status endpoint:
+
+```text
+GET /api/system/database-migrations
+```
+
+Remaining production stages include role/permission enforcement, server-side draft storage if customer drafts must roam across devices, backup/restore runbooks, and final customer lookup contracts for dependent modules.
