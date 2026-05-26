@@ -10,7 +10,7 @@ System Settings owns operator-facing configuration for the ISP management shell.
 - Avatar emotion scoring guide for customer-facing module behavior badges
 - OPENAI settings for API key storage, model and reasoning-effort selection, model pricing reference, and live API testing
 - Access tab for system-login Auth Settings, Permissions, Roles, and Users
-- System port registry viewer
+- System port registry viewer with separate Production and Staging labels for threejmain web/API ports
 - Runtime path visibility
 
 ## Module Layout
@@ -68,7 +68,7 @@ system-settings/
 
 ## Integration Notes
 
-The app-shell configures this module with shared auth, audit logging, the shared settings store, and the port registry provider.
+The app-shell configures this module with shared auth, audit logging, the shared settings store, and the port registry provider. The Ports tab lists threejmain Production ports (`8180` web, `8100` API), threejmain Staging ports (`8280` web, `8200` API), their internal PostgreSQL container ports, and existing 3JCentralPisowifi reservations.
 Location Management preloads the existing Customer Profiling service-area barangays and exposes edit actions so incomplete customer-created locations can be completed later. The table includes a switch-driven multiple select mode for bulk deleting selected locations; edit/add actions are hidden while selection mode is active. Deleted preloaded locations are suppressed from automatic reseeding and persisted.
 Location records, deleted preload markers, avatar images, and avatar emotion guide settings are written to `SYSTEM_SETTINGS_DATA_PATH` (`/app/data/system_settings.json` in Docker Compose) so they survive API container restarts and rebuilds through the `threejmain_api_data` named volume. Accepted avatar formats are PNG, JPG/JPEG, WebP, and GIF, with a 1 MB maximum per image. Long-term production storage should still move to shared PostgreSQL and file/object storage before production use.
 Reusable frontend avatar behavior code lives in `web/avatarEmotion.js` and `web/CustomerEmotionAvatar.jsx`. Customer-facing modules can import the component or resolver to display the current avatar, gender slot, mood score, and emotion label from the shared Avatar settings.

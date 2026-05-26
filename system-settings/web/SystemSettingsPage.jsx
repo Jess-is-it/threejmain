@@ -1836,7 +1836,7 @@ export default function SystemSettingsPage({ refreshShell }) {
       {tab === 'Ports' && (
         <Card title="System Port Registry" icon={IconNetwork} actions={<button className="btn btn-sm" onClick={load}><IconRefresh size={16} className="me-1" />Refresh</button>}>
           <div className="alert alert-info">Use this page to avoid port collisions with 3JCentralPisowifi and other services on the server.</div>
-          <Table rows={ports} columns={['port', 'protocol', 'scope', 'owner', 'service', 'status', 'notes']} />
+          <Table rows={ports} columns={['environment', 'port', 'protocol', 'scope', 'owner', 'service', 'status', 'notes']} />
         </Card>
       )}
       {tab === 'Runtime' && (
