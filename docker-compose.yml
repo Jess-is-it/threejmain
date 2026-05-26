@@ -1,0 +1,48 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-threejmain}
+      POSTGRES_USER: ${POSTGRES_USER:-threejmain}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-threejmain}
+    volumes:
+      - threejmain_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-threejmain} -d ${POSTGRES_DB:-threejmain}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: app-shell/api/Dockerfile
+    environment:
+      APP_ENV: ${APP_ENV:-local}
+      DEFAULT_ADMIN_USERNAME: ${DEFAULT_ADMIN_USERNAME:-admin}
+      DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-admin123}
+      DEFAULT_ADMIN_NAME: ${DEFAULT_ADMIN_NAME:-System Administrator}
+      DEFAULT_ADMIN_EMAIL: ${DEFAULT_ADMIN_EMAIL:-admin@example.local}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://threejmain:threejmain@postgres:5432/threejmain}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:8180,http://127.0.0.1:8180}
+      SYSTEM_SETTINGS_DATA_PATH: /app/data/system_settings.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - threejmain_api_data:/app/data
+    ports:
+      - "8100:8100"
+
+  web:
+    build:
+      context: .
+      dockerfile: app-shell/web/Dockerfile
+    depends_on:
+      - api
+    ports:
+      - "8180:80"
+
+volumes:
+  threejmain_pgdata:
+  threejmain_api_data:

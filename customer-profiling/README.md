@@ -1,50 +1,44 @@
-# THREE3J Customer Profiling System
+# Customer Profiling
 
-Standalone module for customer identity, profile details, and service assignments for THREE3J ISP.
+Customer Profiling owns ISP customer records, account identity, contact details, service addresses, account status, lifecycle notes, and bulk upload workflow.
 
-## Version
-- `0.1.4`
+The previous standalone React/Nest implementation has been folded into the modular monolith:
 
-## Stack
-- Backend: NestJS + Prisma + PostgreSQL
-- Frontend: React + TypeScript + Vite + Tailwind + shadcn/ui + TanStack Query/Table
-- Runtime: Docker Compose (`api`, `web`, `postgres`)
+- Frontend: React + Vite + Tabler
+- Backend: FastAPI
+- Database target: shared PostgreSQL database
 
-## Base Paths
-- Web base path: `/customer-profiling`
-- API base path: `/api/customer-profiling`
-- API versioned base: `/api/customer-profiling/v1`
+The shared shell exposes this module at `/customer-profiling`, but Customer Profiling-specific code is owned here:
 
-## Local URLs
-- UI: `http://localhost:5173/customer-profiling/`
-- API Base: `http://localhost:3000/api/customer-profiling/v1`
-- Swagger: `http://localhost:3000/api/customer-profiling/docs`
-- OpenAPI JSON: `http://localhost:3000/api/customer-profiling/docs-json`
-- Health: `http://localhost:3000/api/customer-profiling/health`
-
-## Quick Start
-1. Copy env file:
-```bash
-cp .env.example .env
-```
-2. Run all services:
-```bash
-docker compose up -d --build
+```text
+customer-profiling/
+  web/
+    CustomerProfilingPage.jsx
+    customerProfiling.css
+  api/
+    customer_profiling/
+      __init__.py
+      router.py
 ```
 
-## Environment Variables
-See `.env.example`.
+Restored workflows from the previous standalone Customer Profiling module:
 
-Important values:
-- `WEB_BASE_PATH`
-- `API_BASE_PATH`
-- `MAIN_BASE_URL`
-- `DATABASE_URL`
-- `MODULE_VERSION`
+- Customer list with search, filter, sort-ready API shape, and pagination response metadata
+- Customer overview KPIs for total, active, pending, suspended, Enrile count, municipalities, and barangays
+- Customer create, edit, view, and soft archive actions
+- Account number support with auto-generation when blank
+- Customer type and status tracking
+- Customer gender tracking for System Settings male/female avatar selection
+- Primary contact, alternate mobile, Facebook account/link, email, service address, and GPS fields
+- Service location selector connected to System Settings -> Location Management, with manual customer locations added to Location Management when no saved record matches
+- Customer table and detail drawer display System Settings emotion avatars using the reusable `CustomerEmotionAvatar` component
+- Secondary contact fields
+- Bulk upload CSV modal with template download, client-side preview validation, duplicate checks, and guarded import
 
-## Repository Layout
-- `api/` NestJS service with Prisma
-- `web/` React UI shell integrated from TailwindAdmin template
-- `docker-compose.yml` local stack
-- `AI_PROMPT.md` prompt summary for AI workflows
-- `CHANGELOG.md` semantic version history
+Current shell API route prefix:
+
+```text
+/api/customer-profiling
+```
+
+The current implementation is an in-memory FastAPI shell so the workflow is visible and testable while the durable PostgreSQL models are added.
