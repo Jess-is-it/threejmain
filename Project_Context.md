@@ -232,7 +232,28 @@ Release `runtime/server` after the build/start/restart and immediate health chec
 
 The project is back to one shared working tree and one shared test server for normal Codex development.
 
-There is no separate production server definition in the repo yet. Current verified runtime is the shared Docker Compose stack on ports `8180` and `8100`; `master` is the production branch, but production deployment hardening still needs explicit environment/secrets, domain/TLS/reverse-proxy, backup/restore, and module persistence work.
+Production is deployed on the same host from `origin/master` through the local systemd watcher `threejmain-production-auto-deploy.service`. The watcher runs `scripts/production_auto_deploy.sh`, polls `origin/master`, and calls `scripts/production_deploy.sh` when the branch changes. Production uses a detached checkout at `/home/threejmain-production` and Docker Compose project `threejmain-production`.
+
+Production URLs:
+
+```text
+Web: http://192.168.50.70:8180/
+API: http://192.168.50.70:8100/
+```
+
+Production data is not shared with the old staging/test Compose project. The production Compose project has its own named Docker volumes, while the old `threejmain` Compose project volumes are preserved separately. Because production and staging use the same host ports, the deploy script stops the old `threejmain` Compose project before starting production. Do not restart the staging Compose project on ports `8180` and `8100` unless intentionally taking production down or moving staging to separate ports.
+
+Production deployment commands:
+
+```bash
+scripts/install_production_autodeploy.sh
+scripts/production_auto_deploy.sh --once
+scripts/production_deploy.sh
+systemctl status threejmain-production-auto-deploy.service
+docker compose --project-name threejmain-production -f /home/threejmain-production/docker-compose.yml ps
+```
+
+`master` remains the production branch. Production releases should still merge `staging` into `master` through a Pull Request; the watcher updates production after `master` moves. Remaining hardening work: production secrets, non-default admin credentials, domain/TLS/reverse-proxy, backup/restore automation, and durable PostgreSQL persistence for modules beyond Customer Profiling.
 
 Normal Codex work happens in:
 
@@ -240,7 +261,7 @@ Normal Codex work happens in:
 /home/threejmain
 ```
 
-All visual review should use:
+Normal visual review should use production URLs only when the user is asking about the live deployment. For staging/integration checks, coordinate before changing the runtime because the same ports are currently owned by production:
 
 ```text
 http://192.168.50.70:8180/
@@ -252,7 +273,7 @@ All API review should use:
 http://192.168.50.70:8100/
 ```
 
-Module Codex sessions should not create per-Codex preview servers, per-Codex worktrees, or per-Codex task branches for normal work. They should coordinate through `scripts/ai_coord.py`, lock the module folders and shared files they need, and use `runtime/server` before restarting or rebuilding the shared server.
+Module Codex sessions should not create per-Codex preview servers, per-Codex worktrees, or per-Codex task branches for normal work. They should coordinate through `scripts/ai_coord.py`, lock the module folders and shared files they need, and use `runtime/server` before restarting or rebuilding any shared runtime.
 
 Cross-module work is allowed only after locking every affected module folder and any shared app-shell files. This is important for Service Order features that affect Service, Customer Profiling, Billing, Ticketing, and app-shell contracts.
 
