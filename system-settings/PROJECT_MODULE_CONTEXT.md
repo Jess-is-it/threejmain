@@ -29,13 +29,14 @@ System Settings manages shell configuration pages for branding, business profile
 - Search geocoder suggestions through Nominatim-compatible `GEOCODER_SEARCH_URL` and manually enter location records when search is unavailable.
 - Edit saved locations so incomplete records created from customer forms can be completed later.
 - Use switch-driven multiple select in Location Management to bulk delete selected records; edit/add controls are hidden while selection mode is active.
-- View reserved ports used by the app and related 3JCentralPisowifi services.
+- View reserved ports used by the app and related 3JCentralPisowifi services, with explicit Production and Staging labels.
 - Keep compatibility API routes for `/api/system/settings`, `/api/system/ports`, and `/api/locations`.
 
 ## Integration Notes
 
 - App-shell imports `SystemSettingsPage` and passes `refreshShell`.
 - App-shell calls `configure_system_settings(current_admin, add_audit, settings, port_registry)`.
+- The port registry provider includes threejmain Production (`8180` web, `8100` API), threejmain Staging (`8280` web, `8200` API), internal PostgreSQL container ports for both Compose projects, and existing 3JCentralPisowifi reserved/in-use ports.
 - Branding/business settings are still in-memory in the first shell.
 - Location Management records, deleted preload markers, avatar images, avatar emotion guide settings, and OPENAI settings persist to `SYSTEM_SETTINGS_DATA_PATH` (`/app/data/system_settings.json` in Docker Compose) through the `threejmain_api_data` named volume.
 - Avatar endpoints are module-owned under `/api/system-settings/avatars`; accepted uploads are PNG, JPG/JPEG, WebP, and GIF images up to 1 MB.

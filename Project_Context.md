@@ -187,7 +187,7 @@ Account Admin is not the system-login admin area. It is now reserved for custome
 - `5432/tcp`: PostgreSQL container-only default
 - Avoid using `3JCentralPisowifi` ports: `8080/tcp`, `80/tcp`, `1812/udp`, `1813/udp`, `11812/udp`, and `11813/udp`
 
-The app exposes a System Settings -> Ports page backed by `/api/system/ports` so operators can view reserved and in-use ports.
+The app exposes a System Settings -> Ports page backed by `/api/system/ports` so operators can view reserved and in-use ports. The registry explicitly labels threejmain Production ports (`8180` web, `8100` API), threejmain Staging ports (`8280` web, `8200` API), internal PostgreSQL container ports for both Compose projects, and existing 3JCentralPisowifi reservations.
 
 System Settings now lives in the `system-settings/` module folder. Logs now lives in the `logs/` module folder. App-shell imports their pages and API routers while retaining compatibility endpoints:
 
