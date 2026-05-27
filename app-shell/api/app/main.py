@@ -68,6 +68,11 @@ from ticketing import (
 
 
 APP_STARTED_AT = time.time()
+APP_VERSION = os.getenv("APP_VERSION", "0.1.0-local")
+APP_BRANCH = os.getenv("APP_BRANCH", "local")
+APP_COMMIT = os.getenv("APP_COMMIT", "unknown")
+APP_BUILD_TIME = os.getenv("APP_BUILD_TIME", "")
+APP_SYSTEM_NAME = os.getenv("APP_SYSTEM_NAME", "3J ISP Management")
 
 DEFAULT_ADMIN_USERNAME = os.getenv("DEFAULT_ADMIN_USERNAME", "admin")
 DEFAULT_ADMIN_PASSWORD = os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123")
@@ -215,7 +220,7 @@ class PasswordPayload(BaseModel):
     confirm_password: str = Field(min_length=8)
 
 
-app = FastAPI(title="3J ISP Management API", version="0.1.0")
+app = FastAPI(title="3J ISP Management API", version=APP_VERSION)
 
 app.add_middleware(
     CORSMiddleware,
@@ -228,6 +233,40 @@ app.add_middleware(
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def environment_label(environment: str) -> str:
+    normalized = (environment or "local").strip().lower()
+    labels = {
+        "prod": "Production",
+        "production": "Production",
+        "staging": "Staging",
+        "stage": "Staging",
+        "local": "Local",
+        "development": "Development",
+        "dev": "Development",
+    }
+    return labels.get(normalized, normalized.replace("-", " ").replace("_", " ").title())
+
+
+def system_version_payload() -> dict[str, str | bool]:
+    environment = os.getenv("APP_ENV", settings["deployment"].get("environment", "local"))
+    system_name = os.getenv("APP_SYSTEM_NAME") or settings["branding"].get("display_name") or APP_SYSTEM_NAME
+    commit = os.getenv("APP_COMMIT", APP_COMMIT)
+    branch = os.getenv("APP_BRANCH", APP_BRANCH)
+    version = os.getenv("APP_VERSION", APP_VERSION)
+    build_time = os.getenv("APP_BUILD_TIME", APP_BUILD_TIME)
+    return {
+        "systemName": system_name,
+        "environment": environment,
+        "environmentLabel": environment_label(environment),
+        "version": version,
+        "branch": branch,
+        "commit": commit,
+        "commitShort": commit[:7] if commit and commit != "unknown" else "unknown",
+        "buildTime": build_time,
+        "dirty": version.endswith("-dirty"),
+    }
 
 
 def add_audit(
@@ -495,6 +534,11 @@ def stop_module_workers():
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "3J ISP Management API", "time": now_iso()}
+
+
+@app.get("/api/system/version")
+def system_version():
+    return system_version_payload()
 
 
 @app.post("/api/auth/login")

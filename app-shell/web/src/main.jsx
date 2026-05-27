@@ -278,10 +278,20 @@ function Login({ branding, onLogin }) {
   );
 }
 
-function Sidebar({ page, setPage, me, logout, branding, collapsed }) {
+function environmentTone(environment) {
+  const normalized = String(environment || '').toLowerCase();
+  if (normalized.includes('prod')) return 'production';
+  if (normalized.includes('stag')) return 'staging';
+  return 'local';
+}
+
+function Sidebar({ page, setPage, me, logout, branding, versionInfo, collapsed }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [navOpen, setNavOpen] = useState({});
+  const environment = versionInfo?.environmentLabel || versionInfo?.environment || 'Local';
+  const version = versionInfo?.version || 'local';
+  const systemName = versionInfo?.systemName || branding.display_name || '3J ISP Management';
   const activate = (nextPage) => {
     setPage(nextPage);
     setMobileOpen(false);
@@ -367,6 +377,13 @@ function Sidebar({ page, setPage, me, logout, branding, collapsed }) {
                 <button className="dropdown-item" onClick={() => activate('Change Password')}><IconKey size={18} className="me-2" />Change Password</button>
                 <div className="dropdown-divider" />
                 <button className="dropdown-item text-danger" onClick={logout}><IconLogout size={18} className="me-2" />Logout</button>
+              </div>
+            )}
+            {!collapsed && (
+              <div className="sidebar-version" title={`${systemName} ${environment} ${versionInfo?.commitShort || ''}`.trim()}>
+                <span className={`sidebar-version-env sidebar-version-env-${environmentTone(environment)}`}>{environment}</span>
+                <span className="sidebar-version-name">{systemName}</span>
+                <span className="sidebar-version-build">v{version}</span>
               </div>
             )}
           </div>
@@ -540,10 +557,20 @@ function App() {
   const [dashboard, setDashboard] = useState(null);
   const [modules, setModules] = useState([]);
   const [resources, setResources] = useState(null);
+  const [versionInfo, setVersionInfo] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
+  async function loadPublicShell() {
+    const [nextBranding, nextVersion] = await Promise.all([
+      publicRequest('/public/branding'),
+      publicRequest('/system/version')
+    ]);
+    setBranding(nextBranding);
+    setVersionInfo(nextVersion);
+  }
+
   async function refresh() {
-    setBranding(await publicRequest('/public/branding'));
+    await loadPublicShell();
     if (token()) {
       const [nextMe, nextDashboard, nextModules] = await Promise.all([
         request('/me'),
@@ -568,7 +595,7 @@ function App() {
     return map;
   }, [modules]);
 
-  useEffect(() => { publicRequest('/public/branding').then(setBranding).catch(() => {}); }, []);
+  useEffect(() => { loadPublicShell().catch(() => {}); }, []);
   useEffect(() => {
     const onPopState = () => setPage(pageFromLocation());
     window.addEventListener('popstate', onPopState);
@@ -605,7 +632,7 @@ function App() {
 
   return (
     <div className={`page ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
-      <Sidebar page={page} setPage={navigate} me={me} logout={logout} branding={branding} collapsed={sidebarCollapsed} />
+      <Sidebar page={page} setPage={navigate} me={me} logout={logout} branding={branding} versionInfo={versionInfo} collapsed={sidebarCollapsed} />
       <div className="page-wrapper">
         <Header page={page} resources={resources} onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)} sidebarCollapsed={sidebarCollapsed} />
         <div className="page-body">
