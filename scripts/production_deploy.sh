@@ -32,6 +32,12 @@ git -C "$SOURCE_REPO" fetch --prune "$REMOTE" "+refs/heads/$BRANCH:refs/remotes/
 TARGET_COMMIT="$(git -C "$SOURCE_REPO" rev-parse "$REMOTE/$BRANCH^{commit}")"
 SHORT_TARGET="$(git -C "$SOURCE_REPO" rev-parse --short "$TARGET_COMMIT")"
 
+export APP_ENV="${APP_ENV:-production}"
+export APP_BRANCH="${APP_BRANCH:-$BRANCH}"
+export APP_COMMIT="${APP_COMMIT:-$TARGET_COMMIT}"
+export APP_VERSION="${APP_VERSION:-${BRANCH}-${SHORT_TARGET}}"
+export APP_BUILD_TIME="${APP_BUILD_TIME:-$(date -Is)}"
+
 mkdir -p "$STATE_DIR"
 
 if [[ ! -e "$PROD_DIR/.git" ]]; then

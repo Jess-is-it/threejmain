@@ -30,6 +30,7 @@ python3 scripts/ai_coord.py update <agent> "<task-name>" "<what changed>" --file
 - Shared backend shell: FastAPI under `app-shell/api`
 - Database target: one shared PostgreSQL database via Docker Compose
 - Common shell features: side navigation, top header with page name and system metrics, profile, and change password
+- The shell displays runtime version metadata in the sidebar. `/api/system/version` returns the system name, environment label, version, branch, commit, and build time.
 - Shared app pages use aligned content gutters in `app-shell`: page body containers and top headers share the same desktop/tablet horizontal spacing so module pages line up with the sidebar consistently.
 
 ## Architecture Pattern
@@ -263,6 +264,19 @@ docker compose --project-name threejmain-staging -f /home/threejmain/docker-comp
 ```
 
 `master` remains the production branch. Production releases should still merge `staging` into `master` through a Pull Request; the watcher updates production after `master` moves. Remaining hardening work: production secrets, non-default admin credentials, domain/TLS/reverse-proxy, backup/restore automation, and durable PostgreSQL persistence for modules beyond Customer Profiling.
+
+Version metadata is provided through environment variables consumed by Docker Compose:
+
+```text
+APP_ENV
+APP_SYSTEM_NAME
+APP_VERSION
+APP_BRANCH
+APP_COMMIT
+APP_BUILD_TIME
+```
+
+`scripts/production_deploy.sh` sets production metadata from `origin/master`; `scripts/staging_deploy.sh` sets staging metadata from the current `/home/threejmain` checkout and marks the version `-dirty` when uncommitted changes are present. The sidebar uses `/api/system/version` so production and staging can show different branch/commit versions.
 
 Normal Codex work happens in:
 
