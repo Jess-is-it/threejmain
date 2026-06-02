@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   IconAlertTriangle,
   IconAntenna,
@@ -9,6 +9,7 @@ import {
   IconCircleCheck,
   IconDeviceFloppy,
   IconEdit,
+  IconMap,
   IconMapPin,
   IconNetwork,
   IconPlayerPlay,
@@ -20,7 +21,9 @@ import {
   IconServer2,
   IconTrash,
   IconWifi,
-  IconX
+  IconX,
+  IconZoomIn,
+  IconZoomOut
 } from '@tabler/icons-react';
 import './networkSettings.css';
 
@@ -32,6 +35,7 @@ const defaultMeta = {
   adminStatuses: ['ENABLED', 'DISABLED', 'RESERVED'],
   operationalStatuses: ['UNKNOWN', 'UP', 'DEGRADED', 'DOWN'],
   napStatuses: ['PLANNED', 'ACTIVE', 'FULL', 'MAINTENANCE', 'OFFLINE', 'ARCHIVED'],
+  napSplitterRatios: ['1:8', '1:16'],
   fbtStatuses: ['PLANNED', 'ACTIVE', 'FULL', 'MAINTENANCE', 'OFFLINE', 'ARCHIVED'],
   onuStatuses: ['UNKNOWN', 'ONLINE', 'OFFLINE', 'LOS', 'DYING_GASP', 'DISABLED'],
   deviceTypes: ['MIKROTIK', 'OLT'],
@@ -71,6 +75,15 @@ const optionLabels = {
   AUTH_PRIV: 'authPriv'
 };
 
+function formatSplitterRatio(value) {
+  return String(value || '').replace(':', 'x');
+}
+
+function normalizeNapSplitterRatio(value) {
+  const normalized = String(value || '').trim().toLowerCase().replace('x', ':');
+  return defaultMeta.napSplitterRatios.includes(normalized) ? normalized : '1:8';
+}
+
 const choiceIcons = {
   API: IconApi,
   SNMP: IconAntenna,
@@ -80,6 +93,25 @@ const choiceIcons = {
 
 const ONU_AUTO_REFRESH_SECONDS = 15;
 const PPPOE_AUTO_REFRESH_SECONDS = 30;
+const DEFAULT_MAP_SURFACE = { width: 1600, height: 900 };
+const MAP_MIN_SCALE = 0.55;
+const MAP_MAX_SCALE = 64;
+const MAP_WHEEL_ZOOM_FACTOR = 1.28;
+const MAP_BUTTON_ZOOM_FACTOR = 1.45;
+const MAP_MAX_NATIVE_TILE_ZOOM = 19;
+const DEFAULT_OLT_LOCATION_PICKER = { lat: 14.5995, lng: 120.9842, zoom: 17 };
+const DEFAULT_OLT_LOCATION_PICKER_SURFACE = { width: 720, height: 320 };
+
+const ponTechnologyDefaults = {
+  GPON: { splitRatio: '1:128', capacity: '128' },
+  XGS_PON: { splitRatio: '1:128', capacity: '128' },
+  EPON: { splitRatio: '1:64', capacity: '64' },
+  OTHER: { splitRatio: '1:64', capacity: '64' }
+};
+
+function ponDefaultsForTechnology(technology) {
+  return ponTechnologyDefaults[technology] || ponTechnologyDefaults.OTHER;
+}
 
 const blankOlt = {
   id: '',
@@ -101,9 +133,19 @@ const blankPon = {
   technology: 'GPON',
   adminStatus: 'ENABLED',
   operationalStatus: 'UNKNOWN',
-  splitRatio: '1:64',
+  splitRatio: '1:128',
   serviceVlan: '',
-  capacity: '64',
+  capacity: '128',
+  moduleVendor: '',
+  modulePartNumber: '',
+  moduleSerial: '',
+  moduleHardwareRev: '',
+  moduleRxPowerDbm: '',
+  moduleTxPowerDbm: '',
+  moduleTemperatureC: '',
+  moduleVoltageV: '',
+  moduleBiasCurrentMa: '',
+  moduleSource: '',
   notes: ''
 };
 
@@ -243,6 +285,95 @@ function matches(row, search) {
   return Object.values(row).join(' ').toLowerCase().includes(term);
 }
 
+function parseCoordinate(value) {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  const text = String(value).trim();
+  if (!text) return null;
+  const decimal = Number(text);
+  if (Number.isFinite(decimal)) return decimal;
+
+  const direction = (text.match(/[NSEW]/i)?.[0] || '').toUpperCase();
+  const parts = text
+    .replace(/[NSEW]/ig, '')
+    .replace(/[^\d.+-]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .map(Number)
+    .filter(Number.isFinite);
+  if (!parts.length) return null;
+  const sign = direction === 'S' || direction === 'W' || String(parts[0]).startsWith('-') ? -1 : 1;
+  const degrees = Math.abs(parts[0]);
+  const minutes = Math.abs(parts[1] || 0);
+  const seconds = Math.abs(parts[2] || 0);
+  if (minutes >= 60 || seconds >= 60) return null;
+  return sign * (degrees + minutes / 60 + seconds / 3600);
+}
+
+function hasCoordinates(row) {
+  return parseCoordinate(row?.latitude) !== null && parseCoordinate(row?.longitude) !== null;
+}
+
+function oltPickerViewFromCoordinates(latitude, longitude, fallback = DEFAULT_OLT_LOCATION_PICKER) {
+  const lat = parseCoordinate(latitude);
+  const lng = parseCoordinate(longitude);
+  if (lat === null || lng === null) return fallback;
+  return { ...fallback, lat, lng };
+}
+
+function isSnmpOltDevice(device) {
+  return device?.accessMethod === 'SNMP' && device?.deviceType === 'OLT';
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function geoToWorldPixel(latitude, longitude, zoomLevel) {
+  const lat = clamp(Number(latitude), -85.05112878, 85.05112878);
+  const lng = Number(longitude);
+  const sinLat = Math.sin((lat * Math.PI) / 180);
+  const scale = 256 * (2 ** zoomLevel);
+  return {
+    x: ((lng + 180) / 360) * scale,
+    y: (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * scale
+  };
+}
+
+function worldPixelToGeo(x, y, zoomLevel) {
+  const scale = 256 * (2 ** zoomLevel);
+  const boundedY = clamp(Number(y), 0, scale);
+  const longitude = (Number(x) / scale) * 360 - 180;
+  const normalizedLongitude = ((((longitude + 180) % 360) + 360) % 360) - 180;
+  const n = Math.PI - (2 * Math.PI * boundedY) / scale;
+  const latitude = (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+  return { latitude, longitude: normalizedLongitude };
+}
+
+function mapTileUrl(x, y, z) {
+  const tileCount = 2 ** z;
+  const normalizedX = ((x % tileCount) + tileCount) % tileCount;
+  return `https://tile.openstreetmap.org/${z}/${normalizedX}/${y}.png`;
+}
+
+function uniqueNapKey(nap) {
+  const name = String(nap?.name || '').trim().toLowerCase();
+  if (!name) return String(nap?.id || '').trim().toLowerCase();
+  const ponKey = String(nap?.ponPortId || nap?.ponId || nap?.ponLabel || '').trim().toLowerCase();
+  return `${ponKey}::${name}`;
+}
+
+function uniqueNapRows(rows) {
+  const seen = new Set();
+  return rows.filter((nap) => {
+    const key = uniqueNapKey(nap);
+    if (!key) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function Card({ title, icon: Icon, children, actions, className = '' }) {
   return (
     <div className={`card ${className}`}>
@@ -291,6 +422,46 @@ function PageHeader({ title, subtitle }) {
 
 function StatusBadge({ value }) {
   return <span className={`badge ${badgeClass(value)}`}>{titleize(value)}</span>;
+}
+
+function formatDbm(value) {
+  const text = String(value ?? '').trim();
+  return text ? `${text} dBm` : '-';
+}
+
+function PonModuleCell({ pon }) {
+  const vendor = String(pon.moduleVendor || '').trim();
+  const partNumber = String(pon.modulePartNumber || '').trim();
+  const serial = String(pon.moduleSerial || '').trim();
+  const source = String(pon.moduleSource || '').trim();
+  const telemetry = [
+    pon.moduleTemperatureC ? `${pon.moduleTemperatureC} C` : '',
+    pon.moduleVoltageV ? `${pon.moduleVoltageV} V` : '',
+    pon.moduleBiasCurrentMa ? `${pon.moduleBiasCurrentMa} mA` : ''
+  ].filter(Boolean).join(' / ');
+  const hasModuleData = vendor
+    || partNumber
+    || serial
+    || pon.moduleRxPowerDbm
+    || pon.moduleTxPowerDbm
+    || pon.moduleTemperatureC
+    || pon.moduleVoltageV
+    || pon.moduleBiasCurrentMa;
+  if (!hasModuleData) {
+    return (
+      <td className="network-pon-module-cell">
+        <span className="text-muted">No power data</span>
+        <small>Add PON power</small>
+      </td>
+    );
+  }
+  return (
+    <td className="network-pon-module-cell">
+      <strong>{[vendor, partNumber].filter(Boolean).join(' / ') || 'Optical module'}</strong>
+      <span>Rx {formatDbm(pon.moduleRxPowerDbm)} / Tx {formatDbm(pon.moduleTxPowerDbm)}</span>
+      <small>{[serial && `SN ${serial}`, telemetry, source || 'Manual'].filter(Boolean).join(' / ')}</small>
+    </td>
+  );
 }
 
 function RowActions({ onEdit, onDelete, label, extraActions = [] }) {
@@ -345,11 +516,21 @@ function RowActions({ onEdit, onDelete, label, extraActions = [] }) {
   );
 }
 
-function TextInput({ label, value, onChange, type = 'text', required = false, min, max, placeholder = '' }) {
+function TextInput({ label, value, onChange, type = 'text', required = false, min, max, placeholder = '', list = '' }) {
   return (
     <div className="col-md-4">
       <label className="form-label">{label}</label>
-      <input className="form-control" type={type} min={min} max={max} required={required} placeholder={placeholder} value={value ?? ''} onChange={(event) => onChange(event.target.value)} />
+      <input
+        className="form-control"
+        type={type}
+        min={min}
+        max={max}
+        required={required}
+        placeholder={placeholder}
+        list={list || undefined}
+        value={value ?? ''}
+        onChange={(event) => onChange(event.target.value)}
+      />
     </div>
   );
 }
@@ -361,6 +542,29 @@ function SelectInput({ label, value, onChange, options, required = false, childr
       <select className="form-select" required={required} value={value ?? ''} onChange={(event) => onChange(event.target.value)}>
         {children || options.map((option) => <option key={option} value={option}>{titleize(option)}</option>)}
       </select>
+    </div>
+  );
+}
+
+function RadioChoiceInput({ label, value, options, onChange, formatLabel = (option) => option }) {
+  return (
+    <div className="col-md-4">
+      <label className="form-label">{label}</label>
+      <div className="network-choice-grid network-choice-grid-compact">
+        {options.map((option) => (
+          <label key={option} className={`network-radio-card ${value === option ? 'active' : ''}`}>
+            <input
+              className="form-check-input"
+              type="radio"
+              name={label.replaceAll(' ', '-').toLowerCase()}
+              value={option}
+              checked={value === option}
+              onChange={() => onChange(option)}
+            />
+            <span>{formatLabel(option)}</span>
+          </label>
+        ))}
+      </div>
     </div>
   );
 }
@@ -468,11 +672,25 @@ function CrudModal({ title, icon: Icon, children, onClose, onSubmit, submitDisab
   );
 }
 
-function PonOptions({ pons }) {
+function canonicalPonLabel(pon) {
+  const portNumber = Number(pon?.portNumber || 0);
+  return pon?.ponLabel || pon?.displayLabel || (portNumber > 0 ? `PON${String(portNumber).padStart(2, '0')}` : 'PON');
+}
+
+function ponPathLabel(pon, olts = []) {
+  const olt = olts.find((row) => row.id === pon.oltId) || {};
+  return [
+    pon.oltVendor || olt.vendor,
+    pon.oltName || olt.name,
+    canonicalPonLabel(pon)
+  ].filter(Boolean).join('/');
+}
+
+function PonOptions({ pons, olts = [] }) {
   return (
     <>
       <option value="">Select PON</option>
-      {pons.map((pon) => <option key={pon.id} value={pon.id}>{pon.oltName} / {pon.label}</option>)}
+      {pons.map((pon) => <option key={pon.id} value={pon.id}>{ponPathLabel(pon, olts)}</option>)}
     </>
   );
 }
@@ -483,6 +701,35 @@ function NapOptions({ naps }) {
       <option value="">Select NAP</option>
       {naps.map((nap) => <option key={nap.id} value={nap.id}>{nap.name} / {nap.oltName} {nap.ponLabel}</option>)}
     </>
+  );
+}
+
+function NapPonChoices({ pons, value, onChange }) {
+  return (
+    <div className="col-12">
+      <label className="form-label">PON</label>
+      {pons.length ? (
+        <div className="network-choice-grid network-nap-pon-grid">
+          {pons.map((pon) => (
+            <label key={pon.id} className={`network-radio-card network-nap-pon-option ${value === pon.id ? 'active' : ''}`}>
+              <input
+                className="form-check-input"
+                type="radio"
+                name="network-nap-pon"
+                value={pon.id}
+                checked={value === pon.id}
+                required
+                onChange={() => onChange(pon.id)}
+              />
+              <span className="network-nap-pon-main">{canonicalPonLabel(pon)}</span>
+              <small>{[titleize(pon.technology), pon.operationalStatus && titleize(pon.operationalStatus)].filter(Boolean).join(' / ')}</small>
+            </label>
+          ))}
+        </div>
+      ) : (
+        <div className="empty network-nap-pon-empty">Choose an OLT with available PON ports.</div>
+      )}
+    </div>
   );
 }
 
@@ -497,6 +744,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
   const [onus, setOnus] = useState([]);
   const [devices, setDevices] = useState([]);
   const [locations, setLocations] = useState([]);
+  const [mapImages, setMapImages] = useState(null);
   const [pppoeAccounts, setPppoeAccounts] = useState([]);
   const [pppoeKpis, setPppoeKpis] = useState({});
   const [pppoeRouters, setPppoeRouters] = useState([]);
@@ -517,16 +765,47 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
   const [onuStatusFilter, setOnuStatusFilter] = useState('');
   const [onuOltFilter, setOnuOltFilter] = useState('');
   const [onuPonFilter, setOnuPonFilter] = useState('');
+  const [napOltFilter, setNapOltFilter] = useState('');
+  const [napPonFilter, setNapPonFilter] = useState('');
+  const [napStatusFilter, setNapStatusFilter] = useState('');
+  const [expandedNapOltIds, setExpandedNapOltIds] = useState({});
+  const [expandedNapPonIds, setExpandedNapPonIds] = useState({});
+  const [mapOltFilter, setMapOltFilter] = useState('');
+  const [mapTypeFilter, setMapTypeFilter] = useState('');
+  const [mapView, setMapView] = useState({ zoom: 1, panX: 0, panY: 0 });
+  const [mapHighDetail, setMapHighDetail] = useState(true);
+  const [mapLayerVisibility, setMapLayerVisibility] = useState({
+    olts: true,
+    naps: true,
+    links: true,
+    details: true
+  });
+  const [mapSurfaceSize, setMapSurfaceSize] = useState(DEFAULT_MAP_SURFACE);
+  const [mapDragging, setMapDragging] = useState(false);
+  const mapDragRef = useRef(null);
+  const mapSurfaceRef = useRef(null);
   const [modalType, setModalType] = useState('');
   const [oltForm, setOltForm] = useState(blankOlt);
   const [ponForm, setPonForm] = useState(blankPon);
   const [napForm, setNapForm] = useState(blankNap);
+  const [napSelectedOltId, setNapSelectedOltId] = useState('');
+  const [napAddAnother, setNapAddAnother] = useState(false);
+  const [napFormMessage, setNapFormMessage] = useState('');
+  const [napFormError, setNapFormError] = useState('');
+  const [napSaving, setNapSaving] = useState(false);
   const [fbtForm, setFbtForm] = useState(blankFbt);
   const [deviceForm, setDeviceForm] = useState(blankDevice);
   const [deviceFormError, setDeviceFormError] = useState('');
   const [deviceSaving, setDeviceSaving] = useState(false);
   const [locationBindingDevice, setLocationBindingDevice] = useState(null);
   const [locationBindingSelection, setLocationBindingSelection] = useState([]);
+  const [oltLocationForm, setOltLocationForm] = useState({ locationId: '', label: '', latitude: '', longitude: '' });
+  const [oltLocationPickerOpen, setOltLocationPickerOpen] = useState(false);
+  const [oltLocationPickerView, setOltLocationPickerView] = useState(DEFAULT_OLT_LOCATION_PICKER);
+  const [oltLocationPickerSurfaceSize, setOltLocationPickerSurfaceSize] = useState(DEFAULT_OLT_LOCATION_PICKER_SURFACE);
+  const [oltLocationPickerDragging, setOltLocationPickerDragging] = useState(false);
+  const oltLocationPickerSurfaceRef = useRef(null);
+  const oltLocationPickerDragRef = useRef(null);
   const [locationBindingError, setLocationBindingError] = useState('');
   const [locationBindingSaving, setLocationBindingSaving] = useState(false);
   const [captureDevice, setCaptureDevice] = useState(null);
@@ -544,6 +823,11 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     setOnuStatusFilter('');
     setOnuOltFilter('');
     setOnuPonFilter('');
+    setNapOltFilter('');
+    setNapPonFilter('');
+    setNapStatusFilter('');
+    setMapOltFilter('');
+    setMapTypeFilter('');
     setPppoeStatusFilter('');
     setPppoeRouterFilter('');
     setPppoeProfileFilter('');
@@ -553,7 +837,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
   async function load() {
     setError('');
     try {
-      const [nextMeta, nextOverview, nextOlts, nextPons, nextNaps, nextFbts, nextOnus, nextDevices, nextLocations] = await Promise.all([
+      const [nextMeta, nextOverview, nextOlts, nextPons, nextNaps, nextFbts, nextOnus, nextDevices, nextMapImages] = await Promise.all([
         request('/network-settings/meta'),
         request('/network-settings/overview'),
         request('/network-settings/olts'),
@@ -562,20 +846,26 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
         request('/network-settings/fbts'),
         request('/network-settings/onus'),
         request('/network-settings/devices'),
-        request('/system-settings/locations').catch(() => [])
+        request('/system-settings/map-images').catch(() => null)
       ]);
       setMeta(nextMeta);
       setOverview(nextOverview);
       setOlts(nextOlts);
       setPons(nextPons);
-      setNaps(nextNaps);
+      setNaps(uniqueNapRows(nextNaps));
       setFbts(nextFbts);
       setOnus(nextOnus);
       setDevices(nextDevices);
-      setLocations(nextLocations);
+      if (nextMapImages) setMapImages(nextMapImages);
       setSelectedOltId((current) => (current && nextOlts.some((olt) => olt.id === current) ? current : nextOlts[0]?.id || ''));
       setExpandedOltIds((current) => Object.fromEntries(
         Object.entries(current).filter(([id, expanded]) => expanded && nextOlts.some((olt) => olt.id === id))
+      ));
+      setExpandedNapOltIds((current) => Object.fromEntries(
+        Object.entries(current).filter(([id, expanded]) => expanded && nextOlts.some((olt) => olt.id === id))
+      ));
+      setExpandedNapPonIds((current) => Object.fromEntries(
+        Object.entries(current).filter(([id, expanded]) => expanded && nextPons.some((pon) => pon.id === id))
       ));
     } catch (err) {
       setError(err.message);
@@ -633,15 +923,67 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
   }, [onuOltFilter, onuPonFilter, pons]);
 
   useEffect(() => {
+    if (napPonFilter && !pons.some((pon) => pon.id === napPonFilter && (!napOltFilter || pon.oltId === napOltFilter))) {
+      setNapPonFilter('');
+    }
+  }, [napOltFilter, napPonFilter, pons]);
+
+  useEffect(() => {
     setPppoePage(1);
   }, [search, pppoeStatusFilter, pppoeProfileFilter, pppoePageSize]);
+
+  useEffect(() => {
+    if (activeSection !== 'map') return undefined;
+    const node = mapSurfaceRef.current;
+    if (!node) return undefined;
+    const updateSize = () => {
+      const rect = node.getBoundingClientRect();
+      const width = Math.max(320, Math.round(rect.width || DEFAULT_MAP_SURFACE.width));
+      const height = Math.max(320, Math.round(rect.height || DEFAULT_MAP_SURFACE.height));
+      setMapSurfaceSize((current) => {
+        if (current.width === width && current.height === height) return current;
+        return { width, height };
+      });
+    };
+    updateSize();
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updateSize) : null;
+    if (observer) observer.observe(node);
+    window.addEventListener('resize', updateSize);
+    return () => {
+      if (observer) observer.disconnect();
+      window.removeEventListener('resize', updateSize);
+    };
+  }, [activeSection]);
+
+  useEffect(() => {
+    if (!oltLocationPickerOpen) return undefined;
+    const node = oltLocationPickerSurfaceRef.current;
+    if (!node) return undefined;
+    const updateSize = () => {
+      const rect = node.getBoundingClientRect();
+      const width = Math.max(300, Math.round(rect.width || DEFAULT_OLT_LOCATION_PICKER_SURFACE.width));
+      const height = Math.max(260, Math.round(rect.height || DEFAULT_OLT_LOCATION_PICKER_SURFACE.height));
+      setOltLocationPickerSurfaceSize((current) => {
+        if (current.width === width && current.height === height) return current;
+        return { width, height };
+      });
+    };
+    updateSize();
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updateSize) : null;
+    if (observer) observer.observe(node);
+    window.addEventListener('resize', updateSize);
+    return () => {
+      if (observer) observer.disconnect();
+      window.removeEventListener('resize', updateSize);
+    };
+  }, [oltLocationPickerOpen]);
 
   const deviceScope = useMemo(() => {
     if (activeSection === 'mikrotik-settings') {
       return {
         accessMethod: 'API',
         deviceType: 'MIKROTIK',
-        pageTitle: 'MikroTik Settings',
+        pageTitle: 'MikroTik API',
         subtitle: 'API-managed MikroTik routers used for PPPoE account discovery and future provisioning.',
         cardTitle: 'MikroTik API Devices',
         placeholder: 'Search MikroTik, IP, model',
@@ -654,7 +996,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
       return {
         accessMethod: 'SNMP',
         deviceType: 'OLT',
-        pageTitle: 'OLT Settings',
+        pageTitle: 'OLT SNMP',
         subtitle: 'SNMP-managed OLT devices used for capture, polling, and OLT/PON/ONU discovery.',
         cardTitle: 'OLT SNMP Devices',
         placeholder: 'Search OLT, IP, vendor, model',
@@ -680,8 +1022,52 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     () => olts.filter((olt) => matches(olt, search) || pons.some((pon) => pon.oltId === olt.id && matches(pon, search))),
     [olts, pons, search]
   );
-  const filteredNaps = useMemo(() => naps.filter((nap) => matches(nap, search)), [naps, search]);
+  const filteredNaps = useMemo(
+    () => naps.filter((nap) => (
+      matches(nap, search)
+      && (!napOltFilter || nap.oltId === napOltFilter)
+      && (!napPonFilter || nap.ponPortId === napPonFilter)
+      && (!napStatusFilter || nap.status === napStatusFilter)
+    )),
+    [naps, search, napOltFilter, napPonFilter, napStatusFilter]
+  );
   const filteredFbts = useMemo(() => fbts.filter((fbt) => matches(fbt, search)), [fbts, search]);
+  const barangayOptions = useMemo(() => {
+    const values = new Set();
+    [...locations, ...naps].forEach((item) => {
+      const value = String(item.barangay || '').trim();
+      if (value) values.add(value);
+    });
+    return Array.from(values).sort((left, right) => left.localeCompare(right));
+  }, [locations, naps]);
+  const napPonOptions = useMemo(
+    () => pons.filter((pon) => pon.oltId === napSelectedOltId),
+    [pons, napSelectedOltId]
+  );
+  const napFilterPonOptions = useMemo(
+    () => pons.filter((pon) => !napOltFilter || pon.oltId === napOltFilter),
+    [pons, napOltFilter]
+  );
+  const napGroupsByOlt = useMemo(
+    () => olts.map((olt) => {
+      const oltNaps = filteredNaps.filter((nap) => nap.oltId === olt.id);
+      const activeCount = oltNaps.filter((nap) => nap.status === 'ACTIVE').length;
+      const ponGroups = pons
+        .filter((pon) => pon.oltId === olt.id)
+        .map((pon) => {
+          const ponNaps = oltNaps.filter((nap) => nap.ponPortId === pon.id);
+          return {
+            pon,
+            naps: ponNaps,
+            activeCount: ponNaps.filter((nap) => nap.status === 'ACTIVE').length,
+            fbtCount: ponNaps.reduce((total, nap) => total + Number(nap.fbtCount || 0), 0)
+          };
+        })
+        .filter((group) => group.naps.length || (napPonFilter && group.pon.id === napPonFilter));
+      return { olt, naps: oltNaps, ponGroups, activeCount, ponCount: ponGroups.length };
+    }).filter((group) => group.naps.length || (napOltFilter && group.olt.id === napOltFilter)),
+    [olts, pons, filteredNaps, napOltFilter, napPonFilter]
+  );
   const filteredOnus = useMemo(
     () => onus.filter((onu) => (
       matches(onu, search)
@@ -720,6 +1106,254 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
   const pppoeTotalPages = Math.max(1, Math.ceil(sortedPppoeAccounts.length / Number(pppoePageSize || 25)));
   const pppoeCurrentPage = Math.min(pppoePage, pppoeTotalPages);
   const pagedPppoeAccounts = sortedPppoeAccounts.slice((pppoeCurrentPage - 1) * pppoePageSize, pppoeCurrentPage * pppoePageSize);
+  const networkMap = useMemo(() => {
+    const surface = {
+      width: Math.max(320, Number(mapSurfaceSize.width) || DEFAULT_MAP_SURFACE.width),
+      height: Math.max(320, Number(mapSurfaceSize.height) || DEFAULT_MAP_SURFACE.height)
+    };
+    const canvas = { width: Math.max(1600, surface.width), height: Math.max(1000, surface.height) };
+    const mapScale = clamp(Number(mapView.zoom) || 1, MAP_MIN_SCALE, MAP_MAX_SCALE);
+    const panX = Number(mapView.panX) || 0;
+    const panY = Number(mapView.panY) || 0;
+    const mapNaps = naps.filter((nap) => (
+      matches(nap, search)
+      && (!mapOltFilter || nap.oltId === mapOltFilter)
+    ));
+    const mapOlts = olts.filter((olt) => (
+      (!mapOltFilter || olt.id === mapOltFilter)
+      && (matches(olt, search) || mapNaps.some((nap) => nap.oltId === olt.id) || !String(search || '').trim())
+    ));
+    const showOltMarkers = mapLayerVisibility.olts && (!mapTypeFilter || mapTypeFilter === 'olt');
+    const showNapMarkers = mapLayerVisibility.naps && (!mapTypeFilter || mapTypeFilter === 'nap');
+    const coordinateRows = [
+      ...(showOltMarkers ? mapOlts.filter(hasCoordinates) : []),
+      ...(showNapMarkers ? mapNaps.filter(hasCoordinates) : [])
+    ];
+    const geoPoints = coordinateRows
+      .map((row) => ({ lat: parseCoordinate(row.latitude), lng: parseCoordinate(row.longitude) }))
+      .filter((point) => point.lat !== null && point.lng !== null);
+    const mapCenter = geoPoints.length
+      ? {
+        lat: geoPoints.reduce((total, point) => total + point.lat, 0) / geoPoints.length,
+        lng: geoPoints.reduce((total, point) => total + point.lng, 0) / geoPoints.length
+      }
+      : { lat: 14.5995, lng: 120.9842 };
+    let baseZoom = geoPoints.length > 1 ? 16 : 17;
+    if (geoPoints.length > 1) {
+      for (let candidateZoom = 18; candidateZoom >= 10; candidateZoom -= 1) {
+        const projected = geoPoints.map((point) => geoToWorldPixel(point.lat, point.lng, candidateZoom));
+        const xs = projected.map((point) => point.x);
+        const ys = projected.map((point) => point.y);
+        if ((Math.max(...xs) - Math.min(...xs)) <= canvas.width - 320 && (Math.max(...ys) - Math.min(...ys)) <= canvas.height - 260) {
+          baseZoom = candidateZoom;
+          break;
+        }
+      }
+    }
+    const centerWorld = geoToWorldPixel(mapCenter.lat, mapCenter.lng, baseZoom);
+    const tileBoost = Math.max(0, Math.floor(Math.log2(Math.max(mapScale, 1))));
+    const detailBoost = mapHighDetail && mapScale >= 0.85 ? 1 : 0;
+    const tileZoom = clamp(baseZoom + tileBoost + detailBoost, 1, MAP_MAX_NATIVE_TILE_ZOOM);
+    const tileZoomRatio = 2 ** (tileZoom - baseZoom);
+    const tileScale = mapScale / tileZoomRatio;
+    const tileCenterWorld = {
+      x: centerWorld.x * tileZoomRatio,
+      y: centerWorld.y * tileZoomRatio
+    };
+    const screenPoint = (point) => ({
+      x: surface.width / 2 + (point.x - canvas.width / 2) * mapScale + panX,
+      y: surface.height / 2 + (point.y - canvas.height / 2) * mapScale + panY
+    });
+    const tileWorldToScreen = (world) => ({
+      x: surface.width / 2 + (world.x - tileCenterWorld.x) * tileScale + panX,
+      y: surface.height / 2 + (world.y - tileCenterWorld.y) * tileScale + panY
+    });
+    const visibleTileWorld = {
+      left: tileCenterWorld.x + (0 - surface.width / 2 - panX) / tileScale,
+      right: tileCenterWorld.x + (surface.width - surface.width / 2 - panX) / tileScale,
+      top: tileCenterWorld.y + (0 - surface.height / 2 - panY) / tileScale,
+      bottom: tileCenterWorld.y + (surface.height - surface.height / 2 - panY) / tileScale
+    };
+    const tileStartX = Math.floor(visibleTileWorld.left / 256) - 2;
+    const tileEndX = Math.floor(visibleTileWorld.right / 256) + 2;
+    const tileStartY = Math.max(0, Math.floor(visibleTileWorld.top / 256) - 2);
+    const tileEndY = Math.min((2 ** tileZoom) - 1, Math.floor(visibleTileWorld.bottom / 256) + 2);
+    const tiles = [];
+    for (let tileX = tileStartX; tileX <= tileEndX; tileX += 1) {
+      for (let tileY = tileStartY; tileY <= tileEndY; tileY += 1) {
+        const tilePoint = tileWorldToScreen({ x: tileX * 256, y: tileY * 256 });
+        tiles.push({
+          id: `${tileZoom}-${tileX}-${tileY}`,
+          src: mapTileUrl(tileX, tileY, tileZoom),
+          x: tilePoint.x,
+          y: tilePoint.y,
+          size: 256 * tileScale
+        });
+      }
+    }
+    const project = (row) => {
+      const lat = parseCoordinate(row.latitude);
+      const lng = parseCoordinate(row.longitude);
+      if (lat === null || lng === null) return null;
+      const world = geoToWorldPixel(lat, lng, baseZoom);
+      return {
+        x: canvas.width / 2 + world.x - centerWorld.x,
+        y: canvas.height / 2 + world.y - centerWorld.y,
+        coordinateSource: 'GPS'
+      };
+    };
+    const oltPositions = new Map();
+    const gridColumns = Math.max(1, Math.ceil(Math.sqrt(Math.max(mapOlts.length, 1))));
+    mapOlts.forEach((olt, index) => {
+      const projected = project(olt);
+      if (projected) {
+        oltPositions.set(olt.id, projected);
+        return;
+      }
+      const childPositions = mapNaps
+        .filter((nap) => nap.oltId === olt.id)
+        .map(project)
+        .filter(Boolean);
+      if (childPositions.length) {
+        oltPositions.set(olt.id, {
+          x: childPositions.reduce((total, item) => total + item.x, 0) / childPositions.length,
+          y: childPositions.reduce((total, item) => total + item.y, 0) / childPositions.length - 70,
+          coordinateSource: 'NAP centroid'
+        });
+        return;
+      }
+      const column = index % gridColumns;
+      const row = Math.floor(index / gridColumns);
+      const xStep = gridColumns <= 1 ? 0 : (canvas.width - 320) / (gridColumns - 1);
+      oltPositions.set(olt.id, {
+        x: 160 + column * xStep,
+        y: 150 + row * 230,
+        coordinateSource: 'Topology'
+      });
+    });
+    const napSiblingIndexes = new Map();
+    const napPositions = new Map();
+    mapNaps.forEach((nap) => {
+      const projected = project(nap);
+      if (projected) {
+        napPositions.set(nap.id, projected);
+        return;
+      }
+      const parent = oltPositions.get(nap.oltId) || { x: canvas.width / 2, y: canvas.height / 2 };
+      const siblings = mapNaps.filter((row) => row.oltId === nap.oltId && !hasCoordinates(row));
+      const index = napSiblingIndexes.get(nap.oltId) || 0;
+      napSiblingIndexes.set(nap.oltId, index + 1);
+      const total = Math.max(1, siblings.length);
+      const angle = (Math.PI * 2 * index) / total - Math.PI / 2;
+      const radius = 110 + (index % 3) * 28;
+      napPositions.set(nap.id, {
+        x: parent.x + Math.cos(angle) * radius,
+        y: parent.y + Math.sin(angle) * radius,
+        coordinateSource: 'Topology'
+      });
+    });
+    const oltNodes = mapOlts.map((olt) => ({
+      id: `olt-${olt.id}`,
+      sourceId: olt.id,
+      type: 'olt',
+      label: olt.name,
+      detail: [olt.vendor, olt.model || olt.managementIp].filter(Boolean).join(' / ') || 'OLT',
+      status: olt.status,
+      napCount: mapNaps.filter((nap) => nap.oltId === olt.id).length,
+      ...oltPositions.get(olt.id)
+    })).filter((node) => node.x !== undefined && node.y !== undefined);
+    const napNodes = mapNaps.map((nap) => ({
+      id: `nap-${nap.id}`,
+      sourceId: nap.id,
+      parentOltId: nap.oltId,
+      type: 'nap',
+      label: nap.name,
+      detail: [nap.oltName, nap.ponLabel, nap.barangay].filter(Boolean).join(' / ') || 'NAP Box',
+      status: nap.status,
+      splitterRatio: formatSplitterRatio(nap.splitterRatio),
+      fbtCount: nap.fbtCount,
+      ...napPositions.get(nap.id)
+    })).filter((node) => node.x !== undefined && node.y !== undefined);
+    const nodes = [
+      ...(showOltMarkers ? oltNodes : []),
+      ...(showNapMarkers ? napNodes : [])
+    ].map((node) => ({ ...node, ...screenPoint(node) }));
+    const visibleNodeIds = new Set(nodes.map((node) => node.id));
+    const showLinks = mapLayerVisibility.links && showOltMarkers && showNapMarkers;
+    const lines = !showLinks ? [] : mapNaps.map((nap) => {
+      const parent = oltPositions.get(nap.oltId);
+      const child = napPositions.get(nap.id);
+      if (!parent || !child) return null;
+      const parentPoint = screenPoint(parent);
+      const childPoint = screenPoint(child);
+      return {
+        id: `${nap.oltId}-${nap.id}`,
+        x1: parentPoint.x,
+        y1: parentPoint.y,
+        x2: childPoint.x,
+        y2: childPoint.y,
+        visible: visibleNodeIds.has(`olt-${nap.oltId}`) && visibleNodeIds.has(`nap-${nap.id}`)
+      };
+    }).filter((line) => line?.visible);
+    return {
+      canvas,
+      surface,
+      nodes,
+      lines,
+      tiles,
+      baseZoom,
+      tileZoom,
+      viewZoom: baseZoom + Math.log2(mapScale),
+      nativeTileMaxed: tileZoom >= MAP_MAX_NATIVE_TILE_ZOOM,
+      mapMode: geoPoints.length ? 'GPS map' : 'Topology',
+      totals: {
+        olts: nodes.filter((node) => node.type === 'olt').length,
+        naps: nodes.filter((node) => node.type === 'nap').length,
+        gps: nodes.filter((node) => node.coordinateSource === 'GPS').length
+      }
+    };
+  }, [olts, naps, search, mapOltFilter, mapTypeFilter, mapSurfaceSize, mapView, mapHighDetail, mapLayerVisibility]);
+  const oltLocationPickerMap = useMemo(() => {
+    const surface = {
+      width: Math.max(300, Number(oltLocationPickerSurfaceSize.width) || DEFAULT_OLT_LOCATION_PICKER_SURFACE.width),
+      height: Math.max(260, Number(oltLocationPickerSurfaceSize.height) || DEFAULT_OLT_LOCATION_PICKER_SURFACE.height)
+    };
+    const zoom = clamp(Math.round(Number(oltLocationPickerView.zoom) || DEFAULT_OLT_LOCATION_PICKER.zoom), 10, 19);
+    const centerWorld = geoToWorldPixel(oltLocationPickerView.lat, oltLocationPickerView.lng, zoom);
+    const visibleWorld = {
+      left: centerWorld.x - surface.width / 2,
+      right: centerWorld.x + surface.width / 2,
+      top: centerWorld.y - surface.height / 2,
+      bottom: centerWorld.y + surface.height / 2
+    };
+    const tileStartX = Math.floor(visibleWorld.left / 256) - 1;
+    const tileEndX = Math.floor(visibleWorld.right / 256) + 1;
+    const tileStartY = Math.max(0, Math.floor(visibleWorld.top / 256) - 1);
+    const tileEndY = Math.min((2 ** zoom) - 1, Math.floor(visibleWorld.bottom / 256) + 1);
+    const tiles = [];
+    for (let tileX = tileStartX; tileX <= tileEndX; tileX += 1) {
+      for (let tileY = tileStartY; tileY <= tileEndY; tileY += 1) {
+        tiles.push({
+          id: `${zoom}-${tileX}-${tileY}`,
+          src: mapTileUrl(tileX, tileY, zoom),
+          x: surface.width / 2 + tileX * 256 - centerWorld.x,
+          y: surface.height / 2 + tileY * 256 - centerWorld.y
+        });
+      }
+    }
+    const selectedLat = parseCoordinate(oltLocationForm.latitude);
+    const selectedLng = parseCoordinate(oltLocationForm.longitude);
+    const marker = selectedLat !== null && selectedLng !== null
+      ? (() => {
+        const selectedWorld = geoToWorldPixel(selectedLat, selectedLng, zoom);
+        return {
+          x: surface.width / 2 + selectedWorld.x - centerWorld.x,
+          y: surface.height / 2 + selectedWorld.y - centerWorld.y
+        };
+      })()
+      : null;
+    return { surface, zoom, centerWorld, tiles, marker };
+  }, [oltLocationForm.latitude, oltLocationForm.longitude, oltLocationPickerSurfaceSize, oltLocationPickerView]);
 
   function ponsForOlt(olt) {
     const oltPons = pons.filter((pon) => pon.oltId === olt.id);
@@ -748,12 +1382,169 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     setExpandedOltIds((current) => ({ ...current, [oltId]: !current[oltId] }));
   }
 
+  function toggleNapOltExpansion(oltId) {
+    setExpandedNapOltIds((current) => ({ ...current, [oltId]: !current[oltId] }));
+  }
+
+  function toggleNapPonExpansion(ponId) {
+    setExpandedNapPonIds((current) => ({ ...current, [ponId]: !current[ponId] }));
+  }
+
+  function zoomMapAt(multiplier, clientX = null, clientY = null) {
+    const surfaceNode = mapSurfaceRef.current;
+    const rect = surfaceNode?.getBoundingClientRect();
+    const surfaceWidth = rect?.width || mapSurfaceSize.width || DEFAULT_MAP_SURFACE.width;
+    const surfaceHeight = rect?.height || mapSurfaceSize.height || DEFAULT_MAP_SURFACE.height;
+    const pointX = rect && clientX !== null ? clientX - rect.left : surfaceWidth / 2;
+    const pointY = rect && clientY !== null ? clientY - rect.top : surfaceHeight / 2;
+
+    setMapView((current) => {
+      const currentZoom = clamp(Number(current.zoom) || 1, MAP_MIN_SCALE, MAP_MAX_SCALE);
+      const nextZoom = clamp(Number((currentZoom * multiplier).toFixed(4)), MAP_MIN_SCALE, MAP_MAX_SCALE);
+      if (nextZoom === currentZoom) return current;
+      const ratio = nextZoom / currentZoom;
+      const panX = Number(current.panX) || 0;
+      const panY = Number(current.panY) || 0;
+      const anchorX = pointX - surfaceWidth / 2;
+      const anchorY = pointY - surfaceHeight / 2;
+      return {
+        ...current,
+        zoom: nextZoom,
+        panX: anchorX - (anchorX - panX) * ratio,
+        panY: anchorY - (anchorY - panY) * ratio
+      };
+    });
+  }
+
+  function resetMapView() {
+    setMapView({ zoom: 1, panX: 0, panY: 0 });
+  }
+
+  function toggleMapLayer(layerKey) {
+    setMapLayerVisibility((current) => ({ ...current, [layerKey]: !current[layerKey] }));
+  }
+
+  function startMapPan(event) {
+    if (event.button !== 0) return;
+    mapDragRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      panX: mapView.panX,
+      panY: mapView.panY
+    };
+    setMapDragging(true);
+  }
+
+  function moveMapPan(event) {
+    if (!mapDragRef.current) return;
+    const { x, y, panX, panY } = mapDragRef.current;
+    setMapView((current) => ({
+      ...current,
+      panX: panX + event.clientX - x,
+      panY: panY + event.clientY - y
+    }));
+  }
+
+  function endMapPan() {
+    mapDragRef.current = null;
+    setMapDragging(false);
+  }
+
+  function mapImageFor(targetId) {
+    return mapImages?.targets?.find((target) => target.id === targetId)?.image?.data_url || '';
+  }
+
+  function openOltLocationCapture() {
+    setOltLocationPickerView((current) => oltPickerViewFromCoordinates(oltLocationForm.latitude, oltLocationForm.longitude, current));
+    setOltLocationPickerOpen(true);
+  }
+
+  function updateOltLocationPickerZoom(delta) {
+    setOltLocationPickerView((current) => ({
+      ...current,
+      zoom: clamp(Math.round((Number(current.zoom) || DEFAULT_OLT_LOCATION_PICKER.zoom) + delta), 10, 19)
+    }));
+  }
+
+  function captureOltLocationAtPointer(event) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    const zoom = clamp(Math.round(Number(oltLocationPickerView.zoom) || DEFAULT_OLT_LOCATION_PICKER.zoom), 10, 19);
+    const centerWorld = geoToWorldPixel(oltLocationPickerView.lat, oltLocationPickerView.lng, zoom);
+    const captured = worldPixelToGeo(
+      centerWorld.x + x - rect.width / 2,
+      centerWorld.y + y - rect.height / 2,
+      zoom
+    );
+    setOltLocationForm((current) => ({
+      ...current,
+      latitude: captured.latitude.toFixed(6),
+      longitude: captured.longitude.toFixed(6)
+    }));
+    setOltLocationPickerView((current) => ({
+      ...current,
+      lat: captured.latitude,
+      lng: captured.longitude,
+      zoom
+    }));
+  }
+
+  function startOltLocationPickerPan(event) {
+    if (event.button !== 0) return;
+    oltLocationPickerDragRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      view: oltLocationPickerView,
+      moved: false
+    };
+    setOltLocationPickerDragging(true);
+  }
+
+  function moveOltLocationPickerPan(event) {
+    const drag = oltLocationPickerDragRef.current;
+    if (!drag) return;
+    const dx = event.clientX - drag.x;
+    const dy = event.clientY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+    const startWorld = geoToWorldPixel(drag.view.lat, drag.view.lng, drag.view.zoom);
+    const nextCenter = worldPixelToGeo(startWorld.x - dx, startWorld.y - dy, drag.view.zoom);
+    setOltLocationPickerView({
+      ...drag.view,
+      lat: nextCenter.latitude,
+      lng: nextCenter.longitude
+    });
+  }
+
+  function finishOltLocationPickerPan(event) {
+    const drag = oltLocationPickerDragRef.current;
+    if (!drag) return;
+    oltLocationPickerDragRef.current = null;
+    setOltLocationPickerDragging(false);
+    if (!drag.moved) captureOltLocationAtPointer(event);
+  }
+
+  function cancelOltLocationPickerPan() {
+    oltLocationPickerDragRef.current = null;
+    setOltLocationPickerDragging(false);
+  }
+
   function closeModal() {
     setModalType('');
     setDeviceFormError('');
     setDeviceSaving(false);
+    setNapSelectedOltId('');
+    setNapAddAnother(false);
+    setNapFormMessage('');
+    setNapFormError('');
+    setNapSaving(false);
     setLocationBindingDevice(null);
     setLocationBindingSelection([]);
+    setOltLocationForm({ locationId: '', label: '', latitude: '', longitude: '' });
+    setOltLocationPickerOpen(false);
+    setOltLocationPickerView(DEFAULT_OLT_LOCATION_PICKER);
+    setOltLocationPickerDragging(false);
+    oltLocationPickerDragRef.current = null;
     setLocationBindingError('');
     setLocationBindingSaving(false);
   }
@@ -770,11 +1561,6 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     setCaptureResult(device.lastCapture || null);
     setCaptureError('');
     setCaptureRunning(false);
-  }
-
-  function openNewOlt() {
-    setOltForm(blankOlt);
-    setModalType('olt');
   }
 
   function openEditOlt(olt) {
@@ -799,14 +1585,56 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     setModalType('pon');
   }
 
+  function openPonPower(pon) {
+    setSelectedOltId(pon.oltId);
+    setExpandedOltIds((current) => ({ ...current, [pon.oltId]: true }));
+    setPonForm({ ...blankPon, ...pon, portNumber: String(pon.portNumber), capacity: String(pon.capacity), moduleSource: pon.moduleSource || 'Manual' });
+    setModalType('pon-power');
+  }
+
+  function loadBarangayOptions() {
+    request('/system-settings/locations')
+      .then(setLocations)
+      .catch(() => setLocations([]));
+  }
+
   function openNewNap() {
     setNapForm(blankNap);
+    setNapSelectedOltId('');
+    setNapAddAnother(false);
+    setNapFormMessage('');
+    setNapFormError('');
+    setNapSaving(false);
     setModalType('nap');
+    loadBarangayOptions();
   }
 
   function openEditNap(nap) {
-    setNapForm({ ...blankNap, ...nap, portCapacity: String(nap.portCapacity) });
+    const assignedPon = pons.find((pon) => pon.id === nap.ponPortId);
+    setNapForm({ ...blankNap, ...nap, splitterRatio: normalizeNapSplitterRatio(nap.splitterRatio), portCapacity: String(nap.portCapacity) });
+    setNapSelectedOltId(assignedPon?.oltId || nap.oltId || '');
+    setNapAddAnother(false);
+    setNapFormMessage('');
+    setNapFormError('');
+    setNapSaving(false);
     setModalType('nap');
+    loadBarangayOptions();
+  }
+
+  function selectNapOlt(oltId) {
+    setNapSelectedOltId(oltId);
+    setNapFormMessage('');
+    setNapFormError('');
+    setNapForm((current) => {
+      const currentPonStillAvailable = pons.some((pon) => pon.id === current.ponPortId && pon.oltId === oltId);
+      return { ...current, ponPortId: currentPonStillAvailable ? current.ponPortId : '' };
+    });
+  }
+
+  function selectNapPon(ponPortId) {
+    setNapFormMessage('');
+    setNapFormError('');
+    setNapForm((current) => ({ ...current, ponPortId }));
   }
 
   function openNewFbt() {
@@ -853,11 +1681,38 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
   }
 
   function openLocationBindings(device) {
+    const selectedLocationId = device.oltLocationId || device.oltLocation?.id || '';
+    const latitude = device.latitude || device.oltLocation?.latitude || '';
+    const longitude = device.longitude || device.oltLocation?.longitude || '';
     setLocationBindingDevice(device);
-    setLocationBindingSelection(device.boundLocationIds || []);
+    setLocationBindingSelection(isSnmpOltDevice(device) ? (selectedLocationId ? [selectedLocationId] : []) : (device.boundLocationIds || []));
+    setOltLocationForm({
+      locationId: selectedLocationId,
+      label: device.oltLocationName || device.oltLocation?.label || device.site || '',
+      latitude,
+      longitude
+    });
+    setOltLocationPickerOpen(false);
+    setOltLocationPickerView(oltPickerViewFromCoordinates(latitude, longitude));
     setLocationBindingError('');
     setLocationBindingSaving(false);
     setModalType('location-bindings');
+    loadBarangayOptions();
+  }
+
+  function selectOltLocation(locationId) {
+    const location = locations.find((row) => row.id === locationId);
+    setLocationBindingSelection(locationId ? [locationId] : []);
+    setOltLocationForm((current) => ({
+      ...current,
+      locationId,
+      label: location ? locationLabel(location) : current.label,
+      latitude: location?.latitude ?? current.latitude,
+      longitude: location?.longitude ?? current.longitude
+    }));
+    if (location && hasCoordinates(location)) {
+      setOltLocationPickerView((current) => oltPickerViewFromCoordinates(location.latitude, location.longitude, current));
+    }
   }
 
   function toggleLocationBinding(locationId, checked) {
@@ -873,6 +1728,34 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     setLocationBindingError('');
     setLocationBindingSaving(true);
     try {
+      if (isSnmpOltDevice(locationBindingDevice)) {
+        const selectedLocation = locations.find((location) => location.id === oltLocationForm.locationId);
+        const saved = await request(`/network-settings/devices/${locationBindingDevice.id}/olt-location`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            locationId: oltLocationForm.locationId,
+            label: oltLocationForm.label,
+            latitude: oltLocationForm.latitude,
+            longitude: oltLocationForm.longitude,
+            location: selectedLocation ? {
+              id: selectedLocation.id,
+              location_name: selectedLocation.location_name,
+              address: selectedLocation.address,
+              municipality: selectedLocation.municipality,
+              barangay: selectedLocation.barangay,
+              province: selectedLocation.province,
+              region: selectedLocation.region,
+              latitude: selectedLocation.latitude,
+              longitude: selectedLocation.longitude
+            } : {}
+          })
+        });
+        setMessage(`${saved.name} OLT map location saved.`);
+        closeModal();
+        await load();
+        refreshShell();
+        return;
+      }
       const selectedLocations = locations
         .filter((location) => locationBindingSelection.includes(location.id))
         .map((location) => ({
@@ -882,7 +1765,9 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
           municipality: location.municipality,
           barangay: location.barangay,
           province: location.province,
-          region: location.region
+          region: location.region,
+          latitude: location.latitude,
+          longitude: location.longitude
         }));
       const saved = await request(`/network-settings/devices/${locationBindingDevice.id}/location-bindings`, {
         method: 'PATCH',
@@ -928,18 +1813,71 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     refreshShell();
   }
 
-  async function saveNap(event) {
+  async function savePonPower(event) {
     event.preventDefault();
-    const body = { ...napForm, portCapacity: numberOrBlank(napForm.portCapacity) };
-    delete body.id;
-    await request(napForm.id ? `/network-settings/nap-boxes/${napForm.id}` : '/network-settings/nap-boxes', {
-      method: napForm.id ? 'PATCH' : 'POST',
-      body: JSON.stringify(body)
-    });
-    setMessage('NAP box saved.');
+    if (!ponForm.id) return;
+    const body = {
+      moduleVendor: ponForm.moduleVendor,
+      modulePartNumber: ponForm.modulePartNumber,
+      moduleSerial: ponForm.moduleSerial,
+      moduleHardwareRev: ponForm.moduleHardwareRev,
+      moduleRxPowerDbm: ponForm.moduleRxPowerDbm,
+      moduleTxPowerDbm: ponForm.moduleTxPowerDbm,
+      moduleTemperatureC: ponForm.moduleTemperatureC,
+      moduleVoltageV: ponForm.moduleVoltageV,
+      moduleBiasCurrentMa: ponForm.moduleBiasCurrentMa,
+      moduleSource: 'Manual'
+    };
+    await request(`/network-settings/pons/${ponForm.id}/power`, { method: 'PATCH', body: JSON.stringify(body) });
+    setMessage('PON power saved.');
     closeModal();
     await load();
     refreshShell();
+  }
+
+  async function saveNap(event) {
+    event.preventDefault();
+    if (napSaving) return;
+    if (!napSelectedOltId) {
+      setNapFormError('Choose an OLT before saving the NAP box.');
+      return;
+    }
+    if (!napForm.ponPortId) {
+      setNapFormError('Choose a PON before saving the NAP box.');
+      return;
+    }
+    setNapFormError('');
+    setNapFormMessage('');
+    setNapSaving(true);
+    const body = { ...napForm, splitterRatio: normalizeNapSplitterRatio(napForm.splitterRatio) };
+    delete body.id;
+    delete body.oltId;
+    delete body.portCapacity;
+    body.location = '';
+    try {
+      const saved = await request(napForm.id ? `/network-settings/nap-boxes/${napForm.id}` : '/network-settings/nap-boxes', {
+        method: napForm.id ? 'PATCH' : 'POST',
+        body: JSON.stringify(body)
+      });
+      setNaps((current) => uniqueNapRows([saved, ...current.filter((nap) => nap.id !== saved.id)]));
+      const successMessage = `${saved.name} saved.`;
+      setMessage(successMessage);
+      if (!napForm.id && napAddAnother) {
+        const retainedPonPortId = saved.ponPortId || body.ponPortId;
+        const retainedPon = pons.find((pon) => pon.id === retainedPonPortId);
+        setNapForm({ ...blankNap, ponPortId: retainedPonPortId });
+        setNapFormMessage(`${successMessage} Add another NAP for ${retainedPon ? ponPathLabel(retainedPon, olts) : 'the selected PON'}.`);
+      } else {
+        closeModal();
+      }
+      request('/network-settings/overview').then(setOverview).catch((err) => setError(err.message));
+      request('/network-settings/pons').then(setPons).catch((err) => setError(err.message));
+      Promise.resolve(refreshShell()).catch(() => {});
+    } catch (err) {
+      setNapFormError(err.message);
+    } finally {
+      setNapSaving(false);
+    }
   }
 
   async function saveFbt(event) {
@@ -1107,6 +2045,11 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
                               {device.locationBindingCount ? `${device.locationBindingCount} bound location${device.locationBindingCount === 1 ? '' : 's'}` : 'No location bindings'}
                             </div>
                           )}
+                          {isSnmpOltDevice(device) && (
+                            <div className="text-muted small">
+                              {device.hasOltMapLocation ? `Map ${device.latitude}, ${device.longitude}` : 'No OLT map location'}
+                            </div>
+                          )}
                         </td>
                         <td>{device.connectionLabel}<span>{device.accessMethod === 'API' ? device.apiProtocol : `${titleize(device.snmpVersion)} / ${titleize(device.snmpTransport)} / ${titleize(device.portAssociationMode)}`}</span></td>
                         <td><span className={`badge ${device.deviceType === 'MIKROTIK' ? 'bg-blue-lt text-blue' : 'bg-indigo-lt text-indigo'}`}>{titleize(device.deviceType)}</span></td>
@@ -1124,6 +2067,13 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
                             ...(device.accessMethod === 'API' && device.deviceType === 'MIKROTIK' ? [{
                               label: 'bind-locations',
                               title: `Bind locations to ${device.name}`,
+                              icon: IconMapPin,
+                              className: 'bg-purple-lt text-purple',
+                              onClick: () => openLocationBindings(device)
+                            }] : []),
+                            ...(isSnmpOltDevice(device) ? [{
+                              label: 'bind-olt-location',
+                              title: `Set OLT map location for ${device.name}`,
                               icon: IconMapPin,
                               className: 'bg-purple-lt text-purple',
                               onClick: () => openLocationBindings(device)
@@ -1160,7 +2110,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
               title={`OLTs (${filteredOlts.length})`}
               icon={IconWifi}
               className="network-table-card"
-              actions={tableActions({ placeholder: 'Search OLT, site, IP', onNew: openNewOlt, newLabel: 'New OLT' })}
+              actions={tableActions({ placeholder: 'Search OLT, site, IP' })}
             >
               <div className="table-responsive">
                 <table className="table card-table table-vcenter network-table network-olt-pon-table">
@@ -1219,7 +2169,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
                                   </div>
                                   <div className="table-responsive network-child-table-wrap">
                                     <table className="table table-vcenter network-table network-child-table">
-                                      <thead><tr><th>PON</th><th>Status</th><th>Split/VLAN</th><th>Capacity</th><th>ONUs</th><th>NAP</th><th className="network-actions-column">Actions</th></tr></thead>
+                                      <thead><tr><th>PON</th><th>Status</th><th>Power Module</th><th>Split/VLAN</th><th>Capacity</th><th>ONUs</th><th>NAP</th><th className="network-actions-column">Actions</th></tr></thead>
                                       <tbody>
                                         {oltPons.map((pon) => {
                                           const ponOnus = onusForPon(pon.id);
@@ -1228,15 +2178,27 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
                                             <tr key={pon.id}>
                                               <td><span className="network-table-value fw-semibold">{pon.label}</span><div className="text-muted small">Port {pon.portNumber} / {pon.technology}</div></td>
                                               <td><StatusBadge value={pon.adminStatus} /> <StatusBadge value={pon.operationalStatus} /></td>
+                                              <PonModuleCell pon={pon} />
                                               <td>{pon.splitRatio}<span>{pon.serviceVlan || 'No VLAN'}</span></td>
                                               <td>{pon.capacity}</td>
                                               <td>{pon.onuCount ?? ponOnus.length}<span>{onlineCount} online</span></td>
                                               <td>{pon.napCount}</td>
-                                              <RowActions label={pon.label} onEdit={() => openEditPon(pon)} onDelete={() => remove(`/network-settings/pons/${pon.id}`, pon.label)} />
+                                              <RowActions
+                                                label={pon.label}
+                                                onEdit={() => openEditPon(pon)}
+                                                onDelete={() => remove(`/network-settings/pons/${pon.id}`, pon.label)}
+                                                extraActions={[{
+                                                  label: 'power',
+                                                  title: `Add PON power for ${pon.label}`,
+                                                  icon: IconAntenna,
+                                                  className: 'bg-cyan-lt text-cyan',
+                                                  onClick: () => openPonPower(pon)
+                                                }]}
+                                              />
                                             </tr>
                                           );
                                         })}
-                                        {!oltPons.length && <tr><td colSpan="7"><div className="empty">No PON records for this OLT.</div></td></tr>}
+                                        {!oltPons.length && <tr><td colSpan="8"><div className="empty">No PON records for this OLT.</div></td></tr>}
                                       </tbody>
                                     </table>
                                   </div>
@@ -1258,6 +2220,155 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     );
   }
 
+  function renderMapPage() {
+    const oltMarkerImage = mapImageFor('olt');
+    const napMarkerImage = mapImageFor('nap');
+    return (
+      <div className="network-map-page">
+        <div
+          ref={mapSurfaceRef}
+          className={`network-map-surface ${mapDragging ? 'dragging' : ''}`}
+          onMouseDown={startMapPan}
+          onMouseMove={moveMapPan}
+          onMouseUp={endMapPan}
+          onMouseLeave={endMapPan}
+          onWheel={(event) => {
+            event.preventDefault();
+            zoomMapAt(event.deltaY < 0 ? MAP_WHEEL_ZOOM_FACTOR : 1 / MAP_WHEEL_ZOOM_FACTOR, event.clientX, event.clientY);
+          }}
+        >
+          <div className="network-map-toolbar" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="network-map-title">
+              <span className="badge bg-indigo-lt text-indigo"><IconMap size={18} /></span>
+              <div>
+                <strong>Map</strong>
+                <span>
+                  {networkMap.totals.olts} OLTs / {networkMap.totals.naps} NAP boxes / {networkMap.totals.gps} GPS / {networkMap.mapMode}
+                  {' / '}tiles z{networkMap.tileZoom}{mapHighDetail ? ' HD' : ''}{networkMap.nativeTileMaxed ? ' max' : ''}
+                </span>
+              </div>
+            </div>
+            <div className="network-map-controls">
+              <SearchInput value={search} onChange={setSearch} placeholder="Search OLT, NAP, PON, barangay" />
+              <select className="form-select form-select-sm" value={mapOltFilter} onChange={(event) => setMapOltFilter(event.target.value)}>
+                <option value="">All OLTs</option>
+                {olts.map((olt) => <option key={olt.id} value={olt.id}>{olt.name}</option>)}
+              </select>
+              <select className="form-select form-select-sm" value={mapTypeFilter} onChange={(event) => setMapTypeFilter(event.target.value)}>
+                <option value="">All markers</option>
+                <option value="olt">OLT only</option>
+                <option value="nap">NAP only</option>
+              </select>
+              <button
+                type="button"
+                className={`btn btn-sm network-map-hd-toggle ${mapHighDetail ? 'btn-primary' : 'btn-outline-secondary'}`}
+                title="Toggle higher detail map tiles"
+                onClick={() => setMapHighDetail((current) => !current)}
+              >
+                HD
+              </button>
+              <button type="button" className="btn btn-outline-secondary btn-sm network-header-icon-button" title="Zoom out" aria-label="Zoom out" onClick={() => zoomMapAt(1 / MAP_BUTTON_ZOOM_FACTOR)}>
+                <IconZoomOut size={16} />
+              </button>
+              <button
+                type="button"
+                className="btn btn-outline-secondary btn-sm network-map-zoom-value"
+                title={`Reset map view. Native tiles z${networkMap.tileZoom}${networkMap.nativeTileMaxed ? ' max' : ''}.`}
+                onClick={resetMapView}
+              >
+                z{networkMap.viewZoom.toFixed(1)}
+              </button>
+              <button type="button" className="btn btn-outline-secondary btn-sm network-header-icon-button" title="Zoom in" aria-label="Zoom in" onClick={() => zoomMapAt(MAP_BUTTON_ZOOM_FACTOR)}>
+                <IconZoomIn size={16} />
+              </button>
+            </div>
+          </div>
+          <div className="network-map-tile-layer" aria-hidden="true">
+            {networkMap.tiles.map((tile) => (
+              <img
+                key={tile.id}
+                src={tile.src}
+                alt=""
+                draggable="false"
+                style={{ left: tile.x, top: tile.y, width: tile.size, height: tile.size }}
+              />
+            ))}
+          </div>
+          <svg className="network-map-links" viewBox={`0 0 ${networkMap.surface.width} ${networkMap.surface.height}`} aria-hidden="true">
+            {networkMap.lines.map((line) => (
+              <line key={line.id} x1={line.x1} y1={line.y1} x2={line.x2} y2={line.y2} />
+            ))}
+          </svg>
+          <div className="network-map-marker-layer">
+            {networkMap.nodes.map((node) => {
+              const markerImage = node.type === 'olt' ? oltMarkerImage : napMarkerImage;
+              const MarkerIcon = node.type === 'olt' ? IconWifi : IconBox;
+              return (
+                <button
+                  type="button"
+                  key={node.id}
+                  className={`network-map-marker ${node.type} ${statusTone(node.status)}`}
+                  style={{ left: node.x, top: node.y }}
+                  title={`${node.label} - ${node.detail}`}
+                  onMouseDown={(event) => event.stopPropagation()}
+                >
+                  <span className="network-map-marker-art">
+                    {markerImage ? <img src={markerImage} alt="" /> : <MarkerIcon size={24} />}
+                  </span>
+                  {mapLayerVisibility.details && (
+                    <span className="network-map-marker-label">
+                      <strong>{node.label}</strong>
+                      <small>{node.detail}</small>
+                      <em>{node.type === 'olt' ? `${node.napCount} NAP` : `${node.splitterRatio} / ${node.fbtCount || 0} FBT`}</em>
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          {!networkMap.nodes.length && (
+            <div className="network-map-empty">
+              {mapLayerVisibility.olts || mapLayerVisibility.naps ? 'No OLT or NAP markers match the current filters.' : 'All marker layers are hidden.'}
+            </div>
+          )}
+          <div
+            className="network-map-legend"
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+            onWheel={(event) => event.stopPropagation()}
+          >
+            <div className="network-map-legend-header">
+              <strong>Legend</strong>
+              <button
+                type="button"
+                className="network-map-legend-reset"
+                onClick={() => setMapLayerVisibility({ olts: true, naps: true, links: true, details: true })}
+              >
+                Show all
+              </button>
+            </div>
+            <label className="network-map-legend-check">
+              <input type="checkbox" checked={mapLayerVisibility.olts} onChange={() => toggleMapLayer('olts')} />
+              <span><i className="network-map-dot olt" /> OLT markers</span>
+            </label>
+            <label className="network-map-legend-check">
+              <input type="checkbox" checked={mapLayerVisibility.naps} onChange={() => toggleMapLayer('naps')} />
+              <span><i className="network-map-dot nap" /> NAP boxes</span>
+            </label>
+            <label className="network-map-legend-check">
+              <input type="checkbox" checked={mapLayerVisibility.links} onChange={() => toggleMapLayer('links')} />
+              <span><i className="network-map-line-sample" /> PON assignment</span>
+            </label>
+            <label className="network-map-legend-check">
+              <input type="checkbox" checked={mapLayerVisibility.details} onChange={() => toggleMapLayer('details')} />
+              <span><i className="network-map-detail-sample" /> Details</span>
+            </label>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   function renderNapPage() {
     return (
       <>
@@ -1268,23 +2379,156 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
               title={`NAP Boxes (${filteredNaps.length})`}
               icon={IconBox}
               className="network-table-card"
-              actions={tableActions({ placeholder: 'Search NAP, OLT, PON, location', onNew: openNewNap, newLabel: 'New NAP' })}
+              actions={tableActions({ placeholder: 'Search NAP, OLT, PON, barangay', onNew: openNewNap, newLabel: 'New NAP' })}
             >
+              <div className="network-filter-bar">
+                <label>
+                  <span>OLT</span>
+                  <select className="form-select form-select-sm" value={napOltFilter} onChange={(event) => setNapOltFilter(event.target.value)}>
+                    <option value="">All OLTs</option>
+                    {olts.map((olt) => <option key={olt.id} value={olt.id}>{olt.name}</option>)}
+                  </select>
+                </label>
+                <label>
+                  <span>PON</span>
+                  <select className="form-select form-select-sm" value={napPonFilter} onChange={(event) => setNapPonFilter(event.target.value)}>
+                    <option value="">All PONs</option>
+                    {napFilterPonOptions.map((pon) => <option key={pon.id} value={pon.id}>{ponPathLabel(pon, olts)}</option>)}
+                  </select>
+                </label>
+                <label>
+                  <span>Status</span>
+                  <select className="form-select form-select-sm" value={napStatusFilter} onChange={(event) => setNapStatusFilter(event.target.value)}>
+                    <option value="">All statuses</option>
+                    {meta.napStatuses.map((status) => <option key={status} value={status}>{titleize(status)}</option>)}
+                  </select>
+                </label>
+                {(napOltFilter || napPonFilter || napStatusFilter || search) && (
+                  <button type="button" className="btn btn-sm" onClick={() => {
+                    setSearch('');
+                    setNapOltFilter('');
+                    setNapPonFilter('');
+                    setNapStatusFilter('');
+                  }}>
+                    Clear
+                  </button>
+                )}
+              </div>
               <div className="table-responsive">
-                <table className="table card-table table-vcenter network-table">
-                  <thead><tr><th>NAP</th><th>Assignment</th><th>Status</th><th>Capacity</th><th>Location</th><th className="network-actions-column">Actions</th></tr></thead>
+                <table className="table card-table table-vcenter network-table network-nap-group-table">
+                  <thead><tr><th className="network-expand-column"><span className="visually-hidden">Expand</span></th><th>OLT</th><th>Vendor / Site</th><th>Status</th><th>PONs</th><th>NAP Boxes</th><th>Active</th></tr></thead>
                   <tbody>
-                    {filteredNaps.map((nap) => (
-                      <tr key={nap.id}>
-                        <td><span className="network-table-value fw-semibold">{nap.name}</span><div className="text-muted small">{nap.splitterRatio}</div></td>
-                        <td>{nap.oltName}<span>{nap.ponLabel}</span></td>
-                        <td><StatusBadge value={nap.status} /></td>
-                        <td>{nap.fbtCount}/{nap.portCapacity}</td>
-                        <td>{nap.location || '-'}<span>{nap.barangay || ''}</span></td>
-                        <RowActions label={nap.name} onEdit={() => openEditNap(nap)} onDelete={() => remove(`/network-settings/nap-boxes/${nap.id}`, nap.name)} />
-                      </tr>
-                    ))}
-                    {!filteredNaps.length && <tr><td colSpan="6"><div className="empty">No NAP records match the current search.</div></td></tr>}
+                    {napGroupsByOlt.map(({ olt, naps: oltNaps, ponGroups, activeCount, ponCount }) => {
+                      const filtered = String(search || '').trim() || napOltFilter || napPonFilter || napStatusFilter;
+                      const expanded = Boolean(expandedNapOltIds[olt.id]) || Boolean(filtered && oltNaps.length);
+                      return (
+                        <React.Fragment key={olt.id}>
+                          <tr>
+                            <td className="network-expand-column">
+                              <button
+                                type="button"
+                                className="network-expand-button"
+                                title={`${expanded ? 'Collapse' : 'Expand'} ${olt.name} NAP boxes`}
+                                aria-label={`${expanded ? 'Collapse' : 'Expand'} ${olt.name} NAP boxes`}
+                                aria-expanded={expanded}
+                                onClick={() => toggleNapOltExpansion(olt.id)}
+                              >
+                                {expanded ? <IconChevronDown size={18} /> : <IconChevronRight size={18} />}
+                              </button>
+                            </td>
+                            <td><button type="button" className="network-row-select" onClick={() => toggleNapOltExpansion(olt.id)}>{olt.name}<span>{olt.managementIp || 'No management IP'}</span></button></td>
+                            <td>{olt.vendor || '-'}<span>{olt.site || '-'}</span></td>
+                            <td><StatusBadge value={olt.status} /></td>
+                            <td>{ponCount}</td>
+                            <td>{oltNaps.length}</td>
+                            <td>{activeCount}</td>
+                          </tr>
+                          {expanded && (
+                            <tr className="network-expanded-row">
+                              <td colSpan="7">
+                                <div className="network-pon-expansion network-nap-expansion">
+                                  <div className="network-pon-expansion-header">
+                                    <div>
+                                      <div className="network-pon-expansion-title">NAP Boxes Under {olt.name}</div>
+                                      <div className="text-muted small">{oltNaps.length} shown across {ponCount} PON module{ponCount === 1 ? '' : 's'}</div>
+                                    </div>
+                                  </div>
+                                  <div className="table-responsive network-child-table-wrap">
+                                    <table className="table table-vcenter network-table network-child-table network-nap-pon-table">
+                                      <thead><tr><th className="network-expand-column"><span className="visually-hidden">Expand</span></th><th>PON</th><th>Technology / Status</th><th>NAP Boxes</th><th>Active</th><th>FBT</th><th>Capacity</th></tr></thead>
+                                      <tbody>
+                                        {ponGroups.map(({ pon, naps: ponNaps, activeCount: ponActiveCount, fbtCount }) => {
+                                          const ponExpanded = Boolean(expandedNapPonIds[pon.id]) || Boolean(filtered && ponNaps.length);
+                                          return (
+                                            <React.Fragment key={pon.id}>
+                                              <tr>
+                                                <td className="network-expand-column">
+                                                  <button
+                                                    type="button"
+                                                    className="network-expand-button"
+                                                    title={`${ponExpanded ? 'Collapse' : 'Expand'} ${canonicalPonLabel(pon)} NAP boxes`}
+                                                    aria-label={`${ponExpanded ? 'Collapse' : 'Expand'} ${canonicalPonLabel(pon)} NAP boxes`}
+                                                    aria-expanded={ponExpanded}
+                                                    onClick={() => toggleNapPonExpansion(pon.id)}
+                                                  >
+                                                    {ponExpanded ? <IconChevronDown size={18} /> : <IconChevronRight size={18} />}
+                                                  </button>
+                                                </td>
+                                                <td>
+                                                  <button type="button" className="network-row-select" onClick={() => toggleNapPonExpansion(pon.id)}>
+                                                    {canonicalPonLabel(pon)}
+                                                    <span>{ponPathLabel(pon, olts)}</span>
+                                                  </button>
+                                                </td>
+                                                <td>
+                                                  {pon.technology || '-'}
+                                                  <span>{titleize(pon.adminStatus)} / {titleize(pon.operationalStatus)}</span>
+                                                </td>
+                                                <td>{ponNaps.length}</td>
+                                                <td>{ponActiveCount}</td>
+                                                <td>{fbtCount}</td>
+                                                <td>{pon.allocatedOnus || 0}/{pon.capacity || 0}</td>
+                                              </tr>
+                                              {ponExpanded && (
+                                                <tr className="network-nap-pon-expanded-row">
+                                                  <td colSpan="7">
+                                                    <div className="network-nap-leaf-wrap">
+                                                      <table className="table table-vcenter network-table network-child-table network-nap-child-table network-nap-leaf-table">
+                                                        <thead><tr><th>NAP</th><th>Status</th><th>Splitter</th><th>FBT</th><th>Barangay</th><th>Coordinates</th><th className="network-actions-column">Actions</th></tr></thead>
+                                                        <tbody>
+                                                          {ponNaps.map((nap) => (
+                                                            <tr key={nap.id}>
+                                                              <td><span className="network-table-value fw-semibold">{nap.name}</span><div className="text-muted small">{nap.notes || 'No notes'}</div></td>
+                                                              <td><StatusBadge value={nap.status} /></td>
+                                                              <td>{formatSplitterRatio(nap.splitterRatio)}</td>
+                                                              <td>{nap.fbtCount}/{nap.portCapacity}</td>
+                                                              <td>{nap.barangay || '-'}</td>
+                                                              <td>{hasCoordinates(nap) ? `${nap.latitude}, ${nap.longitude}` : '-'}</td>
+                                                              <RowActions label={nap.name} onEdit={() => openEditNap(nap)} onDelete={() => remove(`/network-settings/nap-boxes/${nap.id}`, nap.name)} />
+                                                            </tr>
+                                                          ))}
+                                                          {!ponNaps.length && <tr><td colSpan="7"><div className="empty">No NAP records match this PON and filter set.</div></td></tr>}
+                                                        </tbody>
+                                                      </table>
+                                                    </div>
+                                                  </td>
+                                                </tr>
+                                              )}
+                                            </React.Fragment>
+                                          );
+                                        })}
+                                        {!ponGroups.length && <tr><td colSpan="7"><div className="empty">No PON groups match this OLT and filter set.</div></td></tr>}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                    {!napGroupsByOlt.length && <tr><td colSpan="7"><div className="empty">No NAP records match the current filters.</div></td></tr>}
                   </tbody>
                 </table>
               </div>
@@ -1653,6 +2897,17 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
                 <strong>{result ? formatDateTime(result.capturedAt) : 'Never'}</strong>
               </div>
             </div>
+            {captureRunning && (
+              <div className="network-capture-progress" role="status" aria-live="polite">
+                <div className="network-capture-progress-header">
+                  <span className="network-capture-progress-label">Capturing OLT data</span>
+                  <span className="network-capture-progress-detail">Reading SNMP system, interface, PON, and ONU data...</span>
+                </div>
+                <div className="network-capture-progress-track" role="progressbar" aria-label="Capture in progress" aria-valuetext="Capture in progress">
+                  <div className="network-capture-progress-bar" />
+                </div>
+              </div>
+            )}
             {captureError && <div className="alert alert-danger mb-3">{captureError}</div>}
             {!result && <div className="empty network-capture-empty">No capture has been run for this device yet.</div>}
             {result && (
@@ -1744,6 +2999,129 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
   function renderModal() {
     if (modalType === 'location-bindings' && locationBindingDevice) {
       const selectedCount = locationBindingSelection.length;
+      const isOltLocationBinding = isSnmpOltDevice(locationBindingDevice);
+      if (isOltLocationBinding) {
+        return (
+          <CrudModal
+            title={`Bind OLT Location: ${locationBindingDevice.name}`}
+            icon={IconMapPin}
+            onClose={closeModal}
+            onSubmit={saveLocationBindings}
+            submitDisabled={locationBindingSaving}
+            submitLabel={locationBindingSaving ? 'Saving...' : 'Save Location'}
+          >
+            {locationBindingError && <div className="col-12"><div className="alert alert-danger mb-0">{locationBindingError}</div></div>}
+            <div className="col-12">
+              <div className="network-location-binding-summary">
+                <span className="badge bg-purple-lt text-purple"><IconMapPin size={16} /></span>
+                <span>Set the OLT coordinates used by the Network Settings map</span>
+              </div>
+            </div>
+            <SelectInput label="Saved Location" value={oltLocationForm.locationId} onChange={selectOltLocation}>
+              <option value="">Manual coordinates</option>
+              {locations.map((location) => (
+                <option key={location.id} value={location.id}>
+                  {locationLabel(location)}{hasCoordinates(location) ? ` (${location.latitude}, ${location.longitude})` : ''}
+                </option>
+              ))}
+            </SelectInput>
+            <TextInput label="Map Label / Site" value={oltLocationForm.label} onChange={(value) => setOltLocationForm({ ...oltLocationForm, label: value })} />
+            <div className="col-12">
+              <div className="network-coordinate-capture">
+                <div className="network-coordinate-capture-header">
+                  <div>
+                    <label className="form-label mb-0">Coordinates</label>
+                    <small>Click Capture, then click the map to fill the OLT latitude and longitude.</small>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-outline-primary btn-sm"
+                    aria-expanded={oltLocationPickerOpen}
+                    onClick={openOltLocationCapture}
+                  >
+                    <IconMap size={16} className="me-2" />
+                    Capture
+                  </button>
+                </div>
+                <div className="row g-3">
+                  <div className="col-md-6">
+                    <label className="form-label">Latitude</label>
+                    <input
+                      className="form-control"
+                      required
+                      placeholder="Example: 14.599512"
+                      value={oltLocationForm.latitude ?? ''}
+                      onChange={(event) => setOltLocationForm({ ...oltLocationForm, latitude: event.target.value })}
+                    />
+                  </div>
+                  <div className="col-md-6">
+                    <label className="form-label">Longitude</label>
+                    <input
+                      className="form-control"
+                      required
+                      placeholder="Example: 120.984222"
+                      value={oltLocationForm.longitude ?? ''}
+                      onChange={(event) => setOltLocationForm({ ...oltLocationForm, longitude: event.target.value })}
+                    />
+                  </div>
+                </div>
+                {oltLocationPickerOpen && (
+                  <div className="network-coordinate-picker-wrap">
+                    <div className="network-coordinate-picker-actions" onMouseDown={(event) => event.stopPropagation()}>
+                      <span>{oltLocationPickerMap.zoom}z</span>
+                      <button type="button" className="btn btn-outline-secondary btn-sm network-header-icon-button" title="Zoom out" aria-label="Zoom out" onClick={() => updateOltLocationPickerZoom(-1)}>
+                        <IconZoomOut size={16} />
+                      </button>
+                      <button type="button" className="btn btn-outline-secondary btn-sm network-header-icon-button" title="Zoom in" aria-label="Zoom in" onClick={() => updateOltLocationPickerZoom(1)}>
+                        <IconZoomIn size={16} />
+                      </button>
+                    </div>
+                    <div
+                      ref={oltLocationPickerSurfaceRef}
+                      className={`network-coordinate-picker ${oltLocationPickerDragging ? 'dragging' : ''}`}
+                      role="button"
+                      tabIndex={0}
+                      aria-label="Click map to capture OLT coordinates"
+                      onMouseDown={startOltLocationPickerPan}
+                      onMouseMove={moveOltLocationPickerPan}
+                      onMouseUp={finishOltLocationPickerPan}
+                      onMouseLeave={cancelOltLocationPickerPan}
+                      onWheel={(event) => {
+                        event.preventDefault();
+                        updateOltLocationPickerZoom(event.deltaY < 0 ? 1 : -1);
+                      }}
+                    >
+                      <div className="network-coordinate-tile-layer" aria-hidden="true">
+                        {oltLocationPickerMap.tiles.map((tile) => (
+                          <img
+                            key={tile.id}
+                            src={tile.src}
+                            alt=""
+                            draggable="false"
+                            style={{ left: tile.x, top: tile.y }}
+                          />
+                        ))}
+                      </div>
+                      {oltLocationPickerMap.marker && (
+                        <span
+                          className="network-coordinate-picker-marker"
+                          style={{ left: oltLocationPickerMap.marker.x, top: oltLocationPickerMap.marker.y }}
+                          aria-hidden="true"
+                        >
+                          <IconMapPin size={30} />
+                        </span>
+                      )}
+                    </div>
+                    <div className="network-coordinate-picker-hint">
+                      Click to capture. Drag to pan, or use the zoom buttons to adjust the map.
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </CrudModal>
+        );
+      }
       return (
         <CrudModal
           title={`Bind Locations: ${locationBindingDevice.name}`}
@@ -1883,7 +3261,12 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
         <CrudModal title={ponForm.id ? 'Edit PON' : 'New PON'} icon={IconNetwork} onClose={closeModal} onSubmit={savePon}>
           <TextInput label="Port No." type="number" min="1" value={ponForm.portNumber} onChange={(value) => setPonForm({ ...ponForm, portNumber: value })} />
           <TextInput label="Label" value={ponForm.label} onChange={(value) => setPonForm({ ...ponForm, label: value })} />
-          <SelectInput label="Technology" value={ponForm.technology} options={meta.ponTechnologies} onChange={(value) => setPonForm({ ...ponForm, technology: value })} />
+          <SelectInput
+            label="Technology"
+            value={ponForm.technology}
+            options={meta.ponTechnologies}
+            onChange={(value) => setPonForm({ ...ponForm, technology: value, ...ponDefaultsForTechnology(value) })}
+          />
           <SelectInput label="Admin" value={ponForm.adminStatus} options={meta.adminStatuses} onChange={(value) => setPonForm({ ...ponForm, adminStatus: value })} />
           <SelectInput label="Operational" value={ponForm.operationalStatus} options={meta.operationalStatuses} onChange={(value) => setPonForm({ ...ponForm, operationalStatus: value })} />
           <TextInput label="Split Ratio" value={ponForm.splitRatio} onChange={(value) => setPonForm({ ...ponForm, splitRatio: value })} />
@@ -1893,19 +3276,57 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
         </CrudModal>
       );
     }
+    if (modalType === 'pon-power') {
+      return (
+        <CrudModal title={`Power Module: ${ponForm.label || 'PON'}`} icon={IconAntenna} onClose={closeModal} onSubmit={savePonPower}>
+          <TextInput label="Module Vendor" value={ponForm.moduleVendor} onChange={(value) => setPonForm({ ...ponForm, moduleVendor: value })} />
+          <TextInput label="Part Number" value={ponForm.modulePartNumber} onChange={(value) => setPonForm({ ...ponForm, modulePartNumber: value })} />
+          <TextInput label="Serial Number" value={ponForm.moduleSerial} onChange={(value) => setPonForm({ ...ponForm, moduleSerial: value })} />
+          <TextInput label="Rx Power (dBm)" placeholder="-7.50" value={ponForm.moduleRxPowerDbm} onChange={(value) => setPonForm({ ...ponForm, moduleRxPowerDbm: value })} />
+          <TextInput label="Tx Power (dBm)" placeholder="-5.30" value={ponForm.moduleTxPowerDbm} onChange={(value) => setPonForm({ ...ponForm, moduleTxPowerDbm: value })} />
+          <TextInput label="Temperature (C)" placeholder="49.2" value={ponForm.moduleTemperatureC} onChange={(value) => setPonForm({ ...ponForm, moduleTemperatureC: value })} />
+          <TextInput label="Voltage (V)" placeholder="3.27" value={ponForm.moduleVoltageV} onChange={(value) => setPonForm({ ...ponForm, moduleVoltageV: value })} />
+          <TextInput label="Bias Current (mA)" placeholder="24.8" value={ponForm.moduleBiasCurrentMa} onChange={(value) => setPonForm({ ...ponForm, moduleBiasCurrentMa: value })} />
+          <TextInput label="Hardware Rev" value={ponForm.moduleHardwareRev} onChange={(value) => setPonForm({ ...ponForm, moduleHardwareRev: value })} />
+        </CrudModal>
+      );
+    }
     if (modalType === 'nap') {
       return (
-        <CrudModal title={napForm.id ? 'Edit NAP Box' : 'New NAP Box'} icon={IconBox} onClose={closeModal} onSubmit={saveNap}>
+        <CrudModal title={napForm.id ? 'Edit NAP Box' : 'New NAP Box'} icon={IconBox} onClose={closeModal} onSubmit={saveNap} submitDisabled={napSaving} submitLabel={napSaving ? 'Saving...' : 'Save'}>
+          {napFormMessage && <div className="col-12"><div className="alert alert-success mb-0">{napFormMessage}</div></div>}
+          {napFormError && <div className="col-12"><div className="alert alert-danger mb-0">{napFormError}</div></div>}
+          <SelectInput label="OLT" value={napSelectedOltId} required onChange={selectNapOlt}>
+            <option value="">Select OLT</option>
+            {olts.map((olt) => (
+              <option key={olt.id} value={olt.id}>{[olt.vendor, olt.name].filter(Boolean).join(' / ') || olt.name}</option>
+            ))}
+          </SelectInput>
+          <NapPonChoices pons={napPonOptions} value={napForm.ponPortId} onChange={selectNapPon} />
           <TextInput label="NAP Name" value={napForm.name} required onChange={(value) => setNapForm({ ...napForm, name: value })} />
-          <SelectInput label="Assigned PON" value={napForm.ponPortId} required onChange={(value) => setNapForm({ ...napForm, ponPortId: value })}><PonOptions pons={pons} /></SelectInput>
-          <TextInput label="Location" value={napForm.location} onChange={(value) => setNapForm({ ...napForm, location: value })} />
-          <TextInput label="Barangay" value={napForm.barangay} onChange={(value) => setNapForm({ ...napForm, barangay: value })} />
           <TextInput label="Latitude" value={napForm.latitude} onChange={(value) => setNapForm({ ...napForm, latitude: value })} />
           <TextInput label="Longitude" value={napForm.longitude} onChange={(value) => setNapForm({ ...napForm, longitude: value })} />
-          <TextInput label="Splitter Ratio" value={napForm.splitterRatio} onChange={(value) => setNapForm({ ...napForm, splitterRatio: value })} />
-          <TextInput label="FBT Capacity" type="number" min="1" value={napForm.portCapacity} onChange={(value) => setNapForm({ ...napForm, portCapacity: value })} />
+          <TextInput label="Barangay" value={napForm.barangay} list="network-nap-barangay-options" placeholder="Search or select barangay" onChange={(value) => setNapForm({ ...napForm, barangay: value })} />
+          <datalist id="network-nap-barangay-options">
+            {barangayOptions.map((barangay) => <option key={barangay} value={barangay} />)}
+          </datalist>
+          <RadioChoiceInput
+            label="Splitter Ratio"
+            value={normalizeNapSplitterRatio(napForm.splitterRatio)}
+            options={meta.napSplitterRatios || defaultMeta.napSplitterRatios}
+            formatLabel={formatSplitterRatio}
+            onChange={(value) => setNapForm({ ...napForm, splitterRatio: value })}
+          />
           <SelectInput label="Status" value={napForm.status} options={meta.napStatuses} onChange={(value) => setNapForm({ ...napForm, status: value })} />
           <NotesInput label="Notes" value={napForm.notes} onChange={(value) => setNapForm({ ...napForm, notes: value })} />
+          {!napForm.id && (
+            <CheckboxInput
+              label="After Save"
+              checked={napAddAnother}
+              onChange={setNapAddAnother}
+              help="Add another NAP using the same OLT and PON"
+            />
+          )}
         </CrudModal>
       );
     }
@@ -1938,6 +3359,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
       {activeSection === 'mikrotik-settings' && renderDevicesPage()}
       {activeSection === 'pppoe' && renderPppoeAccountsPage()}
       {activeSection === 'olt-settings' && renderDevicesPage()}
+      {activeSection === 'map' && renderMapPage()}
       {activeSection === 'olts' && renderOltPonPage()}
       {activeSection === 'onus' && renderOnusPage()}
       {activeSection === 'naps' && renderNapPage()}

@@ -29,6 +29,7 @@ _data_loaded = False
 _current_admin: Callable[[str | None], dict[str, Any]] | None = None
 _audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None] | None = None
 _capture_lock = threading.Lock()
+_data_save_lock = threading.Lock()
 _poller_lock = threading.Lock()
 _poller_stop_event = threading.Event()
 _poller_thread: threading.Thread | None = None
@@ -46,9 +47,16 @@ _poller_state: dict[str, Any] = {
 
 OLT_STATUSES = ["PLANNED", "ACTIVE", "MAINTENANCE", "OFFLINE", "ARCHIVED"]
 PON_TECHNOLOGIES = ["GPON", "EPON", "XGS_PON", "OTHER"]
+PON_TECHNOLOGY_DEFAULTS = {
+    "GPON": {"splitRatio": "1:128", "capacity": 128},
+    "XGS_PON": {"splitRatio": "1:128", "capacity": 128},
+    "EPON": {"splitRatio": "1:64", "capacity": 64},
+    "OTHER": {"splitRatio": "1:64", "capacity": 64},
+}
 ADMIN_STATUSES = ["ENABLED", "DISABLED", "RESERVED"]
 OPER_STATUS = ["UNKNOWN", "UP", "DEGRADED", "DOWN"]
 NAP_STATUSES = ["PLANNED", "ACTIVE", "FULL", "MAINTENANCE", "OFFLINE", "ARCHIVED"]
+NAP_SPLITTER_RATIOS = ["1:8", "1:16"]
 FBT_STATUSES = ["PLANNED", "ACTIVE", "FULL", "MAINTENANCE", "OFFLINE", "ARCHIVED"]
 ONU_STATUSES = ["UNKNOWN", "ONLINE", "OFFLINE", "LOS", "DYING_GASP", "DISABLED"]
 DEVICE_TYPES = ["MIKROTIK", "OLT"]
@@ -63,6 +71,19 @@ SNMP_AUTH_LEVELS = ["NO_AUTH_NO_PRIV", "AUTH_NO_PRIV", "AUTH_PRIV"]
 SNMP_AUTH_PROTOCOLS = ["MD5", "SHA", "SHA-224", "SHA-256", "SHA-384", "SHA-512"]
 SNMP_PRIVACY_PROTOCOLS = ["AES", "DES"]
 SECRET_DEVICE_FIELDS = {"apiPassword", "snmpCommunity", "snmpAuthPassword", "snmpPrivacyPassword"}
+PON_MODULE_FIELDS = (
+    "moduleVendor",
+    "modulePartNumber",
+    "moduleSerial",
+    "moduleHardwareRev",
+    "moduleRxPowerDbm",
+    "moduleTxPowerDbm",
+    "moduleTemperatureC",
+    "moduleVoltageV",
+    "moduleBiasCurrentMa",
+    "moduleEntityIndex",
+    "moduleSource",
+)
 MIKROTIK_API_TEST_TIMEOUT_SECONDS = 3
 MIKROTIK_API_MAX_REPLY_SENTENCES = 10000
 SNMP_CAPTURE_TIMEOUT_SECONDS = 3
@@ -71,6 +92,8 @@ SNMP_MAX_WALK_ROWS = 2048
 DEFAULT_DEVICE_POLL_INTERVAL_SECONDS = int(os.getenv("NETWORK_SETTINGS_POLL_INTERVAL_SECONDS", "300"))
 NETWORK_SETTINGS_POLL_LOOP_SECONDS = int(os.getenv("NETWORK_SETTINGS_POLL_LOOP_SECONDS", "10"))
 ONU_TABLE_REFRESH_SECONDS = int(os.getenv("NETWORK_SETTINGS_ONU_TABLE_REFRESH_SECONDS", "15"))
+MAX_CAPTURE_HISTORY_PER_DEVICE = int(os.getenv("NETWORK_SETTINGS_CAPTURE_HISTORY_PER_DEVICE", "10"))
+MAX_CAPTURE_PREVIEW_CANDIDATES = int(os.getenv("NETWORK_SETTINGS_CAPTURE_PREVIEW_CANDIDATES", "200"))
 NETWORK_SETTINGS_DATA_PATH = os.getenv(
     "NETWORK_SETTINGS_DATA_PATH",
     "/app/data/network_settings.json" if os.path.isdir("/app/data") else "",
@@ -111,6 +134,11 @@ PON_CHILD_INTERFACE_RE = re.compile(
     r"\b(?:xgspon|xgpon|gpon|epon|xpon|pon)\s*\d+\s*[/.-]\s*\d+\s*[:.]\s*\d+\b",
     re.IGNORECASE,
 )
+PON_MODEL_TECHNOLOGY_RE = re.compile(r"\b(?:hsgq[-_\s]*)?([egx])\d{2}[a-z]*\b", re.IGNORECASE)
+COMPACT_PON_ONU_INTERFACE_RE = re.compile(
+    r"\b(?:xgspon|xgpon|gpon|epon|xpon|pon)\s*0*(\d{1,3})\s*(?:onu|ont)\s*0*(\d{1,3})\b",
+    re.IGNORECASE,
+)
 ONU_SERIAL_RE = re.compile(r"\b(?:sn|serial)\s*[:#-]?\s*([A-Za-z0-9-]{6,32})\b", re.IGNORECASE)
 ONU_MAC_RE = re.compile(r"\b(?:mac|macaddr|mac-address)?\s*[:#-]?\s*([0-9a-f]{2}(?::[0-9a-f]{2}){5}|[0-9a-f]{12})\b", re.IGNORECASE)
 ONU_RX_RE = re.compile(r"\b(?:rx|rxpower|rx-power|receive)\s*[:=]?\s*(-?\d+(?:\.\d+)?)\s*(?:dbm)?\b", re.IGNORECASE)
@@ -136,9 +164,10 @@ ENTERPRISE_VENDOR_MARKERS = [
 
 SUB_NAV = [
     {"key": "overview", "label": "Overview", "route": "/network-settings"},
-    {"key": "mikrotikSettings", "label": "MikroTik Settings", "route": "/network-settings/mikrotik/settings"},
+    {"key": "mikrotikSettings", "label": "MikroTik API", "route": "/network-settings/mikrotik/settings"},
     {"key": "pppoeAccounts", "label": "PPPoE Accounts", "route": "/network-settings/pppoe-accounts"},
-    {"key": "oltSettings", "label": "OLT Settings", "route": "/network-settings/olt/settings"},
+    {"key": "oltSettings", "label": "OLT SNMP", "route": "/network-settings/olt/settings"},
+    {"key": "map", "label": "Map", "route": "/network-settings/map"},
     {"key": "olts", "label": "OLT & PON", "route": "/network-settings/olts"},
     {"key": "onus", "label": "ONUs", "route": "/network-settings/onus"},
     {"key": "napBoxes", "label": "NAP Boxes", "route": "/network-settings/nap-boxes"},
@@ -153,6 +182,10 @@ class OltPayload(BaseModel):
     vendor: str | None = None
     model: str | None = None
     firmwareVersion: str | None = None
+    latitude: str | float | None = None
+    longitude: str | float | None = None
+    locationId: str | None = None
+    locationName: str | None = None
     status: str | None = None
     defaultPonCount: int | None = Field(default=None, ge=1, le=128)
     notes: str | None = None
@@ -167,7 +200,31 @@ class PonPayload(BaseModel):
     splitRatio: str | None = None
     serviceVlan: str | None = None
     capacity: int | None = Field(default=None, ge=1, le=4096)
+    moduleVendor: str | None = None
+    modulePartNumber: str | None = None
+    moduleSerial: str | None = None
+    moduleHardwareRev: str | None = None
+    moduleRxPowerDbm: str | float | None = None
+    moduleTxPowerDbm: str | float | None = None
+    moduleTemperatureC: str | float | None = None
+    moduleVoltageV: str | float | None = None
+    moduleBiasCurrentMa: str | float | None = None
+    moduleEntityIndex: str | None = None
+    moduleSource: str | None = None
     notes: str | None = None
+
+
+class PonPowerPayload(BaseModel):
+    moduleVendor: str | None = None
+    modulePartNumber: str | None = None
+    moduleSerial: str | None = None
+    moduleHardwareRev: str | None = None
+    moduleRxPowerDbm: str | float | None = None
+    moduleTxPowerDbm: str | float | None = None
+    moduleTemperatureC: str | float | None = None
+    moduleVoltageV: str | float | None = None
+    moduleBiasCurrentMa: str | float | None = None
+    moduleSource: str | None = None
 
 
 class NapPayload(BaseModel):
@@ -230,6 +287,14 @@ class DeviceLocationBindingPayload(BaseModel):
     locations: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class DeviceOltLocationPayload(BaseModel):
+    locationId: str | None = None
+    location: dict[str, Any] = Field(default_factory=dict)
+    label: str | None = None
+    latitude: str | float | None = None
+    longitude: str | float | None = None
+
+
 def configure_network_settings(
     current_admin: Callable[[str | None], dict[str, Any]] | None = None,
     audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None] | None = None,
@@ -273,36 +338,95 @@ def load_network_settings_data() -> None:
     network_devices = list(payload.get("networkDevices") or [])
     device_captures = list(payload.get("deviceCaptures") or [])
     onus = list(payload.get("onus") or [])
+    capture_history_normalized = normalize_capture_history()
+    if normalize_pon_inventory_defaults() or capture_history_normalized:
+        save_network_settings_data()
+
+
+def compact_capture_for_storage(capture: dict[str, Any]) -> dict[str, Any]:
+    interfaces = capture.get("interfaces") if isinstance(capture.get("interfaces"), list) else []
+    pon_candidates = capture.get("ponCandidates") if isinstance(capture.get("ponCandidates"), list) else []
+    onu_candidates = capture.get("onuCandidates") if isinstance(capture.get("onuCandidates"), list) else []
+    return {
+        "id": capture.get("id"),
+        "deviceId": capture.get("deviceId"),
+        "status": capture.get("status", "UNKNOWN"),
+        "capturedAt": capture.get("capturedAt", ""),
+        "message": capture.get("message", ""),
+        "system": capture.get("system") or {},
+        "interfaceCount": int(capture.get("interfaceCount") or len(interfaces)),
+        "ponCandidateCount": int(capture.get("ponCandidateCount") or len(pon_candidates)),
+        "onuCandidateCount": int(capture.get("onuCandidateCount") or len(onu_candidates)),
+        "ponCandidates": pon_candidates[:MAX_CAPTURE_PREVIEW_CANDIDATES],
+        "onuCandidates": onu_candidates[:MAX_CAPTURE_PREVIEW_CANDIDATES],
+        "reconciliation": capture.get("reconciliation") or {},
+        "detailsPruned": bool(interfaces)
+        or len(pon_candidates) > MAX_CAPTURE_PREVIEW_CANDIDATES
+        or len(onu_candidates) > MAX_CAPTURE_PREVIEW_CANDIDATES
+        or bool(capture.get("detailsPruned")),
+    }
+
+
+def compact_capture_history(captures: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    kept_counts: dict[str, int] = {}
+    retained: list[dict[str, Any]] = []
+    for capture in sorted(captures, key=lambda item: clean_text(item.get("capturedAt")), reverse=True):
+        device_id = clean_text(capture.get("deviceId")) or "unknown"
+        count = kept_counts.get(device_id, 0)
+        if count >= MAX_CAPTURE_HISTORY_PER_DEVICE:
+            continue
+        retained.append(compact_capture_for_storage(capture))
+        kept_counts[device_id] = count + 1
+    return sorted(retained, key=lambda item: clean_text(item.get("capturedAt")))
+
+
+def normalize_capture_history() -> bool:
+    global device_captures
+    compacted = compact_capture_history(device_captures)
+    changed = compacted != device_captures
+    if changed:
+        device_captures = compacted
+    return changed
 
 
 def save_network_settings_data() -> None:
     if not NETWORK_SETTINGS_DATA_PATH:
         return
+    payload = {
+        "olts": olts,
+        "ponPorts": pon_ports,
+        "napBoxes": nap_boxes,
+        "fbts": fbts,
+        "networkDevices": network_devices,
+        "deviceCaptures": compact_capture_history(device_captures),
+        "onus": onus,
+    }
     try:
-        os.makedirs(os.path.dirname(NETWORK_SETTINGS_DATA_PATH), exist_ok=True)
-        temp_path = f"{NETWORK_SETTINGS_DATA_PATH}.tmp"
-        with open(temp_path, "w", encoding="utf-8") as handle:
-            json.dump(
-                {
-                    "olts": olts,
-                    "ponPorts": pon_ports,
-                    "napBoxes": nap_boxes,
-                    "fbts": fbts,
-                    "networkDevices": network_devices,
-                    "deviceCaptures": device_captures,
-                    "onus": onus,
-                },
-                handle,
-                indent=2,
-                sort_keys=True,
-            )
-        os.replace(temp_path, NETWORK_SETTINGS_DATA_PATH)
+        with _data_save_lock:
+            os.makedirs(os.path.dirname(NETWORK_SETTINGS_DATA_PATH), exist_ok=True)
+            temp_path = f"{NETWORK_SETTINGS_DATA_PATH}.tmp"
+            with open(temp_path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, separators=(",", ":"))
+            os.replace(temp_path, NETWORK_SETTINGS_DATA_PATH)
     except OSError:
         return
 
 
 def clean_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def clean_coordinate(value: Any, field_name: str, minimum: float, maximum: float) -> str:
+    text = clean_text(value)
+    if not text:
+        return ""
+    try:
+        number = float(text)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"{field_name} must be a valid number") from None
+    if number < minimum or number > maximum:
+        raise HTTPException(status_code=400, detail=f"{field_name} must be between {minimum:g} and {maximum:g}")
+    return f"{number:.6f}".rstrip("0").rstrip(".")
 
 
 def clean_unique_texts(values: list[Any]) -> list[str]:
@@ -449,6 +573,25 @@ def unique_pon_port(olt_id: str, port_number: int, current_id: str | None = None
         raise HTTPException(status_code=400, detail="PON port number already exists for this OLT")
 
 
+def unique_nap_name(name: str, pon_port_id: str, current_id: str | None = None) -> None:
+    normalized_name = normalize_upper(name)
+    duplicate = next(
+        (
+            row
+            for row in visible_naps()
+            if row.get("ponPortId") == pon_port_id
+            and normalize_upper(row.get("name")) == normalized_name
+            and row.get("id") != current_id
+        ),
+        None,
+    )
+    if duplicate:
+        current = next((row for row in nap_boxes if row.get("id") == current_id), None)
+        if current and current.get("ponPortId") == pon_port_id and normalize_upper(current.get("name")) == normalized_name:
+            return
+        raise HTTPException(status_code=400, detail="NAP box name already exists for this PON")
+
+
 def unique_fbt_port(nap_box_id: str, port_number: int, current_id: str | None = None) -> None:
     duplicate = next(
         (
@@ -484,6 +627,18 @@ def unique_device_endpoint(record: dict[str, Any], current_id: str | None = None
         raise HTTPException(status_code=400, detail="A device already uses this management IP, method, and port")
 
 
+def canonical_pon_label_from_number(port_number: Any) -> str:
+    try:
+        number = int(port_number or 0)
+    except (TypeError, ValueError):
+        number = 0
+    return f"PON{number:02d}" if number > 0 else "PON"
+
+
+def canonical_pon_label(pon: dict[str, Any]) -> str:
+    return canonical_pon_label_from_number(pon.get("portNumber"))
+
+
 def normalize_olt_payload(payload: OltPayload, current: dict[str, Any] | None = None) -> dict[str, Any]:
     data = payload.model_dump(exclude_unset=True)
     record = dict(current or {})
@@ -496,6 +651,10 @@ def normalize_olt_payload(payload: OltPayload, current: dict[str, Any] | None = 
     record["vendor"] = clean_text(record.get("vendor")) or "Generic"
     record["model"] = clean_text(record.get("model"))
     record["firmwareVersion"] = clean_text(record.get("firmwareVersion"))
+    record["latitude"] = clean_coordinate(record.get("latitude"), "Latitude", -90, 90)
+    record["longitude"] = clean_coordinate(record.get("longitude"), "Longitude", -180, 180)
+    record["locationId"] = clean_text(record.get("locationId"))
+    record["locationName"] = clean_text(record.get("locationName"))
     record["status"] = ensure_choice(record.get("status"), OLT_STATUSES, "OLT status", "PLANNED")
     record["defaultPonCount"] = int(record.get("defaultPonCount") or 4)
     record["notes"] = clean_text(record.get("notes"))
@@ -510,14 +669,40 @@ def normalize_pon_payload(payload: PonPayload, olt_id: str, current: dict[str, A
     record["oltId"] = olt_id
     record["portNumber"] = int(record.get("portNumber") or next_pon_number(olt_id))
     unique_pon_port(olt_id, record["portNumber"], record.get("id"))
-    record["label"] = clean_text(record.get("label")) or f"PON-{record['portNumber']:02d}"
+    record["label"] = canonical_pon_label(record)
     record["technology"] = ensure_choice(record.get("technology"), PON_TECHNOLOGIES, "PON technology", "GPON")
     record["adminStatus"] = ensure_choice(record.get("adminStatus"), ADMIN_STATUSES, "admin status", "ENABLED")
     record["operationalStatus"] = ensure_choice(record.get("operationalStatus"), OPER_STATUS, "operational status", "UNKNOWN")
-    record["splitRatio"] = clean_text(record.get("splitRatio")) or "1:64"
     record["serviceVlan"] = clean_text(record.get("serviceVlan"))
-    record["capacity"] = int(record.get("capacity") or 64)
+    for field in PON_MODULE_FIELDS:
+        record[field] = clean_text(record.get(field))
+    apply_pon_technology_defaults(record)
     record["notes"] = clean_text(record.get("notes"))
+    return record
+
+
+def normalize_pon_power_payload(payload: PonPowerPayload) -> dict[str, str]:
+    data = payload.model_dump(exclude_unset=True)
+    record = {field: clean_text(data.get(field)) for field in PON_MODULE_FIELDS if field in data}
+    has_power_data = any(
+        clean_text(record.get(field))
+        for field in (
+            "moduleVendor",
+            "modulePartNumber",
+            "moduleSerial",
+            "moduleHardwareRev",
+            "moduleRxPowerDbm",
+            "moduleTxPowerDbm",
+            "moduleTemperatureC",
+            "moduleVoltageV",
+            "moduleBiasCurrentMa",
+        )
+    )
+    if has_power_data:
+        record["moduleSource"] = clean_text(record.get("moduleSource")) or "Manual"
+    elif "moduleSource" not in record:
+        record["moduleSource"] = ""
+    record["moduleEntityIndex"] = ""
     return record
 
 
@@ -532,11 +717,13 @@ def normalize_nap_payload(payload: NapPayload, current: dict[str, Any] | None = 
     if not record["ponPortId"]:
         raise HTTPException(status_code=400, detail="PON assignment is required")
     find_pon(record["ponPortId"])
-    record["location"] = clean_text(record.get("location")) or "Field location"
+    unique_nap_name(record["name"], record["ponPortId"], record.get("id"))
+    record["location"] = clean_text(record.get("location"))
     record["barangay"] = clean_text(record.get("barangay"))
     record["latitude"] = clean_text(record.get("latitude"))
     record["longitude"] = clean_text(record.get("longitude"))
-    record["splitterRatio"] = clean_text(record.get("splitterRatio")) or "1:8"
+    splitter_ratio = clean_text(record.get("splitterRatio")).lower().replace("x", ":")
+    record["splitterRatio"] = ensure_choice(splitter_ratio or "1:8", NAP_SPLITTER_RATIOS, "splitter ratio", "1:8")
     record["portCapacity"] = int(record.get("portCapacity") or 8)
     record["status"] = ensure_choice(record.get("status"), NAP_STATUSES, "NAP status", "PLANNED")
     record["notes"] = clean_text(record.get("notes"))
@@ -585,6 +772,8 @@ def normalize_location_binding_snapshot(location: dict[str, Any]) -> dict[str, A
         "barangay": clean_text(location.get("barangay")),
         "province": clean_text(location.get("province")),
         "region": clean_text(location.get("region")),
+        "latitude": clean_coordinate(location.get("latitude"), "Latitude", -90, 90),
+        "longitude": clean_coordinate(location.get("longitude"), "Longitude", -180, 180),
         "label": location_binding_label(location),
     }
 
@@ -1188,6 +1377,92 @@ def infer_pon_technology(text: str) -> str:
     return "OTHER"
 
 
+def safe_pon_technology(value: Any, fallback: str = "OTHER") -> str:
+    normalized = normalize_upper(value)
+    return normalized if normalized in PON_TECHNOLOGIES else fallback
+
+
+def infer_model_pon_technology(text: str) -> str:
+    for match in PON_MODEL_TECHNOLOGY_RE.finditer(text):
+        marker = match.group(1).lower()
+        if marker == "e":
+            return "EPON"
+        if marker == "g":
+            return "GPON"
+        if marker == "x":
+            return "XGS_PON"
+    return ""
+
+
+def infer_context_pon_technology(*values: Any) -> str:
+    text = " ".join(clean_text(value) for value in values if clean_text(value))
+    direct = infer_pon_technology(text)
+    if direct != "OTHER":
+        return direct
+    return infer_model_pon_technology(text)
+
+
+def infer_olt_context_pon_technology(
+    olt: dict[str, Any] | None = None,
+    device: dict[str, Any] | None = None,
+    system: dict[str, Any] | None = None,
+) -> str:
+    values = []
+    for source in (system or {}, olt or {}, device or {}):
+        values.extend(
+            [
+                source.get("vendor"),
+                source.get("model"),
+                source.get("sysDescr"),
+                source.get("sourceSysDescr"),
+                source.get("sysObjectID"),
+                source.get("sourceSysObjectID"),
+                source.get("name"),
+            ]
+        )
+    return infer_context_pon_technology(*values)
+
+
+def pon_technology_defaults(technology: Any) -> dict[str, int | str]:
+    return PON_TECHNOLOGY_DEFAULTS.get(safe_pon_technology(technology), PON_TECHNOLOGY_DEFAULTS["OTHER"])
+
+
+def apply_pon_technology_defaults(row: dict[str, Any], context_technology: str = "") -> bool:
+    current_technology = safe_pon_technology(row.get("technology"))
+    next_technology = safe_pon_technology(context_technology, current_technology)
+    if current_technology == "OTHER" and next_technology != "OTHER":
+        current_technology = next_technology
+    defaults = pon_technology_defaults(current_technology)
+    changed = False
+    if row.get("technology") != current_technology:
+        row["technology"] = current_technology
+        changed = True
+    if clean_text(row.get("splitRatio")) != clean_text(defaults["splitRatio"]):
+        row["splitRatio"] = defaults["splitRatio"]
+        changed = True
+    if int(row.get("capacity") or 0) != int(defaults["capacity"]):
+        row["capacity"] = defaults["capacity"]
+        changed = True
+    return changed
+
+
+def normalize_pon_inventory_defaults() -> int:
+    changed = 0
+    timestamp = now_iso()
+    olt_by_id = {row.get("id"): row for row in olts}
+    device_by_id = {row.get("id"): row for row in network_devices}
+    for pon in pon_ports:
+        if pon.get("deletedAt"):
+            continue
+        olt = olt_by_id.get(pon.get("oltId")) or {}
+        device = device_by_id.get(olt.get("sourceDeviceId")) or device_by_id.get(pon.get("sourceDeviceId")) or {}
+        context_technology = infer_olt_context_pon_technology(olt, device)
+        if apply_pon_technology_defaults(pon, context_technology):
+            pon["updatedAt"] = timestamp
+            changed += 1
+    return changed
+
+
 def infer_pon_number(text: str, used: set[int]) -> int | None:
     for raw in reversed(re.findall(r"\d+", text)):
         number = int(raw)
@@ -1217,7 +1492,8 @@ def assign_pon_numbers(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 
 def is_pon_child_interface(text: str) -> bool:
-    return bool(PON_CHILD_INTERFACE_RE.search(clean_text(text)))
+    normalized = clean_text(text)
+    return bool(PON_CHILD_INTERFACE_RE.search(normalized) or COMPACT_PON_ONU_INTERFACE_RE.search(normalized))
 
 
 def is_subscriber_interface(text: str) -> bool:
@@ -1272,6 +1548,9 @@ def pon_candidates_from_interfaces(interfaces: list[dict[str, Any]]) -> list[dic
 
 
 def infer_onu_link(text: str, pon_candidates: list[dict[str, Any]]) -> tuple[int | None, str]:
+    compact_match = COMPACT_PON_ONU_INTERFACE_RE.search(text)
+    if compact_match:
+        return int(compact_match.group(1)), str(int(compact_match.group(2)))
     match = PON_ONU_RE.search(text)
     if match:
         return int(match.group(1)), match.group(2)
@@ -1595,6 +1874,10 @@ def run_snmp_capture(device: dict[str, Any]) -> dict[str, Any]:
             system["vendor"] = vendor
             system["model"] = model
             system["firmwareVersion"] = firmware_from_descr(clean_text(system.get("sysDescr")))
+            context_technology = infer_olt_context_pon_technology(system=system, device=device)
+            for candidate in pon_candidates:
+                if safe_pon_technology(candidate.get("technology")) == "OTHER" and context_technology:
+                    candidate["technology"] = context_technology
             onu_candidates = onu_candidates_from_interfaces(interfaces, pon_candidates)
             onu_candidates = augment_vendor_onu_candidates(client, system, onu_candidates)
             return {
@@ -1803,18 +2086,26 @@ def reconcile_olt_capture(device: dict[str, Any], capture_data: dict[str, Any], 
         else:
             olt["defaultPonCount"] = max(int(olt.get("defaultPonCount") or 4), captured_pon_target)
     created_pons = ensure_pon_count(olt["id"], int(olt.get("defaultPonCount") or 4))
+    context_technology = infer_olt_context_pon_technology(olt, device, system)
     updated_pons = 0
     for candidate in pon_candidates:
         port_number = int(candidate.get("portNumber") or next_pon_number(olt["id"]))
         pon = next((row for row in visible_pons() if row["oltId"] == olt["id"] and row["portNumber"] == port_number), None)
+        technology = ensure_choice(
+            context_technology if safe_pon_technology(candidate.get("technology")) == "OTHER" and context_technology else candidate.get("technology"),
+            PON_TECHNOLOGIES,
+            "PON technology",
+            "GPON",
+        )
+        defaults = pon_technology_defaults(technology)
         if pon is None:
-            pon = create_pon_record(olt["id"], port_number, timestamp)
+            pon = create_pon_record(olt["id"], port_number, timestamp, technology)
             created_pons.append(pon)
         pon.update(
             {
                 "updatedAt": timestamp,
-                "label": clean_text(candidate.get("label")) or f"PON-{port_number:02d}",
-                "technology": ensure_choice(candidate.get("technology"), PON_TECHNOLOGIES, "PON technology", "GPON"),
+                "label": canonical_pon_label_from_number(port_number),
+                "technology": technology,
                 "adminStatus": ensure_choice(candidate.get("adminStatus"), ADMIN_STATUSES, "admin status", "ENABLED"),
                 "operationalStatus": ensure_choice(
                     candidate.get("operationalStatus"),
@@ -1822,7 +2113,10 @@ def reconcile_olt_capture(device: dict[str, Any], capture_data: dict[str, Any], 
                     "operational status",
                     "UNKNOWN",
                 ),
+                "splitRatio": defaults["splitRatio"],
+                "capacity": defaults["capacity"],
                 "sourceDeviceId": device.get("id"),
+                "sourceLabel": clean_text(candidate.get("label")),
                 "sourceIfIndex": candidate.get("ifIndex"),
                 "sourceIfName": clean_text(candidate.get("ifName")),
                 "sourceIfDescr": clean_text(candidate.get("ifDescr")),
@@ -1855,13 +2149,14 @@ def capture_summary(capture: dict[str, Any], include_details: bool = False) -> d
         "status": capture["status"],
         "capturedAt": capture["capturedAt"],
         "message": capture.get("message", ""),
-        "interfaceCount": len(capture.get("interfaces") or []),
-        "ponCandidateCount": len(capture.get("ponCandidates") or []),
-        "onuCandidateCount": len(capture.get("onuCandidates") or []),
+        "interfaceCount": int(capture.get("interfaceCount") or len(capture.get("interfaces") or [])),
+        "ponCandidateCount": int(capture.get("ponCandidateCount") or len(capture.get("ponCandidates") or [])),
+        "onuCandidateCount": int(capture.get("onuCandidateCount") or len(capture.get("onuCandidates") or [])),
         "system": capture.get("system") or {},
         "ponCandidates": capture.get("ponCandidates") or [],
         "onuCandidates": capture.get("onuCandidates") or [],
         "reconciliation": capture.get("reconciliation") or {},
+        "detailsPruned": bool(capture.get("detailsPruned")),
     }
     if include_details:
         summary["interfaces"] = capture.get("interfaces") or []
@@ -1950,7 +2245,8 @@ def perform_device_capture(
                 device["model"] = clean_text(system.get("model"))
             if clean_text(system.get("firmwareVersion")):
                 device["firmwareVersion"] = clean_text(system.get("firmwareVersion"))
-            device_captures.append(capture)
+            device_captures.append(compact_capture_for_storage(capture))
+            normalize_capture_history()
             add_audit(
                 "network_device_captured",
                 "NetworkDevice",
@@ -1983,7 +2279,8 @@ def perform_device_capture(
             device["lastCapturedAt"] = timestamp
             device["lastCaptureStatus"] = "FAILED"
             device["lastCaptureMessage"] = str(exc.detail)
-            device_captures.append(capture)
+            device_captures.append(compact_capture_for_storage(capture))
+            normalize_capture_history()
             add_audit(
                 "network_device_capture_failed",
                 "NetworkDevice",
@@ -2089,7 +2386,9 @@ def next_fbt_number(nap_box_id: str) -> int:
     return number
 
 
-def create_pon_record(olt_id: str, port_number: int, timestamp: str) -> dict[str, Any]:
+def create_pon_record(olt_id: str, port_number: int, timestamp: str, technology: str = "GPON") -> dict[str, Any]:
+    normalized_technology = ensure_choice(technology, PON_TECHNOLOGIES, "PON technology", "GPON")
+    defaults = pon_technology_defaults(normalized_technology)
     record = {
         "id": str(uuid4()),
         "createdAt": timestamp,
@@ -2097,13 +2396,25 @@ def create_pon_record(olt_id: str, port_number: int, timestamp: str) -> dict[str
         "deletedAt": None,
         "oltId": olt_id,
         "portNumber": port_number,
-        "label": f"PON-{port_number:02d}",
-        "technology": "GPON",
+        "label": canonical_pon_label_from_number(port_number),
+        "technology": normalized_technology,
         "adminStatus": "ENABLED",
         "operationalStatus": "UNKNOWN",
-        "splitRatio": "1:64",
+        "splitRatio": defaults["splitRatio"],
         "serviceVlan": "",
-        "capacity": 64,
+        "capacity": defaults["capacity"],
+        "moduleVendor": "",
+        "modulePartNumber": "",
+        "moduleSerial": "",
+        "moduleHardwareRev": "",
+        "moduleRxPowerDbm": "",
+        "moduleTxPowerDbm": "",
+        "moduleTemperatureC": "",
+        "moduleVoltageV": "",
+        "moduleBiasCurrentMa": "",
+        "moduleEntityIndex": "",
+        "moduleSource": "",
+        "moduleLastCapturedAt": "",
         "notes": "Default PON generated from OLT configuration.",
     }
     pon_ports.append(record)
@@ -2139,9 +2450,14 @@ def pon_summary(pon: dict[str, Any]) -> dict[str, Any]:
     naps = nap_rows_for_pon(pon["id"])
     pon_onus = onu_rows_for_pon(pon["id"])
     fbt_count = sum(len(fbt_rows_for_nap(nap["id"])) for nap in naps)
+    display_label = canonical_pon_label(pon)
     return {
         **pon,
+        "label": display_label,
+        "sourceLabel": clean_text(pon.get("sourceLabel")) or clean_text(pon.get("label")),
+        "ponLabel": display_label,
         "oltName": olt["name"],
+        "oltVendor": clean_text(olt.get("vendor")),
         "napCount": len(naps),
         "onuCount": len(pon_onus),
         "onlineOnuCount": sum(1 for onu in pon_onus if onu.get("status") == "ONLINE"),
@@ -2155,11 +2471,13 @@ def nap_summary(nap: dict[str, Any]) -> dict[str, Any]:
     pon = find_pon(nap["ponPortId"])
     olt = find_olt(pon["oltId"])
     nap_fbts = fbt_rows_for_nap(nap["id"])
+    pon_label = canonical_pon_label(pon)
     return {
         **nap,
-        "ponLabel": pon["label"],
+        "ponLabel": pon_label,
         "oltId": olt["id"],
         "oltName": olt["name"],
+        "oltVendor": clean_text(olt.get("vendor")),
         "fbtCount": len(nap_fbts),
         "availableFbtSlots": max(0, int(nap.get("portCapacity") or 0) - len(nap_fbts)),
     }
@@ -2169,13 +2487,15 @@ def fbt_summary(fbt: dict[str, Any]) -> dict[str, Any]:
     nap = find_nap(fbt["napBoxId"])
     pon = find_pon(nap["ponPortId"])
     olt = find_olt(pon["oltId"])
+    pon_label = canonical_pon_label(pon)
     return {
         **fbt,
         "napName": nap["name"],
         "ponPortId": pon["id"],
-        "ponLabel": pon["label"],
+        "ponLabel": pon_label,
         "oltId": olt["id"],
         "oltName": olt["name"],
+        "oltVendor": clean_text(olt.get("vendor")),
     }
 
 
@@ -2200,7 +2520,8 @@ def onu_summary(onu: dict[str, Any]) -> dict[str, Any]:
         **detail_defaults,
         **onu,
         "oltName": olt["name"],
-        "ponLabel": pon["label"],
+        "oltVendor": clean_text(olt.get("vendor")),
+        "ponLabel": canonical_pon_label(pon),
         "ponPortNumber": pon["portNumber"],
         "sourceDeviceName": device.get("name", ""),
         "sourceDeviceVendor": device.get("vendor", ""),
@@ -2222,6 +2543,13 @@ def device_summary(device: dict[str, Any]) -> dict[str, Any]:
     bound_location_ids = clean_unique_texts(
         raw_bound_location_ids + [location["id"] for location in bound_locations if location.get("id")]
     )
+    linked_olt = find_captured_olt(device) if is_olt_snmp_device(device) else None
+    raw_olt_location = device.get("oltLocation") if isinstance(device.get("oltLocation"), dict) else {}
+    olt_location = normalize_location_binding_snapshot(raw_olt_location) if raw_olt_location else {}
+    olt_latitude = clean_text(linked_olt.get("latitude") if linked_olt else "") or clean_text(device.get("latitude")) or clean_text(olt_location.get("latitude"))
+    olt_longitude = clean_text(linked_olt.get("longitude") if linked_olt else "") or clean_text(device.get("longitude")) or clean_text(olt_location.get("longitude"))
+    olt_location_id = clean_text(linked_olt.get("locationId") if linked_olt else "") or clean_text(device.get("oltLocationId")) or clean_text(olt_location.get("id"))
+    olt_location_name = clean_text(linked_olt.get("locationName") if linked_olt else "") or clean_text(device.get("oltLocationName")) or clean_text(olt_location.get("label"))
     if device["accessMethod"] == "SNMP" and device["deviceType"] == "OLT":
         discovery_status = "READY_FOR_OLT_SNMP_AUTODETECT"
     elif device["accessMethod"] == "SNMP":
@@ -2247,6 +2575,13 @@ def device_summary(device: dict[str, Any]) -> dict[str, Any]:
         "boundLocationIds": bound_location_ids,
         "boundLocations": bound_locations,
         "locationBindingCount": len(bound_location_ids or bound_locations),
+        "linkedOltId": linked_olt.get("id") if linked_olt else "",
+        "latitude": olt_latitude,
+        "longitude": olt_longitude,
+        "oltLocationId": olt_location_id,
+        "oltLocationName": olt_location_name,
+        "oltLocation": olt_location,
+        "hasOltMapLocation": bool(olt_latitude and olt_longitude),
     }
 
 
@@ -2255,6 +2590,13 @@ def is_mikrotik_api_device(device: dict[str, Any]) -> bool:
         device.get("accessMethod") == "API"
         and device.get("deviceType") == "MIKROTIK"
         and clean_text(device.get("apiProtocol") or "MIKROTIK_API") == "MIKROTIK_API"
+    )
+
+
+def is_olt_snmp_device(device: dict[str, Any]) -> bool:
+    return (
+        device.get("accessMethod") == "SNMP"
+        and device.get("deviceType") == "OLT"
     )
 
 
@@ -2403,6 +2745,7 @@ def network_settings_meta(admin=Depends(require_admin)) -> dict[str, Any]:
         "adminStatuses": ADMIN_STATUSES,
         "operationalStatuses": OPER_STATUS,
         "napStatuses": NAP_STATUSES,
+        "napSplitterRatios": NAP_SPLITTER_RATIOS,
         "fbtStatuses": FBT_STATUSES,
         "onuStatuses": ONU_STATUSES,
         "deviceTypes": DEVICE_TYPES,
@@ -2599,6 +2942,88 @@ def update_device_location_bindings(device_id: str, payload: DeviceLocationBindi
     return device_summary(current)
 
 
+@router.patch("/devices/{device_id}/olt-location")
+def update_device_olt_location(device_id: str, payload: DeviceOltLocationPayload, admin=Depends(require_admin)):
+    seed_network_settings_data()
+    current = find_device(device_id)
+    if not is_olt_snmp_device(current):
+        raise HTTPException(status_code=400, detail="OLT map location is only available for SNMP OLT devices")
+    location_snapshot = normalize_location_binding_snapshot(payload.location or {})
+    location_id = clean_text(payload.locationId) or clean_text(location_snapshot.get("id"))
+    label = (
+        clean_text(payload.label)
+        or clean_text(location_snapshot.get("label"))
+        or clean_text(location_snapshot.get("location_name"))
+        or clean_text(current.get("site"))
+        or "Main POP"
+    )
+    latitude = clean_coordinate(payload.latitude or location_snapshot.get("latitude"), "Latitude", -90, 90)
+    longitude = clean_coordinate(payload.longitude or location_snapshot.get("longitude"), "Longitude", -180, 180)
+    if not latitude or not longitude:
+        raise HTTPException(status_code=400, detail="Latitude and longitude are required for OLT map location")
+    if location_snapshot:
+        location_snapshot["id"] = location_id or location_snapshot.get("id")
+        location_snapshot["label"] = label
+        location_snapshot["latitude"] = latitude
+        location_snapshot["longitude"] = longitude
+    timestamp = now_iso()
+    current["oltLocationId"] = location_id
+    current["oltLocationName"] = label
+    current["oltLocation"] = location_snapshot
+    current["latitude"] = latitude
+    current["longitude"] = longitude
+    current["site"] = label
+    current["updatedAt"] = timestamp
+    olt = find_captured_olt(current)
+    created_pons: list[dict[str, Any]] = []
+    if olt is None:
+        olt = {
+            "id": str(uuid4()),
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+            "deletedAt": None,
+            "name": clean_text(current.get("name")) or clean_text(current.get("managementIp")),
+            "site": label,
+            "managementIp": clean_text(current.get("managementIp")),
+            "vendor": clean_text(current.get("vendor")) or "Generic",
+            "model": clean_text(current.get("model")),
+            "firmwareVersion": "",
+            "latitude": latitude,
+            "longitude": longitude,
+            "locationId": location_id,
+            "locationName": label,
+            "status": "ACTIVE",
+            "defaultPonCount": 4,
+            "notes": "Created from SNMP OLT map location binding.",
+            "sourceDeviceId": current.get("id"),
+            "lastCapturedAt": current.get("lastCapturedAt") or "",
+        }
+        olts.append(olt)
+        created_pons = ensure_pon_count(olt["id"], int(olt.get("defaultPonCount") or 4))
+    else:
+        olt.update(
+            {
+                "updatedAt": timestamp,
+                "site": label,
+                "managementIp": clean_text(olt.get("managementIp")) or clean_text(current.get("managementIp")),
+                "latitude": latitude,
+                "longitude": longitude,
+                "locationId": location_id,
+                "locationName": label,
+                "sourceDeviceId": current.get("id"),
+            }
+        )
+    add_audit(
+        "network_olt_location_bound",
+        "NetworkDevice",
+        current["id"],
+        {"name": current["name"], "location": label, "linkedOltId": olt["id"], "createdPons": len(created_pons)},
+        actor_name(admin),
+    )
+    save_network_settings_data()
+    return device_summary(current)
+
+
 @router.get("/router-location-bindings")
 def list_router_location_bindings(admin=Depends(require_admin)):
     seed_network_settings_data()
@@ -2763,6 +3188,24 @@ def update_pon(pon_id: str, payload: PonPayload, admin=Depends(require_admin)):
     current.update(record)
     current["updatedAt"] = now_iso()
     add_audit("network_pon_updated", "NetworkPonPort", current["id"], {"portNumber": current["portNumber"]}, actor_name(admin))
+    save_network_settings_data()
+    return pon_summary(current)
+
+
+@router.patch("/pons/{pon_id}/power")
+def update_pon_power(pon_id: str, payload: PonPowerPayload, admin=Depends(require_admin)):
+    seed_network_settings_data()
+    current = find_pon(pon_id)
+    record = normalize_pon_power_payload(payload)
+    current.update(record)
+    current["updatedAt"] = now_iso()
+    add_audit(
+        "network_pon_power_updated",
+        "NetworkPonPort",
+        current["id"],
+        {"portNumber": current["portNumber"], "source": current.get("moduleSource", "")},
+        actor_name(admin),
+    )
     save_network_settings_data()
     return pon_summary(current)
 
