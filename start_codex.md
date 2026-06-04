@@ -94,6 +94,12 @@ All visual review uses the shared test server:
 http://192.168.50.70:8180/
 ```
 
+When the user asks to check screenshots in `3jmain_ss`, look first in:
+
+```text
+/mnt/windows_vod/3jmain_ss
+```
+
 All API review uses:
 
 ```text

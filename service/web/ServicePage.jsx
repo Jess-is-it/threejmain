@@ -43,10 +43,6 @@ async function request(path, options = {}) {
   return data;
 }
 
-function today() {
-  return new Date().toISOString().slice(0, 10);
-}
-
 function money(value) {
   return new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP' }).format(Number(value || 0));
 }
@@ -62,7 +58,7 @@ function titleLabel(value) {
 function statusClass(value) {
   const normalized = String(value || '').toLowerCase();
   if (['completed', 'approved', 'active'].includes(normalized)) return 'bg-green-lt text-green';
-  if (['submitted', 'pending_requirement', 'pending_review', 'in_progress', 'requested', 'scheduled', 'installing', 'draft'].includes(normalized)) return 'bg-yellow-lt text-yellow';
+  if (['submitted', 'pending_requirement', 'pending_review', 'in_progress', 'requested', 'scheduled', 'installing', 'draft', 'pending_installation', 'pending_disconnection', 'pending_reconnection'].includes(normalized)) return 'bg-yellow-lt text-yellow';
   if (['cancelled', 'rejected', 'retired'].includes(normalized)) return 'bg-red-lt text-red';
   if (['on_hold'].includes(normalized)) return 'bg-orange-lt text-orange';
   return 'bg-blue-lt text-blue';
@@ -120,12 +116,7 @@ const ORDER_CREATION_STAGE_DEFS = {
   }
 };
 const ORDER_DETAIL_SCHEMAS = {
-  NEW_INSTALLATION: [
-    { name: 'preferredSchedule', label: 'Preferred Schedule', type: 'date', required: true },
-    { name: 'installationFee', label: 'Installation Fee', type: 'money', readOnly: true },
-    { name: 'coverageArea', label: 'Coverage Area', type: 'text', required: true },
-    { name: 'coverageCheckRequired', label: 'Coverage Check Required', type: 'boolean' }
-  ],
+  NEW_INSTALLATION: [],
   PLAN_UPGRADE: [
     { name: 'currentPlan', label: 'Current Plan', type: 'text', required: true, readOnly: true },
     { name: 'effectiveDate', label: 'Effective Date', type: 'date', required: true },
@@ -258,6 +249,11 @@ function customerLocationLabel(customer) {
 }
 
 function customerFullAddressLabel(customer) {
+  return customerAddressValue(customer) || customerLocationLabel(customer);
+}
+
+function customerAddressValue(customer) {
+  if (!customer) return '';
   const address = customer?.address || [
     customer?.addressLine1,
     customer?.addressLine2,
@@ -265,11 +261,26 @@ function customerFullAddressLabel(customer) {
     customer?.city || customer?.municipality,
     customer?.province
   ].filter(Boolean).join(', ');
-  return address || customerLocationLabel(customer);
+  return address || '';
 }
 
 function customerLocationKey(customer) {
   return customerLocationParts(customer).join('||') || 'UNSPECIFIED';
+}
+
+function locationOptionLabel(location) {
+  return [
+    location?.barangay,
+    location?.municipality || location?.city
+  ].filter(Boolean).join(', ') || location?.location_name || location?.address || 'Unnamed location';
+}
+
+function installationAddressFromParts(location, streetAddress = '') {
+  return [
+    streetAddress,
+    location?.barangay,
+    location?.municipality || location?.city
+  ].map((part) => String(part || '').trim()).filter(Boolean).join(', ');
 }
 
 function customerFromOrder(order) {
@@ -320,6 +331,41 @@ function serviceAccountLabel(account) {
 
 function valueOrDash(value) {
   return value === null || value === undefined || value === '' ? '-' : value;
+}
+
+function parseDateValue(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function daysSince(value) {
+  const parsed = parseDateValue(value);
+  if (!parsed) return null;
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  parsed.setHours(0, 0, 0, 0);
+  return Math.max(0, Math.floor((todayStart.getTime() - parsed.getTime()) / 86400000));
+}
+
+function orderAgeLabel(order) {
+  const age = daysSince(order?.requestedDate || order?.createdAt);
+  if (age === null) return '-';
+  if (age === 0) return 'Today';
+  return `${age} day${age === 1 ? '' : 's'}`;
+}
+
+function orderTargetLabel(order) {
+  return valueOrDash(
+    order?.targetActivationDate
+    || order?.orderDetails?.preferredSchedule
+    || order?.orderDetails?.effectiveDate
+    || order?.orderDetails?.targetTransferDate
+    || order?.orderDetails?.suspensionStartDate
+    || order?.orderDetails?.reconnectionDate
+    || order?.orderDetails?.targetDisconnectionDate
+    || order?.orderDetails?.targetReplacementDate
+  );
 }
 
 function accountRowId(row) {
@@ -503,9 +549,6 @@ function catalogSelectionHint(orderType) {
 
 function detailsSeedForCatalog(orderType, item = null, account = null) {
   if (!item) return {};
-  if (orderType === 'NEW_INSTALLATION') {
-    return { installationFee: item.installFee || '' };
-  }
   if (['PLAN_UPGRADE', 'PLAN_DOWNGRADE'].includes(orderType)) {
     const currentRate = Number(account?.catalog?.monthlyRate || 0);
     return { priceDifference: Math.abs(Number(item.monthlyRate || 0) - currentRate) };
@@ -702,7 +745,7 @@ const blankCatalog = {
   downloadMbps: '50',
   uploadMbps: '20',
   monthlyRate: '999',
-  installFee: '1500',
+  installFee: '0',
   billingMode: 'PREPAID',
   status: 'ACTIVE',
   contractMonths: '0',
@@ -717,11 +760,15 @@ const blankOrder = {
   serviceAccountId: '',
   catalogId: '',
   orderType: '',
-  requestedDate: today(),
+  requestedDate: '',
   targetActivationDate: '',
   activationDate: '',
   billingStartDate: '',
   installAddress: '',
+  installAddressSameAsCustomer: true,
+  installLocationId: '',
+  installLocationLabel: '',
+  installStreetAddress: '',
   status: 'DRAFT',
   priority: 'NORMAL',
   serviceReference: '',
@@ -730,7 +777,7 @@ const blankOrder = {
 };
 
 export default function ServicePage({ initialSection = 'catalog', refreshShell = () => {} }) {
-  const pageView = initialSection === 'orders' ? 'orders' : 'catalog';
+  const pageView = initialSection === 'orders' ? 'orders' : initialSection === 'accounts' ? 'accounts' : 'catalog';
   const [meta, setMeta] = useState({ serviceTypes: [], segments: [], catalogStatuses: [], accountStatuses: [], billingModes: [], orderTypes: [], orderDetailSchemas: ORDER_DETAIL_SCHEMAS, orderStatuses: [], orderPriorities: [] });
   const [catalogOverview, setCatalogOverview] = useState({ metrics: {}, byType: [], activePlans: [] });
   const [orderOverview, setOrderOverview] = useState({ metrics: {}, byStatus: {}, recentOrders: [] });
@@ -739,12 +786,13 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
   const [orders, setOrders] = useState([]);
   const [allOrders, setAllOrders] = useState([]);
   const [customers, setCustomers] = useState([]);
+  const [locations, setLocations] = useState([]);
   const [avatarConfig, setAvatarConfig] = useState(null);
   const [catalogSearch, setCatalogSearch] = useState('');
   const [orderSearch, setOrderSearch] = useState('');
   const [orderPage, setOrderPage] = useState(1);
   const [orderPageSize, setOrderPageSize] = useState('10');
-  const [accountTypeFilter, setAccountTypeFilter] = useState('ALL');
+  const [accountServiceTab, setAccountServiceTab] = useState('WITH_SERVICE');
   const [customerStatusFilter, setCustomerStatusFilter] = useState('ALL');
   const [orderTypeFilter, setOrderTypeFilter] = useState('ALL');
   const [serviceStatusFilter, setServiceStatusFilter] = useState('ALL');
@@ -870,15 +918,37 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
     () => accountRows.filter((row) => !row.hasService).map((row) => row.customer),
     [accountRows]
   );
+  const serviceAccountTabCounts = useMemo(() => ({
+    WITH_SERVICE: accountRows.filter((row) => row.hasService).length,
+    WITHOUT_SERVICE: accountRows.filter((row) => !row.hasService).length
+  }), [accountRows]);
+  const isWithoutServiceAccountTab = accountServiceTab === 'WITHOUT_SERVICE';
   const filteredAccountRows = useMemo(
     () => accountRows.filter(({ customer, account, orders: customerOrders, hasService }) => (
-      (accountTypeFilter === 'ALL' || (accountTypeFilter === 'SERVICE' ? hasService : !hasService))
+      (accountServiceTab === 'WITH_SERVICE' ? hasService : !hasService)
       && (customerStatusFilter === 'ALL' || customer.status === customerStatusFilter)
-      && (orderTypeFilter === 'ALL' || accountTypeFilter === 'NON_SERVICE' || (hasService && customerOrders.some((order) => order.orderType === orderTypeFilter)))
-      && (serviceStatusFilter === 'ALL' || accountTypeFilter === 'NON_SERVICE' || (hasService && customerOrders.some((order) => order.status === serviceStatusFilter)))
+      && (orderTypeFilter === 'ALL' || isWithoutServiceAccountTab || (hasService && customerOrders.some((order) => order.orderType === orderTypeFilter)))
+      && (serviceStatusFilter === 'ALL' || isWithoutServiceAccountTab || (hasService && customerOrders.some((order) => order.status === serviceStatusFilter)))
       && (!orderSearch.trim() || accountRowSearchText({ customer, account, orders: customerOrders }).includes(orderSearch.trim().toLowerCase()))
     )),
-    [accountRows, accountTypeFilter, customerStatusFilter, orderTypeFilter, serviceStatusFilter, orderSearch]
+    [accountRows, accountServiceTab, customerStatusFilter, isWithoutServiceAccountTab, orderTypeFilter, serviceStatusFilter, orderSearch]
+  );
+  const filteredOrderRows = useMemo(
+    () => orders.filter((order) => (
+      (orderTypeFilter === 'ALL' || order.orderType === orderTypeFilter)
+      && (serviceStatusFilter === 'ALL' || order.status === serviceStatusFilter)
+    )),
+    [orders, orderTypeFilter, serviceStatusFilter]
+  );
+  const orderQueueStats = useMemo(() => ({
+    open: filteredOrderRows.filter((order) => OPEN_ORDER_STATUSES.includes(order.status)).length,
+    inProgress: filteredOrderRows.filter((order) => order.status === 'IN_PROGRESS').length,
+    pending: filteredOrderRows.filter((order) => ['SUBMITTED', 'PENDING_REQUIREMENT', 'PENDING_REVIEW', 'APPROVED'].includes(order.status)).length,
+    completed: filteredOrderRows.filter((order) => order.status === 'COMPLETED').length
+  }), [filteredOrderRows]);
+  const activeServiceAccountCount = useMemo(
+    () => serviceAccountRows.filter((row) => row.account?.status === 'ACTIVE').length,
+    [serviceAccountRows]
   );
   const orderPageSizeNumber = orderPageSize === 'ALL' ? Math.max(filteredAccountRows.length, 1) : Number(orderPageSize);
   const orderPageCount = Math.max(1, Math.ceil(filteredAccountRows.length / orderPageSizeNumber));
@@ -918,12 +988,11 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
       || selectedServiceOrder?.serviceAccount
       || null;
   }, [orderForm.serviceAccountId, selectedAccountRow, selectedServiceOrder, serviceAccountRecords]);
-  const serviceFiltersActive = Boolean(accountTypeFilter !== 'ALL' || customerStatusFilter !== 'ALL' || orderTypeFilter !== 'ALL' || serviceStatusFilter !== 'ALL');
+  const serviceFiltersActive = Boolean(customerStatusFilter !== 'ALL' || (!isWithoutServiceAccountTab && (orderTypeFilter !== 'ALL' || serviceStatusFilter !== 'ALL')));
   const serviceFilterCount = [
-    accountTypeFilter !== 'ALL',
     customerStatusFilter !== 'ALL',
-    orderTypeFilter !== 'ALL',
-    serviceStatusFilter !== 'ALL'
+    !isWithoutServiceAccountTab && orderTypeFilter !== 'ALL',
+    !isWithoutServiceAccountTab && serviceStatusFilter !== 'ALL'
   ].filter(Boolean).length;
   const orderTypeOptions = useMemo(() => serviceOrderTypeOptions(meta), [meta]);
   const orderCustomerLocationOptions = useMemo(() => {
@@ -942,6 +1011,14 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
     });
     return Array.from(options).sort((left, right) => label(left).localeCompare(label(right)));
   }, [customers]);
+  const locationOptions = useMemo(() => {
+    const unique = new Map();
+    locations.forEach((location) => {
+      const optionLabel = locationOptionLabel(location);
+      if (!unique.has(optionLabel)) unique.set(optionLabel, location);
+    });
+    return Array.from(unique.values()).sort((left, right) => locationOptionLabel(left).localeCompare(locationOptionLabel(right)));
+  }, [locations]);
   const orderCustomerPickerRows = useMemo(() => {
     const term = orderCustomerSearch.trim().toLowerCase();
     return customers
@@ -1025,17 +1102,24 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
   const completedOrderWizardStageSet = new Set(completedOrderWizardStageIds);
   const orderWizardProgress = Math.round((Math.min(completedOrderWizardStageSet.size, orderWizardStages.length) / orderWizardStages.length) * 100);
   const isFinalOrderWizardStage = orderWizardStageIndex === orderWizardStages.length - 1;
+  const orderInstallationAddressReady = !orderShowsInstallAddressField(orderForm.orderType)
+    || (
+      orderForm.installAddressSameAsCustomer !== false
+        ? Boolean(customerAddressValue(selectedOrderCustomer))
+        : Boolean(orderForm.installLocationId && String(orderForm.installStreetAddress || '').trim())
+    );
   const orderSaveDisabled = !orderForm.customerId
     || !orderForm.orderType
     || (shouldShowOrderCatalog && !orderCatalogIsValid)
     || (orderRequiresServiceAccount(orderForm.orderType) && !orderForm.serviceAccountId)
+    || !orderInstallationAddressReady
     || orderDetailMissingFields.length > 0
     || (!isEditingOrder && !isOrderReviewConfirmed);
   const completedOrderWizardStages = orderWizardStages.map((stage) => {
     if (isEditingOrder) {
       if (stage.id === 'customer') return Boolean(orderForm.customerId);
       if (stage.id === 'type') return Boolean(orderForm.orderType);
-      if (stage.id === 'order') return Boolean(orderForm.customerId && orderForm.requestedDate);
+      if (stage.id === 'order') return Boolean(orderForm.customerId && orderForm.orderType && orderInstallationAddressReady && orderDetailMissingFields.length === 0);
       if (stage.id === 'catalog') return orderCatalogIsValid;
       if (stage.id === 'ticket') return Boolean(orderForm.customerId && orderForm.orderType);
       if (stage.id === 'review') return orderDetailMissingFields.length === 0;
@@ -1046,7 +1130,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
   async function load(nextCatalogSearch = catalogSearch, nextOrderSearch = orderSearch) {
     setError('');
     try {
-      const [nextMeta, nextCatalogOverview, nextOrderOverview, nextAccounts, nextCatalog, nextOrders, nextAllOrders, nextCustomers, nextAvatarConfig] = await Promise.all([
+      const [nextMeta, nextCatalogOverview, nextOrderOverview, nextAccounts, nextCatalog, nextOrders, nextAllOrders, nextCustomers, nextLocations, nextAvatarConfig] = await Promise.all([
         request('/service/meta'),
         request('/service/catalog/overview'),
         request('/service/orders/overview'),
@@ -1055,6 +1139,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
         request(`/service/orders?search=${encodeURIComponent(nextOrderSearch)}`),
         request('/service/orders'),
         request('/service/customers'),
+        request('/system-settings/locations').catch(() => []),
         request('/system-settings/avatars').catch(() => null)
       ]);
       setMeta(nextMeta);
@@ -1065,6 +1150,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
       setOrders(nextOrders);
       setAllOrders(nextAllOrders);
       setCustomers(nextCustomers);
+      setLocations(nextLocations);
       setAvatarConfig(nextAvatarConfig);
     } catch (err) {
       setError(err.message);
@@ -1097,7 +1183,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
 
   useEffect(() => {
     setOrderPage(1);
-  }, [orderSearch, accountTypeFilter, customerStatusFilter, orderTypeFilter, serviceStatusFilter, orderPageSize]);
+  }, [orderSearch, accountServiceTab, customerStatusFilter, orderTypeFilter, serviceStatusFilter, orderPageSize]);
 
   useEffect(() => {
     if (orderPage > orderPageCount) setOrderPage(orderPageCount);
@@ -1123,7 +1209,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
           ...next,
           downloadMbps: current.downloadMbps || '50',
           uploadMbps: current.uploadMbps || '20',
-          installFee: current.installFee || '0',
+          installFee: '0',
           contractMonths: current.contractMonths || '0',
           billingMode: current.billingMode === 'ONE_TIME' ? 'PREPAID' : current.billingMode
         };
@@ -1134,7 +1220,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
           downloadMbps: '',
           uploadMbps: '',
           monthlyRate: '0',
-          installFee: current.installFee || '1500',
+          installFee: current.installFee || '0',
           contractMonths: '0',
           billingMode: 'ONE_TIME'
         };
@@ -1263,6 +1349,64 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
     setOrderWizardStage('order');
   }
 
+  function findInstallLocationByLabel(optionLabel) {
+    return locationOptions.find((location) => locationOptionLabel(location) === optionLabel) || null;
+  }
+
+  function resolvedInstallationAddress(form = orderForm) {
+    if (!orderShowsInstallAddressField(form.orderType)) return form.installAddress || '';
+    if (form.installAddressSameAsCustomer !== false) {
+      return customerAddressValue(selectedOrderCustomer) || form.installAddress || '';
+    }
+    const location = locations.find((row) => row.id === form.installLocationId) || findInstallLocationByLabel(form.installLocationLabel);
+    return installationAddressFromParts(location, form.installStreetAddress);
+  }
+
+  function setInstallationSameAsCustomer(checked) {
+    setOrderForm((current) => {
+      if (checked) {
+        return {
+          ...current,
+          installAddressSameAsCustomer: true,
+          installAddress: customerAddressValue(selectedOrderCustomer),
+          installLocationId: '',
+          installLocationLabel: '',
+          installStreetAddress: ''
+        };
+      }
+      return {
+        ...current,
+        installAddressSameAsCustomer: false,
+        installAddress: '',
+        installLocationId: '',
+        installLocationLabel: '',
+        installStreetAddress: ''
+      };
+    });
+  }
+
+  function setInstallationLocation(optionLabel) {
+    const location = findInstallLocationByLabel(optionLabel);
+    setOrderForm((current) => ({
+      ...current,
+      installAddressSameAsCustomer: false,
+      installLocationId: location?.id || '',
+      installLocationLabel: optionLabel,
+      installAddress: location ? installationAddressFromParts(location, current.installStreetAddress) : current.installAddress
+    }));
+  }
+
+  function setInstallationStreetAddress(installStreetAddress) {
+    setOrderForm((current) => {
+      const location = locations.find((row) => row.id === current.installLocationId) || findInstallLocationByLabel(current.installLocationLabel);
+      return {
+        ...current,
+        installStreetAddress,
+        installAddress: location ? installationAddressFromParts(location, installStreetAddress) : current.installAddress
+      };
+    });
+  }
+
   function openNewOrderModal(customer = null, account = null, requestedOrderType = null) {
     setMessage('');
     setError('');
@@ -1284,6 +1428,10 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
           : account.catalogId || account.catalog?.id || selectedCatalog?.id || '',
         orderType: safeOrderType,
         installAddress: account.serviceAddress || accountCustomer.address || '',
+        installAddressSameAsCustomer: true,
+        installLocationId: '',
+        installLocationLabel: '',
+        installStreetAddress: '',
         serviceReference: account.serviceReference || '',
         orderDetails: detailsForOrderType(
           safeOrderType,
@@ -1301,7 +1449,11 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
           customerId: customer.id,
           catalogId: selectedCatalog?.id || '',
           orderType: 'NEW_INSTALLATION',
-          installAddress: customer.address || '',
+          installAddress: customerAddressValue(customer),
+          installAddressSameAsCustomer: true,
+          installLocationId: '',
+          installLocationLabel: '',
+          installStreetAddress: '',
           orderDetails: detailsForOrderType('NEW_INSTALLATION', detailsSeedForCatalog('NEW_INSTALLATION', selectedCatalog), {}, meta.orderDetailSchemas)
         }
         : { ...blankOrder, orderDetails: detailsForOrderType('NEW_INSTALLATION', {}, {}, meta.orderDetailSchemas) });
@@ -1347,6 +1499,11 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
     setMessage('');
     setError('');
     setOrderModalTab('order');
+    const orderCustomer = customerFromOrder(order);
+    const customerAddress = customerAddressValue(orderCustomer);
+    const sameAsCustomer = (order.orderType || 'NEW_INSTALLATION') === 'NEW_INSTALLATION'
+      ? Boolean(order.installAddress && customerAddress && order.installAddress === customerAddress)
+      : true;
     setOrderForm({
       ...blankOrder,
       ...order,
@@ -1357,6 +1514,10 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
       targetActivationDate: order.targetActivationDate || '',
       activationDate: order.activationDate || '',
       billingStartDate: order.billingStartDate || '',
+      installAddressSameAsCustomer: sameAsCustomer,
+      installLocationId: '',
+      installLocationLabel: '',
+      installStreetAddress: sameAsCustomer ? '' : order.installAddress || '',
       notes: order.notes || ''
     });
     setOrderWizardStage('order');
@@ -1371,7 +1532,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
       downloadMbps: catalogFormIsInternet ? Number(catalogForm.downloadMbps || 0) : 0,
       uploadMbps: catalogFormIsInternet ? Number(catalogForm.uploadMbps || 0) : 0,
       monthlyRate: Number(catalogForm.monthlyRate || 0),
-      installFee: (catalogFormIsInternet || catalogFormIsInstallation) ? Number(catalogForm.installFee || 0) : 0,
+      installFee: catalogFormIsInstallation ? Number(catalogForm.installFee || 0) : 0,
       contractMonths: catalogFormIsInternet ? Number(catalogForm.contractMonths || 0) : 0
     };
     delete body.id;
@@ -1424,6 +1585,16 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
       setError('Select a service account before saving this service order type.');
       return;
     }
+    if (orderShowsInstallAddressField(body.orderType)) {
+      const installAddress = resolvedInstallationAddress(body);
+      if (!installAddress) {
+        setError(body.installAddressSameAsCustomer === false
+          ? 'Select an installation location and enter Street/Zone/House#.'
+          : 'The selected customer does not have an address. Use a different installation address.');
+        return;
+      }
+      body.installAddress = installAddress;
+    }
     if (!shouldShowOrderCatalog && !body.catalogId && selectedOrderAccount) {
       body.catalogId = selectedOrderAccount.catalogId || selectedOrderAccount.catalog?.id || '';
     }
@@ -1431,6 +1602,10 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
       setError(`Complete required order details before saving: ${orderDetailMissingFields.join(', ')}.`);
       return;
     }
+    delete body.installAddressSameAsCustomer;
+    delete body.installLocationId;
+    delete body.installLocationLabel;
+    delete body.installStreetAddress;
     delete body.id;
     try {
       const path = orderForm.id ? `/service/orders/${orderForm.id}` : '/service/orders';
@@ -1490,6 +1665,9 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
     if (orderType === 'NEW_INSTALLATION') {
       nextForm.serviceAccountId = '';
       if (!orderForm.id) nextForm.serviceReference = '';
+      if (nextForm.installAddressSameAsCustomer !== false) {
+        nextForm.installAddress = customerAddressValue(selectedOrderCustomer);
+      }
     } else if (!nextForm.serviceAccountId && selectedAccountRow?.account && selectedAccountRow.customer?.id === nextForm.customerId) {
       nextForm.serviceAccountId = selectedAccountRow.account.id;
       nextForm.serviceReference = selectedAccountRow.account.serviceReference || nextForm.serviceReference;
@@ -1536,7 +1714,6 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
   }
 
   function clearServiceFilters() {
-    setAccountTypeFilter('ALL');
     setCustomerStatusFilter('ALL');
     setOrderTypeFilter('ALL');
     setServiceStatusFilter('ALL');
@@ -1563,10 +1740,10 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
   function canOpenOrderWizardStage(stageId) {
     if (stageId === 'customer') return true;
     if (stageId === 'type') return Boolean(selectedOrderPickerCustomer || selectedOrderTypePickerCustomer || orderForm.customerId);
-    if (stageId === 'order') return Boolean(orderForm.customerId && orderForm.orderType);
-    if (stageId === 'catalog') return Boolean(orderForm.customerId && orderForm.orderType && orderForm.requestedDate && orderDetailMissingFields.length === 0);
-    if (stageId === 'ticket') return Boolean(orderForm.customerId && orderForm.orderType && orderForm.requestedDate && orderDetailMissingFields.length === 0 && (!shouldShowOrderCatalog || orderCatalogIsValid));
-    if (stageId === 'review') return Boolean(orderForm.customerId && orderForm.orderType && orderForm.requestedDate && orderDetailMissingFields.length === 0 && (!shouldShowOrderCatalog || orderCatalogIsValid));
+    if (stageId === 'order') return Boolean(orderForm.customerId && orderForm.orderType && orderInstallationAddressReady);
+    if (stageId === 'catalog') return Boolean(orderForm.customerId && orderForm.orderType && orderInstallationAddressReady && orderDetailMissingFields.length === 0);
+    if (stageId === 'ticket') return Boolean(orderForm.customerId && orderForm.orderType && orderInstallationAddressReady && orderDetailMissingFields.length === 0 && (!shouldShowOrderCatalog || orderCatalogIsValid));
+    if (stageId === 'review') return Boolean(orderForm.customerId && orderForm.orderType && orderInstallationAddressReady && orderDetailMissingFields.length === 0 && (!shouldShowOrderCatalog || orderCatalogIsValid));
     return false;
   }
 
@@ -1871,15 +2048,53 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
             <div className="alert alert-info mb-0">This order type uses the account's current service catalog: {selectedOrderAccount.catalogName || selectedOrderAccount.catalog?.name || 'Service'}.</div>
           )}
           <div className="service-two-cols">
-            <TextField label="Requested Date" type="date" value={orderForm.requestedDate} required onChange={(requestedDate) => setOrderForm({ ...orderForm, requestedDate })} />
-            <TextField label="Target Completion" type="date" value={orderForm.targetActivationDate} onChange={(targetActivationDate) => setOrderForm({ ...orderForm, targetActivationDate })} />
-          </div>
-          <div className="service-two-cols">
+            <TextField label={orderForm.orderType === 'NEW_INSTALLATION' ? 'Requested installation date' : 'Requested Date'} type="date" value={orderForm.requestedDate} onChange={(requestedDate) => setOrderForm({ ...orderForm, requestedDate })} />
             <SelectField label="Priority" value={orderForm.priority} options={meta.orderPriorities || ['NORMAL']} onChange={(priority) => setOrderForm({ ...orderForm, priority })} />
-            {showInstallAddress && (
-              <TextField label={orderAddressLabel(orderForm.orderType)} value={orderForm.installAddress} onChange={(installAddress) => setOrderForm({ ...orderForm, installAddress })} />
-            )}
           </div>
+          {showInstallAddress && (
+            <div className="service-install-address-panel">
+              <label className="form-check">
+                <input
+                  className="form-check-input"
+                  type="checkbox"
+                  checked={orderForm.installAddressSameAsCustomer !== false}
+                  onChange={(event) => setInstallationSameAsCustomer(event.target.checked)}
+                />
+                <span className="form-check-label">Use customer address as installation address</span>
+              </label>
+              {orderForm.installAddressSameAsCustomer !== false ? (
+                <div className="service-readonly-address">
+                  <IconMapPin size={15} />
+                  <span>{customerAddressValue(selectedOrderCustomer) || 'No customer address saved.'}</span>
+                </div>
+              ) : (
+                <>
+                  <div className="service-two-cols">
+                    <div>
+                      <label className="form-label">Installation Location</label>
+                      <input
+                        className="form-control"
+                        list="service-install-location-options"
+                        placeholder="Search barangay / municipality"
+                        value={orderForm.installLocationLabel || ''}
+                        onChange={(event) => setInstallationLocation(event.target.value)}
+                      />
+                      <datalist id="service-install-location-options">
+                        {locationOptions.map((location) => (
+                          <option key={location.id || locationOptionLabel(location)} value={locationOptionLabel(location)} />
+                        ))}
+                      </datalist>
+                    </div>
+                    <TextField label="Street/Zone/House#" value={orderForm.installStreetAddress || ''} onChange={setInstallationStreetAddress} />
+                  </div>
+                  <div className="service-readonly-address">
+                    <IconMapPin size={15} />
+                    <span>{resolvedInstallationAddress() || 'Select a location and enter Street/Zone/House#.'}</span>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
           <ServiceOrderTypeFields
             orderType={orderForm.orderType}
             details={orderForm.orderDetails || {}}
@@ -1963,7 +2178,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
             <DetailRow label="Category" value={label(ticketCategory)} />
             <DetailRow label="Priority" value={label(orderForm.priority || 'NORMAL')} />
             <DetailRow label="Source" value="INTERNAL" />
-            <DetailRow label="Due Date" value={orderForm.targetActivationDate || orderForm.requestedDate || '-'} />
+            <DetailRow label="Due Date" value={orderTargetLabel(orderForm) !== '-' ? orderTargetLabel(orderForm) : orderForm.requestedDate || '-'} />
             <DetailRow label="Service Reference" value={selectedOrderAccount?.serviceReference || 'Generated on save'} />
             <DetailRow label="Service Catalog" value={selectedCatalog.name || selectedOrderAccount?.catalogName || '-'} />
             <DetailRow label="Ticket Status" value="OPEN" />
@@ -1987,8 +2202,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
             <DetailRow label="Order Type" value={orderForm.orderType ? label(orderForm.orderType) : '-'} />
             <DetailRow label="Customer" value={selectedOrderCustomer ? customerLabel(selectedOrderCustomer) : '-'} />
             <DetailRow label="Service Account" value={selectedOrderAccount ? serviceAccountLabel(selectedOrderAccount) : 'New installation'} />
-            <DetailRow label="Requested Date" value={orderForm.requestedDate || '-'} />
-            <DetailRow label="Target Completion" value={orderForm.targetActivationDate || '-'} />
+            <DetailRow label={orderForm.orderType === 'NEW_INSTALLATION' ? 'Requested installation date' : 'Requested Date'} value={orderForm.requestedDate || '-'} />
             <DetailRow label="Priority" value={label(orderForm.priority || 'NORMAL')} />
           </div>
           <div className="service-order-form-panel">
@@ -2044,7 +2258,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
     return renderOrderInfoStage();
   }
 
-  const metrics = catalogOverview.metrics || orderOverview.metrics || {};
+  const metrics = { ...(catalogOverview.metrics || {}), ...(orderOverview.metrics || {}) };
   const orderModalType = orderForm.customerId ? (orderForm.orderType || orderTypePickerType || '') : (orderTypePickerType || orderForm.orderType || '');
   const orderModalTypePresentation = serviceOrderTypePresentation(orderModalType);
   const OrderModalTypeIcon = orderModalTypePresentation.icon;
@@ -2101,8 +2315,84 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
           <div className="col-12">
             <div className="service-order-kpis">
               {[
-                ['Service Accounts', serviceAccountRows.length, IconUsers, 'green'],
-                ['Customers without Service Account', customersWithoutServiceAccount.length, IconListDetails, 'yellow']
+                ['Open Requests', orderQueueStats.open, IconListDetails, 'yellow'],
+                ['In Progress', orderQueueStats.inProgress, IconRefresh, 'blue'],
+                ['Pending Review', orderQueueStats.pending, IconTicket, 'orange'],
+                ['Completed', orderQueueStats.completed, IconCheck, 'green']
+              ].map(([metricLabel, value, Icon, tone]) => (
+                <div className="service-order-kpi" key={metricLabel}>
+                  <span className={`badge bg-${tone}-lt text-${tone}`}><Icon size={18} /></span>
+                  <div>
+                    <div className="service-metric-value">{value}</div>
+                    <div className="text-muted">{metricLabel}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="col-12">
+            <Card
+              title="Service Order Queue"
+              icon={IconListDetails}
+              actions={
+                <div className="service-card-actions">
+                  <div className="service-search">
+                    <div className="input-icon">
+                      <span className="input-icon-addon"><IconSearch size={16} /></span>
+                      <input
+                        className="form-control form-control-sm"
+                        placeholder="Search order / customer / ticket"
+                        value={orderSearch}
+                        onChange={(event) => setOrderSearch(event.target.value)}
+                        onKeyDown={(event) => event.key === 'Enter' && load(catalogSearch, orderSearch)}
+                      />
+                    </div>
+                  </div>
+                  <select className="form-select form-select-sm service-filter-select" aria-label="Service order type" value={orderTypeFilter} onChange={(event) => setOrderTypeFilter(event.target.value)}>
+                    <option value="ALL">All order types</option>
+                    {(meta.orderTypes || []).map((orderType) => <option key={orderType} value={orderType}>{label(orderType)}</option>)}
+                  </select>
+                  <select className="form-select form-select-sm service-filter-select" aria-label="Service order status" value={serviceStatusFilter} onChange={(event) => setServiceStatusFilter(event.target.value)}>
+                    <option value="ALL">All statuses</option>
+                    {(meta.orderStatuses || []).map((status) => <option key={status} value={status}>{label(status)}</option>)}
+                  </select>
+                  <button className="btn btn-primary btn-sm" type="button" onClick={openOrderCustomerPicker}>
+                    <IconPlus size={15} className="me-1" />
+                    New Service Order
+                  </button>
+                </div>
+              }
+            >
+              <ServiceOrdersRegistryTable
+                rows={filteredOrderRows}
+                selectedOrderId={selectedServiceOrderId}
+                onSelectOrder={selectServiceOrder}
+                onEdit={editOrder}
+                onCancel={cancelOrder}
+              />
+            </Card>
+          </div>
+          {selectedServiceOrder && (
+            <div className="col-12">
+              <ServiceOrderDetailPanel
+                order={selectedServiceOrder}
+                onEdit={editOrder}
+                onCancel={cancelOrder}
+                onClose={() => setSelectedServiceOrderId('')}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {pageView === 'accounts' && (
+        <div className="row row-cards">
+          <div className="col-12">
+            <div className="service-order-kpis">
+              {[
+                ['Active Service Accounts', activeServiceAccountCount, IconWifi, 'green'],
+                ['Total Service Accounts', serviceAccountRows.length, IconUsers, 'cyan'],
+                ['Customers Without Service', customersWithoutServiceAccount.length, IconListDetails, 'yellow']
               ].map(([metricLabel, value, Icon, tone]) => (
                 <div className="service-order-kpi" key={metricLabel}>
                   <span className={`badge bg-${tone}-lt text-${tone}`}><Icon size={18} /></span>
@@ -2117,7 +2407,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
           <div className="col-12">
             <Card
               title="Service Accounts"
-              icon={IconListDetails}
+              icon={IconWifi}
               actions={
                 <div className="service-card-actions">
                   <div className="service-search">
@@ -2147,7 +2437,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
                   </button>
                   <button className="btn btn-primary btn-sm" type="button" onClick={openOrderCustomerPicker}>
                     <IconPlus size={15} className="me-1" />
-                    Service Order
+                    New Service Request
                   </button>
                 </div>
               }
@@ -2156,20 +2446,12 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
                 <div className="service-filter-panel" id="service-accounts-filters">
                   <div className="service-filter-panel-header">
                     <div>
-                      <div className="fw-semibold">Filters</div>
-                      <div className="text-muted small">Account, customer, and service order filters.</div>
+                      <div className="fw-semibold">Subscription filters</div>
+                      <div className="text-muted small">Customer, service account, and related request filters.</div>
                     </div>
                     {serviceFiltersActive && <button className="btn btn-sm btn-outline-secondary" type="button" onClick={clearServiceFilters}>Clear filters</button>}
                   </div>
                   <div className="service-filter-grid">
-                    <div>
-                      <label className="form-label">Account type</label>
-                      <select className="form-select form-select-sm service-filter-select" aria-label="Account type" value={accountTypeFilter} onChange={(event) => setAccountTypeFilter(event.target.value)}>
-                        <option value="ALL">All accounts</option>
-                        <option value="SERVICE">Service accounts</option>
-                        <option value="NON_SERVICE">Non-service accounts</option>
-                      </select>
-                    </div>
                     <div>
                       <label className="form-label">Customer status</label>
                       <select className="form-select form-select-sm service-filter-select" aria-label="Customer status" value={customerStatusFilter} onChange={(event) => setCustomerStatusFilter(event.target.value)}>
@@ -2179,14 +2461,14 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
                     </div>
                     <div>
                       <label className="form-label">Order type</label>
-                      <select className="form-select form-select-sm service-filter-select" aria-label="Service order type" value={orderTypeFilter} onChange={(event) => setOrderTypeFilter(event.target.value)} disabled={accountTypeFilter === 'NON_SERVICE'}>
+                      <select className="form-select form-select-sm service-filter-select" aria-label="Service order type" value={orderTypeFilter} onChange={(event) => setOrderTypeFilter(event.target.value)} disabled={isWithoutServiceAccountTab}>
                         <option value="ALL">All order types</option>
                         {(meta.orderTypes || []).map((orderType) => <option key={orderType} value={orderType}>{label(orderType)}</option>)}
                       </select>
                     </div>
                     <div>
                       <label className="form-label">Order status</label>
-                      <select className="form-select form-select-sm service-filter-select" aria-label="Service order status" value={serviceStatusFilter} onChange={(event) => setServiceStatusFilter(event.target.value)} disabled={accountTypeFilter === 'NON_SERVICE'}>
+                      <select className="form-select form-select-sm service-filter-select" aria-label="Service order status" value={serviceStatusFilter} onChange={(event) => setServiceStatusFilter(event.target.value)} disabled={isWithoutServiceAccountTab}>
                         <option value="ALL">All order statuses</option>
                         {(meta.orderStatuses || []).map((status) => <option key={status} value={status}>{label(status)}</option>)}
                       </select>
@@ -2194,6 +2476,24 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
                   </div>
                 </div>
               )}
+              <div className="service-account-tabs" role="tablist" aria-label="Service account status">
+                {[
+                  { value: 'WITH_SERVICE', label: 'With Service', count: serviceAccountTabCounts.WITH_SERVICE, tone: 'green' },
+                  { value: 'WITHOUT_SERVICE', label: 'Without Service', count: serviceAccountTabCounts.WITHOUT_SERVICE, tone: 'yellow' }
+                ].map((tab) => (
+                  <button
+                    key={tab.value}
+                    type="button"
+                    className={`service-account-tab ${accountServiceTab === tab.value ? 'active' : ''}`}
+                    role="tab"
+                    aria-selected={accountServiceTab === tab.value}
+                    onClick={() => setAccountServiceTab(tab.value)}
+                  >
+                    <span>{tab.label}</span>
+                    <span className={`badge bg-${tab.tone}-lt text-${tab.tone}`}>{tab.count}</span>
+                  </button>
+                ))}
+              </div>
               {selectedAccountRow ? (
                 <ServiceOrderSplitView
                   rows={filteredAccountRows}
@@ -2266,9 +2566,6 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
                 )}
                 <div className="service-two-cols">
                   <TextField label={catalogFormIsInstallation ? 'One-time Charge' : catalogFormIsAddOn ? 'Monthly Add-on Charge' : 'Monthly Rate'} type="number" min="0" step="0.01" value={catalogFormIsInstallation ? catalogForm.installFee : catalogForm.monthlyRate} required onChange={(value) => setCatalogForm(catalogFormIsInstallation ? { ...catalogForm, installFee: value, monthlyRate: '0' } : { ...catalogForm, monthlyRate: value })} />
-                  {catalogFormIsInternet && (
-                    <TextField label="Install Fee" type="number" min="0" step="0.01" value={catalogForm.installFee} onChange={(installFee) => setCatalogForm({ ...catalogForm, installFee })} />
-                  )}
                 </div>
                 <div className="service-two-cols">
                   <SelectField label="Billing Mode" value={catalogForm.billingMode} options={meta.billingModes || ['PREPAID']} onChange={(billingMode) => setCatalogForm({ ...catalogForm, billingMode })} />
@@ -2535,7 +2832,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
                       <button
                         type="button"
                         className="btn btn-primary"
-                        disabled={(currentOrderWizardStage.id === 'customer' && !selectedOrderPickerCustomer) || (currentOrderWizardStage.id === 'type' && !orderTypePickerCanContinue) || (currentOrderWizardStage.id === 'order' && (!orderForm.requestedDate || orderDetailMissingFields.length > 0)) || (currentOrderWizardStage.id === 'catalog' && !orderCatalogIsValid)}
+                        disabled={(currentOrderWizardStage.id === 'customer' && !selectedOrderPickerCustomer) || (currentOrderWizardStage.id === 'type' && !orderTypePickerCanContinue) || (currentOrderWizardStage.id === 'order' && (!orderInstallationAddressReady || orderDetailMissingFields.length > 0)) || (currentOrderWizardStage.id === 'catalog' && !orderCatalogIsValid)}
                         onClick={nextOrderWizardStage}
                       >
                         Next<IconChevronRight size={16} className="ms-1" />
@@ -2849,7 +3146,7 @@ function ServiceOrderSplitView({
               <table className="table table-vcenter table-hover table-sm mb-0 service-table">
                 <thead>
                   <tr>
-                    <th>Accounts</th>
+                    <th>Customer / Subscription</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2890,7 +3187,7 @@ function ServiceOrderSplitView({
                             </>
                           )}
                           {latestOrder && (
-                            <div className="text-muted small">Latest: {latestOrder.serviceReference || latestOrder.orderNumber}</div>
+                            <div className="text-muted small">Recent request: {latestOrder.serviceReference || latestOrder.orderNumber}</div>
                           )}
                         </td>
                       </tr>
@@ -2986,7 +3283,7 @@ function CustomerAccountDetailPanel({ row, selectedOrderId, onAddOrder, onSelect
           </div>
           <div className="service-detail-actions">
             <button className="btn btn-primary btn-sm" type="button" onClick={() => onAddOrder(customer, primaryAccount)}>
-              <IconPlus size={14} className="me-1" />New Service Order
+              <IconPlus size={14} className="me-1" />{hasService ? 'Create Service Request' : 'Create New Installation'}
             </button>
             <button type="button" className="badge bg-secondary-lt text-secondary service-header-icon-badge border-0" title="Close" aria-label="Close" onClick={onClose}>
               <IconX size={14} />
@@ -3004,13 +3301,13 @@ function CustomerAccountDetailPanel({ row, selectedOrderId, onAddOrder, onSelect
             </div>
             <div className="col-6 col-lg-3">
               <div className="service-detail-kpi">
-                <div className="text-muted small">Service Orders</div>
+                <div className="text-muted small">Related Requests</div>
                 <div className="fw-semibold">{customerOrders.length} total</div>
               </div>
             </div>
             <div className="col-6 col-lg-3">
               <div className="service-detail-kpi">
-                <div className="text-muted small">Open / Completed</div>
+                <div className="text-muted small">Open / Completed Requests</div>
                 <div className="fw-semibold">{openCount} / {completedCount}</div>
               </div>
             </div>
@@ -3043,7 +3340,7 @@ function CustomerAccountDetailPanel({ row, selectedOrderId, onAddOrder, onSelect
 
           <section className="service-detail-section">
             <div className="service-customer-context-heading">
-              <h4>Service Orders</h4>
+              <h4>Service Order History</h4>
               <span className="text-muted small">Latest first</span>
             </div>
             {customerOrders.length ? (
@@ -3083,7 +3380,6 @@ function CustomerAccountDetailPanel({ row, selectedOrderId, onAddOrder, onSelect
                             <DetailRow label="Status" value={label(order.status || 'DRAFT')} />
                             <DetailRow label="Priority" value={label(order.priority || 'NORMAL')} />
                             <DetailRow label="Requested Date" value={valueOrDash(order.requestedDate)} />
-                            <DetailRow label="Target Completion" value={valueOrDash(order.targetActivationDate)} />
                             <DetailRow label="Service Account" value={valueOrDash(serviceAccount.serviceAccountNumber || order.serviceAccountNumber)} />
                             <DetailRow label="Service Address" value={valueOrDash(serviceAccount.serviceAddress || order.installAddress)} />
                             <DetailRow label="Service Catalog" value={valueOrDash(catalog.name || order.catalogName)} />
@@ -3136,7 +3432,7 @@ function ServiceAccountDetailPanel({ row, onAddOrder, onSelectOrder, onClose, av
           </div>
           <div className="service-detail-actions">
             <button className="btn btn-primary btn-sm" type="button" onClick={() => onAddOrder(customer, account)}>
-              <IconPlus size={14} className="me-1" />New Service Order
+              <IconPlus size={14} className="me-1" />Create Service Request
             </button>
             <button type="button" className="badge bg-secondary-lt text-secondary service-header-icon-badge border-0" title="Close" aria-label="Close" onClick={onClose}>
               <IconX size={14} />
@@ -3160,13 +3456,13 @@ function ServiceAccountDetailPanel({ row, onAddOrder, onSelectOrder, onClose, av
             </div>
             <div className="col-6 col-lg-3">
               <div className="service-detail-kpi">
-                <div className="text-muted small">Service Orders</div>
+                <div className="text-muted small">Related Requests</div>
                 <div className="fw-semibold">{customerOrders.length} total</div>
               </div>
             </div>
             <div className="col-6 col-lg-3">
               <div className="service-detail-kpi">
-                <div className="text-muted small">Open / Completed</div>
+                <div className="text-muted small">Open / Completed Requests</div>
                 <div className="fw-semibold">{openCount} / {completedCount}</div>
               </div>
             </div>
@@ -3177,9 +3473,33 @@ function ServiceAccountDetailPanel({ row, onAddOrder, onSelectOrder, onClose, av
             <DetailRow label="Service Account No." value={valueOrDash(account.serviceAccountNumber)} />
             <DetailRow label="Service Reference" value={valueOrDash(account.serviceReference)} />
             <DetailRow label="Status" value={label(account.status || 'UNKNOWN')} />
+            <DetailRow label="Status Reason" value={valueOrDash(account.statusReason)} />
             <DetailRow label="Activation Date" value={valueOrDash(account.activationDate)} />
+            <DetailRow label="Suspension Date" value={valueOrDash(account.suspensionDate)} />
+            <DetailRow label="Disconnection Date" value={valueOrDash(account.disconnectionDate)} />
+            <DetailRow label="Reconnection Date" value={valueOrDash(account.reconnectionDate)} />
+            <DetailRow label="Termination Date" value={valueOrDash(account.terminationDate)} />
             <DetailRow label="Service Address" value={valueOrDash(account.serviceAddress)} />
             <DetailRow label="Notes" value={valueOrDash(account.notes)} />
+          </section>
+
+          <section className="service-detail-section">
+            <h4>Billing Summary</h4>
+            <DetailRow label="Billing Status" value={label(account.billingStatus || 'NOT_STARTED')} />
+            <DetailRow label="Billing Cycle" value={label(account.billingCycle || 'MONTHLY')} />
+            <DetailRow label="Billing Start" value={valueOrDash(account.billingStartDate)} />
+            <DetailRow label="Monthly Recurring Charge" value={money(account.monthlyRecurringCharge ?? catalog.monthlyRate)} />
+            <DetailRow label="Outstanding Balance" value={money(account.outstandingBalance || 0)} />
+            <DetailRow label="Last Payment" value={valueOrDash(account.lastPaymentDate)} />
+            <DetailRow label="Next Billing" value={valueOrDash(account.nextBillingDate)} />
+          </section>
+
+          <section className="service-detail-section">
+            <h4>Installation</h4>
+            <DetailRow label="Installation Date" value={valueOrDash(account.installationDate)} />
+            <DetailRow label="Installation Ticket" value={valueOrDash(account.installationTicketId || account.ticketNumber)} />
+            <DetailRow label="Installed By" value={valueOrDash(account.installedBy)} />
+            <DetailRow label="Installation Remarks" value={valueOrDash(account.installationRemarks)} />
           </section>
 
           <section className="service-detail-section">
@@ -3201,7 +3521,27 @@ function ServiceAccountDetailPanel({ row, onAddOrder, onSelectOrder, onClose, av
           </section>
 
           <section className="service-detail-section">
-            <h4>Related Service Orders</h4>
+            <h4>Network</h4>
+            <DetailRow label="PPPoE Username" value={valueOrDash(account.networkInfo?.pppoeUsername)} />
+            <DetailRow label="Static IP" value={valueOrDash(account.networkInfo?.staticIp)} />
+            <DetailRow label="OLT" value={valueOrDash(account.networkInfo?.olt)} />
+            <DetailRow label="NAP Box" value={valueOrDash(account.networkInfo?.napBox)} />
+            <DetailRow label="Port / VLAN" value={valueOrDash([account.networkInfo?.port, account.networkInfo?.vlan].filter(Boolean).join(' / '))} />
+            <DetailRow label="Bandwidth Profile" value={valueOrDash(account.networkInfo?.bandwidthProfile || catalog.name)} />
+          </section>
+
+          <section className="service-detail-section">
+            <h4>Equipment</h4>
+            <DetailRow label="ONU" value={valueOrDash(account.equipmentInfo?.onuSerialNumber)} />
+            <DetailRow label="Router" value={valueOrDash(account.equipmentInfo?.routerSerialNumber)} />
+            <DetailRow label="MAC Address" value={valueOrDash(account.equipmentInfo?.macAddress)} />
+            <DetailRow label="Ownership" value={valueOrDash(account.equipmentInfo?.ownership)} />
+            <DetailRow label="Equipment Status" value={valueOrDash(account.equipmentInfo?.status)} />
+            <DetailRow label="Retrieval Required" value={account.equipmentInfo?.retrievalRequired ? 'Yes' : 'No'} />
+          </section>
+
+          <section className="service-detail-section">
+            <h4>Service Order History</h4>
             {customerOrders.length ? (
               <div className="service-reference-list">
                 {customerOrders.map((order) => (
@@ -3248,7 +3588,7 @@ function NoServiceAccountPanel({ customer, orders: customerOrders = [], onAddOrd
           </div>
           <div className="service-detail-actions">
             <button className="btn btn-primary btn-sm" type="button" onClick={() => onAddOrder(customer)}>
-              <IconPlus size={14} className="me-1" />Add Service Order
+              <IconPlus size={14} className="me-1" />Create New Installation
             </button>
             <button type="button" className="badge bg-secondary-lt text-secondary service-header-icon-badge border-0" title="Close" aria-label="Close" onClick={onClose}>
               <IconX size={14} />
@@ -3266,7 +3606,7 @@ function NoServiceAccountPanel({ customer, orders: customerOrders = [], onAddOrd
             </div>
             <div className="col-6 col-lg-3">
               <div className="service-detail-kpi">
-                <div className="text-muted small">Service Orders</div>
+                <div className="text-muted small">Related Requests</div>
                 <div className="fw-semibold">{customerOrders.length}</div>
               </div>
             </div>
@@ -3279,7 +3619,7 @@ function NoServiceAccountPanel({ customer, orders: customerOrders = [], onAddOrd
             <div className="col-6 col-lg-3">
               <div className="service-detail-kpi">
                 <div className="text-muted small">Next Action</div>
-                <div className="fw-semibold">{openCount ? 'Review open order' : 'Create order'}</div>
+                <div className="fw-semibold">{openCount ? 'Review open request' : 'Create installation'}</div>
               </div>
             </div>
           </div>
@@ -3294,7 +3634,7 @@ function NoServiceAccountPanel({ customer, orders: customerOrders = [], onAddOrd
           </section>
 
           <section className="service-detail-section">
-            <h4>Related Service Orders</h4>
+            <h4>Service Order History</h4>
             {customerOrders.length ? (
               <div className="service-reference-list">
                 {customerOrders.map((order) => (
@@ -3370,14 +3710,14 @@ function ServiceOrderDetailPanel({ order, onEdit, onCancel, onClose }) {
             </div>
             <div className="col-6 col-lg-3">
               <div className="service-detail-kpi">
-                <div className="text-muted small">Monthly Rate</div>
-                <div className="fw-semibold">{money(catalog.monthlyRate)}</div>
+                <div className="text-muted small">Request Age</div>
+                <div className="fw-semibold">{orderAgeLabel(order)}</div>
               </div>
             </div>
             <div className="col-6 col-lg-3">
               <div className="service-detail-kpi">
-                <div className="text-muted small">Speed</div>
-                <div className="fw-semibold">{Number(catalog.downloadMbps || 0)} / {Number(catalog.uploadMbps || 0)} Mbps</div>
+                <div className="text-muted small">Target Date</div>
+                <div className="fw-semibold">{orderTargetLabel(order)}</div>
               </div>
             </div>
           </div>
@@ -3407,7 +3747,6 @@ function ServiceOrderDetailPanel({ order, onEdit, onCancel, onClose }) {
             <DetailRow label="Type" value={label(catalog.serviceType || '')} />
             <DetailRow label="Segment" value={label(catalog.segment || '')} />
             <DetailRow label="Billing" value={label(catalog.billingMode || '')} />
-            <DetailRow label="Install Fee" value={money(catalog.installFee)} />
             <DetailRow label="Contract" value={`${Number(catalog.contractMonths || 0)} months`} />
             <DetailRow label="Equipment" value={valueOrDash(catalog.equipmentProfile)} />
           </section>
@@ -3434,7 +3773,6 @@ function ServiceOrderDetailPanel({ order, onEdit, onCancel, onClose }) {
             <h4>Order Details</h4>
             <DetailRow label="Type" value={label(order.orderType || 'NEW_INSTALLATION')} />
             <DetailRow label="Priority" value={label(order.priority)} />
-            <DetailRow label="Target Completion" value={valueOrDash(order.targetActivationDate)} />
             <DetailRow label="Activation Date" value={valueOrDash(order.activationDate)} />
             <DetailRow label="Billing Start" value={valueOrDash(order.billingStartDate)} />
             <DetailRow label={orderAddressLabel(order.orderType)} value={valueOrDash(orderAddressSummary(order, account))} />
@@ -3481,9 +3819,9 @@ function AccountsTable({ rows, selectedAccountId, selectedOrderId, orderTypeFilt
           <thead>
             <tr>
               <th className="service-col-customer">Customer Account</th>
-              <th className="service-col-type">Account Status</th>
-              <th className="service-col-service">Current Service</th>
-              <th className="service-col-orders">Service Orders</th>
+              <th className="service-col-type">Service Status</th>
+              <th className="service-col-service">Current Subscription</th>
+              <th className="service-col-orders">Recent Request</th>
               <th className="service-col-action text-end" aria-label="Actions">Actions</th>
             </tr>
           </thead>
@@ -3554,7 +3892,7 @@ function AccountsTable({ rows, selectedAccountId, selectedOrderId, orderTypeFilt
                     ) : (
                       <>
                         <div className="fw-semibold">No service account yet</div>
-                        <div className="text-muted small">{customerOrders.length ? `${customerOrders.length} service order request(s)` : 'Needs service order'}</div>
+                        <div className="text-muted small">{customerOrders.length ? `${customerOrders.length} service request(s)` : 'Needs new installation'}</div>
                       </>
                     )}
                   </td>
@@ -3578,7 +3916,7 @@ function AccountsTable({ rows, selectedAccountId, selectedOrderId, orderTypeFilt
                         </div>
                         <div className="text-muted small">{label(latestOrder.orderType || 'NEW_INSTALLATION')} · {label(latestOrder.status)}</div>
                       </div>
-                    ) : hasService ? <span className="text-muted small">No orders yet</span> : '-'}
+                    ) : hasService ? <span className="text-muted small">No service requests yet</span> : '-'}
                   </td>
                   <td className="service-col-action text-end">
                     {hasService ? (
@@ -3586,8 +3924,8 @@ function AccountsTable({ rows, selectedAccountId, selectedOrderId, orderTypeFilt
                         <button
                           className="badge bg-green-lt text-green service-add-order-badge"
                           type="button"
-                          title="Add service order"
-                          aria-label={`Add service order for ${customerLabel(customer)}`}
+                          title="Create service request"
+                          aria-label={`Create service request for ${customerLabel(customer)}`}
                           onClick={(event) => {
                             event.stopPropagation();
                             onAddOrder(customer, account);
@@ -3612,8 +3950,8 @@ function AccountsTable({ rows, selectedAccountId, selectedOrderId, orderTypeFilt
                       <button
                         className="badge bg-blue-lt text-blue service-add-order-badge"
                         type="button"
-                        title="Add service order"
-                        aria-label={`Add service order for ${customerLabel(customer)}`}
+                        title="Create new installation"
+                        aria-label={`Create new installation for ${customerLabel(customer)}`}
                         onClick={(event) => {
                           event.stopPropagation();
                           onAddOrder(customer);
@@ -3642,6 +3980,87 @@ function AccountsTable({ rows, selectedAccountId, selectedOrderId, orderTypeFilt
         </div>
       )}
     </>
+  );
+}
+
+function ServiceOrdersRegistryTable({ rows, selectedOrderId, onSelectOrder, onEdit, onCancel }) {
+  if (!rows.length) return <Empty />;
+  return (
+    <div className="service-table-wrap">
+      <table className="table card-table table-vcenter table-hover service-table service-zebra-table service-orders-table service-order-registry-table">
+        <thead>
+          <tr>
+            <th>Service Order</th>
+            <th>Requester</th>
+            <th>Workflow</th>
+            <th>Ticket</th>
+            <th>Target Account</th>
+            <th className="service-col-action text-end" aria-label="Actions">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((order) => {
+            const selected = selectedOrderId === order.id;
+            const account = order.serviceAccount || {};
+            const catalog = order.catalog || {};
+            return (
+              <tr
+                className={`service-clickable-row ${selected ? 'service-selected-order-row' : ''}`}
+                key={order.id}
+                role="button"
+                tabIndex={0}
+                onClick={(event) => {
+                  if (isInteractiveTableTarget(event.target)) return;
+                  onSelectOrder(order);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    onSelectOrder(order);
+                  }
+                }}
+              >
+                <td>
+                  <div className="fw-semibold">{order.orderNumber}</div>
+                  <div className="text-muted small">{label(order.orderType || 'NEW_INSTALLATION')}</div>
+                  <div className="text-muted small">{catalog.name || order.catalogName || '-'}</div>
+                </td>
+                <td>
+                  <div className="fw-semibold">{order.customerName || customerLabel(order.customer || {})}</div>
+                  <div className="text-muted small">{order.accountNumber || order.customer?.accountNumber || '-'}</div>
+                </td>
+                <td>
+                  <span className={`badge ${statusClass(order.status)}`}>{label(order.status)}</span>
+                  <div className="text-muted small">Age: {orderAgeLabel(order)}</div>
+                  <div className="text-muted small">Target: {orderTargetLabel(order)}</div>
+                </td>
+                <td>
+                  <div className="fw-semibold">{order.ticketNumber || order.ticket?.ticketNumber || '-'}</div>
+                  <div className="text-muted small">{order.ticketStatus || order.ticket?.status ? label(order.ticketStatus || order.ticket?.status) : '-'}</div>
+                </td>
+                <td>
+                  <div className="fw-semibold">{account.serviceAccountNumber || order.serviceAccountNumber || 'New installation'}</div>
+                  <div className="text-muted small">{order.serviceReference || account.serviceReference || '-'}</div>
+                </td>
+                <td className="service-col-action text-end">
+                  <div className="service-row-actions">
+                    <button className="badge bg-blue-lt text-blue service-add-order-badge" type="button" title="View service order" aria-label={`View ${order.orderNumber}`} onClick={(event) => { event.stopPropagation(); onSelectOrder(order); }}>
+                      <IconEye size={14} />
+                    </button>
+                    <button className="badge bg-secondary-lt text-secondary service-add-order-badge" type="button" title="Edit service order" aria-label={`Edit ${order.orderNumber}`} onClick={(event) => { event.stopPropagation(); onEdit(order); }}>
+                      <IconEdit size={14} />
+                    </button>
+                    <button className="badge bg-red-lt text-red service-add-order-badge" type="button" title="Cancel service order" aria-label={`Cancel ${order.orderNumber}`} onClick={(event) => { event.stopPropagation(); onCancel(order); }}>
+                      <IconTrash size={14} />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

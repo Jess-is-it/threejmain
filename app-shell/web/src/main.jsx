@@ -18,6 +18,7 @@ import {
   IconKey,
   IconListDetails,
   IconLogout,
+  IconMap,
   IconMenu2,
   IconNetwork,
   IconPackage,
@@ -39,6 +40,7 @@ import InventoryPage from '../../../inventory/web/InventoryPage.jsx';
 import LogsPage from '../../../logs/web/LogsPage.jsx';
 import NetworkSettingsPage from '../../../network-settings/web/NetworkSettingsPage.jsx';
 import PointOfSalePage from '../../../point-of-sale/web/PointOfSalePage.jsx';
+import ProcessFlowPage from '../../../process-flow/web/ProcessFlowPage.jsx';
 import ServicePage from '../../../service/web/ServicePage.jsx';
 import SystemSettingsPage from '../../../system-settings/web/SystemSettingsPage.jsx';
 import TicketingPage from '../../../ticketing/web/TicketingPage.jsx';
@@ -48,6 +50,7 @@ const API = '/api';
 
 const moduleNav = [
   { page: 'Dashboard', slug: 'dashboard', icon: IconDashboard, tone: 'blue' },
+  { page: 'Process Flow', slug: 'process-flow', icon: IconActivity, tone: 'cyan' },
   { page: 'Customer Profiling', slug: 'customer-profiling', icon: IconUsers, tone: 'azure' },
   { page: 'Billing', slug: 'billing', icon: IconCash, tone: 'green' },
   { page: 'Point of Sale', slug: 'point-of-sale', icon: IconBuildingStore, tone: 'yellow' },
@@ -62,6 +65,7 @@ const moduleNav = [
     tone: 'blue',
     children: [
       { page: 'Service Catalog', slug: 'service/catalog', icon: IconPackage, tone: 'blue' },
+      { page: 'Service Account', slug: 'service/account', icon: IconWifi, tone: 'green' },
       { page: 'Service Order', slug: 'service/order', icon: IconListDetails, tone: 'cyan' }
     ]
   },
@@ -71,12 +75,14 @@ const moduleNav = [
     icon: IconNetwork,
     tone: 'indigo',
     children: [
+      { page: 'Map', slug: 'network-settings/map', icon: IconMap, tone: 'indigo' },
+      { page: 'Fiber Mapping', slug: 'network-settings/fiber-mapping', icon: IconNetwork, tone: 'teal' },
       {
         page: 'MikroTik',
         icon: IconRouter,
         tone: 'cyan',
         children: [
-          { page: 'MikroTik Settings', label: 'Settings', slug: 'network-settings/mikrotik/settings', icon: IconSettings, tone: 'cyan' },
+          { page: 'MikroTik API', label: 'MikroTik API', slug: 'network-settings/mikrotik/settings', icon: IconSettings, tone: 'cyan' },
           { page: 'PPPoE Accounts', slug: 'network-settings/pppoe-accounts', icon: IconKey, tone: 'cyan' }
         ]
       },
@@ -85,11 +91,19 @@ const moduleNav = [
         icon: IconWifi,
         tone: 'blue',
         children: [
-          { page: 'OLT Settings', label: 'Settings', slug: 'network-settings/olt/settings', icon: IconSettings, tone: 'blue' },
+          { page: 'OLT SNMP', label: 'OLT SNMP', slug: 'network-settings/olt/settings', icon: IconSettings, tone: 'blue' },
           { page: 'OLT & PON', slug: 'network-settings/olts', icon: IconWifi, tone: 'blue' },
           { page: 'ONUs', slug: 'network-settings/onus', icon: IconRouter, tone: 'cyan' },
-          { page: 'NAP Boxes', slug: 'network-settings/nap-boxes', icon: IconBox, tone: 'orange' },
-          { page: 'FBT', slug: 'network-settings/fbts', icon: IconNetwork, tone: 'green' }
+          { page: 'NAP Boxes', slug: 'network-settings/nap-boxes', icon: IconBox, tone: 'orange' }
+        ]
+      },
+      {
+        page: 'Insertion Loss',
+        icon: IconNetwork,
+        tone: 'green',
+        children: [
+          { page: 'Splitters', slug: 'network-settings/insertion-loss/splitters', icon: IconNetwork, tone: 'green' },
+          { page: 'Fiber Optic', slug: 'network-settings/insertion-loss/fiber-optic', icon: IconNetwork, tone: 'teal' }
         ]
       }
     ]
@@ -166,7 +180,8 @@ function pageFromLocation() {
   const slug = window.location.pathname.replace(/^\/+|\/+$/g, '') || 'dashboard';
   const item = navItems().find((navItem) => navItem.slug && navItem.slug === slug);
   if (item) return item.page;
-  if (slug === 'network-settings/devices') return 'MikroTik Settings';
+  if (slug === 'network-settings/devices') return 'MikroTik API';
+  if (slug === 'network-settings/fbts') return 'Splitters';
   if (slug === 'profile') return 'View Profile';
   if (slug === 'change-password') return 'Change Password';
   return 'Dashboard';
@@ -638,6 +653,7 @@ function App() {
         <div className="page-body">
           <div className="container-xl">
             {page === 'Dashboard' && <Dashboard data={dashboard} />}
+            {page === 'Process Flow' && <ProcessFlowPage refreshShell={refresh} />}
             {page === 'Customer Profiling' && <CustomerProfilingPage refreshShell={refresh} />}
             {page === 'Billing' && <BillingPage refreshShell={refresh} />}
             {page === 'Point of Sale' && <PointOfSalePage refreshShell={refresh} />}
@@ -646,17 +662,22 @@ function App() {
             {page === 'Customer Service Management' && <CustomerServiceManagementPage refreshShell={refresh} />}
             {page === 'Ticketing' && <TicketingPage refreshShell={refresh} />}
             {page === 'Service Catalog' && <ServicePage initialSection="catalog" refreshShell={refresh} />}
+            {page === 'Service Account' && <ServicePage initialSection="accounts" refreshShell={refresh} />}
             {page === 'Service Order' && <ServicePage initialSection="orders" refreshShell={refresh} />}
             {page === 'Network Settings' && <NetworkSettingsPage initialSection="overview" refreshShell={refresh} />}
-            {page === 'MikroTik Settings' && <NetworkSettingsPage initialSection="mikrotik-settings" refreshShell={refresh} />}
+            {page === 'MikroTik API' && <NetworkSettingsPage initialSection="mikrotik-settings" refreshShell={refresh} />}
             {page === 'PPPoE Accounts' && <NetworkSettingsPage initialSection="pppoe" refreshShell={refresh} />}
-            {page === 'OLT Settings' && <NetworkSettingsPage initialSection="olt-settings" refreshShell={refresh} />}
+            {page === 'OLT SNMP' && <NetworkSettingsPage initialSection="olt-settings" refreshShell={refresh} />}
+            {page === 'Map' && <NetworkSettingsPage initialSection="map" refreshShell={refresh} />}
+            {page === 'Fiber Mapping' && <NetworkSettingsPage initialSection="fiber-mapping" refreshShell={refresh} />}
             {page === 'OLT & PON' && <NetworkSettingsPage initialSection="olts" refreshShell={refresh} />}
             {page === 'ONUs' && <NetworkSettingsPage initialSection="onus" refreshShell={refresh} />}
             {page === 'NAP Boxes' && <NetworkSettingsPage initialSection="naps" refreshShell={refresh} />}
-            {page === 'FBT' && <NetworkSettingsPage initialSection="fbts" refreshShell={refresh} />}
+            {page === 'Splitters' && <NetworkSettingsPage initialSection="fbts" refreshShell={refresh} />}
+            {page === 'Fiber Optic' && <NetworkSettingsPage initialSection="fiber-optic-loss" refreshShell={refresh} />}
             {moduleNav.filter((item) => ![
               'Dashboard',
+              'Process Flow',
               'Customer Profiling',
               'Billing',
               'Point of Sale',

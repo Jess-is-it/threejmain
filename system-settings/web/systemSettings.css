@@ -99,6 +99,50 @@
   width: 100%;
 }
 
+.system-settings-map-image-card {
+  height: 100%;
+}
+
+.system-settings-map-image-layout {
+  align-items: center;
+  display: flex;
+  gap: 1.25rem;
+}
+
+.system-settings-map-image-preview {
+  align-items: center;
+  background:
+    linear-gradient(45deg, #f1f5f9 25%, transparent 25%),
+    linear-gradient(-45deg, #f1f5f9 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #f1f5f9 75%),
+    linear-gradient(-45deg, transparent 75%, #f1f5f9 75%);
+  background-color: #fff;
+  background-position: 0 0, 0 0.5rem, 0.5rem -0.5rem, -0.5rem 0;
+  background-size: 1rem 1rem;
+  border: 1px solid var(--tblr-border-color, #dadfe5);
+  border-radius: 8px;
+  display: flex;
+  flex: 0 0 auto;
+  height: 8rem;
+  justify-content: center;
+  overflow: hidden;
+  width: 8rem;
+}
+
+.system-settings-map-image-preview img {
+  height: 100%;
+  object-fit: contain;
+  padding: 0.75rem;
+  width: 100%;
+}
+
+.system-settings-image-guidelines {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0;
+  padding-left: 1rem;
+}
+
 .system-settings-avatar-meta {
   align-items: center;
   display: flex;
@@ -217,6 +261,13 @@
 .system-settings-locations .table th,
 .system-settings-locations .table td {
   vertical-align: middle;
+}
+
+@media (max-width: 575.98px) {
+  .system-settings-map-image-layout {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 
 .system-settings-modal .modal-body {

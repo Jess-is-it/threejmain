@@ -264,6 +264,13 @@ function formatDisplayDate(value) {
   }).format(parsed);
 }
 
+function formatRecommendedByCustomer(data = {}) {
+  const name = String(data.recommendedByCustomerName || '').trim();
+  const account = String(data.recommendedByCustomerAccountNumber || '').trim();
+  if (account && name) return `${account} - ${name}`;
+  return name || account || String(data.recommendedByCustomerId || '').trim() || '-';
+}
+
 function coordinateNumber(value) {
   if (value === null || value === undefined || value === '') return null;
   const number = Number(value);
@@ -378,6 +385,10 @@ const blankCustomerForm = {
   lastName: '',
   businessName: '',
   birthDate: '',
+  recommendedByCustomer: false,
+  recommendedByCustomerId: '',
+  recommendedByCustomerAccountNumber: '',
+  recommendedByCustomerName: '',
   contactNumber: '',
   alternateMobileNumber: '',
   facebookAccountName: '',
@@ -399,7 +410,7 @@ const blankCustomerForm = {
   longitude: '',
   gender: 'MALE',
   customerType: 'RESIDENTIAL',
-  status: 'ACTIVE'
+  status: 'PENDING'
 };
 
 const blankCustomerFilters = {
@@ -422,6 +433,7 @@ const customerTableColumns = [
   { key: 'type', label: 'Type', sortBy: 'customerType', group: 'Profile' },
   { key: 'businessName', label: 'Business Name', sortBy: 'businessName', group: 'Profile', defaultVisible: false },
   { key: 'birthDate', label: 'Birth Date', sortBy: 'birthDate', group: 'Profile', defaultVisible: false },
+  { key: 'recommendedByCustomerName', label: 'Recommended By', sortBy: 'recommendedByCustomerName', group: 'Profile', defaultVisible: false },
   { key: 'contact', label: 'Primary Contact', sortBy: 'contactNumber', group: 'Contact' },
   { key: 'alternateMobileNumber', label: 'Alternate Mobile', sortBy: 'alternateMobileNumber', group: 'Contact', defaultVisible: false },
   { key: 'facebookAccountName', label: 'Facebook', sortBy: 'facebookAccountName', group: 'Contact', defaultVisible: false },
@@ -470,6 +482,7 @@ function customerStageCompleted(data, stageIndex) {
   if (stageIndex === 0) {
     const requiredFields = ['firstName', 'lastName'];
     if (normalizeUpper(data?.customerType) === 'BUSINESS') requiredFields.push('businessName');
+    if (data?.recommendedByCustomer) requiredFields.push('recommendedByCustomerId');
     return requiredFields.every((key) => String(data?.[key] || '').trim());
   }
   if (stageIndex === 1) {
@@ -491,6 +504,7 @@ function customerStageCompleted(data, stageIndex) {
   }
   const requiredFields = ['firstName', 'lastName', 'contactNumber'];
   if (normalizeUpper(data?.customerType) === 'BUSINESS') requiredFields.push('businessName');
+  if (data?.recommendedByCustomer) requiredFields.push('recommendedByCustomerId');
   return requiredFields.every((key) => String(data?.[key] || '').trim());
 }
 
@@ -571,6 +585,9 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const [coordinatePan, setCoordinatePan] = useState(null);
   const [locationSearch, setLocationSearch] = useState('');
   const [isLocationPickerOpen, setLocationPickerOpen] = useState(false);
+  const [referralSearch, setReferralSearch] = useState('');
+  const [referralOptions, setReferralOptions] = useState([]);
+  const [isReferralPickerOpen, setReferralPickerOpen] = useState(false);
   const [isMobileDetailsView, setMobileDetailsView] = useState(() => (
     typeof window !== 'undefined' && window.matchMedia('(max-width: 767.98px)').matches
   ));
@@ -586,6 +603,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const columnMenuButtonRef = useRef(null);
   const latestFiltersRef = useRef(blankCustomerFilters);
   const searchDebounceRef = useRef(null);
+  const referralSearchDebounceRef = useRef(null);
 
   const savedProvinces = uniqueValues(locations.map((location) => normalizeUpper(location.province)));
   const provinceOptions = uniqueValues([...savedProvinces, ...(meta.provinces || [])]);
@@ -623,6 +641,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const customerWizardProgress = Math.round((displayedCompletedFormStages.filter(Boolean).length / customerFormStages.length) * 100);
   const selectedFormLocation = locations.find((item) => item.id === form.locationId);
   const canCaptureCoordinates = Boolean(selectedFormLocation);
+  const hasCoordinateValues = Boolean(String(form.longitude || '').trim() || String(form.latitude || '').trim());
   const locationSearchQuery = locationSearch.trim().toLowerCase();
   const filteredLocationRecords = locations
     .filter((location) => {
@@ -637,6 +656,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       ].some((part) => String(part || '').toLowerCase().includes(locationSearchQuery));
     })
     .slice(0, 12);
+  const filteredReferralOptions = referralOptions.filter((customer) => customer.id !== editingId);
   const coordinateMap = coordinateCapture
     ? coordinateTileData(
       coordinateCapture.centerLatitude,
@@ -751,7 +771,10 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     const timeout = window.setTimeout(() => setMessage(''), 6000);
     return () => window.clearTimeout(timeout);
   }, [message]);
-  useEffect(() => () => window.clearTimeout(searchDebounceRef.current), []);
+  useEffect(() => () => {
+    window.clearTimeout(searchDebounceRef.current);
+    window.clearTimeout(referralSearchDebounceRef.current);
+  }, []);
   useEffect(() => {
     if (!isColumnMenuOpen) return undefined;
     syncColumnMenuPosition();
@@ -890,6 +913,13 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     setSelectedDraftIds([]);
   }
 
+  function resetReferralPicker() {
+    window.clearTimeout(referralSearchDebounceRef.current);
+    setReferralSearch('');
+    setReferralOptions([]);
+    setReferralPickerOpen(false);
+  }
+
   function continueDraft(draft) {
     const draftForm = { ...blankCustomerForm, ...(draft.form || {}) };
     const draftLocation = locations.find((location) => location.id === draftForm.locationId);
@@ -897,6 +927,9 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     setActiveDraftId(draft.id);
     setForm(draftForm);
     setLocationSearch(draftLocation ? locationLabel(draftLocation) : draftForm.locationName || '');
+    setReferralSearch(draftForm.recommendedByCustomer ? formatRecommendedByCustomer(draftForm) : '');
+    setReferralOptions([]);
+    setReferralPickerOpen(false);
     setLocationPickerOpen(false);
     setFormStage(Math.min(Math.max(Number(draft.stage) || 0, 0), lastFormStage));
     setFormModalOpen(true);
@@ -914,12 +947,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   function editCustomer(customer) {
     const firstSecondary = customer.secondaryContacts?.[0] || {};
     const customerLocation = locations.find((location) => location.id === customer.locationId);
-    setEditingId(customer.id);
-    setActiveDraftId('');
-    setFormStage(0);
-    setLocationSearch(customerLocation ? locationLabel(customerLocation) : customer.locationName || '');
-    setLocationPickerOpen(false);
-    setForm({
+    const nextForm = {
       ...blankCustomerForm,
       ...customer,
       landmark: customer.landmark || customer.locationName || '',
@@ -927,7 +955,16 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       secondaryContactNumber: customer.secondaryContactNumber || firstSecondary.contactNumber || '',
       secondaryContactFacebookAccount: customer.secondaryContactFacebookAccount || firstSecondary.facebookAccount || '',
       secondaryContactRelationship: customer.secondaryContactRelationship || firstSecondary.relationship || ''
-    });
+    };
+    setEditingId(customer.id);
+    setActiveDraftId('');
+    setFormStage(0);
+    setLocationSearch(customerLocation ? locationLabel(customerLocation) : customer.locationName || '');
+    setReferralSearch(nextForm.recommendedByCustomer ? formatRecommendedByCustomer(nextForm) : '');
+    setReferralOptions([]);
+    setReferralPickerOpen(false);
+    setLocationPickerOpen(false);
+    setForm(nextForm);
     setFormModalOpen(true);
     setMessage(`Editing ${customer.accountNumber}`);
   }
@@ -937,6 +974,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     setActiveDraftId('');
     setFormStage(0);
     setLocationSearch('');
+    resetReferralPicker();
     setLocationPickerOpen(false);
     setForm({ ...blankCustomerForm });
     setFormModalOpen(true);
@@ -951,6 +989,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     setActiveDraftId('');
     setFormStage(0);
     setLocationSearch('');
+    resetReferralPicker();
     setLocationPickerOpen(false);
     setForm({ ...blankCustomerForm });
     if (savedDraft) setMessage('Customer draft saved. Open Drafts to continue later.');
@@ -1002,6 +1041,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     setActiveDraftId('');
     setFormStage(0);
     setLocationSearch('');
+    resetReferralPicker();
     setLocationPickerOpen(false);
     setForm({ ...blankCustomerForm });
   }
@@ -1067,6 +1107,68 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     if (event.key !== 'Enter') return;
     event.preventDefault();
     if (filteredLocationRecords[0]) applyLocation(filteredLocationRecords[0].id);
+  }
+
+  async function loadReferralOptions(searchValue = '') {
+    const params = new URLSearchParams({
+      page: '1',
+      pageSize: '12',
+      sortBy: 'fullName',
+      sortDir: 'asc'
+    });
+    if (searchValue.trim()) params.set('search', searchValue.trim());
+    try {
+      const result = await request(`/customer-profiling/customers?${params.toString()}`);
+      setReferralOptions(Array.isArray(result.data) ? result.data : []);
+    } catch (err) {
+      setError(err.message);
+      setReferralOptions([]);
+    }
+  }
+
+  function handleReferralToggle(checked) {
+    setForm((current) => ({
+      ...current,
+      recommendedByCustomer: checked,
+      recommendedByCustomerId: '',
+      recommendedByCustomerAccountNumber: '',
+      recommendedByCustomerName: ''
+    }));
+    setReferralSearch('');
+    setReferralOptions([]);
+    setReferralPickerOpen(checked);
+    if (checked) loadReferralOptions('');
+  }
+
+  function handleReferralSearchChange(value) {
+    setReferralSearch(value);
+    setReferralPickerOpen(true);
+    setForm((current) => ({
+      ...current,
+      recommendedByCustomerId: '',
+      recommendedByCustomerAccountNumber: '',
+      recommendedByCustomerName: ''
+    }));
+    window.clearTimeout(referralSearchDebounceRef.current);
+    referralSearchDebounceRef.current = window.setTimeout(() => {
+      loadReferralOptions(value);
+    }, 250);
+  }
+
+  function applyReferralCustomer(customer) {
+    setForm((current) => ({
+      ...current,
+      recommendedByCustomer: true,
+      recommendedByCustomerId: customer.id,
+      recommendedByCustomerAccountNumber: customer.accountNumber || '',
+      recommendedByCustomerName: customer.fullName || [customer.firstName, customer.middleName, customer.lastName].filter(Boolean).join(' ')
+    }));
+    setReferralSearch(formatRecommendedByCustomer({
+      recommendedByCustomerId: customer.id,
+      recommendedByCustomerAccountNumber: customer.accountNumber,
+      recommendedByCustomerName: customer.fullName || [customer.firstName, customer.middleName, customer.lastName].filter(Boolean).join(' ')
+    }));
+    setReferralPickerOpen(false);
   }
 
   function openCoordinateCapture() {
@@ -1196,6 +1298,14 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     setCoordinateCapture(null);
   }
 
+  function clearCustomerCoordinates() {
+    setForm({
+      ...form,
+      latitude: '',
+      longitude: ''
+    });
+  }
+
   async function saveCustomer(e) {
     e.preventDefault();
     setError('');
@@ -1212,6 +1322,9 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     if (normalizeUpper(form.customerType) === 'BUSINESS') {
       requiredFields.push(['businessName', 'Business Name', 0]);
     }
+    if (form.recommendedByCustomer) {
+      requiredFields.push(['recommendedByCustomerId', 'Recommended By Customer', 0]);
+    }
     const missingField = requiredFields.find(([key]) => !String(form[key] || '').trim());
     if (missingField) {
       setFormStage(missingField[2]);
@@ -1220,8 +1333,20 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     }
     const method = editingId ? 'PATCH' : 'POST';
     const path = editingId ? `/customer-profiling/customers/${editingId}` : '/customer-profiling/customers';
+    const payload = { ...form };
+    if (editingId) {
+      delete payload.status;
+    } else {
+      payload.status = 'PENDING';
+    }
+    if (!payload.recommendedByCustomer) {
+      payload.recommendedByCustomer = false;
+      payload.recommendedByCustomerId = '';
+      payload.recommendedByCustomerAccountNumber = '';
+      payload.recommendedByCustomerName = '';
+    }
     try {
-      const saved = await request(path, { method, body: JSON.stringify(form) });
+      const saved = await request(path, { method, body: JSON.stringify(payload) });
       setMessage(`${saved.accountNumber} saved.`);
       const shouldRefreshOpenDetails = isDetailsPanelOpen && selected?.id === saved.id;
       if (activeDraftId) removeDrafts([activeDraftId]);
@@ -1229,6 +1354,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       setActiveDraftId('');
       setFormStage(0);
       setForm({ ...blankCustomerForm });
+      resetReferralPicker();
       setFormModalOpen(false);
       await load(filters);
       if (shouldRefreshOpenDetails) await loadCustomer(saved.id);
@@ -1345,9 +1471,8 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
               <h5>Account Details</h5>
             </div>
             <div className="row g-3">
-              <div className="col-md-4"><label className="form-label">Customer Type</label><select className="form-select" value={form.customerType || 'RESIDENTIAL'} onChange={(e) => setForm({ ...form, customerType: e.target.value })}>{meta.customerTypes.map((item) => <option key={item}>{item}</option>)}</select></div>
-              <div className="col-md-4"><label className="form-label">Gender</label><select className="form-select" value={form.gender || 'MALE'} onChange={(e) => setForm({ ...form, gender: e.target.value })}>{(meta.customerGenders || ['MALE', 'FEMALE']).map((item) => <option key={item}>{item}</option>)}</select></div>
-              <div className="col-md-4"><label className="form-label">Status</label><select className="form-select" value={form.status || 'ACTIVE'} onChange={(e) => setForm({ ...form, status: e.target.value })}>{meta.customerStatuses.map((item) => <option key={item}>{item}</option>)}</select></div>
+              <div className="col-md-6"><label className="form-label">Customer Type</label><select className="form-select" value={form.customerType || 'RESIDENTIAL'} onChange={(e) => setForm({ ...form, customerType: e.target.value })}>{meta.customerTypes.map((item) => <option key={item}>{item}</option>)}</select></div>
+              <div className="col-md-6"><label className="form-label">Gender</label><select className="form-select" value={form.gender || 'MALE'} onChange={(e) => setForm({ ...form, gender: e.target.value })}>{(meta.customerGenders || ['MALE', 'FEMALE']).map((item) => <option key={item}>{item}</option>)}</select></div>
               {normalizeUpper(form.customerType) === 'BUSINESS' && (
                 <div className="col-md-12"><label className="form-label">Business Name</label><input className="form-control" value={form.businessName || ''} onChange={(e) => setForm({ ...form, businessName: e.target.value })} placeholder="Registered or trade name" /></div>
               )}
@@ -1362,6 +1487,79 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
               <div className="col-md-4"><label className="form-label">Middle Name</label><input className="form-control" value={form.middleName || ''} onChange={(e) => setForm({ ...form, middleName: e.target.value })} /></div>
               <div className="col-md-4"><label className="form-label">Last Name</label><input className="form-control" value={form.lastName || ''} onChange={(e) => setForm({ ...form, lastName: e.target.value })} /></div>
               <div className="col-md-4"><label className="form-label">Birth Date</label><input className="form-control" type="date" value={form.birthDate || ''} onChange={(e) => setForm({ ...form, birthDate: e.target.value })} /></div>
+            </div>
+          </section>
+          <section className="customer-form-section-panel">
+            <div className="customer-form-section-heading">
+              <h5>Referral</h5>
+              <p>Track customer-to-customer recommendations.</p>
+            </div>
+            <div className="customer-referral-panel">
+              <label className="form-check form-switch m-0">
+                <input
+                  className="form-check-input"
+                  type="checkbox"
+                  checked={Boolean(form.recommendedByCustomer)}
+                  onChange={(event) => handleReferralToggle(event.target.checked)}
+                />
+                <span className="form-check-label">Recommended by existing customer</span>
+              </label>
+              {form.recommendedByCustomer && (
+                <div>
+                  <label className="form-label">Recommended by customer</label>
+                  <div className="customer-location-picker">
+                    <IconSearch size={16} className="customer-location-search-icon" aria-hidden="true" />
+                    <input
+                      className="form-control customer-location-search-input"
+                      value={referralSearch}
+                      onChange={(event) => handleReferralSearchChange(event.target.value)}
+                      onFocus={() => {
+                        setReferralPickerOpen(true);
+                        if (!referralOptions.length) loadReferralOptions(referralSearch);
+                      }}
+                      onBlur={() => window.setTimeout(() => setReferralPickerOpen(false), 120)}
+                      placeholder="Search name, account, contact, or Facebook"
+                      role="combobox"
+                      aria-expanded={isReferralPickerOpen}
+                      aria-controls="customer-referral-options"
+                      aria-autocomplete="list"
+                    />
+                    {(form.recommendedByCustomerId || referralSearch) && (
+                      <button
+                        type="button"
+                        className="btn btn-icon btn-sm customer-location-clear"
+                        title="Clear recommended customer"
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => handleReferralToggle(false)}
+                      >
+                        <IconX size={14} />
+                      </button>
+                    )}
+                    {isReferralPickerOpen && (
+                      <div className="customer-location-options" id="customer-referral-options" role="listbox">
+                        {filteredReferralOptions.map((customer) => (
+                          <button
+                            type="button"
+                            className={`customer-location-option ${form.recommendedByCustomerId === customer.id ? 'active' : ''}`}
+                            key={customer.id}
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => applyReferralCustomer(customer)}
+                            role="option"
+                            aria-selected={form.recommendedByCustomerId === customer.id}
+                          >
+                            <strong>{customer.accountNumber || 'No account'} - {customer.fullName}</strong>
+                            <span>{[customer.contactNumber, customer.barangay, customer.city].filter(Boolean).join(' / ') || 'Existing customer'}</span>
+                          </button>
+                        ))}
+                        {!filteredReferralOptions.length && (
+                          <div className="customer-location-empty">No matching customer.</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="form-hint">Select the existing customer who recommended this profile.</div>
+                </div>
+              )}
             </div>
           </section>
         </div>
@@ -1493,9 +1691,12 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
               <h5>Coordinates</h5>
             </div>
             <div className="row g-3">
-              <div className="col-md-4"><label className="form-label">Longitude</label><input className="form-control" value={form.longitude || ''} onChange={(e) => setForm({ ...form, longitude: e.target.value })} /></div>
-              <div className="col-md-4"><label className="form-label">Latitude</label><input className="form-control" value={form.latitude || ''} onChange={(e) => setForm({ ...form, latitude: e.target.value })} /></div>
-              <div className="col-md-4 d-flex align-items-end"><button type="button" className="btn btn-outline-primary w-100" disabled={!canCaptureCoordinates} title={canCaptureCoordinates ? 'Capture coordinates from the selected customer location record' : 'Select a customer location record first'} onClick={openCoordinateCapture}><IconMapPin size={18} className="me-2" />Capture Coordinates</button></div>
+              <div className="col-md-3"><label className="form-label">Longitude</label><input className="form-control" value={form.longitude || ''} onChange={(e) => setForm({ ...form, longitude: e.target.value })} /></div>
+              <div className="col-md-3"><label className="form-label">Latitude</label><input className="form-control" value={form.latitude || ''} onChange={(e) => setForm({ ...form, latitude: e.target.value })} /></div>
+              <div className={hasCoordinateValues ? 'col-md-3 d-flex align-items-end' : 'col-md-6 d-flex align-items-end'}><button type="button" className="btn btn-outline-primary w-100" disabled={!canCaptureCoordinates} title={canCaptureCoordinates ? 'Capture coordinates from the selected customer location record' : 'Select a customer location record first'} onClick={openCoordinateCapture}><IconMapPin size={18} className="me-2" />Capture Coordinates</button></div>
+              {hasCoordinateValues && (
+                <div className="col-md-3 d-flex align-items-end"><button type="button" className="btn btn-outline-secondary w-100" onClick={clearCustomerCoordinates}><IconX size={18} className="me-2" />Clear</button></div>
+              )}
             </div>
           </section>
         </div>
@@ -1509,12 +1710,13 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
             ['Account Number', form.accountNumber || 'Auto on save'],
             ['Customer Type', form.customerType],
             ['Gender', form.gender],
-            ['Status', form.status],
             ...(normalizeUpper(form.customerType) === 'BUSINESS' ? [['Business Name', form.businessName]] : []),
             ['First Name', form.firstName],
             ['Middle Name', form.middleName],
             ['Last Name', form.lastName],
-            ['Birth Date', formatDisplayDate(form.birthDate)]
+            ['Birth Date', formatDisplayDate(form.birthDate)],
+            ['Recommended by customer', form.recommendedByCustomer ? 'Yes' : 'No'],
+            ...(form.recommendedByCustomer ? [['Recommended by', formatRecommendedByCustomer(form)]] : [])
           ].map(([label, value]) => renderReviewItem(label, value))}
         </section>
         <section>
@@ -1569,6 +1771,9 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     const basicInfoRows = [
       { label: 'Lives in', value: formatCustomerResidence(selected), icon: IconHome },
       { label: 'Birth Date', value: formatDisplayDate(selected.birthDate), icon: IconCalendarEvent },
+      ...(selected.recommendedByCustomer
+        ? [{ label: 'Recommended by', value: formatRecommendedByCustomer(selected), icon: IconUsers }]
+        : []),
       ...(normalizeUpper(selected.customerType) === 'BUSINESS'
         ? [{ label: 'Business Name', value: selected.businessName, icon: IconActivity }]
         : [])
@@ -1748,6 +1953,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     }
     if (columnKey === 'businessName') return renderPlainCustomerCell(columnKey, customer.businessName);
     if (columnKey === 'birthDate') return renderPlainCustomerCell(columnKey, formatDisplayDate(customer.birthDate));
+    if (columnKey === 'recommendedByCustomerName') return renderPlainCustomerCell(columnKey, customer.recommendedByCustomer ? formatRecommendedByCustomer(customer) : '-');
     if (columnKey === 'alternateMobileNumber') return renderPlainCustomerCell(columnKey, customer.alternateMobileNumber);
     if (columnKey === 'facebookAccountName') return renderPlainCustomerCell(columnKey, customer.facebookAccountName);
     if (columnKey === 'facebookProfileLink') return renderPlainCustomerCell(columnKey, customer.facebookProfileLink);

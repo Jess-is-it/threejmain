@@ -1,14 +1,19 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  IconBrandFacebook,
+  IconBrandTelegram,
+  IconBrandWhatsapp,
   IconCalendarDue,
   IconCheck,
   IconDeviceFloppy,
   IconEdit,
+  IconInbox,
   IconMessageCircle,
   IconPhoneCall,
   IconPlus,
   IconRefresh,
   IconSearch,
+  IconSettings,
   IconTrash,
   IconUsers
 } from '@tabler/icons-react';
@@ -61,9 +66,27 @@ function statusClass(status) {
   return 'bg-blue-lt text-blue';
 }
 
+function formatLabel(value) {
+  return String(value || '').replaceAll('_', ' ');
+}
+
+function formatDateTime(value) {
+  if (!value) return '-';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return '-';
+  return parsed.toLocaleString();
+}
+
 function customerLabel(customer) {
   if (!customer) return '-';
   return `${customer.accountNumber || 'NO-ACCOUNT'} - ${customer.name || 'Unnamed customer'}`;
+}
+
+function channelIcon(channel) {
+  if (channel === 'FACEBOOK') return IconBrandFacebook;
+  if (channel === 'TELEGRAM') return IconBrandTelegram;
+  if (channel === 'WHATSAPP') return IconBrandWhatsapp;
+  return IconMessageCircle;
 }
 
 function Card({ title, icon: Icon, children, actions }) {
@@ -83,11 +106,20 @@ function Card({ title, icon: Icon, children, actions }) {
   );
 }
 
-function TextField({ label, value, onChange, type = 'text', required = false }) {
+function TextField({ label, value, onChange, type = 'text', required = false, placeholder = '', readOnly = false, autoComplete = '' }) {
   return (
     <div>
       <label className="form-label">{label}</label>
-      <input className="form-control" type={type} value={value ?? ''} required={required} onChange={(e) => onChange(e.target.value)} />
+      <input
+        autoComplete={autoComplete}
+        className="form-control"
+        placeholder={placeholder}
+        readOnly={readOnly}
+        type={type}
+        value={value ?? ''}
+        required={required}
+        onChange={(e) => onChange(e.target.value)}
+      />
     </div>
   );
 }
@@ -106,9 +138,18 @@ function SelectField({ label, value, onChange, options, required = false, childr
     <div>
       <label className="form-label">{label}</label>
       <select className="form-select" value={value ?? ''} required={required} onChange={(e) => onChange(e.target.value)}>
-        {children || options.map((option) => <option key={option} value={option}>{option.replaceAll('_', ' ')}</option>)}
+        {children || (options || []).map((option) => <option key={option} value={option}>{formatLabel(option)}</option>)}
       </select>
     </div>
+  );
+}
+
+function CheckboxField({ label, checked, onChange }) {
+  return (
+    <label className="form-check form-switch mb-0">
+      <input className="form-check-input" type="checkbox" checked={Boolean(checked)} onChange={(e) => onChange(e.target.checked)} />
+      <span className="form-check-label">{label}</span>
+    </label>
   );
 }
 
@@ -152,10 +193,25 @@ const blankFollowUp = {
   completedAt: ''
 };
 
+const blankFacebookSettings = {
+  enabled: false,
+  pageName: '',
+  pageId: '',
+  appId: '',
+  verifyToken: '',
+  pageAccessToken: '',
+  graphApiVersion: 'v25.0',
+  notes: ''
+};
+
+const tabs = ['Overview', 'Inbox', 'Service Requests', 'Interactions', 'Follow-ups', 'Settings'];
+
 export default function CustomerServiceManagementPage({ refreshShell = () => {} }) {
   const [activeTab, setActiveTab] = useState('Overview');
   const [meta, setMeta] = useState({
     channels: [],
+    omniChannels: [],
+    inboxThreadStatuses: [],
     requestCategories: [],
     requestStatuses: [],
     priorities: [],
@@ -170,29 +226,72 @@ export default function CustomerServiceManagementPage({ refreshShell = () => {} 
   const [requests, setRequests] = useState([]);
   const [interactions, setInteractions] = useState([]);
   const [followUps, setFollowUps] = useState([]);
+  const [inboxThreads, setInboxThreads] = useState([]);
+  const [selectedThreadId, setSelectedThreadId] = useState('');
+  const [selectedThread, setSelectedThread] = useState(null);
+  const [threadMessages, setThreadMessages] = useState([]);
   const [requestForm, setRequestForm] = useState(blankRequest);
   const [interactionForm, setInteractionForm] = useState(blankInteraction);
   const [followUpForm, setFollowUpForm] = useState(blankFollowUp);
   const [filters, setFilters] = useState({ search: '', status: '', customerId: '' });
+  const [inboxFilters, setInboxFilters] = useState({ search: '', channel: '', status: '' });
+  const [replyText, setReplyText] = useState('');
+  const [channelSettings, setChannelSettings] = useState({});
+  const [facebookForm, setFacebookForm] = useState(blankFacebookSettings);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
   const requestById = useMemo(() => new Map(requests.map((row) => [row.id, row])), [requests]);
+  const activeThread = selectedThread || inboxThreads.find((thread) => thread.id === selectedThreadId) || inboxThreads[0] || null;
 
-  async function load(search = customerSearch, nextFilters = filters) {
+  function facebookSettingsToForm(settings = {}) {
+    return {
+      ...blankFacebookSettings,
+      enabled: Boolean(settings.enabled),
+      pageName: settings.pageName || '',
+      pageId: settings.pageId || '',
+      appId: settings.appId || '',
+      verifyToken: settings.verifyToken || '',
+      pageAccessToken: '',
+      graphApiVersion: settings.graphApiVersion || blankFacebookSettings.graphApiVersion,
+      notes: settings.notes || ''
+    };
+  }
+
+  function publicWebhookUrl(path) {
+    if (typeof window === 'undefined') return path || '';
+    return `${window.location.origin}${path || ''}`;
+  }
+
+  async function load(search = customerSearch, nextFilters = filters, nextInboxFilters = inboxFilters) {
     setError('');
     try {
       const params = new URLSearchParams();
       Object.entries(nextFilters).forEach(([key, value]) => {
         if (value) params.set(key, value);
       });
-      const [nextMeta, nextOverview, nextCustomers, nextRequests, nextInteractions, nextFollowUps] = await Promise.all([
+      const inboxParams = new URLSearchParams();
+      Object.entries(nextInboxFilters).forEach(([key, value]) => {
+        if (value) inboxParams.set(key, value);
+      });
+      const [
+        nextMeta,
+        nextOverview,
+        nextCustomers,
+        nextRequests,
+        nextInteractions,
+        nextFollowUps,
+        nextInboxThreads,
+        nextChannelSettings
+      ] = await Promise.all([
         request('/customer-service-management/meta'),
         request('/customer-service-management/overview'),
         request(`/customer-service-management/customers?search=${encodeURIComponent(search)}`),
         request(`/customer-service-management/service-requests?${params.toString()}`),
         request('/customer-service-management/interactions'),
-        request('/customer-service-management/follow-ups')
+        request('/customer-service-management/follow-ups'),
+        request(`/customer-service-management/omni-channel/inbox?${inboxParams.toString()}`),
+        request('/customer-service-management/channel-settings')
       ]);
       setMeta(nextMeta);
       setOverview(nextOverview);
@@ -200,6 +299,21 @@ export default function CustomerServiceManagementPage({ refreshShell = () => {} 
       setRequests(nextRequests);
       setInteractions(nextInteractions);
       setFollowUps(nextFollowUps);
+      setInboxThreads(nextInboxThreads);
+      setChannelSettings(nextChannelSettings);
+      setFacebookForm(facebookSettingsToForm(nextChannelSettings.FACEBOOK));
+      const nextSelectedId = selectedThreadId && nextInboxThreads.some((thread) => thread.id === selectedThreadId)
+        ? selectedThreadId
+        : nextInboxThreads[0]?.id || '';
+      setSelectedThreadId(nextSelectedId);
+      if (nextSelectedId) {
+        const detail = await request(`/customer-service-management/omni-channel/inbox/${nextSelectedId}`);
+        setSelectedThread(detail.thread);
+        setThreadMessages(detail.messages || []);
+      } else {
+        setSelectedThread(null);
+        setThreadMessages([]);
+      }
     } catch (err) {
       setError(err.message);
     }
@@ -298,6 +412,75 @@ export default function CustomerServiceManagementPage({ refreshShell = () => {} 
     refreshShell();
   }
 
+  async function selectInboxThread(threadId) {
+    setSelectedThreadId(threadId);
+    const detail = await request(`/customer-service-management/omni-channel/inbox/${threadId}`);
+    setSelectedThread(detail.thread);
+    setThreadMessages(detail.messages || []);
+    await request(`/customer-service-management/omni-channel/inbox/${threadId}/read`, { method: 'POST' });
+    setInboxThreads((rows) => rows.map((row) => (row.id === threadId ? { ...row, unreadCount: 0 } : row)));
+  }
+
+  function updateInboxFilters(next) {
+    const merged = { ...inboxFilters, ...next };
+    setInboxFilters(merged);
+    load(customerSearch, filters, merged);
+  }
+
+  async function updateThread(next) {
+    if (!activeThread) return;
+    const updated = await request(`/customer-service-management/omni-channel/inbox/${activeThread.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(next)
+    });
+    setSelectedThread(updated);
+    setInboxThreads((rows) => rows.map((row) => (row.id === updated.id ? updated : row)));
+    setMessage('Inbox thread saved.');
+  }
+
+  async function submitReply(e) {
+    e.preventDefault();
+    if (!activeThread || !replyText.trim()) return;
+    const result = await request(`/customer-service-management/omni-channel/inbox/${activeThread.id}/reply`, {
+      method: 'POST',
+      body: JSON.stringify({
+        message: replyText.trim(),
+        agentName: 'Care Team',
+        sendViaFacebook: true
+      })
+    });
+    setReplyText('');
+    setSelectedThread(result.thread);
+    const detail = await request(`/customer-service-management/omni-channel/inbox/${activeThread.id}`);
+    setThreadMessages(detail.messages || []);
+    setInboxThreads((rows) => rows.map((row) => (row.id === result.thread.id ? result.thread : row)));
+    setMessage(result.message.deliveryStatus === 'SENT' ? 'Facebook reply sent.' : 'Reply saved locally.');
+    refreshShell();
+  }
+
+  function setFacebookField(field, value) {
+    setFacebookForm((form) => ({ ...form, [field]: value }));
+  }
+
+  async function saveFacebookSettings(e) {
+    e.preventDefault();
+    const body = { ...facebookForm };
+    if (!body.pageAccessToken) delete body.pageAccessToken;
+    const updated = await request('/customer-service-management/channel-settings/facebook', {
+      method: 'PATCH',
+      body: JSON.stringify(body)
+    });
+    setChannelSettings((settings) => ({ ...settings, FACEBOOK: updated }));
+    setFacebookForm(facebookSettingsToForm(updated));
+    setMessage('Facebook settings saved.');
+  }
+
+  async function checkFacebookSettings() {
+    const result = await request('/customer-service-management/channel-settings/facebook/check', { method: 'POST' });
+    setMessage(result.ready ? 'Facebook setup is ready.' : `Facebook setup needs: ${result.missing.join(', ')}`);
+    await load();
+  }
+
   function editRequest(row) {
     setActiveTab('Service Requests');
     setRequestForm({ ...blankRequest, ...row, tagsText: (row.tags || []).join(', ') });
@@ -321,7 +504,7 @@ export default function CustomerServiceManagementPage({ refreshShell = () => {} 
   function updateFilters(next) {
     const merged = { ...filters, ...next };
     setFilters(merged);
-    load(customerSearch, merged);
+    load(customerSearch, merged, inboxFilters);
   }
 
   return (
@@ -331,7 +514,7 @@ export default function CustomerServiceManagementPage({ refreshShell = () => {} 
       )}
       <div className="csm-toolbar">
         <ul className="nav nav-tabs">
-          {['Overview', 'Service Requests', 'Interactions', 'Follow-ups'].map((tab) => (
+          {tabs.map((tab) => (
             <li className="nav-item" key={tab}>
               <button className={`nav-link ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>{tab}</button>
             </li>
@@ -346,9 +529,11 @@ export default function CustomerServiceManagementPage({ refreshShell = () => {} 
             ['Open Requests', overview.metrics?.open_requests, IconMessageCircle, 'blue'],
             ['Callbacks Due', overview.metrics?.callbacks_due, IconPhoneCall, 'yellow'],
             ['SLA Risks', overview.metrics?.sla_risks, IconCalendarDue, 'red'],
-            ['Interactions Today', overview.metrics?.interactions_today, IconCheck, 'green']
+            ['Interactions Today', overview.metrics?.interactions_today, IconCheck, 'green'],
+            ['Inbox Unread', overview.metrics?.inbox_unread, IconInbox, 'orange'],
+            ['Facebook Threads', overview.metrics?.facebook_threads, IconBrandFacebook, 'azure']
           ].map(([label, value, Icon, tone]) => (
-            <div className="col-sm-6 col-xl-3" key={label}>
+            <div className="col-sm-6 col-xl-2" key={label}>
               <div className="card status-card">
                 <div className="card-body">
                   <span className={`badge bg-${tone}-lt text-${tone} mb-3`}><Icon size={18} /></span>
@@ -366,6 +551,59 @@ export default function CustomerServiceManagementPage({ refreshShell = () => {} 
           <div className="col-lg-5">
             <Card title="Due Follow-ups" icon={IconCalendarDue}>
               <FollowUpList rows={overview.dueFollowUps || []} onEdit={editFollowUp} />
+            </Card>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'Inbox' && (
+        <div className="row row-cards">
+          <div className="col-xl-4">
+            <Card title="Omni-channel Inbox" icon={IconInbox}>
+              <div className="csm-inbox-filters">
+                <input className="form-control" placeholder="Search conversations" value={inboxFilters.search} onChange={(e) => updateInboxFilters({ search: e.target.value })} />
+                <select className="form-select" value={inboxFilters.channel} onChange={(e) => updateInboxFilters({ channel: e.target.value })}>
+                  <option value="">All channels</option>
+                  {(meta.omniChannels || []).map((channel) => <option key={channel} value={channel}>{formatLabel(channel)}</option>)}
+                </select>
+                <select className="form-select" value={inboxFilters.status} onChange={(e) => updateInboxFilters({ status: e.target.value })}>
+                  <option value="">All statuses</option>
+                  {(meta.inboxThreadStatuses || []).map((status) => <option key={status} value={status}>{formatLabel(status)}</option>)}
+                </select>
+              </div>
+              <InboxThreadList rows={inboxThreads} selectedId={activeThread?.id} onSelect={selectInboxThread} />
+            </Card>
+          </div>
+          <div className="col-xl-8">
+            <Card title={activeThread ? `${formatLabel(activeThread.channel)} Conversation` : 'Conversation'} icon={activeThread ? channelIcon(activeThread.channel) : IconInbox}>
+              {!activeThread ? (
+                <div className="empty">No inbox conversations yet.</div>
+              ) : (
+                <div className="csm-conversation">
+                  <div className="csm-thread-header">
+                    <div>
+                      <div className="d-flex align-items-center gap-2 mb-1">
+                        <span className={`badge ${statusClass(activeThread.status)}`}>{formatLabel(activeThread.status)}</span>
+                        <span className="badge bg-blue-lt text-blue">{formatLabel(activeThread.channel)}</span>
+                      </div>
+                      <h3 className="csm-thread-title">{customerLabel(activeThread.customer)}</h3>
+                      <div className="text-muted">External ID: {activeThread.externalUserId || '-'}</div>
+                    </div>
+                    <div className="csm-thread-controls">
+                      <select className="form-select" value={activeThread.status || 'OPEN'} onChange={(e) => updateThread({ status: e.target.value })}>
+                        {(meta.inboxThreadStatuses || []).map((status) => <option key={status} value={status}>{formatLabel(status)}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <MessageStream messages={threadMessages} />
+                  <form className="csm-reply-box" onSubmit={submitReply}>
+                    <textarea className="form-control" rows={3} value={replyText} placeholder="Reply to customer" onChange={(e) => setReplyText(e.target.value)} />
+                    <div className="csm-form-actions">
+                      <button className="btn btn-primary" disabled={!replyText.trim()}><IconMessageCircle size={18} className="me-2" />Send Reply</button>
+                    </div>
+                  </form>
+                </div>
+              )}
             </Card>
           </div>
         </div>
@@ -475,6 +713,56 @@ export default function CustomerServiceManagementPage({ refreshShell = () => {} 
           </div>
         </div>
       )}
+
+      {activeTab === 'Settings' && (
+        <div className="row row-cards">
+          <div className="col-xl-8">
+            <Card
+              title="Facebook Messenger"
+              icon={IconBrandFacebook}
+              actions={<span className={`badge ${statusClass(channelSettings.FACEBOOK?.connectionStatus)}`}>{formatLabel(channelSettings.FACEBOOK?.connectionStatus || 'NOT CONFIGURED')}</span>}
+            >
+              <form onSubmit={saveFacebookSettings}>
+                <div className="csm-settings-grid">
+                  <CheckboxField label="Enable Facebook channel" checked={facebookForm.enabled} onChange={(value) => setFacebookField('enabled', value)} />
+                  <TextField label="Page Name" value={facebookForm.pageName} onChange={(value) => setFacebookField('pageName', value)} />
+                  <TextField label="Page ID" value={facebookForm.pageId} onChange={(value) => setFacebookField('pageId', value)} />
+                  <TextField label="Meta App ID" value={facebookForm.appId} onChange={(value) => setFacebookField('appId', value)} />
+                  <TextField label="Verify Token" value={facebookForm.verifyToken} onChange={(value) => setFacebookField('verifyToken', value)} />
+                  <TextField label="Graph API Version" value={facebookForm.graphApiVersion} onChange={(value) => setFacebookField('graphApiVersion', value)} />
+                  <TextField
+                    label="Webhook Callback URL"
+                    value={publicWebhookUrl(channelSettings.FACEBOOK?.webhookPath || '/api/customer-service-management/channels/facebook/webhook')}
+                    readOnly
+                    onChange={() => {}}
+                  />
+                  <TextField
+                    autoComplete="off"
+                    label="Page Access Token"
+                    placeholder={channelSettings.FACEBOOK?.pageAccessTokenMasked || 'Paste token when rotating'}
+                    type="password"
+                    value={facebookForm.pageAccessToken}
+                    onChange={(value) => setFacebookField('pageAccessToken', value)}
+                  />
+                  <TextArea label="Notes" value={facebookForm.notes} rows={2} onChange={(value) => setFacebookField('notes', value)} />
+                </div>
+                <div className="csm-form-actions">
+                  <button className="btn" type="button" onClick={checkFacebookSettings}><IconCheck size={18} className="me-2" />Check Setup</button>
+                  <button className="btn btn-primary"><IconDeviceFloppy size={18} className="me-2" />Save Facebook</button>
+                </div>
+              </form>
+            </Card>
+          </div>
+          <div className="col-xl-4">
+            <Card title="Future Channels" icon={IconSettings}>
+              <div className="csm-channel-stack">
+                <ChannelCard settings={channelSettings.TELEGRAM} icon={IconBrandTelegram} />
+                <ChannelCard settings={channelSettings.WHATSAPP} icon={IconBrandWhatsapp} />
+              </div>
+            </Card>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -502,6 +790,66 @@ function RequestTable({ rows, onEdit, onDelete }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function InboxThreadList({ rows, selectedId, onSelect }) {
+  if (!rows?.length) return <div className="empty">No inbox conversations yet.</div>;
+  return (
+    <div className="csm-thread-list">
+      {rows.map((thread) => {
+        const Icon = channelIcon(thread.channel);
+        return (
+          <button
+            className={`csm-thread-item ${selectedId === thread.id ? 'active' : ''}`}
+            key={thread.id}
+            onClick={() => onSelect(thread.id)}
+            type="button"
+          >
+            <span className="csm-thread-icon"><Icon size={18} /></span>
+            <span className="csm-thread-copy">
+              <strong>{thread.customer?.name || thread.externalUserId || 'Unknown customer'}</strong>
+              <span>{thread.lastMessage?.text || 'No messages yet'}</span>
+              <small>{formatDateTime(thread.lastMessageAt)}</small>
+            </span>
+            {thread.unreadCount > 0 && <span className="badge bg-red text-white">{thread.unreadCount}</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function MessageStream({ messages }) {
+  if (!messages?.length) return <div className="empty">No messages yet.</div>;
+  return (
+    <div className="csm-message-stream">
+      {messages.map((message) => (
+        <div className={`csm-message ${message.direction === 'OUTBOUND' ? 'outbound' : 'inbound'}`} key={message.id}>
+          <div className="csm-message-bubble">
+            <div className="csm-message-meta">
+              <strong>{message.actorName || formatLabel(message.direction)}</strong>
+              <span>{formatDateTime(message.createdAt)}</span>
+            </div>
+            <p>{message.text}</p>
+            {message.direction === 'OUTBOUND' && <small>{formatLabel(message.deliveryStatus)}</small>}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ChannelCard({ settings = {}, icon: Icon }) {
+  return (
+    <div className="csm-channel-card">
+      <span className="csm-channel-icon">{Icon && <Icon size={20} />}</span>
+      <div>
+        <strong>{settings.displayName || settings.channel || 'Channel'}</strong>
+        <div className="text-muted">{settings.notes || 'Planned integration'}</div>
+      </div>
+      <span className={`badge ${statusClass(settings.connectionStatus)}`}>{formatLabel(settings.connectionStatus || 'PLANNED')}</span>
     </div>
   );
 }

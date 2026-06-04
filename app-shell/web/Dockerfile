@@ -26,6 +26,7 @@ COPY account-admin /workspace/account-admin
 COPY customer-service-management /workspace/customer-service-management
 COPY ticketing /workspace/ticketing
 COPY service /workspace/service
+COPY process-flow /workspace/process-flow
 COPY network-settings /workspace/network-settings
 COPY system-settings /workspace/system-settings
 COPY logs /workspace/logs

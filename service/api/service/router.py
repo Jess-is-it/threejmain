@@ -23,7 +23,21 @@ SERVICE_TYPES = ["FIBER_INTERNET", "WIRELESS_INTERNET", "DEDICATED_INTERNET", "S
 INTERNET_SERVICE_TYPES = {"FIBER_INTERNET", "WIRELESS_INTERNET", "DEDICATED_INTERNET"}
 SERVICE_SEGMENTS = ["RESIDENTIAL", "BUSINESS", "ENTERPRISE", "ALL"]
 CATALOG_STATUSES = ["ACTIVE", "DRAFT", "RETIRED"]
-ACCOUNT_STATUSES = ["PENDING_ACTIVATION", "ACTIVE", "SUSPENDED", "DISCONNECTED", "CANCELLED"]
+ACCOUNT_STATUSES = [
+    "PENDING_INSTALLATION",
+    "ACTIVE",
+    "SUSPENDED",
+    "PENDING_DISCONNECTION",
+    "DISCONNECTED",
+    "PENDING_RECONNECTION",
+    "TERMINATED",
+    "CANCELLED",
+]
+ACCOUNT_STATUS_ALIASES = {
+    "PENDING_ACTIVATION": "PENDING_INSTALLATION",
+}
+BILLING_STATUSES = ["NOT_STARTED", "CURRENT", "OVERDUE", "SUSPENDED", "FOR_COLLECTION", "CLOSED"]
+BILLING_CYCLES = ["MONTHLY", "QUARTERLY", "ANNUAL"]
 BILLING_MODES = ["PREPAID", "POSTPAID", "ONE_TIME"]
 ORDER_TYPES = [
     "NEW_INSTALLATION",
@@ -59,12 +73,7 @@ ORDER_STATUS_ALIASES = {
     "ACTIVE": "COMPLETED",
 }
 ORDER_DETAIL_SCHEMAS = {
-    "NEW_INSTALLATION": [
-        {"name": "preferredSchedule", "label": "Preferred Schedule", "type": "date", "required": True},
-        {"name": "installationFee", "label": "Installation Fee", "type": "money", "readOnly": True},
-        {"name": "coverageArea", "label": "Coverage Area", "type": "text", "required": True},
-        {"name": "coverageCheckRequired", "label": "Coverage Check Required", "type": "boolean"},
-    ],
+    "NEW_INSTALLATION": [],
     "PLAN_UPGRADE": [
         {"name": "currentPlan", "label": "Current Plan", "type": "text", "required": True, "readOnly": True},
         {"name": "effectiveDate", "label": "Effective Date", "type": "date", "required": True},
@@ -164,6 +173,24 @@ class ServiceAccountPayload(BaseModel):
     serviceAddress: str | None = None
     status: str | None = None
     activationDate: str | None = None
+    suspensionDate: str | None = None
+    disconnectionDate: str | None = None
+    reconnectionDate: str | None = None
+    terminationDate: str | None = None
+    statusReason: str | None = None
+    billingCycle: str | None = None
+    billingStartDate: str | None = None
+    billingStatus: str | None = None
+    monthlyRecurringCharge: float | None = Field(default=None, ge=0)
+    outstandingBalance: float | None = Field(default=None, ge=0)
+    lastPaymentDate: str | None = None
+    nextBillingDate: str | None = None
+    installationDate: str | None = None
+    installationTicketId: str | None = None
+    installedBy: str | None = None
+    installationRemarks: str | None = None
+    networkInfo: dict[str, Any] | None = None
+    equipmentInfo: dict[str, Any] | None = None
     serviceReference: str | None = None
     notes: str | None = None
 
@@ -234,6 +261,14 @@ def validate_choice(value: Any, choices: list[str], label: str, default: str) ->
     normalized = normalize_upper(value or default)
     if normalized not in choices:
         raise HTTPException(status_code=400, detail=f"Invalid {label}")
+    return normalized
+
+
+def validate_account_status(value: Any) -> str:
+    normalized = normalize_upper(value or "PENDING_INSTALLATION")
+    normalized = ACCOUNT_STATUS_ALIASES.get(normalized, normalized)
+    if normalized not in ACCOUNT_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid service account status")
     return normalized
 
 
@@ -464,8 +499,26 @@ def account_payload_to_record(payload: ServiceAccountPayload, current: dict[str,
     record["customer"] = customer
     record["catalog"] = catalog_snapshot(catalog)
     record["serviceAddress"] = clean_text(record.get("serviceAddress")) or customer.get("address", "")
-    record["status"] = validate_choice(record.get("status"), ACCOUNT_STATUSES, "service account status", "ACTIVE")
+    record["status"] = validate_account_status(record.get("status"))
     record["activationDate"] = parse_day(record.get("activationDate"), "activationDate")
+    record["suspensionDate"] = parse_day(record.get("suspensionDate"), "suspensionDate")
+    record["disconnectionDate"] = parse_day(record.get("disconnectionDate"), "disconnectionDate")
+    record["reconnectionDate"] = parse_day(record.get("reconnectionDate"), "reconnectionDate")
+    record["terminationDate"] = parse_day(record.get("terminationDate"), "terminationDate")
+    record["statusReason"] = clean_text(record.get("statusReason"))
+    record["billingCycle"] = validate_choice(record.get("billingCycle"), BILLING_CYCLES, "billing cycle", "MONTHLY")
+    record["billingStartDate"] = parse_day(record.get("billingStartDate"), "billingStartDate")
+    record["billingStatus"] = validate_choice(record.get("billingStatus"), BILLING_STATUSES, "billing status", "NOT_STARTED")
+    record["monthlyRecurringCharge"] = money(record.get("monthlyRecurringCharge") if record.get("monthlyRecurringCharge") is not None else catalog.get("monthlyRate", 0), "Monthly Recurring Charge")
+    record["outstandingBalance"] = money(record.get("outstandingBalance"), "Outstanding Balance")
+    record["lastPaymentDate"] = parse_day(record.get("lastPaymentDate"), "lastPaymentDate")
+    record["nextBillingDate"] = parse_day(record.get("nextBillingDate"), "nextBillingDate")
+    record["installationDate"] = parse_day(record.get("installationDate"), "installationDate")
+    record["installationTicketId"] = clean_text(record.get("installationTicketId"))
+    record["installedBy"] = clean_text(record.get("installedBy"))
+    record["installationRemarks"] = clean_text(record.get("installationRemarks"))
+    record["networkInfo"] = record.get("networkInfo") if isinstance(record.get("networkInfo"), dict) else {}
+    record["equipmentInfo"] = record.get("equipmentInfo") if isinstance(record.get("equipmentInfo"), dict) else {}
     record["serviceReference"] = clean_text(record.get("serviceReference")) or service_account_reference(customer)
     record["notes"] = clean_text(record.get("notes"))
     return record
@@ -481,6 +534,11 @@ def service_account_snapshot(account: dict[str, Any]) -> dict[str, Any]:
         "status": account.get("status", ""),
         "serviceAddress": account.get("serviceAddress", ""),
         "activationDate": account.get("activationDate", ""),
+        "billingStatus": account.get("billingStatus", ""),
+        "billingCycle": account.get("billingCycle", ""),
+        "billingStartDate": account.get("billingStartDate", ""),
+        "monthlyRecurringCharge": account.get("monthlyRecurringCharge", 0),
+        "outstandingBalance": account.get("outstandingBalance", 0),
         "catalog": account.get("catalog", {}),
     }
 
@@ -516,7 +574,7 @@ def order_payload_to_record(payload: ServiceOrderPayload, current: dict[str, Any
     record["catalog"] = catalog_snapshot(catalog)
     if linked_account:
         attach_service_account(record, linked_account)
-    record["requestedDate"] = parse_day(record.get("requestedDate") or today_iso(), "requestedDate", required=True)
+    record["requestedDate"] = parse_day(record.get("requestedDate"), "requestedDate")
     record["targetActivationDate"] = parse_day(record.get("targetActivationDate"), "targetActivationDate")
     record["activationDate"] = parse_day(record.get("activationDate"), "activationDate")
     record["billingStartDate"] = parse_day(record.get("billingStartDate"), "billingStartDate")
@@ -722,16 +780,24 @@ def create_ticket_for_order(order: dict[str, Any], actor: str) -> dict[str, Any]
     return ticket
 
 
-def create_or_activate_service_account_from_order(order: dict[str, Any], actor: str) -> dict[str, Any]:
+def create_or_activate_service_account_from_order(order: dict[str, Any], actor: str, target_status: str = "ACTIVE") -> dict[str, Any]:
     account = find_account(order["serviceAccountId"]) if order.get("serviceAccountId") else find_account_by_reference(order.get("serviceReference", ""))
+    status = validate_account_status(target_status)
+    activation_date = order.get("activationDate") or order.get("billingStartDate") or today_iso()
+    is_active = status == "ACTIVE"
     payload = ServiceAccountPayload(
         customerId=order["customerId"],
         catalogId=order["catalogId"],
         serviceAddress=order.get("installAddress"),
-        status="ACTIVE",
-        activationDate=order.get("activationDate") or order.get("billingStartDate") or today_iso(),
+        status=status,
+        activationDate=activation_date if is_active else "",
+        billingStartDate=(order.get("billingStartDate") or activation_date) if is_active else "",
+        billingStatus="CURRENT" if is_active else "NOT_STARTED",
+        installationDate=activation_date if is_active else "",
+        installationTicketId=order.get("ticketId", ""),
         serviceReference=order.get("serviceReference"),
-        notes="Created or activated from completed New Installation order.",
+        statusReason="Installation completed." if is_active else "New installation approved and pending installation completion.",
+        notes="Created from approved New Installation order." if not is_active else "Created or activated from completed New Installation order.",
     )
     timestamp = now_iso()
     if account is None:
@@ -745,44 +811,91 @@ def create_or_activate_service_account_from_order(order: dict[str, Any], actor: 
             **record,
         }
         service_accounts.append(account)
-        add_audit("service_account_created_from_order", "ServiceAccount", account["id"], {"orderId": order["id"]}, actor)
+        add_audit("service_account_created_from_order", "ServiceAccount", account["id"], {"orderId": order["id"], "status": status}, actor)
     else:
+        if account.get("status") == "ACTIVE" and not is_active:
+            attach_service_account(order, account)
+            return account
         record = account_payload_to_record(payload, account)
         account.update(record)
         account["deletedAt"] = ""
         account["updatedAt"] = timestamp
-        add_audit("service_account_activated_from_order", "ServiceAccount", account["id"], {"orderId": order["id"]}, actor)
+        add_audit("service_account_activated_from_order", "ServiceAccount", account["id"], {"orderId": order["id"], "status": status}, actor)
     attach_service_account(order, account)
     return account
 
 
-def apply_completed_order_effects(order: dict[str, Any], actor: str) -> None:
-    if order_status(order) != "COMPLETED":
-        return
+def mark_account_status(account: dict[str, Any], status: str, actor: str, order: dict[str, Any], reason: str = "") -> None:
+    normalized = validate_account_status(status)
+    today = today_iso()
+    account["status"] = normalized
+    account["statusReason"] = reason
+    account["lastStatusUpdatedBy"] = actor
+    account["lastStatusUpdatedAt"] = now_iso()
+    if normalized == "ACTIVE":
+        account["activationDate"] = account.get("activationDate") or today
+        account["reconnectionDate"] = today if (order.get("orderType") == "RECONNECTION") else account.get("reconnectionDate", "")
+        account["billingStatus"] = "CURRENT"
+        account["billingStartDate"] = account.get("billingStartDate") or today
+    elif normalized == "SUSPENDED":
+        account["suspensionDate"] = today
+        account["billingStatus"] = "SUSPENDED"
+    elif normalized == "PENDING_DISCONNECTION":
+        account["statusReason"] = reason or "Disconnection order is approved or in progress."
+    elif normalized == "DISCONNECTED":
+        account["disconnectionDate"] = today
+        account["billingStatus"] = "CLOSED"
+    elif normalized == "PENDING_RECONNECTION":
+        account["statusReason"] = reason or "Reconnection order is approved or in progress."
+    elif normalized == "TERMINATED":
+        account["terminationDate"] = today
+        account["billingStatus"] = "CLOSED"
+    elif normalized == "CANCELLED":
+        account["statusReason"] = reason or "Service account was cancelled before activation."
+    account["updatedAt"] = now_iso()
+
+
+def apply_order_lifecycle_effects(order: dict[str, Any], actor: str) -> None:
+    status = order_status(order)
     order_type = order.get("orderType") or "NEW_INSTALLATION"
     if order_type == "NEW_INSTALLATION":
-        create_or_activate_service_account_from_order(order, actor)
+        if status in ["APPROVED", "IN_PROGRESS"]:
+            create_or_activate_service_account_from_order(order, actor, "PENDING_INSTALLATION")
+        elif status == "COMPLETED":
+            create_or_activate_service_account_from_order(order, actor, "ACTIVE")
         return
     if not order.get("serviceAccountId"):
         return
     account = find_account(order["serviceAccountId"])
     changed = False
+    if order_type == "DISCONNECTION" and status in ["APPROVED", "IN_PROGRESS"]:
+        mark_account_status(account, "PENDING_DISCONNECTION", actor, order)
+        changed = True
+    elif order_type == "RECONNECTION" and status in ["APPROVED", "IN_PROGRESS"]:
+        mark_account_status(account, "PENDING_RECONNECTION", actor, order)
+        changed = True
+    if status != "COMPLETED":
+        if changed:
+            add_audit("service_account_updated_from_order", "ServiceAccount", account["id"], {"orderId": order["id"], "orderType": order_type}, actor)
+        attach_service_account(order, account)
+        return
     if order_type in ["PLAN_UPGRADE", "PLAN_DOWNGRADE"]:
         account["catalogId"] = order["catalogId"]
         account["catalog"] = catalog_snapshot(find_catalog(order["catalogId"]))
+        account["monthlyRecurringCharge"] = account["catalog"].get("monthlyRate", 0)
         changed = True
     elif order_type == "RELOCATION":
         details = order.get("orderDetails") or {}
         account["serviceAddress"] = details.get("newServiceAddress") or order.get("installAddress") or account.get("serviceAddress", "")
         changed = True
     elif order_type == "TEMPORARY_SUSPENSION":
-        account["status"] = "SUSPENDED"
+        mark_account_status(account, "SUSPENDED", actor, order, (order.get("orderDetails") or {}).get("suspensionReason", ""))
         changed = True
     elif order_type == "RECONNECTION":
-        account["status"] = "ACTIVE"
+        mark_account_status(account, "ACTIVE", actor, order, "Service reconnected.")
         changed = True
     elif order_type == "DISCONNECTION":
-        account["status"] = "DISCONNECTED"
+        mark_account_status(account, "DISCONNECTED", actor, order, (order.get("orderDetails") or {}).get("disconnectionReason", ""))
         changed = True
     elif order_type == "CHANGE_OWNERSHIP":
         details = order.get("orderDetails") or {}
@@ -810,7 +923,7 @@ def seed_service_catalog() -> None:
             "downloadMbps": 50,
             "uploadMbps": 20,
             "monthlyRate": 999,
-            "installFee": 1500,
+            "installFee": 0,
             "billingMode": "PREPAID",
             "status": "ACTIVE",
             "contractMonths": 0,
@@ -826,7 +939,7 @@ def seed_service_catalog() -> None:
             "downloadMbps": 100,
             "uploadMbps": 50,
             "monthlyRate": 1499,
-            "installFee": 1500,
+            "installFee": 0,
             "billingMode": "PREPAID",
             "status": "ACTIVE",
             "contractMonths": 0,
@@ -842,7 +955,7 @@ def seed_service_catalog() -> None:
             "downloadMbps": 200,
             "uploadMbps": 100,
             "monthlyRate": 2499,
-            "installFee": 2500,
+            "installFee": 0,
             "billingMode": "POSTPAID",
             "status": "ACTIVE",
             "contractMonths": 12,
@@ -897,40 +1010,6 @@ def seed_service_catalog() -> None:
 
 def seed_service_data() -> None:
     seed_service_catalog()
-    if not service_orders and _customer_searcher is not None:
-        customers = search_customers("")[:2]
-        catalog_rows = visible_catalog()[:2]
-        if customers and catalog_rows:
-            timestamp = now_iso()
-            for customer, catalog in zip(customers, catalog_rows):
-                order_record = order_payload_to_record(
-                    ServiceOrderPayload(
-                        customerId=customer["id"],
-                        catalogId=catalog["id"],
-                        orderType="NEW_INSTALLATION",
-                        requestedDate=today_iso(),
-                        status="COMPLETED",
-                        priority="NORMAL",
-                        billingStartDate=today_iso(),
-                        orderDetails={
-                            "preferredSchedule": today_iso(),
-                            "installationFee": catalog.get("installFee", 0),
-                            "coverageArea": customer.get("address", ""),
-                            "coverageCheckRequired": False,
-                        },
-                        notes="Seed service order for first working Service shell.",
-                    ),
-                )
-                service_orders.append(
-                    {
-                        "id": str(uuid4()),
-                        "orderNumber": next_number("SO", service_orders),
-                        "createdAt": timestamp,
-                        "updatedAt": timestamp,
-                        "deletedAt": "",
-                        **order_record,
-                    },
-                )
     seed_service_accounts()
 
 
@@ -976,6 +1055,8 @@ def service_meta(admin=Depends(require_admin)):
         "segments": SERVICE_SEGMENTS,
         "catalogStatuses": CATALOG_STATUSES,
         "accountStatuses": ACCOUNT_STATUSES,
+        "billingStatuses": BILLING_STATUSES,
+        "billingCycles": BILLING_CYCLES,
         "billingModes": BILLING_MODES,
         "orderTypes": ORDER_TYPES,
         "orderDetailSchemas": ORDER_DETAIL_SCHEMAS,
@@ -1051,22 +1132,7 @@ def list_accounts(
 
 @router.post("/accounts")
 def create_service_account(payload: ServiceAccountPayload, admin=Depends(require_admin)):
-    seed_service_data()
-    record = account_payload_to_record(payload)
-    if any(account.get("serviceReference") == record["serviceReference"] and not account.get("deletedAt") for account in service_accounts):
-        raise HTTPException(status_code=409, detail="Service reference already exists")
-    timestamp = now_iso()
-    account = {
-        "id": str(uuid4()),
-        "serviceAccountNumber": next_number("SA", service_accounts),
-        "createdAt": timestamp,
-        "updatedAt": timestamp,
-        "deletedAt": "",
-        **record,
-    }
-    service_accounts.append(account)
-    add_audit("service_account_created", "ServiceAccount", account["id"], {"customerId": account["customerId"]}, admin["username"])
-    return account_summary(account)
+    raise HTTPException(status_code=400, detail="Service Accounts must be created through a New Installation Service Order")
 
 
 @router.patch("/accounts/{account_id}")
@@ -1187,7 +1253,7 @@ def create_service_order(payload: ServiceOrderPayload, admin=Depends(require_adm
     except Exception:
         service_orders.remove(order)
         raise
-    apply_completed_order_effects(order, admin["username"])
+    apply_order_lifecycle_effects(order, admin["username"])
     add_audit(
         "service_order_created",
         "ServiceOrder",
@@ -1205,7 +1271,7 @@ def update_service_order(order_id: str, payload: ServiceOrderPayload, admin=Depe
     ensure_no_conflicting_open_order(record, current_id=order_id)
     current.update(record)
     current["updatedAt"] = now_iso()
-    apply_completed_order_effects(current, admin["username"])
+    apply_order_lifecycle_effects(current, admin["username"])
     add_audit("service_order_updated", "ServiceOrder", current["id"], {"customerId": current["customerId"]}, admin["username"])
     return order_summary(current)
 

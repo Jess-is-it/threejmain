@@ -191,6 +191,10 @@ BULK_UPLOAD_HEADERS = [
     "lastName",
     "businessName",
     "birthDate",
+    "recommendedByCustomer",
+    "recommendedByCustomerId",
+    "recommendedByCustomerAccountNumber",
+    "recommendedByCustomerName",
     "contactNumber",
     "alternateMobileNumber",
     "facebookAccountName",
@@ -227,6 +231,10 @@ class CustomerPayload(BaseModel):
     middleName: str | None = None
     businessName: str | None = None
     birthDate: str | None = None
+    recommendedByCustomer: bool | str | None = None
+    recommendedByCustomerId: str | None = None
+    recommendedByCustomerAccountNumber: str | None = None
+    recommendedByCustomerName: str | None = None
     contactNumber: str | None = None
     alternateMobileNumber: str | None = None
     facebookAccountName: str | None = None
@@ -464,6 +472,12 @@ def clean_value(value: Any) -> Any:
     return value
 
 
+def normalize_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def customer_full_name(customer: dict[str, Any]) -> str:
     parts = [customer.get("firstName"), customer.get("middleName"), customer.get("lastName")]
     return " ".join(str(part).strip() for part in parts if part)
@@ -604,6 +618,7 @@ def customer_payload_to_record(payload: CustomerPayload, current: dict[str, Any]
     base["gender"] = normalize_upper(base.get("gender") or "MALE")
     base["businessName"] = clean_value(base.get("businessName")) or ""
     base["birthDate"] = clean_value(base.get("birthDate")) or ""
+    base["recommendedByCustomer"] = normalize_bool(base.get("recommendedByCustomer"))
     base["province"] = normalize_upper(base.get("province"))
     base["city"] = normalize_upper(base.get("city"))
     base["barangay"] = normalize_upper(base.get("barangay"))
@@ -617,6 +632,26 @@ def customer_payload_to_record(payload: CustomerPayload, current: dict[str, Any]
         raise HTTPException(status_code=400, detail="Invalid customer status")
     if base["gender"] not in CUSTOMER_GENDERS:
         raise HTTPException(status_code=400, detail="Invalid customer gender")
+
+    if base["recommendedByCustomer"]:
+        recommender_id = clean_value(base.get("recommendedByCustomerId")) or ""
+        if not recommender_id:
+            raise HTTPException(status_code=400, detail="Recommended By Customer is required when referral is enabled.")
+        if recommender_id == str(base.get("id") or ""):
+            raise HTTPException(status_code=400, detail="A customer cannot recommend their own profile.")
+        recommender = next(
+            (customer for customer in visible_customers() if customer["id"] == recommender_id),
+            None,
+        )
+        if not recommender:
+            raise HTTPException(status_code=400, detail="Selected recommending customer was not found.")
+        base["recommendedByCustomerId"] = recommender["id"]
+        base["recommendedByCustomerAccountNumber"] = recommender.get("accountNumber") or ""
+        base["recommendedByCustomerName"] = customer_full_name(recommender)
+    else:
+        base["recommendedByCustomerId"] = ""
+        base["recommendedByCustomerAccountNumber"] = ""
+        base["recommendedByCustomerName"] = ""
 
     secondary = list(base.get("secondaryContacts") or [])
     if base.get("secondaryContactName") and not secondary:
@@ -834,6 +869,8 @@ def list_customers(
             "firstName",
             "middleName",
             "lastName",
+            "recommendedByCustomerName",
+            "recommendedByCustomerAccountNumber",
             "contactNumber",
             "alternateMobileNumber",
             "facebookAccountName",
@@ -861,6 +898,12 @@ def list_customers(
         "fullName": lambda customer: customer_full_name(customer).lower(),
         "businessName": lambda customer: str(customer.get("businessName") or "").lower(),
         "birthDate": lambda customer: str(customer.get("birthDate") or "").lower(),
+        "recommendedByCustomerName": lambda customer: " ".join(
+            [
+                str(customer.get("recommendedByCustomerName") or "").lower(),
+                str(customer.get("recommendedByCustomerAccountNumber") or "").lower(),
+            ],
+        ),
         "contactNumber": lambda customer: str(customer.get("contactNumber") or "").lower(),
         "alternateMobileNumber": lambda customer: str(customer.get("alternateMobileNumber") or "").lower(),
         "facebookAccountName": lambda customer: str(customer.get("facebookAccountName") or "").lower(),
@@ -914,6 +957,10 @@ def customer_bulk_upload_template(admin=Depends(require_admin)):
             "lastName": "DELA CRUZ",
             "businessName": "",
             "birthDate": "2002-05-18",
+            "recommendedByCustomer": "",
+            "recommendedByCustomerId": "",
+            "recommendedByCustomerAccountNumber": "",
+            "recommendedByCustomerName": "",
             "contactNumber": "09171234567",
             "alternateMobileNumber": "09180000001",
             "facebookAccountName": "JUAN DELA CRUZ",
@@ -952,6 +999,7 @@ def get_customer(customer_id: str, admin=Depends(require_admin)):
 def create_customer(payload: CustomerPayload, request: Request, admin=Depends(require_admin)):
     seed_customer_data()
     record = customer_payload_to_record(payload)
+    record["status"] = "PENDING"
     if record.get("accountNumber") and any(
         customer["accountNumber"] == record["accountNumber"] and not customer.get("deletedAt") for customer in all_customers()
     ):

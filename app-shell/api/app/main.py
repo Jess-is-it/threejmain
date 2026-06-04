@@ -24,6 +24,7 @@ MODULE_API_PATHS = [
     ("customer-service-management", "api"),
     ("ticketing", "api"),
     ("service", "api"),
+    ("process-flow", "api"),
     ("network-settings", "api"),
     ("system-settings", "api"),
     ("logs", "api"),
@@ -55,6 +56,7 @@ from network_settings import (
     stop_network_settings_poller,
 )
 from point_of_sale import configure_point_of_sale, point_of_sale_metrics, router as point_of_sale_router, seed_point_of_sale_data
+from process_flow import configure_process_flow, process_flow_metrics, router as process_flow_router
 from logs import configure_logs, router as logs_router
 from service import configure_service, router as service_router, seed_service_data, service_metrics
 from system_settings import configure_system_settings, router as system_settings_router
@@ -174,8 +176,16 @@ modules = [
         "name": "Service",
         "folder": "service",
         "status": "functional-shell",
-        "description": "Service catalog speed plans, customer service orders, and canonical service references for billing and support.",
+        "description": "Service catalog speed plans, service accounts, customer service orders, and canonical service references for billing and support.",
         "metrics": {"catalog_items": 0, "open_orders": 0, "active_orders": 0},
+    },
+    {
+        "slug": "process-flow",
+        "name": "Process Flow",
+        "folder": "process-flow",
+        "status": "functional-shell",
+        "description": "Interactive process topology reference for customer, service, ticketing, billing, inventory, and network workflows.",
+        "metrics": {"flows": 0, "stages": 0},
     },
     {
         "slug": "network-settings",
@@ -336,6 +346,7 @@ def sync_module_metrics() -> None:
         "customer-service-management": customer_service_metrics,
         "ticketing": ticketing_metrics,
         "service": service_metrics,
+        "process-flow": process_flow_metrics,
         "network-settings": network_settings_metrics,
         "system-settings": lambda: {"sections": len(settings), "registered_ports": len(port_registry())},
         "logs": lambda: {"audit_events": len(audit_logs)},
@@ -499,6 +510,7 @@ configure_service(
     seed_customer_data,
     create_ticket_from_service_order,
 )
+configure_process_flow(current_admin)
 configure_network_settings(current_admin, add_audit)
 configure_system_settings(current_admin, add_audit, settings, port_registry)
 configure_logs(current_admin, audit_logs)
@@ -511,6 +523,7 @@ app.include_router(account_admin_router)
 app.include_router(customer_service_router)
 app.include_router(ticketing_router)
 app.include_router(service_router)
+app.include_router(process_flow_router)
 app.include_router(network_settings_router)
 app.include_router(system_settings_router)
 app.include_router(logs_router)

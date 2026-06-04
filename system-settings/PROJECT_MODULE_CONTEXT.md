@@ -15,6 +15,7 @@ System Settings manages shell configuration pages for branding, business profile
 ## Current Scope
 
 - View and update branding/business/deployment settings.
+- Manage map marker images for Network Settings Map OLT and NAP markers under Images -> OLT/NAP.
 - Manage customer-information avatar moods for neutral, happy, sad, angry, offline, support, maintenance, warning, and resolved account contexts, with separate Male and Female upload slots.
 - Manage the customer avatar emotion guide under Avatar -> Settings. The guide stores score thresholds and module signal weights used by shared customer mood resolution.
 - Manage OPENAI settings, including masked API key status, selected model, selected reasoning effort, model pricing reference, and a live Responses API test.
@@ -38,7 +39,8 @@ System Settings manages shell configuration pages for branding, business profile
 - App-shell calls `configure_system_settings(current_admin, add_audit, settings, port_registry)`.
 - The port registry provider includes threejmain Production (`8180` web, `8100` API), threejmain Staging (`8280` web, `8200` API), internal PostgreSQL container ports for both Compose projects, and existing 3JCentralPisowifi reserved/in-use ports.
 - Branding/business settings are still in-memory in the first shell.
-- Location Management records, deleted preload markers, avatar images, avatar emotion guide settings, and OPENAI settings persist to `SYSTEM_SETTINGS_DATA_PATH` (`/app/data/system_settings.json` in Docker Compose) through the `threejmain_api_data` named volume.
+- Location Management records, deleted preload markers, Network Settings map marker images, avatar images, avatar emotion guide settings, and OPENAI settings persist to `SYSTEM_SETTINGS_DATA_PATH` (`/app/data/system_settings.json` in Docker Compose) through the `threejmain_api_data` named volume.
+- Map image endpoints are module-owned under `/api/system-settings/map-images`; accepted uploads are PNG, JPG/JPEG, and WebP images up to 512 KB. `GET /api/system-settings/map-images` returns upload guidelines, target metadata, and any saved marker image data URLs. `PUT/DELETE /api/system-settings/map-images/{target_id}` manages the `olt` and `nap` marker images used by Network Settings -> Map.
 - Avatar endpoints are module-owned under `/api/system-settings/avatars`; accepted uploads are PNG, JPG/JPEG, WebP, and GIF images up to 1 MB.
 - Gender-specific avatar endpoints are `PUT/DELETE /api/system-settings/avatars/{gender_id}/{emotion_id}` where `gender_id` is `male` or `female`. The older `PUT/DELETE /api/system-settings/avatars/{emotion_id}` route remains as male-slot compatibility.
 - `PATCH /api/system-settings/avatar-emotion-settings` updates the reusable scoring thresholds/weights returned by `GET /api/system-settings/avatars`.

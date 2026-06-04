@@ -74,6 +74,12 @@ class AvatarUploadPayload(BaseModel):
     mime_type: str | None = None
 
 
+class MapImageUploadPayload(BaseModel):
+    data_url: str = Field(..., max_length=800_000)
+    file_name: str | None = None
+    mime_type: str | None = None
+
+
 class AvatarEmotionSettingsPayload(BaseModel):
     thresholds: dict[str, int | float] | None = None
     weights: dict[str, int | float] | None = None
@@ -146,6 +152,26 @@ ALLOWED_AVATAR_MIME_TYPES = {
     "image/gif": "GIF",
 }
 MAX_AVATAR_BYTES = 1_048_576
+ALLOWED_MAP_IMAGE_MIME_TYPES = {
+    "image/png": "PNG",
+    "image/jpeg": "JPG/JPEG",
+    "image/webp": "WebP",
+}
+MAX_MAP_IMAGE_BYTES = 524_288
+MAP_IMAGE_TARGETS = [
+    {
+        "id": "nap",
+        "label": "NAP Box",
+        "description": "Marker shown for NAP boxes on the Network Settings map.",
+        "recommended_size": "128 x 128 px",
+    },
+    {
+        "id": "olt",
+        "label": "OLT",
+        "description": "Marker shown for OLT devices on the Network Settings map.",
+        "recommended_size": "160 x 160 px",
+    },
+]
 AVATAR_GENDERS = [
     {"id": "male", "label": "Male"},
     {"id": "female", "label": "Female"},
@@ -602,6 +628,9 @@ def load_persisted_system_settings() -> None:
     access = persisted.get("access")
     if isinstance(access, dict):
         settings_store()["access"] = normalize_access_store(access)
+    map_images = persisted.get("mapImages")
+    if isinstance(map_images, dict):
+        settings_store()["mapImages"] = normalize_map_image_store(map_images)
 
 
 def save_persisted_system_settings(*section_names: str) -> None:
@@ -632,6 +661,10 @@ def save_persisted_system_settings(*section_names: str) -> None:
 
 def save_persisted_avatar_store() -> None:
     save_persisted_system_settings("avatar")
+
+
+def save_persisted_map_image_store() -> None:
+    save_persisted_system_settings("mapImages")
 
 
 def save_persisted_location_store() -> None:
@@ -988,6 +1021,105 @@ def avatar_store() -> dict[str, Any]:
     avatar.setdefault("max_bytes", MAX_AVATAR_BYTES)
     avatar.setdefault("emotion_settings", default_avatar_emotion_settings())
     return avatar
+
+
+def normalize_map_image_store(raw: dict[str, Any] | None) -> dict[str, Any]:
+    raw = raw if isinstance(raw, dict) else {}
+    uploads = raw.get("uploads") if isinstance(raw.get("uploads"), dict) else {}
+    normalized_uploads: dict[str, dict[str, Any]] = {}
+    allowed_targets = {target["id"] for target in MAP_IMAGE_TARGETS}
+    for target_id, record in uploads.items():
+        target = normalize_location_text(target_id).lower()
+        if target not in allowed_targets or not isinstance(record, dict):
+            continue
+        data_url = normalize_location_text(record.get("data_url"))
+        mime_type = normalize_location_text(record.get("mime_type")).lower()
+        if not data_url or mime_type not in ALLOWED_MAP_IMAGE_MIME_TYPES:
+            continue
+        normalized_uploads[target] = {
+            "file_name": normalize_location_text(record.get("file_name"))[:180] or f"{target}-map-marker",
+            "mime_type": mime_type,
+            "byte_size": int(record.get("byte_size") or 0),
+            "data_url": data_url,
+            "updated_at": normalize_location_text(record.get("updated_at")),
+            "updated_by_admin_id": normalize_location_text(record.get("updated_by_admin_id")),
+            "updated_by_username": normalize_location_text(record.get("updated_by_username")),
+        }
+    return {"uploads": normalized_uploads}
+
+
+def map_image_store() -> dict[str, Any]:
+    load_persisted_system_settings()
+    store = settings_store()
+    map_images = normalize_map_image_store(store.setdefault("mapImages", {}))
+    store["mapImages"] = map_images
+    return map_images
+
+
+def normalize_map_image_target(target_id: str) -> str:
+    normalized = normalize_location_text(target_id).lower().replace("_", "-")
+    allowed = {target["id"] for target in MAP_IMAGE_TARGETS}
+    if normalized not in allowed:
+        raise HTTPException(status_code=404, detail="Map image target not found")
+    return normalized
+
+
+def map_image_payload_summary(record: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not record:
+        return None
+    return {
+        "file_name": record.get("file_name"),
+        "mime_type": record.get("mime_type"),
+        "byte_size": record.get("byte_size"),
+        "data_url": record.get("data_url"),
+        "updated_at": record.get("updated_at"),
+        "updated_by_username": record.get("updated_by_username"),
+    }
+
+
+def public_map_image_settings() -> dict[str, Any]:
+    store = map_image_store()
+    uploads = store.get("uploads", {})
+    return {
+        "accepted_formats": list(ALLOWED_MAP_IMAGE_MIME_TYPES.values()),
+        "accepted_mime_types": list(ALLOWED_MAP_IMAGE_MIME_TYPES.keys()),
+        "max_bytes": MAX_MAP_IMAGE_BYTES,
+        "guidelines": [
+            "Use PNG or WebP for crisp transparent marker icons.",
+            "Use JPG only for photo-like markers; transparent backgrounds are not preserved in JPG.",
+            "Keep icons centered with safe padding so they remain readable at small map zoom levels.",
+            "Recommended marker art is 128 x 128 px for NAP boxes and 160 x 160 px for OLT devices.",
+            "Keep each image at or below 512 KB.",
+        ],
+        "targets": [
+            {
+                **target,
+                "image": map_image_payload_summary(uploads.get(target["id"])),
+            }
+            for target in MAP_IMAGE_TARGETS
+        ],
+    }
+
+
+def decode_map_image_data_url(payload: MapImageUploadPayload) -> tuple[str, bytes]:
+    data_url = payload.data_url.strip()
+    if not data_url.startswith("data:") or ";base64," not in data_url:
+        raise HTTPException(status_code=400, detail="Map marker image must be uploaded as a base64 data URL")
+    header, encoded = data_url.split(",", 1)
+    mime_type = header[5:].split(";", 1)[0].strip().lower()
+    if payload.mime_type and payload.mime_type.lower() != mime_type:
+        raise HTTPException(status_code=400, detail="Map marker MIME type does not match the uploaded image")
+    if mime_type not in ALLOWED_MAP_IMAGE_MIME_TYPES:
+        raise HTTPException(status_code=400, detail="Accepted map marker formats are PNG, JPG/JPEG, and WebP")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Map marker image data is not valid base64") from exc
+    if not raw:
+        raise HTTPException(status_code=400, detail="Map marker image is empty")
+    if len(raw) > MAX_MAP_IMAGE_BYTES:
+        raise HTTPException(status_code=400, detail="Map marker image must be 512 KB or smaller")
+    return mime_type, raw
 
 
 def add_audit(action: str, target_type: str, target_id: str, details: dict[str, Any] | None, actor: str) -> None:
@@ -1851,6 +1983,56 @@ def test_openai_settings(payload: OpenAITestPayload, admin=Depends(require_admin
 @router.get("/api/system-settings/avatars")
 def get_avatars(admin=Depends(require_admin)):
     return public_avatar_settings()
+
+
+@router.get("/api/system-settings/map-images")
+def get_map_images(admin=Depends(require_admin)):
+    return public_map_image_settings()
+
+
+@router.put("/api/system-settings/map-images/{target_id}")
+def upload_map_image(target_id: str, payload: MapImageUploadPayload, admin=Depends(require_admin)):
+    target = normalize_map_image_target(target_id)
+    mime_type, raw = decode_map_image_data_url(payload)
+    file_name = normalize_location_text(payload.file_name) or f"{target}-map-marker"
+    record = {
+        "file_name": file_name[:180],
+        "mime_type": mime_type,
+        "byte_size": len(raw),
+        "data_url": payload.data_url.strip(),
+        "updated_at": now_iso(),
+        "updated_by_admin_id": admin.get("id"),
+        "updated_by_username": admin.get("username"),
+    }
+    store = map_image_store()
+    store["uploads"][target] = record
+    save_persisted_map_image_store()
+    add_audit(
+        "system_map_image_uploaded",
+        "SystemMapImage",
+        target,
+        {"target": target, "file_name": record["file_name"], "mime_type": mime_type, "byte_size": len(raw)},
+        admin["username"],
+    )
+    return public_map_image_settings()
+
+
+@router.delete("/api/system-settings/map-images/{target_id}")
+def delete_map_image(target_id: str, admin=Depends(require_admin)):
+    target = normalize_map_image_target(target_id)
+    store = map_image_store()
+    removed = store["uploads"].pop(target, None)
+    if removed is None:
+        raise HTTPException(status_code=404, detail="Map marker image not found")
+    save_persisted_map_image_store()
+    add_audit(
+        "system_map_image_deleted",
+        "SystemMapImage",
+        target,
+        {"target": target, "file_name": removed.get("file_name"), "mime_type": removed.get("mime_type")},
+        admin["username"],
+    )
+    return public_map_image_settings()
 
 
 @router.patch("/api/system-settings/avatar-emotion-settings")

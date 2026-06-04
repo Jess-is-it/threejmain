@@ -21,6 +21,9 @@ olts: list[dict[str, Any]] = []
 pon_ports: list[dict[str, Any]] = []
 nap_boxes: list[dict[str, Any]] = []
 fbts: list[dict[str, Any]] = []
+fiber_optic_losses: list[dict[str, Any]] = []
+fiber_color_settings: dict[str, Any] = {}
+fiber_mapping: dict[str, Any] = {}
 network_devices: list[dict[str, Any]] = []
 device_captures: list[dict[str, Any]] = []
 onus: list[dict[str, Any]] = []
@@ -58,6 +61,56 @@ OPER_STATUS = ["UNKNOWN", "UP", "DEGRADED", "DOWN"]
 NAP_STATUSES = ["PLANNED", "ACTIVE", "FULL", "MAINTENANCE", "OFFLINE", "ARCHIVED"]
 NAP_SPLITTER_RATIOS = ["1:8", "1:16"]
 FBT_STATUSES = ["PLANNED", "ACTIVE", "FULL", "MAINTENANCE", "OFFLINE", "ARCHIVED"]
+SPLITTER_TYPES = ["PLC", "LCP", "FBT"]
+PLC_SPLITTER_RATIOS = ["1:4", "1:8", "1:16"]
+LCP_SPLITTER_RATIOS = ["1:4", "1:8", "1:16"]
+PORT_LOSS_SPLITTER_TYPES = {"PLC", "LCP"}
+SPLITTER_RATIOS = ["1:2", "1:4", "1:8", "1:16", "1:32", "1:64", "1:128", "50:50", "60:40", "70:30", "80:20", "90:10"]
+FBT_SPLIT_RATIOS = ["1:99", "5:95", "10:90", "15:85", "20:80", "25:75", "30:70", "35:65", "40:60", "50:50"]
+WAVELENGTHS_NM = ["1310", "1490", "1550"]
+FBT_LOSS_FIELDS = [
+    "connectorLoss1310Db",
+    "connectorLoss1490Db",
+    "connectorLoss1550Db",
+    "currentNapLoss1310Db",
+    "currentNapLoss1490Db",
+    "currentNapLoss1550Db",
+    "nextNapLoss1310Db",
+    "nextNapLoss1490Db",
+    "nextNapLoss1550Db",
+]
+SPLITTER_PACKAGE_TYPES = ["LCP_MODULE", "CASSETTE", "ABS_BOX", "STEEL_TUBE", "RACK_TRAY", "NAP_TRAY", "CLOSURE"]
+SPLITTER_CONNECTOR_TYPES = ["SC/APC", "SC/UPC", "LC/APC", "LC/UPC", "BARE_FIBER", "SPLICE"]
+SPLITTER_STAGES = ["PRIMARY", "SECONDARY", "DROP", "TAP"]
+SPLITTER_DEFAULTS = {
+    "PLC": {"splitRatio": "1:16", "outputPorts": 16, "packageType": "CASSETTE", "stage": "SECONDARY", "connectorType": "SC/APC"},
+    "LCP": {"splitRatio": "1:16", "outputPorts": 16, "packageType": "LCP_MODULE", "stage": "PRIMARY", "connectorType": "SC/APC"},
+    "FBT": {"splitRatio": "5:95", "outputPorts": 2, "packageType": "STEEL_TUBE", "stage": "TAP", "connectorType": "BARE_FIBER"},
+}
+FIBER_OPTIC_STATUSES = ["ACTIVE", "PLANNED", "ARCHIVED"]
+FIBER_OPTIC_LOSS_FIELDS = ["loss1310DbPer1000m", "loss1490DbPer1000m", "loss1550DbPer1000m"]
+FIBER_CORE_COUNT_OPTIONS = [1, 2, 4, 6, 8, 12, 24, 48, 60, 72]
+FIBER_COLOR_GROUP_SIZE = 12
+FIBER_COLOR_PALETTE_DEFAULTS = [
+    {"position": 1, "name": "Blue", "hex": "#2563EB"},
+    {"position": 2, "name": "Orange", "hex": "#F97316"},
+    {"position": 3, "name": "Green", "hex": "#16A34A"},
+    {"position": 4, "name": "Brown", "hex": "#92400E"},
+    {"position": 5, "name": "Slate", "hex": "#64748B"},
+    {"position": 6, "name": "White", "hex": "#F8FAFC"},
+    {"position": 7, "name": "Red", "hex": "#DC2626"},
+    {"position": 8, "name": "Black", "hex": "#111827"},
+    {"position": 9, "name": "Yellow", "hex": "#EAB308"},
+    {"position": 10, "name": "Violet", "hex": "#7C3AED"},
+    {"position": 11, "name": "Rose", "hex": "#F472B6"},
+    {"position": 12, "name": "Aqua", "hex": "#06B6D4"},
+]
+FIBER_COLOR_SETTINGS_DEFAULT = {
+    "standardName": "TIA-598",
+    "fiberColors": FIBER_COLOR_PALETTE_DEFAULTS,
+    "tubeColors": FIBER_COLOR_PALETTE_DEFAULTS,
+    "notes": "Default 12-color sequence for individual fibers and loose tubes.",
+}
 ONU_STATUSES = ["UNKNOWN", "ONLINE", "OFFLINE", "LOS", "DYING_GASP", "DISABLED"]
 DEVICE_TYPES = ["MIKROTIK", "OLT"]
 DEVICE_ACCESS_METHODS = ["API", "SNMP"]
@@ -150,6 +203,7 @@ ONU_BIAS_RE = re.compile(r"\b(?:bias|current|biascurrent|bias-current)\s*[:=]?\s
 ONU_VLAN_RE = re.compile(r"\b(?:vlan|cvlan|svlan)\s*[:=]?\s*(\d{1,5})\b", re.IGNORECASE)
 ONU_SERVICE_PORT_RE = re.compile(r"\b(?:service[- ]?port|srvport|sp)\s*[:=]?\s*(\d+)\b", re.IGNORECASE)
 HEX_OCTET_TEXT_RE = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
+HEX_COLOR_RE = re.compile(r"^#?(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$")
 PON_ONU_RE = re.compile(
     r"(?:gpon|epon|xgpon|xgspon|xpon|pon|onu|ont)?\s*(?:\d+[/.-])?(\d+)\s*[:/.-]\s*(\d+)",
     re.IGNORECASE,
@@ -164,14 +218,17 @@ ENTERPRISE_VENDOR_MARKERS = [
 
 SUB_NAV = [
     {"key": "overview", "label": "Overview", "route": "/network-settings"},
+    {"key": "map", "label": "Map", "route": "/network-settings/map"},
+    {"key": "fiberMapping", "label": "Fiber Mapping", "route": "/network-settings/fiber-mapping"},
     {"key": "mikrotikSettings", "label": "MikroTik API", "route": "/network-settings/mikrotik/settings"},
     {"key": "pppoeAccounts", "label": "PPPoE Accounts", "route": "/network-settings/pppoe-accounts"},
     {"key": "oltSettings", "label": "OLT SNMP", "route": "/network-settings/olt/settings"},
-    {"key": "map", "label": "Map", "route": "/network-settings/map"},
     {"key": "olts", "label": "OLT & PON", "route": "/network-settings/olts"},
     {"key": "onus", "label": "ONUs", "route": "/network-settings/onus"},
     {"key": "napBoxes", "label": "NAP Boxes", "route": "/network-settings/nap-boxes"},
-    {"key": "fbts", "label": "FBT", "route": "/network-settings/fbts"},
+    {"key": "insertionLoss", "label": "Insertion Loss", "route": "/network-settings/insertion-loss"},
+    {"key": "fbts", "label": "Splitters", "route": "/network-settings/insertion-loss/splitters"},
+    {"key": "fiberOpticLosses", "label": "Fiber Optic", "route": "/network-settings/insertion-loss/fiber-optic"},
 ]
 
 
@@ -216,14 +273,7 @@ class PonPayload(BaseModel):
 
 class PonPowerPayload(BaseModel):
     moduleVendor: str | None = None
-    modulePartNumber: str | None = None
-    moduleSerial: str | None = None
-    moduleHardwareRev: str | None = None
     moduleRxPowerDbm: str | float | None = None
-    moduleTxPowerDbm: str | float | None = None
-    moduleTemperatureC: str | float | None = None
-    moduleVoltageV: str | float | None = None
-    moduleBiasCurrentMa: str | float | None = None
     moduleSource: str | None = None
 
 
@@ -243,11 +293,63 @@ class NapPayload(BaseModel):
 class FbtPayload(BaseModel):
     name: str | None = None
     napBoxId: str | None = None
+    splitterType: str | None = None
+    splitRatio: str | None = None
+    ratioRows: list[dict] | None = None
+    portLosses: list[dict] | None = None
+    inputPorts: int | None = Field(default=None, ge=1, le=16)
+    outputPorts: int | None = Field(default=None, ge=1, le=512)
     portNumber: int | None = Field(default=None, ge=1, le=512)
     portCapacity: int | None = Field(default=None, ge=1, le=512)
+    insertionLossDb: str | float | None = None
+    connectorType: str | None = None
+    packageType: str | None = None
+    stage: str | None = None
+    manufacturer: str | None = None
+    brand: str | None = None
+    model: str | None = None
+    serialNumber: str | None = None
+    connectorLoss1310Db: str | float | None = None
+    connectorLoss1490Db: str | float | None = None
+    connectorLoss1550Db: str | float | None = None
+    currentNapLoss1310Db: str | float | None = None
+    currentNapLoss1490Db: str | float | None = None
+    currentNapLoss1550Db: str | float | None = None
+    nextNapLoss1310Db: str | float | None = None
+    nextNapLoss1490Db: str | float | None = None
+    nextNapLoss1550Db: str | float | None = None
+    lcpCabinet: str | None = None
+    lcpSlot: str | None = None
     status: str | None = None
     locationHint: str | None = None
     notes: str | None = None
+
+
+class FiberOpticLossPayload(BaseModel):
+    name: str | None = None
+    manufacturer: str | None = None
+    model: str | None = None
+    fiberType: str | None = None
+    coreCount: int | str | None = None
+    colorGroups: list[dict[str, Any]] | None = None
+    loss1310DbPer1000m: str | float | None = None
+    loss1490DbPer1000m: str | float | None = None
+    loss1550DbPer1000m: str | float | None = None
+    status: str | None = None
+    notes: str | None = None
+
+
+class FiberColorSettingsPayload(BaseModel):
+    standardName: str | None = None
+    fiberColors: list[dict[str, Any]] | None = None
+    tubeColors: list[dict[str, Any]] | None = None
+    notes: str | None = None
+
+
+class FiberMappingPayload(BaseModel):
+    nodes: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    edges: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    napSplitters: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class DevicePayload(BaseModel):
@@ -320,21 +422,27 @@ def add_audit(action: str, target_type: str, target_id: str, details: dict[str, 
 
 
 def load_network_settings_data() -> None:
-    global _data_loaded, olts, pon_ports, nap_boxes, fbts, network_devices, device_captures, onus
+    global _data_loaded, olts, pon_ports, nap_boxes, fbts, fiber_optic_losses, fiber_color_settings, fiber_mapping, network_devices, device_captures, onus
     if _data_loaded:
         return
     _data_loaded = True
     if not NETWORK_SETTINGS_DATA_PATH or not os.path.exists(NETWORK_SETTINGS_DATA_PATH):
+        fiber_color_settings = normalize_fiber_color_settings({})
+        fiber_mapping = normalize_fiber_mapping({})
         return
     try:
         with open(NETWORK_SETTINGS_DATA_PATH, "r", encoding="utf-8") as handle:
             payload = json.load(handle)
     except (OSError, json.JSONDecodeError):
+        fiber_color_settings = normalize_fiber_color_settings({})
         return
     olts = list(payload.get("olts") or [])
     pon_ports = list(payload.get("ponPorts") or [])
     nap_boxes = list(payload.get("napBoxes") or [])
     fbts = list(payload.get("fbts") or [])
+    fiber_optic_losses = list(payload.get("fiberOpticLosses") or [])
+    fiber_color_settings = normalize_fiber_color_settings(payload.get("fiberColorSettings"))
+    fiber_mapping = normalize_fiber_mapping(payload.get("fiberMapping"))
     network_devices = list(payload.get("networkDevices") or [])
     device_captures = list(payload.get("deviceCaptures") or [])
     onus = list(payload.get("onus") or [])
@@ -397,6 +505,9 @@ def save_network_settings_data() -> None:
         "ponPorts": pon_ports,
         "napBoxes": nap_boxes,
         "fbts": fbts,
+        "fiberOpticLosses": fiber_optic_losses,
+        "fiberColorSettings": fiber_color_settings_summary(),
+        "fiberMapping": fiber_mapping_summary(),
         "networkDevices": network_devices,
         "deviceCaptures": compact_capture_history(device_captures),
         "onus": onus,
@@ -414,6 +525,166 @@ def save_network_settings_data() -> None:
 
 def clean_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def default_fiber_color_settings() -> dict[str, Any]:
+    return json.loads(json.dumps(FIBER_COLOR_SETTINGS_DEFAULT))
+
+
+def normalize_hex_color(value: Any, fallback: str) -> str:
+    text = clean_text(value)
+    if not HEX_COLOR_RE.match(text):
+        return fallback
+    text = text.lstrip("#")
+    if len(text) == 3:
+        text = "".join(character * 2 for character in text)
+    return f"#{text.upper()}"
+
+
+def normalize_fiber_color_palette(rows: Any, defaults: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    source_rows = rows if isinstance(rows, list) else []
+    normalized = []
+    for index, fallback in enumerate(defaults):
+        source = source_rows[index] if index < len(source_rows) and isinstance(source_rows[index], dict) else {}
+        normalized.append({
+            "position": index + 1,
+            "name": clean_text(source.get("name")) or fallback["name"],
+            "hex": normalize_hex_color(source.get("hex"), fallback["hex"]),
+        })
+    return normalized
+
+
+def normalize_fiber_color_settings(payload: Any) -> dict[str, Any]:
+    defaults = default_fiber_color_settings()
+    source = payload if isinstance(payload, dict) else {}
+    return {
+        "standardName": clean_text(source.get("standardName")) or defaults["standardName"],
+        "fiberColors": normalize_fiber_color_palette(source.get("fiberColors"), defaults["fiberColors"]),
+        "tubeColors": normalize_fiber_color_palette(source.get("tubeColors"), defaults["tubeColors"]),
+        "notes": clean_text(source.get("notes")) or defaults["notes"],
+    }
+
+
+def fiber_color_settings_summary() -> dict[str, Any]:
+    return normalize_fiber_color_settings(fiber_color_settings)
+
+
+def color_entry_for_position(palette: list[dict[str, Any]], position: int) -> dict[str, Any]:
+    if not palette:
+        palette = default_fiber_color_settings()["fiberColors"]
+    index = (max(position, 1) - 1) % len(palette)
+    return palette[index]
+
+
+def resolve_fiber_color_entry(source: dict[str, Any], palette: list[dict[str, Any]], fallback_position: int) -> dict[str, str]:
+    fallback = color_entry_for_position(palette, fallback_position)
+    name = clean_text(source.get("colorName") or source.get("tubeColorName") or source.get("name")) or fallback["name"]
+    raw_hex = source.get("colorHex") or source.get("tubeColorHex") or source.get("hex")
+    return {"name": name, "hex": normalize_hex_color(raw_hex, fallback["hex"])}
+
+
+def fiber_core_count_from_groups(groups: Any) -> int:
+    if not isinstance(groups, list):
+        return 0
+    total = 0
+    for group in groups:
+        cores = group.get("cores") if isinstance(group, dict) else []
+        if isinstance(cores, list):
+            total += len(cores)
+    return total
+
+
+def normalize_fiber_core_count(value: Any, fallback: int = 12, strict: bool = False) -> int:
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        count = int(fallback or 12)
+    valid = count in FIBER_CORE_COUNT_OPTIONS or (count >= FIBER_COLOR_GROUP_SIZE and count % FIBER_COLOR_GROUP_SIZE == 0)
+    if not valid:
+        if strict:
+            raise HTTPException(status_code=400, detail="Core count must be 1, 2, 4, 6, 8, 12, 24, 48, 60, 72, or another multiple of 12")
+        count = int(fallback or 12)
+    return max(1, min(count, 288))
+
+
+def default_fiber_color_groups(core_count: int, settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    normalized_settings = normalize_fiber_color_settings(settings or fiber_color_settings)
+    fiber_palette = normalized_settings["fiberColors"]
+    tube_palette = normalized_settings["tubeColors"]
+    uses_tubes = core_count > FIBER_COLOR_GROUP_SIZE
+    groups: list[dict[str, Any]] = []
+    fiber_number = 1
+    remaining = core_count
+    group_number = 1
+    while remaining > 0:
+        group_size = min(FIBER_COLOR_GROUP_SIZE, remaining)
+        tube = color_entry_for_position(tube_palette, group_number) if uses_tubes else {"name": "", "hex": ""}
+        cores = []
+        for position in range(1, group_size + 1):
+            color = color_entry_for_position(fiber_palette, position)
+            cores.append({
+                "fiberNumber": fiber_number,
+                "position": position,
+                "colorName": color["name"],
+                "colorHex": color["hex"],
+            })
+            fiber_number += 1
+        groups.append({
+            "id": f"group-{group_number}",
+            "groupNumber": group_number,
+            "groupName": f"Tube {group_number}" if uses_tubes else "Core Colors",
+            "tubeColorName": tube["name"],
+            "tubeColorHex": tube["hex"],
+            "cores": cores,
+        })
+        remaining -= group_size
+        group_number += 1
+    return groups
+
+
+def normalize_fiber_color_groups(groups: Any, core_count: int, settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    normalized_settings = normalize_fiber_color_settings(settings or fiber_color_settings)
+    defaults = default_fiber_color_groups(core_count, normalized_settings)
+    source_groups = groups if isinstance(groups, list) else []
+    normalized_groups = []
+    fiber_number = 1
+    uses_tubes = core_count > FIBER_COLOR_GROUP_SIZE
+    for index, fallback_group in enumerate(defaults):
+        source_group = source_groups[index] if index < len(source_groups) and isinstance(source_groups[index], dict) else {}
+        group_number = index + 1
+        tube = (
+            resolve_fiber_color_entry(
+                {
+                    "tubeColorName": source_group.get("tubeColorName"),
+                    "tubeColorHex": source_group.get("tubeColorHex"),
+                },
+                normalized_settings["tubeColors"],
+                group_number,
+            )
+            if uses_tubes
+            else {"name": "", "hex": ""}
+        )
+        source_cores = source_group.get("cores") if isinstance(source_group.get("cores"), list) else []
+        cores = []
+        for core_index, fallback_core in enumerate(fallback_group["cores"]):
+            source_core = source_cores[core_index] if core_index < len(source_cores) and isinstance(source_cores[core_index], dict) else {}
+            color = resolve_fiber_color_entry(source_core, normalized_settings["fiberColors"], core_index + 1)
+            cores.append({
+                "fiberNumber": fiber_number,
+                "position": core_index + 1,
+                "colorName": color["name"],
+                "colorHex": color["hex"],
+            })
+            fiber_number += 1
+        normalized_groups.append({
+            "id": clean_text(source_group.get("id")) or fallback_group["id"],
+            "groupNumber": group_number,
+            "groupName": (clean_text(source_group.get("groupName")) or f"Tube {group_number}") if uses_tubes else "Core Colors",
+            "tubeColorName": tube["name"],
+            "tubeColorHex": tube["hex"],
+            "cores": cores,
+        })
+    return normalized_groups
 
 
 def clean_coordinate(value: Any, field_name: str, minimum: float, maximum: float) -> str:
@@ -474,6 +745,106 @@ def ensure_choice(value: Any, allowed: list[str], field_name: str, fallback: str
     return normalized
 
 
+def mapping_number(value: Any, fallback: float = 0.0, minimum: float = 0.0, maximum: float = 6000.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = fallback
+    return round(max(minimum, min(maximum, number)), 2)
+
+
+def normalize_mapping_node_key(value: Any) -> str:
+    key = clean_text(value)[:160]
+    if not re.fullmatch(r"[a-z]+:[A-Za-z0-9_.:-]+", key):
+        return ""
+    return key
+
+
+def normalize_mapping_edge_key(value: Any) -> str:
+    key = clean_text(value)[:220]
+    if not re.fullmatch(r"[a-z]+:[A-Za-z0-9_.:-]+->[a-z]+:[A-Za-z0-9_.:-]+", key):
+        return ""
+    return key
+
+
+def normalize_fiber_mapping_node(record: Any) -> dict[str, Any]:
+    source = record if isinstance(record, dict) else {}
+    return {
+        "x": mapping_number(source.get("x")),
+        "y": mapping_number(source.get("y")),
+        "locked": normalize_bool(source.get("locked")),
+        "visible": not (source.get("visible") is False or clean_text(source.get("visible")).lower() in {"0", "false", "no", "off"}),
+    }
+
+
+def normalize_fiber_mapping_edge(record: Any) -> dict[str, Any]:
+    source = record if isinstance(record, dict) else {}
+    available_fiber_ids = {row["id"] for row in visible_fiber_optic_losses()}
+    fiber_optic_loss_id = clean_text(source.get("fiberOpticLossId"))
+    if fiber_optic_loss_id and fiber_optic_loss_id not in available_fiber_ids:
+        fiber_optic_loss_id = ""
+    wavelength_nm = clean_text(source.get("wavelengthNm")) or WAVELENGTHS_NM[0]
+    if wavelength_nm not in WAVELENGTHS_NM:
+        wavelength_nm = WAVELENGTHS_NM[0]
+    line_style = normalize_upper(source.get("lineStyle") or "SOLID")
+    if line_style not in {"SOLID", "DASHED", "DOTTED"}:
+        line_style = "SOLID"
+    return {
+        "fiberOpticLossId": fiber_optic_loss_id,
+        "wavelengthNm": wavelength_nm,
+        "lengthKm": clean_text(source.get("lengthKm")),
+        "sourcePowerDbm": clean_text(source.get("sourcePowerDbm")),
+        "connectorLossDb": clean_text(source.get("connectorLossDb")),
+        "spliceLossDb": clean_text(source.get("spliceLossDb")),
+        "lineStyle": line_style,
+        "lineColor": normalize_hex_color(source.get("lineColor"), "#2563EB"),
+        "notes": clean_text(source.get("notes")),
+    }
+
+
+def normalize_fiber_mapping(raw: Any) -> dict[str, Any]:
+    source = raw if isinstance(raw, dict) else {}
+    nodes_source = source.get("nodes") if isinstance(source.get("nodes"), dict) else {}
+    edges_source = source.get("edges") if isinstance(source.get("edges"), dict) else {}
+    splitters_source = source.get("napSplitters") if isinstance(source.get("napSplitters"), dict) else {}
+    nodes = {
+        key: normalize_fiber_mapping_node(value)
+        for raw_key, value in nodes_source.items()
+        if (key := normalize_mapping_node_key(raw_key))
+    }
+    edges = {
+        key: normalize_fiber_mapping_edge(value)
+        for raw_key, value in edges_source.items()
+        if (key := normalize_mapping_edge_key(raw_key))
+    }
+    available_nap_ids = {row["id"] for row in visible_naps()}
+    available_splitter_ids = {row["id"] for row in visible_fbts()}
+    nap_splitters: dict[str, list[str]] = {}
+    for raw_nap_id, raw_splitters in splitters_source.items():
+        nap_id = clean_text(raw_nap_id)
+        if nap_id not in available_nap_ids or not isinstance(raw_splitters, list):
+            continue
+        splitter_ids: list[str] = []
+        for raw_splitter_id in raw_splitters:
+            splitter_id = clean_text(raw_splitter_id)
+            if splitter_id in available_splitter_ids and splitter_id not in splitter_ids:
+                splitter_ids.append(splitter_id)
+        if splitter_ids:
+            nap_splitters[nap_id] = splitter_ids
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "napSplitters": nap_splitters,
+        "updatedAt": clean_text(source.get("updatedAt")),
+    }
+
+
+def fiber_mapping_summary() -> dict[str, Any]:
+    global fiber_mapping
+    fiber_mapping = normalize_fiber_mapping(fiber_mapping)
+    return json.loads(json.dumps(fiber_mapping))
+
+
 def actor_name(admin: dict[str, Any]) -> str:
     return clean_text(admin.get("username") or admin.get("full_name") or admin.get("id") or "network-user")
 
@@ -496,6 +867,10 @@ def visible_naps() -> list[dict[str, Any]]:
 
 def visible_fbts() -> list[dict[str, Any]]:
     return [row for row in fbts if not row.get("deletedAt")]
+
+
+def visible_fiber_optic_losses() -> list[dict[str, Any]]:
+    return [row for row in fiber_optic_losses if not row.get("deletedAt")]
 
 
 def visible_devices() -> list[dict[str, Any]]:
@@ -526,7 +901,11 @@ def find_nap(nap_id: str) -> dict[str, Any]:
 
 
 def find_fbt(fbt_id: str) -> dict[str, Any]:
-    return find_row(fbts, fbt_id, "FBT")
+    return find_row(fbts, fbt_id, "Splitter")
+
+
+def find_fiber_optic_loss(loss_id: str) -> dict[str, Any]:
+    return find_row(fiber_optic_losses, loss_id, "Fiber optic loss profile")
 
 
 def find_device(device_id: str) -> dict[str, Any]:
@@ -602,7 +981,7 @@ def unique_fbt_port(nap_box_id: str, port_number: int, current_id: str | None = 
         None,
     )
     if duplicate:
-        raise HTTPException(status_code=400, detail="FBT port number already exists for this NAP")
+        raise HTTPException(status_code=400, detail="Splitter slot/port number already exists for this NAP")
 
 
 def unique_device_endpoint(record: dict[str, Any], current_id: str | None = None) -> None:
@@ -683,26 +1062,24 @@ def normalize_pon_payload(payload: PonPayload, olt_id: str, current: dict[str, A
 
 def normalize_pon_power_payload(payload: PonPowerPayload) -> dict[str, str]:
     data = payload.model_dump(exclude_unset=True)
-    record = {field: clean_text(data.get(field)) for field in PON_MODULE_FIELDS if field in data}
-    has_power_data = any(
-        clean_text(record.get(field))
-        for field in (
-            "moduleVendor",
-            "modulePartNumber",
-            "moduleSerial",
-            "moduleHardwareRev",
-            "moduleRxPowerDbm",
-            "moduleTxPowerDbm",
-            "moduleTemperatureC",
-            "moduleVoltageV",
-            "moduleBiasCurrentMa",
-        )
-    )
+    record = {
+        "moduleVendor": clean_text(data.get("moduleVendor")),
+        "moduleRxPowerDbm": clean_text(data.get("moduleRxPowerDbm")),
+        "moduleSource": clean_text(data.get("moduleSource")),
+        "modulePartNumber": "",
+        "moduleSerial": "",
+        "moduleHardwareRev": "",
+        "moduleTxPowerDbm": "",
+        "moduleTemperatureC": "",
+        "moduleVoltageV": "",
+        "moduleBiasCurrentMa": "",
+        "moduleEntityIndex": "",
+    }
+    has_power_data = bool(record["moduleVendor"] or record["moduleRxPowerDbm"])
     if has_power_data:
         record["moduleSource"] = clean_text(record.get("moduleSource")) or "Manual"
-    elif "moduleSource" not in record:
+    else:
         record["moduleSource"] = ""
-    record["moduleEntityIndex"] = ""
     return record
 
 
@@ -730,22 +1107,217 @@ def normalize_nap_payload(payload: NapPayload, current: dict[str, Any] | None = 
     return record
 
 
+def normalize_splitter_ratio(value: Any, default: str, allowed: list[str] | None = None) -> str:
+    normalized = clean_text(value).upper().replace("X", ":").replace("/", ":")
+    return ensure_choice(normalized or default, allowed or SPLITTER_RATIOS, "splitter ratio", default)
+
+
+def splitter_ratio_choices_for_type(splitter_type: str) -> list[str]:
+    if splitter_type == "PLC":
+        return PLC_SPLITTER_RATIOS
+    if splitter_type == "LCP":
+        return LCP_SPLITTER_RATIOS
+    return SPLITTER_RATIOS
+
+
+def normalize_fbt_split_ratio(value: Any, default: str = "5:95") -> str:
+    normalized = clean_text(value).upper().replace("X", ":").replace("/", ":")
+    if not normalized:
+        return default
+    if not re.match(r"^\d{1,3}\s*:\s*\d{1,3}$", normalized):
+        raise HTTPException(status_code=400, detail="Invalid FBT split ratio")
+    left, right = [int(part.strip()) for part in normalized.split(":", 1)]
+    if left <= 0 or right <= 0 or left + right > 1000:
+        raise HTTPException(status_code=400, detail="Invalid FBT split ratio")
+    return f"{left}:{right}"
+
+
+def splitter_output_ports_from_ratio(split_ratio: str) -> int:
+    normalized = clean_text(split_ratio).replace("x", ":").replace("X", ":")
+    if ":" not in normalized:
+        return 0
+    left, right = normalized.split(":", 1)
+    if left.strip() == "1":
+        try:
+            return int(right.strip())
+        except ValueError:
+            return 0
+    return 2
+
+
+def normalize_splitter_port_losses(split_ratio: str, rows: Any, legacy_loss: Any = "") -> list[dict[str, Any]]:
+    output_ports = splitter_output_ports_from_ratio(split_ratio) or 1
+    existing: dict[int, dict[str, Any]] = {}
+    if isinstance(rows, list):
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            try:
+                port_number = int(item.get("portNumber") or 0)
+            except (TypeError, ValueError):
+                port_number = 0
+            if port_number > 0:
+                existing[port_number] = item
+
+    fallback_loss = clean_text(legacy_loss)
+    normalized: list[dict[str, Any]] = []
+    for port_number in range(1, output_ports + 1):
+        row = existing.get(port_number, {})
+        normalized.append({
+            "id": clean_text(row.get("id")) or f"port-{port_number}",
+            "portNumber": port_number,
+            "insertionLossDb": clean_text(row.get("insertionLossDb")) or fallback_loss,
+        })
+    return normalized
+
+
+def normalize_fbt_ratio_rows(rows: Any, record: dict[str, Any], default_ratio: str) -> list[dict[str, Any]]:
+    existing: dict[str, dict[str, Any]] = {}
+    if isinstance(rows, list):
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            ratio = normalize_fbt_split_ratio(item.get("ratio") or item.get("splitRatio"), "")
+            if not ratio:
+                continue
+            existing[ratio] = {
+                "id": clean_text(item.get("id")) or f"ratio-{ratio.replace(':', '-')}",
+                "ratio": ratio,
+                "isCustom": bool(item.get("isCustom")) or ratio not in FBT_SPLIT_RATIOS,
+                **{field_name: clean_text(item.get(field_name)) for field_name in FBT_LOSS_FIELDS},
+            }
+
+    legacy_losses = {field_name: clean_text(record.get(field_name)) for field_name in FBT_LOSS_FIELDS}
+    legacy_ratio = normalize_fbt_split_ratio(record.get("splitRatio"), default_ratio)
+    if any(legacy_losses.values()) and legacy_ratio not in existing:
+        existing[legacy_ratio] = {
+            "id": f"ratio-{legacy_ratio.replace(':', '-')}",
+            "ratio": legacy_ratio,
+            "isCustom": legacy_ratio not in FBT_SPLIT_RATIOS,
+            **legacy_losses,
+        }
+
+    normalized: list[dict[str, Any]] = []
+    used: set[str] = set()
+    for ratio in FBT_SPLIT_RATIOS:
+        row = existing.get(ratio, {})
+        normalized.append({
+            "id": clean_text(row.get("id")) or f"ratio-{ratio.replace(':', '-')}",
+            "ratio": ratio,
+            "isCustom": False,
+            **{field_name: clean_text(row.get(field_name)) for field_name in FBT_LOSS_FIELDS},
+        })
+        used.add(ratio)
+
+    for ratio, row in existing.items():
+        if ratio in used:
+            continue
+        normalized.append({
+            "id": clean_text(row.get("id")) or f"custom-{ratio.replace(':', '-')}",
+            "ratio": ratio,
+            "isCustom": True,
+            **{field_name: clean_text(row.get(field_name)) for field_name in FBT_LOSS_FIELDS},
+        })
+
+    return normalized
+
+
 def normalize_fbt_payload(payload: FbtPayload, current: dict[str, Any] | None = None) -> dict[str, Any]:
     data = payload.model_dump(exclude_unset=True)
     record = dict(current or {})
     record.update({key: value for key, value in data.items() if value is not None})
-    record["name"] = clean_text(record.get("name"))
-    if not record["name"]:
-        raise HTTPException(status_code=400, detail="FBT name is required")
+    record["splitterType"] = ensure_choice(record.get("splitterType"), SPLITTER_TYPES, "splitter type", "FBT")
+    defaults = SPLITTER_DEFAULTS.get(record["splitterType"], SPLITTER_DEFAULTS["FBT"])
+    manufacturer = clean_text(record.get("manufacturer") or record.get("brand"))
+    if not manufacturer:
+        raise HTTPException(status_code=400, detail="Manufacturer / company is required")
+    record["manufacturer"] = manufacturer
+    record["brand"] = manufacturer
+    record["model"] = clean_text(record.get("model"))
+    record["name"] = clean_text(record.get("name")) or " ".join(
+        part for part in [manufacturer, record["model"], record["splitterType"]] if part
+    )
     record["napBoxId"] = clean_text(record.get("napBoxId"))
-    if not record["napBoxId"]:
-        raise HTTPException(status_code=400, detail="NAP assignment is required")
-    find_nap(record["napBoxId"])
-    record["portNumber"] = int(record.get("portNumber") or next_fbt_number(record["napBoxId"]))
-    unique_fbt_port(record["napBoxId"], record["portNumber"], record.get("id"))
-    record["portCapacity"] = int(record.get("portCapacity") or 8)
-    record["status"] = ensure_choice(record.get("status"), FBT_STATUSES, "FBT status", "PLANNED")
+    if record["napBoxId"]:
+        find_nap(record["napBoxId"])
+        record["portNumber"] = int(record.get("portNumber") or next_fbt_number(record["napBoxId"]))
+        unique_fbt_port(record["napBoxId"], record["portNumber"], record.get("id"))
+    else:
+        record["portNumber"] = int(record.get("portNumber") or 1)
+    record["splitRatio"] = (
+        normalize_fbt_split_ratio(record.get("splitRatio"), defaults["splitRatio"])
+        if record["splitterType"] == "FBT"
+        else normalize_splitter_ratio(
+            record.get("splitRatio"),
+            defaults["splitRatio"],
+            splitter_ratio_choices_for_type(record["splitterType"]),
+        )
+    )
+    if record["splitterType"] == "FBT":
+        record["ratioRows"] = normalize_fbt_ratio_rows(record.get("ratioRows"), record, record["splitRatio"])
+        record["splitRatio"] = record["ratioRows"][0]["ratio"] if record["ratioRows"] else record["splitRatio"]
+        record["portLosses"] = []
+    else:
+        record["ratioRows"] = []
+    derived_outputs = splitter_output_ports_from_ratio(record["splitRatio"])
+    if record["splitterType"] in PORT_LOSS_SPLITTER_TYPES:
+        record["inputPorts"] = 1
+        record["outputPorts"] = derived_outputs or defaults["outputPorts"]
+        record["portCapacity"] = record["outputPorts"]
+        record["portLosses"] = normalize_splitter_port_losses(record["splitRatio"], record.get("portLosses"), record.get("insertionLossDb"))
+    else:
+        record["inputPorts"] = int(record.get("inputPorts") or 1)
+        record["outputPorts"] = int(record.get("outputPorts") or record.get("portCapacity") or derived_outputs or defaults["outputPorts"])
+        record["portCapacity"] = int(record.get("portCapacity") or record["outputPorts"])
+        record["portLosses"] = []
+    record["insertionLossDb"] = clean_text(record.get("insertionLossDb"))
+    record["connectorType"] = ensure_choice(record.get("connectorType"), SPLITTER_CONNECTOR_TYPES, "connector type", defaults["connectorType"])
+    record["packageType"] = ensure_choice(record.get("packageType"), SPLITTER_PACKAGE_TYPES, "package type", defaults["packageType"])
+    record["stage"] = ensure_choice(record.get("stage"), SPLITTER_STAGES, "splitter stage", defaults["stage"])
+    record["serialNumber"] = clean_text(record.get("serialNumber"))
+    for field_name in FBT_LOSS_FIELDS:
+        record[field_name] = clean_text(record.get(field_name))
+    record["lcpCabinet"] = clean_text(record.get("lcpCabinet"))
+    record["lcpSlot"] = clean_text(record.get("lcpSlot"))
+    record["status"] = ensure_choice(record.get("status"), FBT_STATUSES, "splitter status", "PLANNED")
     record["locationHint"] = clean_text(record.get("locationHint"))
+    record["notes"] = clean_text(record.get("notes"))
+    return record
+
+
+def fiber_optic_loss_display_name(record: dict[str, Any]) -> str:
+    core_count = clean_text(record.get("coreCount"))
+    core_label = f"{core_count} Core" if core_count else ""
+    label = " ".join(
+        part
+        for part in [
+            clean_text(record.get("manufacturer")),
+            clean_text(record.get("model")),
+            core_label,
+        ]
+        if part
+    )
+    return label or clean_text(record.get("name")) or "Fiber Optic"
+
+
+def normalize_fiber_optic_loss_payload(payload: FiberOpticLossPayload, current: dict[str, Any] | None = None) -> dict[str, Any]:
+    data = payload.model_dump(exclude_unset=True)
+    record = dict(current or {})
+    record.update({key: value for key, value in data.items() if value is not None})
+    record["manufacturer"] = clean_text(record.get("manufacturer"))
+    if not record["manufacturer"]:
+        raise HTTPException(status_code=400, detail="Manufacturer / company is required")
+    record["model"] = clean_text(record.get("model"))
+    record["fiberType"] = clean_text(record.get("fiberType"))
+    fallback_core_count = fiber_core_count_from_groups(record.get("colorGroups")) or 12
+    record["coreCount"] = normalize_fiber_core_count(record.get("coreCount"), fallback_core_count, strict="coreCount" in data)
+    record["colorGroups"] = normalize_fiber_color_groups(record.get("colorGroups"), record["coreCount"], fiber_color_settings_summary())
+    for field_name in FIBER_OPTIC_LOSS_FIELDS:
+        record[field_name] = clean_text(record.get(field_name))
+    if not any(record.get(field_name) for field_name in FIBER_OPTIC_LOSS_FIELDS):
+        raise HTTPException(status_code=400, detail="At least one wavelength loss value is required")
+    record["name"] = fiber_optic_loss_display_name(record)
+    record["status"] = ensure_choice(record.get("status"), FIBER_OPTIC_STATUSES, "fiber optic status", "ACTIVE")
     record["notes"] = clean_text(record.get("notes"))
     return record
 
@@ -2484,18 +3056,63 @@ def nap_summary(nap: dict[str, Any]) -> dict[str, Any]:
 
 
 def fbt_summary(fbt: dict[str, Any]) -> dict[str, Any]:
-    nap = find_nap(fbt["napBoxId"])
-    pon = find_pon(nap["ponPortId"])
-    olt = find_olt(pon["oltId"])
-    pon_label = canonical_pon_label(pon)
+    splitter_type = ensure_choice(fbt.get("splitterType"), SPLITTER_TYPES, "splitter type", "FBT")
+    split_ratio = clean_text(fbt.get("splitRatio")) or SPLITTER_DEFAULTS[splitter_type]["splitRatio"]
+    if splitter_type in PORT_LOSS_SPLITTER_TYPES:
+        try:
+            split_ratio = normalize_splitter_ratio(
+                split_ratio,
+                SPLITTER_DEFAULTS[splitter_type]["splitRatio"],
+                splitter_ratio_choices_for_type(splitter_type),
+            )
+        except HTTPException:
+            split_ratio = SPLITTER_DEFAULTS[splitter_type]["splitRatio"]
+    ratio_rows = normalize_fbt_ratio_rows(fbt.get("ratioRows"), fbt, split_ratio) if splitter_type == "FBT" else []
+    if splitter_type in PORT_LOSS_SPLITTER_TYPES:
+        output_ports = splitter_output_ports_from_ratio(split_ratio) or SPLITTER_DEFAULTS[splitter_type]["outputPorts"]
+    else:
+        output_ports = int(fbt.get("outputPorts") or fbt.get("portCapacity") or splitter_output_ports_from_ratio(split_ratio) or SPLITTER_DEFAULTS[splitter_type]["outputPorts"])
+    port_losses = normalize_splitter_port_losses(split_ratio, fbt.get("portLosses"), fbt.get("insertionLossDb")) if splitter_type in PORT_LOSS_SPLITTER_TYPES else []
+    nap: dict[str, Any] | None = None
+    pon: dict[str, Any] | None = None
+    olt: dict[str, Any] | None = None
+    nap_box_id = clean_text(fbt.get("napBoxId"))
+    if nap_box_id:
+        try:
+            nap = find_nap(nap_box_id)
+            pon = find_pon(nap["ponPortId"])
+            olt = find_olt(pon["oltId"])
+        except HTTPException:
+            nap = None
+            pon = None
+            olt = None
+    pon_label = canonical_pon_label(pon) if pon else ""
     return {
         **fbt,
-        "napName": nap["name"],
-        "ponPortId": pon["id"],
+        "splitterType": splitter_type,
+        "splitRatio": ratio_rows[0]["ratio"] if ratio_rows else split_ratio,
+        "ratioRows": ratio_rows,
+        "portLosses": port_losses,
+        "inputPorts": 1 if splitter_type in PORT_LOSS_SPLITTER_TYPES else int(fbt.get("inputPorts") or 1),
+        "outputPorts": output_ports,
+        "portCapacity": output_ports if splitter_type in PORT_LOSS_SPLITTER_TYPES else int(fbt.get("portCapacity") or output_ports),
+        "insertionLossDb": clean_text(fbt.get("insertionLossDb")),
+        "connectorType": clean_text(fbt.get("connectorType")) or SPLITTER_DEFAULTS[splitter_type]["connectorType"],
+        "packageType": clean_text(fbt.get("packageType")) or SPLITTER_DEFAULTS[splitter_type]["packageType"],
+        "stage": clean_text(fbt.get("stage")) or SPLITTER_DEFAULTS[splitter_type]["stage"],
+        "manufacturer": clean_text(fbt.get("manufacturer") or fbt.get("brand")),
+        "brand": clean_text(fbt.get("manufacturer") or fbt.get("brand")),
+        "model": clean_text(fbt.get("model")),
+        "serialNumber": clean_text(fbt.get("serialNumber")),
+        **{field_name: clean_text(fbt.get(field_name)) for field_name in FBT_LOSS_FIELDS},
+        "lcpCabinet": clean_text(fbt.get("lcpCabinet")),
+        "lcpSlot": clean_text(fbt.get("lcpSlot")),
+        "napName": nap["name"] if nap else "",
+        "ponPortId": pon["id"] if pon else "",
         "ponLabel": pon_label,
-        "oltId": olt["id"],
-        "oltName": olt["name"],
-        "oltVendor": clean_text(olt.get("vendor")),
+        "oltId": olt["id"] if olt else "",
+        "oltName": olt["name"] if olt else "",
+        "oltVendor": clean_text(olt.get("vendor")) if olt else "",
     }
 
 
@@ -2527,6 +3144,25 @@ def onu_summary(onu: dict[str, Any]) -> dict[str, Any]:
         "sourceDeviceVendor": device.get("vendor", ""),
         "pollIntervalSeconds": poll_interval,
         "pollIntervalLabel": format_seconds(poll_interval),
+    }
+
+
+def fiber_optic_loss_summary(row: dict[str, Any]) -> dict[str, Any]:
+    fallback_core_count = fiber_core_count_from_groups(row.get("colorGroups")) or 12
+    core_count = normalize_fiber_core_count(row.get("coreCount"), fallback_core_count)
+    color_groups = normalize_fiber_color_groups(row.get("colorGroups"), core_count, fiber_color_settings_summary())
+    return {
+        **row,
+        "name": fiber_optic_loss_display_name({**row, "coreCount": core_count}),
+        "manufacturer": clean_text(row.get("manufacturer")),
+        "model": clean_text(row.get("model")),
+        "fiberType": clean_text(row.get("fiberType")),
+        "coreCount": core_count,
+        "colorGroups": color_groups,
+        "colorGroupCount": len(color_groups),
+        **{field_name: clean_text(row.get(field_name)) for field_name in FIBER_OPTIC_LOSS_FIELDS},
+        "status": ensure_choice(row.get("status"), FIBER_OPTIC_STATUSES, "fiber optic status", "ACTIVE"),
+        "notes": clean_text(row.get("notes")),
     }
 
 
@@ -2706,11 +3342,18 @@ def pppoe_kpis(rows: list[dict[str, Any]]) -> dict[str, int]:
 
 def network_settings_metrics() -> dict[str, int]:
     seed_network_settings_data()
+    splitters = [fbt_summary(row) for row in visible_fbts()]
     return {
         "olts": len(visible_olts()),
         "pon_ports": len(visible_pons()),
         "nap_boxes": len(visible_naps()),
         "fbts": len(visible_fbts()),
+        "splitters": len(splitters),
+        "plc_splitters": sum(1 for row in splitters if row.get("splitterType") == "PLC"),
+        "lcp_splitters": sum(1 for row in splitters if row.get("splitterType") == "LCP"),
+        "fbt_splitters": sum(1 for row in splitters if row.get("splitterType") == "FBT"),
+        "fiber_optic_loss_profiles": len(visible_fiber_optic_losses()),
+        "fiber_mapping_naps": sum(1 for key in fiber_mapping_summary().get("nodes", {}) if key.startswith("nap:")),
         "onus": len(visible_onus()),
         "devices": len(visible_devices()),
         "active_olts": sum(1 for row in visible_olts() if row["status"] == "ACTIVE"),
@@ -2747,6 +3390,19 @@ def network_settings_meta(admin=Depends(require_admin)) -> dict[str, Any]:
         "napStatuses": NAP_STATUSES,
         "napSplitterRatios": NAP_SPLITTER_RATIOS,
         "fbtStatuses": FBT_STATUSES,
+        "splitterStatuses": FBT_STATUSES,
+        "splitterTypes": SPLITTER_TYPES,
+        "plcSplitterRatios": PLC_SPLITTER_RATIOS,
+        "lcpSplitterRatios": LCP_SPLITTER_RATIOS,
+        "splitterRatios": SPLITTER_RATIOS,
+        "fbtSplitRatios": FBT_SPLIT_RATIOS,
+        "wavelengthsNm": WAVELENGTHS_NM,
+        "fiberOpticStatuses": FIBER_OPTIC_STATUSES,
+        "fiberCoreCountOptions": FIBER_CORE_COUNT_OPTIONS,
+        "fiberColorSettings": fiber_color_settings_summary(),
+        "splitterPackageTypes": SPLITTER_PACKAGE_TYPES,
+        "splitterConnectorTypes": SPLITTER_CONNECTOR_TYPES,
+        "splitterStages": SPLITTER_STAGES,
         "onuStatuses": ONU_STATUSES,
         "deviceTypes": DEVICE_TYPES,
         "deviceAccessMethods": DEVICE_ACCESS_METHODS,
@@ -2768,13 +3424,13 @@ def network_settings_meta(admin=Depends(require_admin)) -> dict[str, Any]:
 @router.get("/plan")
 def network_settings_plan(admin=Depends(require_admin)) -> dict[str, Any]:
     return {
-        "purpose": "ISP network source-of-truth for OLTs, generated PON ports, NAP boxes, and FBT assignments.",
+        "purpose": "ISP network source-of-truth for OLTs, generated PON ports, NAP boxes, and PLC/LCP/FBT splitter assignments.",
         "implementedNow": [
             "Network Settings app-shell navigation.",
             "OLT CRUD with default PON generation.",
             "PON CRUD under an OLT with delete safeguards.",
             "NAP CRUD assigned to a PON.",
-            "FBT CRUD assigned to a NAP box.",
+            "Splitter CRUD for PLC, LCP, and FBT records assigned to a NAP box.",
             "Device CRUD for MikroTik and OLT endpoints split by API and SNMP readiness.",
             "Live MikroTik PPPoE account discovery from RouterOS API secrets and active sessions.",
             "Background SNMP polling for due devices using each device poll interval.",
@@ -2799,6 +3455,10 @@ def network_settings_overview(admin=Depends(require_admin)) -> dict[str, Any]:
         "devices": [device_summary(row) for row in sorted(visible_devices(), key=lambda item: item["updatedAt"], reverse=True)[:6]],
         "recentNaps": [nap_summary(row) for row in sorted(visible_naps(), key=lambda item: item["updatedAt"], reverse=True)[:6]],
         "recentFbts": [fbt_summary(row) for row in sorted(visible_fbts(), key=lambda item: item["updatedAt"], reverse=True)[:6]],
+        "recentFiberOpticLosses": [
+            fiber_optic_loss_summary(row)
+            for row in sorted(visible_fiber_optic_losses(), key=lambda item: item["updatedAt"], reverse=True)[:6]
+        ],
     }
 
 
@@ -3180,6 +3840,33 @@ def create_pon(olt_id: str, payload: PonPayload, admin=Depends(require_admin)):
     return pon_summary(pon)
 
 
+@router.patch("/olts/{olt_id}/pons/power")
+def update_olt_pon_power(olt_id: str, payload: PonPowerPayload, admin=Depends(require_admin)):
+    seed_network_settings_data()
+    olt = find_olt(olt_id)
+    record = normalize_pon_power_payload(payload)
+    timestamp = now_iso()
+    updated = []
+    for pon in pon_rows_for_olt(olt_id):
+        pon.update(record)
+        pon["updatedAt"] = timestamp
+        updated.append(pon)
+    add_audit(
+        "network_olt_pon_power_updated",
+        "NetworkOlt",
+        olt["id"],
+        {"name": olt["name"], "updatedPons": len(updated), "source": record.get("moduleSource", "")},
+        actor_name(admin),
+    )
+    save_network_settings_data()
+    return {
+        "status": "ok",
+        "oltId": olt["id"],
+        "updatedPons": len(updated),
+        "pons": [pon_summary(pon) for pon in sorted(updated, key=lambda item: item["portNumber"])],
+    }
+
+
 @router.patch("/pons/{pon_id}")
 def update_pon(pon_id: str, payload: PonPayload, admin=Depends(require_admin)):
     seed_network_settings_data()
@@ -3267,7 +3954,7 @@ def delete_nap_box(nap_id: str, admin=Depends(require_admin)):
     seed_network_settings_data()
     current = find_nap(nap_id)
     if fbt_rows_for_nap(nap_id):
-        raise HTTPException(status_code=400, detail="Delete or move assigned FBT records before deleting this NAP")
+        raise HTTPException(status_code=400, detail="Delete or move assigned splitter records before deleting this NAP")
     timestamp = now_iso()
     current["deletedAt"] = timestamp
     current["updatedAt"] = timestamp
@@ -3277,12 +3964,18 @@ def delete_nap_box(nap_id: str, admin=Depends(require_admin)):
 
 
 @router.get("/fbts")
-def list_fbts(search: str = "", napBoxId: str = "", admin=Depends(require_admin)):
+def list_fbts(search: str = "", napBoxId: str = "", splitterType: str = "", admin=Depends(require_admin)):
     seed_network_settings_data()
+    normalized_type = normalize_upper(splitterType)
+    if normalized_type and normalized_type not in SPLITTER_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid splitter type")
     rows = [
-        fbt_summary(row)
+        summary
         for row in visible_fbts()
-        if (not napBoxId or row["napBoxId"] == napBoxId) and matches_search({**row, **fbt_summary(row)}, search)
+        for summary in [fbt_summary(row)]
+        if (not napBoxId or row["napBoxId"] == napBoxId)
+        and (not normalized_type or summary["splitterType"] == normalized_type)
+        and matches_search({**row, **summary}, search)
     ]
     return sorted(rows, key=lambda item: item["updatedAt"], reverse=True)
 
@@ -3294,7 +3987,7 @@ def create_fbt(payload: FbtPayload, admin=Depends(require_admin)):
     timestamp = now_iso()
     fbt = {"id": str(uuid4()), "createdAt": timestamp, "updatedAt": timestamp, "deletedAt": None, **record}
     fbts.append(fbt)
-    add_audit("network_fbt_created", "NetworkFbt", fbt["id"], {"name": fbt["name"], "napBoxId": fbt["napBoxId"]}, actor_name(admin))
+    add_audit("network_splitter_created", "NetworkSplitter", fbt["id"], {"name": fbt["name"], "napBoxId": fbt["napBoxId"], "type": fbt["splitterType"]}, actor_name(admin))
     save_network_settings_data()
     return fbt_summary(fbt)
 
@@ -3306,7 +3999,7 @@ def update_fbt(fbt_id: str, payload: FbtPayload, admin=Depends(require_admin)):
     record = normalize_fbt_payload(payload, current)
     current.update(record)
     current["updatedAt"] = now_iso()
-    add_audit("network_fbt_updated", "NetworkFbt", current["id"], {"name": current["name"]}, actor_name(admin))
+    add_audit("network_splitter_updated", "NetworkSplitter", current["id"], {"name": current["name"], "type": current["splitterType"]}, actor_name(admin))
     save_network_settings_data()
     return fbt_summary(current)
 
@@ -3318,6 +4011,111 @@ def delete_fbt(fbt_id: str, admin=Depends(require_admin)):
     timestamp = now_iso()
     current["deletedAt"] = timestamp
     current["updatedAt"] = timestamp
-    add_audit("network_fbt_deleted", "NetworkFbt", current["id"], {"name": current["name"]}, actor_name(admin))
+    add_audit("network_splitter_deleted", "NetworkSplitter", current["id"], {"name": current["name"], "type": current.get("splitterType", "FBT")}, actor_name(admin))
     save_network_settings_data()
     return {"status": "ok"}
+
+
+@router.get("/fiber-optic-settings")
+def get_fiber_optic_settings(admin=Depends(require_admin)):
+    seed_network_settings_data()
+    return {
+        "coreCountOptions": FIBER_CORE_COUNT_OPTIONS,
+        "colorSettings": fiber_color_settings_summary(),
+    }
+
+
+@router.patch("/fiber-optic-settings")
+def update_fiber_optic_settings(payload: FiberColorSettingsPayload, admin=Depends(require_admin)):
+    global fiber_color_settings
+    seed_network_settings_data()
+    data = fiber_color_settings_summary()
+    data.update(payload.model_dump(exclude_unset=True))
+    fiber_color_settings = normalize_fiber_color_settings(data)
+    add_audit(
+        "network_fiber_optic_settings_updated",
+        "NetworkFiberOpticSettings",
+        "fiber-optic",
+        {"standardName": fiber_color_settings["standardName"]},
+        actor_name(admin),
+    )
+    save_network_settings_data()
+    return {
+        "coreCountOptions": FIBER_CORE_COUNT_OPTIONS,
+        "colorSettings": fiber_color_settings_summary(),
+    }
+
+
+@router.get("/fiber-optic-losses")
+def list_fiber_optic_losses(search: str = "", admin=Depends(require_admin)):
+    seed_network_settings_data()
+    rows = [
+        fiber_optic_loss_summary(row)
+        for row in visible_fiber_optic_losses()
+        if matches_search(row, search)
+    ]
+    return sorted(rows, key=lambda item: item["updatedAt"], reverse=True)
+
+
+@router.post("/fiber-optic-losses")
+def create_fiber_optic_loss(payload: FiberOpticLossPayload, admin=Depends(require_admin)):
+    seed_network_settings_data()
+    record = normalize_fiber_optic_loss_payload(payload)
+    timestamp = now_iso()
+    row = {"id": str(uuid4()), "createdAt": timestamp, "updatedAt": timestamp, "deletedAt": None, **record}
+    fiber_optic_losses.append(row)
+    add_audit("network_fiber_optic_loss_created", "NetworkFiberOpticLoss", row["id"], {"name": row["name"], "manufacturer": row["manufacturer"]}, actor_name(admin))
+    save_network_settings_data()
+    return fiber_optic_loss_summary(row)
+
+
+@router.patch("/fiber-optic-losses/{loss_id}")
+def update_fiber_optic_loss(loss_id: str, payload: FiberOpticLossPayload, admin=Depends(require_admin)):
+    seed_network_settings_data()
+    current = find_fiber_optic_loss(loss_id)
+    record = normalize_fiber_optic_loss_payload(payload, current)
+    current.update(record)
+    current["updatedAt"] = now_iso()
+    add_audit("network_fiber_optic_loss_updated", "NetworkFiberOpticLoss", current["id"], {"name": current["name"], "manufacturer": current["manufacturer"]}, actor_name(admin))
+    save_network_settings_data()
+    return fiber_optic_loss_summary(current)
+
+
+@router.delete("/fiber-optic-losses/{loss_id}")
+def delete_fiber_optic_loss(loss_id: str, admin=Depends(require_admin)):
+    seed_network_settings_data()
+    current = find_fiber_optic_loss(loss_id)
+    timestamp = now_iso()
+    current["deletedAt"] = timestamp
+    current["updatedAt"] = timestamp
+    add_audit("network_fiber_optic_loss_deleted", "NetworkFiberOpticLoss", current["id"], {"name": current["name"], "manufacturer": current.get("manufacturer", "")}, actor_name(admin))
+    save_network_settings_data()
+    return {"status": "ok"}
+
+
+@router.get("/fiber-mapping")
+def get_fiber_mapping(admin=Depends(require_admin)):
+    seed_network_settings_data()
+    return fiber_mapping_summary()
+
+
+@router.patch("/fiber-mapping")
+def update_fiber_mapping(payload: FiberMappingPayload, admin=Depends(require_admin)):
+    global fiber_mapping
+    seed_network_settings_data()
+    data = payload.model_dump()
+    data["updatedAt"] = now_iso()
+    fiber_mapping = normalize_fiber_mapping(data)
+    add_audit(
+        "network_fiber_mapping_updated",
+        "NetworkFiberMapping",
+        "fiber-mapping",
+        {
+            "nodes": len(fiber_mapping.get("nodes", {})),
+            "edges": len(fiber_mapping.get("edges", {})),
+            "napSplitters": len(fiber_mapping.get("napSplitters", {})),
+        },
+        actor_name(admin),
+    )
+    save_network_settings_data()
+    return fiber_mapping_summary()

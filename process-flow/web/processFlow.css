@@ -1,0 +1,250 @@
+.process-flow-page {
+  min-height: calc(100vh - 8rem);
+}
+
+.process-flow-layout {
+  display: grid;
+  grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr);
+  gap: 1rem;
+  min-height: calc(100vh - 9rem);
+}
+
+.process-flow-sidebar,
+.process-flow-main {
+  border: 1px solid var(--tblr-border-color);
+  border-radius: 0.5rem;
+  background: #fff;
+}
+
+.process-flow-sidebar {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  padding: 0.85rem;
+}
+
+.process-flow-search {
+  margin-bottom: 0.75rem;
+}
+
+.process-flow-list {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0.45rem;
+  overflow: auto;
+}
+
+.process-flow-list-item {
+  display: flex;
+  width: 100%;
+  align-items: flex-start;
+  gap: 0.65rem;
+  border: 1px solid transparent;
+  border-radius: 0.45rem;
+  background: transparent;
+  padding: 0.65rem;
+  color: inherit;
+  text-align: left;
+}
+
+.process-flow-list-item:hover,
+.process-flow-list-item.active {
+  border-color: rgba(32, 107, 196, 0.22);
+  background: #edf4ff;
+}
+
+.process-flow-list-icon {
+  display: inline-flex;
+  width: 1.9rem;
+  height: 1.9rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.4rem;
+  background: #e7f0ff;
+  color: var(--tblr-primary);
+}
+
+.process-flow-list-item small {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--tblr-muted);
+  line-height: 1.3;
+}
+
+.process-flow-main {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.process-flow-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--tblr-border-color);
+  padding: 0.9rem 1rem;
+}
+
+.process-flow-toolbar h3 {
+  margin: 0;
+}
+
+.process-flow-toolbar p {
+  max-width: 48rem;
+  margin: 0.2rem 0 0;
+  color: var(--tblr-muted);
+}
+
+.process-flow-canvas {
+  position: relative;
+  min-height: 42rem;
+  flex: 1 1 auto;
+  overflow: hidden;
+  cursor: grab;
+  background:
+    linear-gradient(#eef2f7 1px, transparent 1px),
+    linear-gradient(90deg, #eef2f7 1px, transparent 1px),
+    #f8fafc;
+  background-size: 32px 32px;
+}
+
+.process-flow-canvas.dragging {
+  cursor: grabbing;
+}
+
+.process-flow-stage-track {
+  width: min(44rem, 82vw);
+  margin: 2rem auto 4rem;
+  transform-origin: top center;
+  transition: transform 120ms ease;
+}
+
+.process-flow-stage-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.process-flow-stage-card {
+  display: flex;
+  width: 100%;
+  gap: 0.8rem;
+  border: 1px solid var(--tblr-border-color);
+  border-radius: 0.5rem;
+  background: #fff;
+  padding: 0.95rem;
+  box-shadow: 0 0.35rem 1rem rgba(15, 23, 42, 0.08);
+}
+
+.process-flow-stage-index {
+  display: inline-flex;
+  width: 2.35rem;
+  height: 2.35rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--tblr-primary);
+  color: #fff;
+  font-weight: 800;
+}
+
+.process-flow-stage-content {
+  min-width: 0;
+}
+
+.process-flow-stage-content h4 {
+  margin: 0.55rem 0 0.25rem;
+  font-size: 1rem;
+}
+
+.process-flow-stage-content p {
+  margin: 0;
+  color: #4b5563;
+}
+
+.process-flow-connector {
+  position: relative;
+  display: flex;
+  width: 3rem;
+  height: 4rem;
+  align-items: center;
+  justify-content: center;
+}
+
+.process-flow-connector-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  overflow: hidden;
+  background: #bfdbfe;
+}
+
+.process-flow-connector-line::after {
+  content: "";
+  position: absolute;
+  top: -40%;
+  left: 0;
+  width: 100%;
+  height: 40%;
+  background: var(--tblr-primary);
+  animation: process-flow-line 1.4s linear infinite;
+}
+
+.process-flow-connector-pulse {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  width: 1.8rem;
+  height: 1.8rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: var(--tblr-primary);
+  animation: process-flow-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes process-flow-line {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(350%);
+  }
+}
+
+@keyframes process-flow-pulse {
+  0%,
+  100% {
+    transform: translateY(-0.25rem);
+  }
+  50% {
+    transform: translateY(0.25rem);
+  }
+}
+
+@media (max-width: 991px) {
+  .process-flow-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .process-flow-sidebar {
+    max-height: 22rem;
+  }
+
+  .process-flow-toolbar {
+    flex-direction: column;
+  }
+
+  .process-flow-stage-track {
+    width: min(38rem, 88vw);
+  }
+}
