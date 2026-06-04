@@ -1,0 +1,17 @@
+{
+  "slug": "process-flow",
+  "name": "Process Flow",
+  "status": "functional-shell",
+  "owner": "threejmain",
+  "description": "Interactive system process maps that explain how customer, service, ticketing, billing, inventory, and network workflows connect.",
+  "app_shell_route": "/process-flow",
+  "api_prefix": "/api/process-flow",
+  "frontend_entry": "process-flow/web/ProcessFlowPage.jsx",
+  "api_entry": "process-flow/api/process_flow/router.py",
+  "features": [
+    "workflow_catalog",
+    "pan_zoom_canvas",
+    "process_topology",
+    "cross_module_process_reference"
+  ]
+}

@@ -473,6 +473,14 @@ Release `runtime/server` immediately after restart/build and basic verification.
 
 All visual review happens on the shared server at `http://192.168.50.70:8180/`; confirm whether the user expects production or staging before changing the runtime.
 
+When the user asks to check screenshots in `3jmain_ss`, use the Windows-mounted screenshot directory:
+
+```text
+/mnt/windows_vod/3jmain_ss
+```
+
+Look there before searching older reference folders such as `/home/threejmon/3jmain_ss`.
+
 ---
 
 # During Work

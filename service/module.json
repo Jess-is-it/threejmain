@@ -3,7 +3,7 @@
   "name": "Service",
   "status": "functional-shell",
   "owner": "threejmain",
-  "description": "ISP service catalog, speed plans, service orders, customer-availment tagging, and cross-module service references.",
+  "description": "ISP service catalog, speed plans, service accounts, service orders, customer-availment tagging, and cross-module service references.",
   "app_shell_route": "/service/catalog",
   "api_prefix": "/api/service",
   "frontend_entry": "service/web/ServicePage.jsx",
@@ -14,6 +14,10 @@
       "route": "/service/catalog"
     },
     {
+      "name": "Service Account",
+      "route": "/service/account"
+    },
+    {
       "name": "Service Order",
       "route": "/service/order"
     }
@@ -21,6 +25,7 @@
   "features": [
     "service_catalog",
     "speed_plans",
+    "service_accounts",
     "service_orders",
     "customer_lookup",
     "billing_ticketing_service_references"

@@ -161,7 +161,7 @@ function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error('Unable to read avatar image.'));
+    reader.onerror = () => reject(new Error('Unable to read image.'));
     reader.readAsDataURL(file);
   });
 }
@@ -864,6 +864,192 @@ function AvatarTab() {
             </div>
           );
         })
+      )}
+    </div>
+  );
+}
+
+const MAP_IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp';
+const DEFAULT_MAP_IMAGE_MAX_BYTES = 524288;
+
+function ImagesTab() {
+  const [config, setConfig] = useState(null);
+  const [imageView, setImageView] = useState('nap');
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [busyTarget, setBusyTarget] = useState('');
+
+  async function loadMapImages() {
+    setLoading(true);
+    try {
+      setConfig(await request('/system-settings/map-images'));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadMapImages();
+  }, []);
+
+  async function uploadMapImage(target, file, input) {
+    if (!file) return;
+    const acceptedTypes = config?.accepted_mime_types?.length ? config.accepted_mime_types : MAP_IMAGE_ACCEPT.split(',');
+    const maxBytes = config?.max_bytes || DEFAULT_MAP_IMAGE_MAX_BYTES;
+    setError('');
+    setMessage('');
+    if (!acceptedTypes.includes(file.type)) {
+      setError('Accepted map marker formats are PNG, JPG/JPEG, and WebP.');
+      input.value = '';
+      return;
+    }
+    if (file.size > maxBytes) {
+      setError(`Map marker image must be ${formatBytes(maxBytes)} or smaller.`);
+      input.value = '';
+      return;
+    }
+    setBusyTarget(target.id);
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      const nextConfig = await request(`/system-settings/map-images/${target.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          data_url: dataUrl,
+          file_name: file.name,
+          mime_type: file.type
+        })
+      });
+      setConfig(nextConfig);
+      setMessage(`${target.label} map image saved.`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusyTarget('');
+      input.value = '';
+    }
+  }
+
+  async function removeMapImage(target) {
+    if (!window.confirm(`Remove the ${target.label} map image?`)) return;
+    setBusyTarget(target.id);
+    setError('');
+    setMessage('');
+    try {
+      setConfig(await request(`/system-settings/map-images/${target.id}`, { method: 'DELETE' }));
+      setMessage(`${target.label} map image removed.`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusyTarget('');
+    }
+  }
+
+  const targets = config?.targets || [
+    { id: 'nap', label: 'NAP Box', recommended_size: '128 x 128 px', description: 'Marker shown for NAP boxes on the Network Settings map.' },
+    { id: 'olt', label: 'OLT', recommended_size: '160 x 160 px', description: 'Marker shown for OLT devices on the Network Settings map.' }
+  ];
+  const selectedTarget = targets.find((target) => target.id === imageView) || targets[0];
+  const savedCount = targets.filter((target) => target.image).length;
+  const maxBytes = config?.max_bytes || DEFAULT_MAP_IMAGE_MAX_BYTES;
+  const formats = (config?.accepted_formats || ['PNG', 'JPG/JPEG', 'WebP']).join(' ');
+  const guidelines = config?.guidelines || [
+    'Use PNG or WebP for crisp transparent marker icons.',
+    'Use JPG only for photo-like markers; transparent backgrounds are not preserved in JPG.',
+    'Keep icons centered with safe padding so they remain readable at small map zoom levels.',
+    'Recommended marker art is 128 x 128 px for NAP boxes and 160 x 160 px for OLT devices.',
+    'Keep each image at or below 512 KB.'
+  ];
+
+  return (
+    <div className="row row-cards system-settings-images">
+      <div className="col-12">
+        <div className="alert alert-info mb-0">
+          These images are used as custom marker icons on the Network Settings Map page for OLT and NAP box records.
+        </div>
+      </div>
+      <div className="col-12">
+        <div className="alert alert-secondary mb-0">
+          Accepted image formats: {formats}. Maximum upload size is {formatBytes(maxBytes)} per image.
+        </div>
+      </div>
+      {message && <div className="col-12"><div className="alert alert-success">{message}</div></div>}
+      {error && <div className="col-12"><div className="alert alert-danger">{error}</div></div>}
+      <KpiCard icon={IconPhoto} label="Marker Types" value={targets.length || 2} tone="blue" />
+      <KpiCard icon={IconDatabase} label="Uploaded" value={savedCount} tone="green" />
+      <KpiCard icon={IconSettings} label="Formats" value={formats} tone="cyan" />
+      <KpiCard icon={IconNetwork} label="Max Size" value={formatBytes(maxBytes)} tone="purple" />
+      <div className="col-12">
+        <ul className="nav nav-tabs" role="tablist" aria-label="Map image tabs">
+          {targets.map((target) => (
+            <li className="nav-item" role="presentation" key={target.id}>
+              <button className={`nav-link ${imageView === target.id ? 'active' : ''}`} type="button" role="tab" aria-selected={imageView === target.id} onClick={() => setImageView(target.id)}>
+                {target.label}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+      {loading ? (
+        <div className="col-12"><div className="empty">Loading map images...</div></div>
+      ) : (
+        <>
+          <div className="col-lg-7">
+            <div className="card system-settings-map-image-card">
+              <div className="card-body">
+                <div className="system-settings-map-image-layout">
+                  <div className="system-settings-map-image-preview">
+                    {selectedTarget?.image?.data_url ? (
+                      <img src={selectedTarget.image.data_url} alt={`${selectedTarget.label} map marker`} />
+                    ) : (
+                      <IconPhoto size={42} className="text-muted" />
+                    )}
+                  </div>
+                  <div>
+                    <h3 className="card-title mb-1">{selectedTarget.label}</h3>
+                    <div className="text-muted">{selectedTarget.description}</div>
+                    <div className="system-settings-avatar-meta">
+                      <span className="badge bg-blue-lt text-blue">{selectedTarget.recommended_size}</span>
+                      <span className="badge bg-secondary-lt">{selectedTarget.image ? selectedTarget.image.mime_type : 'No image'}</span>
+                      <span className="text-muted small">
+                        {selectedTarget.image ? `${selectedTarget.image.file_name || 'marker'} · ${formatBytes(selectedTarget.image.byte_size)}` : 'Upload marker image.'}
+                      </span>
+                    </div>
+                    <div className="btn-list mt-3">
+                      <input
+                        id={`map-image-upload-${selectedTarget.id}`}
+                        className="d-none"
+                        type="file"
+                        accept={MAP_IMAGE_ACCEPT}
+                        onChange={(e) => uploadMapImage(selectedTarget, e.target.files?.[0], e.target)}
+                      />
+                      <label className={`btn btn-outline-primary btn-sm ${busyTarget === selectedTarget.id ? 'disabled' : ''}`} htmlFor={busyTarget === selectedTarget.id ? undefined : `map-image-upload-${selectedTarget.id}`} aria-disabled={busyTarget === selectedTarget.id}>
+                        <IconUpload size={16} className="me-2" />{busyTarget === selectedTarget.id ? 'Saving...' : selectedTarget.image ? 'Replace' : 'Upload'}
+                      </label>
+                      {selectedTarget.image && (
+                        <button className="btn btn-outline-danger btn-sm" type="button" onClick={() => removeMapImage(selectedTarget)} disabled={busyTarget === selectedTarget.id}>
+                          <IconTrash size={16} className="me-2" />Remove
+                        </button>
+                      )}
+                      <button className="btn btn-outline-secondary btn-sm" type="button" onClick={loadMapImages} disabled={busyTarget === selectedTarget.id}>
+                        <IconRefresh size={16} className="me-2" />Refresh
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="col-lg-5">
+            <Card title="Upload Guidelines" icon={IconPhoto}>
+              <ul className="system-settings-image-guidelines">
+                {guidelines.map((guideline) => <li key={guideline}>{guideline}</li>)}
+              </ul>
+            </Card>
+          </div>
+        </>
       )}
     </div>
   );
@@ -1759,7 +1945,7 @@ function AccessTab() {
 }
 
 export default function SystemSettingsPage({ refreshShell }) {
-  const tabs = ['General', 'Location Management', 'Avatar', 'OPENAI', 'Access', 'Ports', 'Runtime'];
+  const tabs = ['General', 'Location Management', 'Images', 'Avatar', 'OPENAI', 'Access', 'Ports', 'Runtime'];
   const [tab, setTab] = useState('General');
   const [settings, setSettings] = useState(null);
   const [ports, setPorts] = useState([]);
@@ -1830,6 +2016,7 @@ export default function SystemSettingsPage({ refreshShell }) {
         </Card>
       )}
       {tab === 'Location Management' && <LocationManagementTab />}
+      {tab === 'Images' && <ImagesTab />}
       {tab === 'Avatar' && <AvatarTab />}
       {tab === 'OPENAI' && <OpenAISettingsTab />}
       {tab === 'Access' && <AccessTab />}

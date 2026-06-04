@@ -20,9 +20,12 @@ Customer Profiling manages customer records, account identity, service addresses
 - Create, update, view, and soft archive customer profiles
 - New customer modal is staged with Profile, Contact, Location, and Review steps; Contact shows stacked Primary Contact and Secondary Contact relative panels plus a form-population progress bar
 - Customer profiles include optional birth date capture and review.
+- Customer profiles can mark whether the customer was recommended by an existing customer; when enabled, the UI requires selecting the recommending Customer Profiling record and saves id/name/account snapshot fields.
+- Customer lifecycle status is system-owned in the UI: the create/edit customer modal no longer exposes manual Status selection, and new customer creates start as `PENDING` for downstream module workflow automation.
 - New customer drafts are temporary browser-local records saved in `localStorage` and can be resumed or deleted from the Customer Drafts side panel
 - Customer service location selection backed by System Settings -> Location Management
 - The create/edit Location stage uses Customer Location wording, a searchable saved-location picker, and one merged location/address panel for record, landmark, province, city, barangay, and address lines.
+- The Location stage coordinate controls show Capture Coordinates only after a saved Customer Location is selected and show a Clear action whenever longitude/latitude values are present.
 - Customer gender field (`MALE` / `FEMALE`) used by System Settings avatar selection.
 - Customer table and detail drawer show System Settings customer emotion avatars through `CustomerEmotionAvatar`.
 - Customer detail drawer hides avatar mood labels, uses a larger avatar image, places account/status/type badges beside the customer name, and uses compact Customers-table-style Basic Info and Location tabs; contact fields and Secondary Contacts live under Basic Info.

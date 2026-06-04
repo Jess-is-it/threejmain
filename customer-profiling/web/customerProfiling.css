@@ -1143,6 +1143,11 @@
   font-size: 0.78rem;
 }
 
+.customer-referral-panel {
+  display: grid;
+  gap: 0.9rem;
+}
+
 .customer-contact-section-heading {
   display: flex;
   align-items: center;

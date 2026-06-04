@@ -1,8 +1,8 @@
 # Network Settings
 
-Network Settings is the ISP network source-of-truth module for access network assets, starting with device records, SNMP capture runs, MikroTik PPPoE account discovery, OLTs, generated PON ports, captured ONU inventory, NAP boxes, and FBT assignments.
+Network Settings is the ISP network source-of-truth module for access network assets, starting with device records, SNMP capture runs, MikroTik PPPoE account discovery, OLTs, generated PON ports, captured ONU inventory, NAP boxes, PLC/LCP/FBT splitter catalog records, and fiber mapping.
 
-This module is now wired into `app-shell/` with module-local JSON persistence when `/app/data` is available. The JSON store is written atomically through a temp file plus replace operation to avoid truncated data files during shared server restarts. Live device provisioning, PPPoE-to-ONU mapping, topology visualization, and durable PostgreSQL persistence remain future work.
+This module is now wired into `app-shell/` with module-local JSON persistence when `/app/data` is available. The JSON store is written atomically through a temp file plus replace operation to avoid truncated data files during shared server restarts. Live device provisioning, PPPoE-to-ONU mapping, advanced topology automation, and durable PostgreSQL persistence remain future work.
 
 ## Research Baseline
 
@@ -21,6 +21,10 @@ Research references used for this plan:
 - [LibreNMS Fetching SNMP Data](https://docs.librenms.org/Developing/Using-SnmpQuery/) and [Discovery Support](https://docs.librenms.org/Support/Discovery%20Support/): discovery runs query devices through SNMP get/walk operations, then process returned data into inventory.
 - [RFC 3418 SNMPv2-MIB](https://www.rfc-editor.org/rfc/rfc3418.html): standard system objects such as `sysDescr`, `sysObjectID`, `sysUpTime`, `sysContact`, `sysName`, and `sysLocation`.
 - [RFC 2863 IF-MIB](https://datatracker.ietf.org/doc/html/rfc2863): standard interface inventory/status objects including `ifDescr`, `ifAdminStatus`, `ifOperStatus`, `ifName`, and `ifAlias`.
+- [Corning FTTH 101 tutorial](https://www.corning.com/media/worldwide/coc/documents/Fiber/IEC_FTTH_101_Tutorialv2.pdf): FTTH topology uses splitter/local convergence points between feeder and distribution network segments.
+- [FIBERVISION PLC vs FBT overview](https://www.fibervision.com.cn/support/2026-Blogs/Understanding-Fiber-Optic-Splitters%2C-PLC-vs-FBT.html): PLC splitters provide uniform multi-output splitting across common FTTH ratios, while FBT splitters use fused/tapered fiber coupling.
+- [ISE Magazine optical splitter troubleshooting](https://www.isemag.com/fttx-optical-networks/article/14267547/troubleshooting-optical-splitters): FTTX splitter work should track passive component type, ratio, insertion loss, and field troubleshooting context.
+- [Prysmian fiber optic color code guide](https://na.prysmian.com/sites/na.prysmian.com/files/media/documents/TLS-0007-0121_Color%20Code%20Guide%20For%20Fiber%20Optic%20Specifications_LR_0.pdf) and [FOA fiber optic color codes card](https://foa.org/tech/coloc_codes/Color_Codes_Card_Fiber_Device.pdf): common TIA-598-based fiber/tube order uses 12 colors: blue, orange, green, brown, slate, white, red, black, yellow, violet, rose, and aqua. Larger cables repeat the sequence by tube/group, stripe, dash, or binder convention depending on cable construction and manufacturer.
 
 ## Routes
 
@@ -34,14 +38,17 @@ Planned sub-navigation:
 
 | Sub-nav | Purpose |
 | --- | --- |
-| Overview | Network KPIs and recent OLT/NAP/FBT records. |
+| Overview | Network KPIs and recent OLT/NAP/splitter records. |
+| Map | Network map shown first in the shared sidebar, above MikroTik. |
+| Fiber Mapping | Open canvas for building OLT-to-PON-to-NAP fiber paths, placing lockable objects, assigning splitters/fiber profiles to links, and computing first-pass optical power. |
 | MikroTik / Settings | MikroTik API device records used for PPPoE discovery and future provisioning. |
 | PPPoE Accounts | Live MikroTik RouterOS API view of PPP secrets and active sessions. |
 | OLT / Settings | OLT SNMP device records used for capture, polling, and discovery. |
 | OLT & PON | OLT CRUD plus generated and manually editable PON records under each OLT. |
 | ONUs | Captured ONU/ONT inventory grouped by OLT and PON, refreshed automatically in the UI. |
 | NAP Boxes | NAP CRUD assigned to a PON port. |
-| FBT | FBT CRUD assigned to a NAP box. |
+| Insertion Loss / Splitters | PLC, LCP, and FBT splitter CRUD by manufacturer/model. PLC and LCP are limited to 1:4, 1:8, and 1:16 ratios with insertion loss tracked per output port. FBT records auto-populate preset ratio rows and let operators add custom ratios with connector/deployment NAP/next NAP loss entered as comma- or slash-separated values for selected 1310, 1490, and/or 1550 nm wavelengths. Compatibility route remains `/network-settings/fbts`. |
+| Insertion Loss / Fiber Optic | Fiber optic manufacturer/company catalog entries with optional model and insertion loss per 1000m at 1310, 1490, and 1550 nm. Manufacturer/company and at least one wavelength loss value are required; operators no longer enter a separate profile name or fiber type. The page has List and Settings tabs, a core-count dropdown for 1, 2, 4, 6, 8, 12, 24, 48, 60, and 72 cores, generated/editable tube/core color groups for 24+ cores, and Fiber Optic settings for the fiber/tube color palette. |
 
 API prefix:
 
@@ -66,7 +73,10 @@ Implemented endpoints:
 - `PATCH/DELETE /api/network-settings/pons/{pon_id}`
 - `GET /api/network-settings/onus`
 - `GET/POST/PATCH/DELETE /api/network-settings/nap-boxes`
-- `GET/POST/PATCH/DELETE /api/network-settings/fbts`
+- `GET/POST/PATCH/DELETE /api/network-settings/fbts` (Splitters compatibility endpoint)
+- `GET/PATCH /api/network-settings/fiber-optic-settings`
+- `GET/POST/PATCH/DELETE /api/network-settings/fiber-optic-losses`
+- `GET/PATCH /api/network-settings/fiber-mapping`
 
 OLT creation generates four default PON records unless the operator sets another `defaultPonCount`. Increasing an OLT's default PON count adds missing PON records. Decreasing the target count does not silently delete PONs; operators can delete unneeded PON rows manually, and the API blocks deleting PONs that still have assigned NAP boxes.
 
@@ -75,6 +85,8 @@ The old combined Devices page has been removed from navigation. The API device l
 The OLT Settings table includes a Capture action for SNMP records. Capture currently supports SNMP v1/v2c over UDP/UDP6 without adding external Python dependencies. A run fetches SNMPv2-MIB system identity and IF-MIB interface columns, stores the capture result, displays captured system/interface/PON/ONU candidate information, and reconciles OLT devices into the OLT & PON and ONUs inventory. Generic PON detection is based on PON-like interface names/descriptions (`GPON`, `EPON`, `XGSPON`, `XPON`, `PON`) while ONU detection uses subscriber-side ONU/ONT/GEM/TCONT-style interface rows when the OLT exposes them through IF-MIB. VSOL-style child interfaces such as `EPON0/1:1` are treated as ONU rows under physical PON `EPON0/1`, not as separate PON ports, and the VSOL interface-to-MAC table is used as mapping evidence when available. Vendor and model are inferred from `sysDescr` and common enterprise OID prefixes and shown in the OLT Settings table after capture. ONU capture records standard identity/status fields and parses serial number, MAC address, Rx/Tx optical power, distance, temperature, voltage, bias current, VLAN, service port, profile, and last-down reason when the OLT exposes those values in generic SNMP interface text. For HS Fiber/HSGQ enterprise OID `1.3.6.1.4.1.50224`, capture also walks the EPON ONU info and ONU optical tables to fill ONU MAC address, receive power, transmit power, distance, temperature, voltage, and bias current. The API now starts a background Network Settings poller on shared app startup; it checks for due SNMP devices every `NETWORK_SETTINGS_POLL_LOOP_SECONDS` seconds, then runs the same capture/reconciliation path when `lastCapturedAt` reaches the device `pollIntervalSeconds` value. The default device poll interval is 300 seconds. The ONUs page auto-refreshes every 15 seconds while open. Additional vendor-specific ONU optical OIDs remain future work.
 
 The PPPoE Accounts page lives under the MikroTik navigation group. It reads configured PPP secrets and active PPP sessions from each saved MikroTik API device through RouterOS API, merges them by username, and displays account status, router, caller ID/MAC, assigned IP, profile, uptime, last caller ID, last logout, and disconnect reason. The UI includes KPI cards, router/status/profile filters, search, show-entries control, sortable columns, pagination, manual refresh, and a 30-second auto-refresh while the page is open. This is read-only discovery for now; provisioning and PPPoE-to-ONU/customer mapping are the next layer.
+
+The Fiber Mapping page lives directly under Network Settings, below Map and above the MikroTik group. It renders an open scrollable canvas where every OLT is shown with its PON ports automatically placed to the right and connected by editable lines. OLT, PON, and NAP objects can be dragged and locked. Hovering a PON shows an add button that lists NAP boxes assigned to that PON; selecting a NAP places it on the canvas and connects it to the PON. OLT/NAP artwork uses the marker images configured in System Settings -> Images, while PON and splitter placeholders use icons. NAP boxes can carry PLC/LCP/FBT splitter assignments, and selected fiber links can store fiber optic profile, wavelength, length, source power, connector loss, splice loss, line color/style, notes, and a computed first-pass loss/estimated receive-power summary. The first implementation persists canvas node positions, lock states, edge settings, and NAP splitter assignments in Network Settings JSON data through `GET/PATCH /api/network-settings/fiber-mapping`.
 
 ## Planned CRUD Scope
 
@@ -201,10 +213,10 @@ Key first-pass records:
 - Folder created: `network-settings/`
 - Status: `functional-shell`
 - App-shell navigation, route, API router, Docker copy paths, Vite allowlist, and dashboard metrics are wired.
-- CRUD exists for OLTs, PON ports, NAP boxes, FBT records, and network device records, with module-local JSON persistence on the shared API data volume when available.
+- CRUD exists for OLTs, PON ports, NAP boxes, PLC/LCP/FBT splitter catalog records, and network device records, with module-local JSON persistence on the shared API data volume when available.
 - The PPPoE Accounts page discovers live PPPoE accounts from saved MikroTik API devices by reading RouterOS PPP secrets and active sessions. It is read-only until provisioning and mapping are added.
 - OLT Settings includes manual and scheduled SNMP capture for v1/v2c OLT devices. Successful captures save SNMP system info, interface rows, inferred PON and ONU candidates, update device vendor/model, and auto-create/update OLT, PON, and captured ONU inventory records.
 - The ONUs page displays KPI cards for total ONUs, online ONUs, offline/problem ONUs, and PONs with captured ONUs. It also shows a per-PON ONU count selector, table filters, and captured ONU details without a poll column.
-- OLT creation still creates default PON ports, but the API no longer seeds sample OLT/PON/NAP/FBT records on startup.
+- OLT creation still creates default PON ports, but the API no longer seeds sample OLT/PON/NAP/splitter records on startup.
 - SNMPv3 capture, additional vendor-specific OLT/ONU MIB OID mapping, guaranteed optical metrics across every vendor, and full topology reconciliation remain future work.
 - Module-local JSON persistence is a staging bridge; shared PostgreSQL persistence and encrypted secrets handling are still required before production use.
