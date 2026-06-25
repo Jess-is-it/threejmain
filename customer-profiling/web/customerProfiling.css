@@ -527,8 +527,8 @@
 }
 
 .customer-actions-column {
-  width: 9.5rem;
-  min-width: 9.5rem;
+  width: 12.25rem;
+  min-width: 12.25rem;
   text-align: right;
   white-space: nowrap;
 }
@@ -1024,6 +1024,33 @@
 .customer-coordinate-controls .btn {
   border-radius: 999px;
   background: #fff;
+}
+
+.customer-coordinate-provider-select {
+  width: 10.75rem;
+  border-radius: 999px;
+  background-color: #fff;
+}
+
+.customer-coordinate-provider-status {
+  position: absolute;
+  top: 3.45rem;
+  right: 0.85rem;
+  z-index: 2;
+  max-width: min(18rem, calc(100% - 1.7rem));
+  padding: 0.32rem 0.55rem;
+  border: 1px solid rgba(37, 99, 235, 0.2);
+  border-radius: 999px;
+  background: rgba(239, 246, 255, 0.94);
+  color: #2563eb;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.customer-coordinate-provider-status.error {
+  border-color: rgba(220, 38, 38, 0.24);
+  background: rgba(254, 242, 242, 0.94);
+  color: #dc2626;
 }
 
 .customer-coordinate-map img {

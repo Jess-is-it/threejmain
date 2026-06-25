@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -56,6 +57,7 @@ PON_TECHNOLOGY_DEFAULTS = {
     "EPON": {"splitRatio": "1:64", "capacity": 64},
     "OTHER": {"splitRatio": "1:64", "capacity": 64},
 }
+PON_COLOR_BASES = ["#20C997", "#FCC419", "#339AF0", "#CC5DE8"]
 ADMIN_STATUSES = ["ENABLED", "DISABLED", "RESERVED"]
 OPER_STATUS = ["UNKNOWN", "UP", "DEGRADED", "DOWN"]
 NAP_STATUSES = ["PLANNED", "ACTIVE", "FULL", "MAINTENANCE", "OFFLINE", "ARCHIVED"]
@@ -245,12 +247,14 @@ class OltPayload(BaseModel):
     locationName: str | None = None
     status: str | None = None
     defaultPonCount: int | None = Field(default=None, ge=1, le=128)
+    displayOrder: int | None = Field(default=None, ge=0)
     notes: str | None = None
 
 
 class PonPayload(BaseModel):
     portNumber: int | None = Field(default=None, ge=1, le=512)
     label: str | None = None
+    colorHex: str | None = None
     technology: str | None = None
     adminStatus: str | None = None
     operationalStatus: str | None = None
@@ -296,6 +300,7 @@ class FbtPayload(BaseModel):
     splitterType: str | None = None
     splitRatio: str | None = None
     ratioRows: list[dict] | None = None
+    ratioProfiles: list[dict] | None = None
     portLosses: list[dict] | None = None
     inputPorts: int | None = Field(default=None, ge=1, le=16)
     outputPorts: int | None = Field(default=None, ge=1, le=512)
@@ -350,6 +355,11 @@ class FiberMappingPayload(BaseModel):
     nodes: dict[str, dict[str, Any]] = Field(default_factory=dict)
     edges: dict[str, dict[str, Any]] = Field(default_factory=dict)
     napSplitters: dict[str, list[str]] = Field(default_factory=dict)
+    junctionBoxes: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    containerSplitters: dict[str, list[str]] = Field(default_factory=dict)
+    containerSplitterAssignments: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    connectionPoints: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    fiberLinkSettings: dict[str, Any] = Field(default_factory=dict)
 
 
 class DevicePayload(BaseModel):
@@ -374,6 +384,7 @@ class DevicePayload(BaseModel):
     portAssociationMode: str | None = None
     pollerGroup: str | None = None
     pollIntervalSeconds: int | None = Field(default=None, ge=30, le=86400)
+    displayOrder: int | None = Field(default=None, ge=0)
     forceAdd: bool | str | None = None
     snmpAuthLevel: str | None = None
     snmpAuthName: str | None = None
@@ -395,6 +406,12 @@ class DeviceOltLocationPayload(BaseModel):
     label: str | None = None
     latitude: str | float | None = None
     longitude: str | float | None = None
+
+
+class DeviceOrderPayload(BaseModel):
+    orderedIds: list[str] = Field(default_factory=list)
+    accessMethod: str | None = None
+    deviceType: str | None = None
 
 
 def configure_network_settings(
@@ -447,7 +464,8 @@ def load_network_settings_data() -> None:
     device_captures = list(payload.get("deviceCaptures") or [])
     onus = list(payload.get("onus") or [])
     capture_history_normalized = normalize_capture_history()
-    if normalize_pon_inventory_defaults() or capture_history_normalized:
+    display_orders_normalized = ensure_display_orders()
+    if normalize_pon_inventory_defaults() or capture_history_normalized or display_orders_normalized:
         save_network_settings_data()
 
 
@@ -753,6 +771,51 @@ def mapping_number(value: Any, fallback: float = 0.0, minimum: float = 0.0, maxi
     return round(max(minimum, min(maximum, number)), 2)
 
 
+def optional_mapping_number(value: Any, minimum: float = 0.0, maximum: float = 6000.0) -> float | None:
+    if value is None or clean_text(value) == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(max(minimum, min(maximum, number)), 2)
+
+
+def optional_geo_number(value: Any, minimum: float, maximum: float) -> float | None:
+    if value is None or clean_text(value) == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return round(max(minimum, min(maximum, number)), 7)
+
+
+def normalize_fiber_mapping_bend_points(points: Any) -> list[dict[str, Any]]:
+    if not isinstance(points, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for point in points[:24]:
+        source = point if isinstance(point, dict) else {}
+        latitude = optional_geo_number(source.get("latitude"), -90.0, 90.0)
+        longitude = optional_geo_number(source.get("longitude"), -180.0, 180.0)
+        x = optional_mapping_number(source.get("x"), 0.0, 12000.0)
+        y = optional_mapping_number(source.get("y"), 0.0, 12000.0)
+        if (latitude is None or longitude is None) and (x is None or y is None):
+            continue
+        record: dict[str, Any] = {}
+        if latitude is not None and longitude is not None:
+            record["latitude"] = latitude
+            record["longitude"] = longitude
+        if x is not None and y is not None:
+            record["x"] = x
+            record["y"] = y
+        normalized.append(record)
+    return normalized
+
+
 def normalize_mapping_node_key(value: Any) -> str:
     key = clean_text(value)[:160]
     if not re.fullmatch(r"[a-z]+:[A-Za-z0-9_.:-]+", key):
@@ -769,12 +832,16 @@ def normalize_mapping_edge_key(value: Any) -> str:
 
 def normalize_fiber_mapping_node(record: Any) -> dict[str, Any]:
     source = record if isinstance(record, dict) else {}
-    return {
+    normalized = {
         "x": mapping_number(source.get("x")),
         "y": mapping_number(source.get("y")),
         "locked": normalize_bool(source.get("locked")),
         "visible": not (source.get("visible") is False or clean_text(source.get("visible")).lower() in {"0", "false", "no", "off"}),
     }
+    source_key = normalize_mapping_node_key(source.get("sourceKey"))
+    if source_key:
+        normalized["sourceKey"] = source_key
+    return normalized
 
 
 def normalize_fiber_mapping_edge(record: Any) -> dict[str, Any]:
@@ -789,16 +856,132 @@ def normalize_fiber_mapping_edge(record: Any) -> dict[str, Any]:
     line_style = normalize_upper(source.get("lineStyle") or "SOLID")
     if line_style not in {"SOLID", "DASHED", "DOTTED"}:
         line_style = "SOLID"
+    connection_type = normalize_upper(source.get("connectionType") or "FUSION")
+    if connection_type not in {"FUSION", "MECHANICAL", "SC_CONNECTOR"}:
+        connection_type = "FUSION"
+    fiber_core_number = clean_text(source.get("fiberCoreNumber")) or "1"
+    if not fiber_core_number.isdigit() or int(fiber_core_number) < 1:
+        fiber_core_number = "1"
     return {
         "fiberOpticLossId": fiber_optic_loss_id,
+        "fiberCoreNumber": fiber_core_number,
         "wavelengthNm": wavelength_nm,
         "lengthKm": clean_text(source.get("lengthKm")),
         "sourcePowerDbm": clean_text(source.get("sourcePowerDbm")),
         "connectorLossDb": clean_text(source.get("connectorLossDb")),
         "spliceLossDb": clean_text(source.get("spliceLossDb")),
+        "connectionType": connection_type,
         "lineStyle": line_style,
         "lineColor": normalize_hex_color(source.get("lineColor"), "#2563EB"),
+        "mapBendPoints": normalize_fiber_mapping_bend_points(source.get("mapBendPoints")),
         "notes": clean_text(source.get("notes")),
+    }
+
+
+def normalize_fiber_mapping_junction(record: Any, junction_id: str, valid_source_keys: set[str]) -> dict[str, Any] | None:
+    source = record if isinstance(record, dict) else {}
+    source_key = normalize_mapping_node_key(source.get("sourceKey"))
+    if source_key not in valid_source_keys:
+        return None
+    name = clean_text(source.get("name"))[:80] or f"Junction Box {junction_id[-4:]}"
+    return {
+        "id": junction_id,
+        "name": name,
+        "sourceKey": source_key,
+        "sourceLabel": clean_text(source.get("sourceLabel"))[:120],
+        "status": clean_text(source.get("status"))[:40] or "ACTIVE",
+        "createdAt": clean_text(source.get("createdAt")),
+        "notes": clean_text(source.get("notes"))[:400],
+    }
+
+
+def normalize_fiber_mapping_connection_point(record: Any) -> dict[str, Any]:
+    source = record if isinstance(record, dict) else {}
+    connection_type = normalize_upper(source.get("connectionType") or source.get("type") or "FUSION")
+    if connection_type not in {"FUSION", "MECHANICAL", "SC_CONNECTOR"}:
+        connection_type = "FUSION"
+    normalized = {
+        "connectionType": connection_type,
+        "label": clean_text(source.get("label"))[:80],
+        "updatedAt": clean_text(source.get("updatedAt")),
+    }
+    position_x = optional_mapping_number(source.get("positionX"))
+    position_y = optional_mapping_number(source.get("positionY"))
+    if position_x is not None:
+        normalized["positionX"] = position_x
+    if position_y is not None:
+        normalized["positionY"] = position_y
+    endpoint_role = clean_text(source.get("endpointRole"))
+    if endpoint_role in {"input", "output"}:
+        normalized["endpointRole"] = endpoint_role
+    return normalized
+
+
+def normalize_fiber_mapping_splitter_assignment(
+    record: Any,
+    available_splitters_by_id: dict[str, dict[str, Any]],
+    fallback_index: int = 0,
+) -> dict[str, Any] | None:
+    source = record if isinstance(record, dict) else {"splitterId": record}
+    splitter_id = clean_text(source.get("splitterId") or source.get("id"))
+    splitter = available_splitters_by_id.get(splitter_id)
+    if not splitter:
+        return None
+    assignment_id = clean_text(source.get("assignmentId"))[:80]
+    if not assignment_id or not re.fullmatch(r"[A-Za-z0-9_.:-]+", assignment_id):
+        assignment_id = f"{splitter_id}-{fallback_index + 1}"
+    ratio = clean_text(source.get("ratio") or source.get("splitRatio"))
+    if normalize_upper(splitter.get("splitterType")) == "FBT":
+        available_ratios = {
+            normalize_fbt_split_ratio(row.get("ratio") or row.get("splitRatio"), "")
+            for row in normalize_fbt_ratio_rows(splitter.get("ratioRows"), splitter, splitter.get("splitRatio") or "5:95")
+        }
+        ratio = normalize_fbt_split_ratio(ratio, splitter.get("splitRatio") or "5:95")
+        if available_ratios and ratio not in available_ratios:
+            ratio = next(iter(available_ratios))
+    elif normalize_upper(splitter.get("splitterType")) in PORT_LOSS_SPLITTER_TYPES:
+        splitter_type = normalize_upper(splitter.get("splitterType"))
+        profiles = normalize_splitter_ratio_profiles(splitter_type, splitter.get("ratioProfiles"), splitter, splitter.get("splitRatio") or SPLITTER_DEFAULTS[splitter_type]["splitRatio"])
+        available_ratios = [profile["splitRatio"] for profile in profiles]
+        ratio = normalize_splitter_ratio(ratio or splitter.get("splitRatio"), splitter.get("splitRatio") or SPLITTER_DEFAULTS[splitter_type]["splitRatio"], splitter_ratio_choices_for_type(splitter_type))
+        if available_ratios and ratio not in available_ratios:
+            ratio = available_ratios[0]
+    else:
+        ratio = clean_text(ratio or splitter.get("splitRatio"))
+    normalized = {
+        "assignmentId": assignment_id,
+        "splitterId": splitter_id,
+        "ratio": ratio,
+    }
+    parent_assignment_id = clean_text(source.get("parentAssignmentId"))[:80]
+    parent_terminal = clean_text(source.get("parentTerminal"))
+    if parent_assignment_id and re.fullmatch(r"[A-Za-z0-9_.:-]+", parent_assignment_id) and parent_terminal in {"splitA", "splitB", "output"}:
+        normalized["parentAssignmentId"] = parent_assignment_id
+        normalized["parentTerminal"] = parent_terminal
+    position_x = optional_mapping_number(source.get("positionX"))
+    position_y = optional_mapping_number(source.get("positionY"))
+    if position_x is not None:
+        normalized["positionX"] = position_x
+    if position_y is not None:
+        normalized["positionY"] = position_y
+    return normalized
+
+
+def normalize_fiber_link_settings(raw: Any) -> dict[str, int]:
+    source = raw if isinstance(raw, dict) else {}
+
+    def bounded_int(value: Any, fallback: int, minimum: int, maximum: int) -> int:
+        try:
+            number = int(float(str(value).strip()))
+        except (TypeError, ValueError):
+            number = fallback
+        return max(minimum, min(maximum, number))
+
+    max_line_pixels = bounded_int(source.get("maxLinePixels"), 500, 160, 1200)
+    min_line_pixels = bounded_int(source.get("minLinePixels"), 80, 40, max_line_pixels)
+    return {
+        "maxLinePixels": max_line_pixels,
+        "minLinePixels": min_line_pixels,
     }
 
 
@@ -807,6 +990,10 @@ def normalize_fiber_mapping(raw: Any) -> dict[str, Any]:
     nodes_source = source.get("nodes") if isinstance(source.get("nodes"), dict) else {}
     edges_source = source.get("edges") if isinstance(source.get("edges"), dict) else {}
     splitters_source = source.get("napSplitters") if isinstance(source.get("napSplitters"), dict) else {}
+    junctions_source = source.get("junctionBoxes") if isinstance(source.get("junctionBoxes"), dict) else {}
+    container_splitters_source = source.get("containerSplitters") if isinstance(source.get("containerSplitters"), dict) else {}
+    container_assignments_source = source.get("containerSplitterAssignments") if isinstance(source.get("containerSplitterAssignments"), dict) else {}
+    connection_points_source = source.get("connectionPoints") if isinstance(source.get("connectionPoints"), dict) else {}
     nodes = {
         key: normalize_fiber_mapping_node(value)
         for raw_key, value in nodes_source.items()
@@ -818,7 +1005,27 @@ def normalize_fiber_mapping(raw: Any) -> dict[str, Any]:
         if (key := normalize_mapping_edge_key(raw_key))
     }
     available_nap_ids = {row["id"] for row in visible_naps()}
-    available_splitter_ids = {row["id"] for row in visible_fbts()}
+    available_splitters_by_id = {row["id"]: fbt_summary(row) for row in visible_fbts()}
+    available_splitter_ids = set(available_splitters_by_id)
+    valid_container_keys = {key for key in nodes if key.startswith(("nap:", "junction:"))}
+    valid_source_keys = (
+        set(nodes.keys())
+        | {f"olt:{row['id']}" for row in visible_olts()}
+        | {f"pon:{row['id']}" for row in visible_pons()}
+        | {f"nap:{nap_id}" for nap_id in available_nap_ids}
+    )
+    junction_boxes: dict[str, dict[str, Any]] = {}
+    for raw_junction_id, raw_junction in junctions_source.items():
+        junction_id = clean_text(raw_junction_id)[:80]
+        if not junction_id or not re.fullmatch(r"[A-Za-z0-9_.:-]+", junction_id):
+            continue
+        junction_key = f"junction:{junction_id}"
+        normalized = normalize_fiber_mapping_junction(raw_junction, junction_id, valid_source_keys | set(junction_boxes.keys()))
+        if not normalized:
+            continue
+        junction_boxes[junction_id] = normalized
+        valid_container_keys.add(junction_key)
+        valid_source_keys.add(junction_key)
     nap_splitters: dict[str, list[str]] = {}
     for raw_nap_id, raw_splitters in splitters_source.items():
         nap_id = clean_text(raw_nap_id)
@@ -831,10 +1038,79 @@ def normalize_fiber_mapping(raw: Any) -> dict[str, Any]:
                 splitter_ids.append(splitter_id)
         if splitter_ids:
             nap_splitters[nap_id] = splitter_ids
+    container_splitters: dict[str, list[str]] = {}
+    container_splitter_assignments: dict[str, list[dict[str, Any]]] = {}
+    for nap_id, splitter_ids in nap_splitters.items():
+        container_splitters[f"nap:{nap_id}"] = splitter_ids
+        container_splitter_assignments[f"nap:{nap_id}"] = [
+            assignment
+            for index, splitter_id in enumerate(splitter_ids)
+            if (assignment := normalize_fiber_mapping_splitter_assignment(splitter_id, available_splitters_by_id, index))
+        ]
+    for raw_container_key, raw_splitters in container_splitters_source.items():
+        container_key = normalize_mapping_node_key(raw_container_key)
+        if container_key not in valid_container_keys or not isinstance(raw_splitters, list):
+            continue
+        splitter_ids: list[str] = []
+        assignments: list[dict[str, Any]] = []
+        for raw_splitter_id in raw_splitters:
+            assignment = normalize_fiber_mapping_splitter_assignment(raw_splitter_id, available_splitters_by_id, len(assignments))
+            if not assignment:
+                continue
+            if assignment["splitterId"] not in splitter_ids:
+                splitter_ids.append(assignment["splitterId"])
+            assignments.append(assignment)
+        if splitter_ids:
+            container_splitters[container_key] = splitter_ids
+            container_splitter_assignments[container_key] = assignments
+            if container_key.startswith("nap:"):
+                nap_splitters[container_key.split(":", 1)[1]] = splitter_ids
+    for raw_container_key, raw_assignments in container_assignments_source.items():
+        container_key = normalize_mapping_node_key(raw_container_key)
+        if container_key not in valid_container_keys or not isinstance(raw_assignments, list):
+            continue
+        assignments: list[dict[str, Any]] = []
+        seen_assignment_ids: set[str] = set()
+        for raw_assignment in raw_assignments:
+            assignment = normalize_fiber_mapping_splitter_assignment(raw_assignment, available_splitters_by_id, len(assignments))
+            if not assignment:
+                continue
+            original_assignment_id = assignment["assignmentId"]
+            suffix = 2
+            while assignment["assignmentId"] in seen_assignment_ids:
+                assignment["assignmentId"] = f"{original_assignment_id}-{suffix}"
+                suffix += 1
+            seen_assignment_ids.add(assignment["assignmentId"])
+            assignments.append(assignment)
+        if assignments:
+            splitter_ids = []
+            for assignment in assignments:
+                if assignment["splitterId"] not in splitter_ids:
+                    splitter_ids.append(assignment["splitterId"])
+            container_splitter_assignments[container_key] = assignments
+            container_splitters[container_key] = splitter_ids
+            if container_key.startswith("nap:"):
+                nap_splitters[container_key.split(":", 1)[1]] = splitter_ids
+    connection_points: dict[str, dict[str, Any]] = {}
+    valid_point_prefixes = tuple(
+        f"{container_key}|{assignment['assignmentId']}|"
+        for container_key, assignments in container_splitter_assignments.items()
+        for assignment in assignments
+    )
+    for raw_point_key, raw_point in connection_points_source.items():
+        point_key = clean_text(raw_point_key)[:220]
+        if not point_key or not valid_point_prefixes or not point_key.startswith(valid_point_prefixes):
+            continue
+        connection_points[point_key] = normalize_fiber_mapping_connection_point(raw_point)
     return {
         "nodes": nodes,
         "edges": edges,
         "napSplitters": nap_splitters,
+        "junctionBoxes": junction_boxes,
+        "containerSplitters": container_splitters,
+        "containerSplitterAssignments": container_splitter_assignments,
+        "connectionPoints": connection_points,
+        "fiberLinkSettings": normalize_fiber_link_settings(source.get("fiberLinkSettings")),
         "updatedAt": clean_text(source.get("updatedAt")),
     }
 
@@ -851,6 +1127,68 @@ def actor_name(admin: dict[str, Any]) -> str:
 
 def next_code(prefix: str, rows: list[dict[str, Any]]) -> str:
     return f"{prefix}-{len(rows) + 1:04d}"
+
+
+def normalize_display_order(value: Any, fallback: int = 0) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = int(fallback or 0)
+    return max(0, number)
+
+
+def display_order_sort_value(row: dict[str, Any]) -> int:
+    value = normalize_display_order(row.get("displayOrder"))
+    return value if value > 0 else 1_000_000
+
+
+def row_created_sort_value(row: dict[str, Any]) -> str:
+    return clean_text(row.get("createdAt") or row.get("updatedAt") or row.get("name"))
+
+
+def olt_sort_key(row: dict[str, Any]) -> tuple[int, str, str]:
+    return (display_order_sort_value(row), row_created_sort_value(row), clean_text(row.get("name")))
+
+
+def device_sort_key(row: dict[str, Any]) -> tuple[str, str, int, str, str]:
+    return (
+        clean_text(row.get("accessMethod")),
+        clean_text(row.get("deviceType")),
+        display_order_sort_value(row),
+        row_created_sort_value(row),
+        clean_text(row.get("name")),
+    )
+
+
+def next_display_order(rows: list[dict[str, Any]]) -> int:
+    existing = [normalize_display_order(row.get("displayOrder")) for row in rows if not row.get("deletedAt")]
+    return (max(existing) if existing else 0) + 1
+
+
+def ordered_visible_olts() -> list[dict[str, Any]]:
+    return sorted(visible_olts(), key=olt_sort_key)
+
+
+def ordered_visible_devices() -> list[dict[str, Any]]:
+    return sorted(visible_devices(), key=device_sort_key)
+
+
+def ensure_display_orders() -> bool:
+    changed = False
+    for index, olt in enumerate(ordered_visible_olts(), start=1):
+        if normalize_display_order(olt.get("displayOrder")) != index:
+            olt["displayOrder"] = index
+            changed = True
+    device_groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for device in visible_devices():
+        device_groups.setdefault((clean_text(device.get("accessMethod")), clean_text(device.get("deviceType"))), []).append(device)
+    for devices in device_groups.values():
+        ordered = sorted(devices, key=lambda item: (display_order_sort_value(item), row_created_sort_value(item), clean_text(item.get("name"))))
+        for index, device in enumerate(ordered, start=1):
+            if normalize_display_order(device.get("displayOrder")) != index:
+                device["displayOrder"] = index
+                changed = True
+    return changed
 
 
 def visible_olts() -> list[dict[str, Any]]:
@@ -1018,6 +1356,28 @@ def canonical_pon_label(pon: dict[str, Any]) -> str:
     return canonical_pon_label_from_number(pon.get("portNumber"))
 
 
+def adjust_hex_color(hex_color: str, amount: int) -> str:
+    normalized = normalize_hex_color(hex_color, PON_COLOR_BASES[0]).lstrip("#")
+    channels = [int(normalized[index : index + 2], 16) for index in range(0, 6, 2)]
+    adjusted = [max(0, min(255, channel + amount)) for channel in channels]
+    return f"#{adjusted[0]:02X}{adjusted[1]:02X}{adjusted[2]:02X}"
+
+
+def default_pon_color(port_number: Any) -> str:
+    try:
+        number = max(1, int(port_number or 1))
+    except (TypeError, ValueError):
+        number = 1
+    base = PON_COLOR_BASES[(number - 1) % len(PON_COLOR_BASES)]
+    family_index = (number - 1) // len(PON_COLOR_BASES)
+    if family_index <= 0:
+        return base
+    amount = ((family_index + 1) // 2) * 18
+    if family_index % 2:
+        amount *= -1
+    return adjust_hex_color(base, amount)
+
+
 def normalize_olt_payload(payload: OltPayload, current: dict[str, Any] | None = None) -> dict[str, Any]:
     data = payload.model_dump(exclude_unset=True)
     record = dict(current or {})
@@ -1036,6 +1396,7 @@ def normalize_olt_payload(payload: OltPayload, current: dict[str, Any] | None = 
     record["locationName"] = clean_text(record.get("locationName"))
     record["status"] = ensure_choice(record.get("status"), OLT_STATUSES, "OLT status", "PLANNED")
     record["defaultPonCount"] = int(record.get("defaultPonCount") or 4)
+    record["displayOrder"] = normalize_display_order(record.get("displayOrder"))
     record["notes"] = clean_text(record.get("notes"))
     return record
 
@@ -1049,6 +1410,7 @@ def normalize_pon_payload(payload: PonPayload, olt_id: str, current: dict[str, A
     record["portNumber"] = int(record.get("portNumber") or next_pon_number(olt_id))
     unique_pon_port(olt_id, record["portNumber"], record.get("id"))
     record["label"] = canonical_pon_label(record)
+    record["colorHex"] = normalize_hex_color(record.get("colorHex"), default_pon_color(record["portNumber"]))
     record["technology"] = ensure_choice(record.get("technology"), PON_TECHNOLOGIES, "PON technology", "GPON")
     record["adminStatus"] = ensure_choice(record.get("adminStatus"), ADMIN_STATUSES, "admin status", "ENABLED")
     record["operationalStatus"] = ensure_choice(record.get("operationalStatus"), OPER_STATUS, "operational status", "UNKNOWN")
@@ -1171,6 +1533,61 @@ def normalize_splitter_port_losses(split_ratio: str, rows: Any, legacy_loss: Any
     return normalized
 
 
+def normalize_splitter_ratio_profiles(
+    splitter_type: str,
+    profiles: Any,
+    record: dict[str, Any],
+    default_ratio: str,
+) -> list[dict[str, Any]]:
+    if splitter_type not in PORT_LOSS_SPLITTER_TYPES:
+        return []
+    allowed = splitter_ratio_choices_for_type(splitter_type)
+    existing: dict[str, dict[str, Any]] = {}
+
+    if isinstance(profiles, list):
+        for item in profiles:
+            if not isinstance(item, dict):
+                continue
+            raw_ratio = clean_text(item.get("splitRatio") or item.get("ratio"))
+            if not raw_ratio:
+                continue
+            ratio = normalize_splitter_ratio(raw_ratio, default_ratio, allowed)
+            output_ports = splitter_output_ports_from_ratio(ratio) or SPLITTER_DEFAULTS[splitter_type]["outputPorts"]
+            existing[ratio] = {
+                "id": clean_text(item.get("id")) or f"ratio-{ratio.replace(':', '-')}",
+                "splitRatio": ratio,
+                "ratio": ratio,
+                "outputPorts": output_ports,
+                "portCapacity": output_ports,
+                "portLosses": normalize_splitter_port_losses(ratio, item.get("portLosses"), item.get("insertionLossDb")),
+            }
+
+    legacy_ratio = normalize_splitter_ratio(record.get("splitRatio"), default_ratio, allowed)
+    if legacy_ratio not in existing:
+        output_ports = splitter_output_ports_from_ratio(legacy_ratio) or SPLITTER_DEFAULTS[splitter_type]["outputPorts"]
+        existing[legacy_ratio] = {
+            "id": f"ratio-{legacy_ratio.replace(':', '-')}",
+            "splitRatio": legacy_ratio,
+            "ratio": legacy_ratio,
+            "outputPorts": output_ports,
+            "portCapacity": output_ports,
+            "portLosses": normalize_splitter_port_losses(legacy_ratio, record.get("portLosses"), record.get("insertionLossDb")),
+        }
+
+    normalized: list[dict[str, Any]] = []
+    used: set[str] = set()
+    for ratio in allowed:
+        profile = existing.get(ratio)
+        if not profile:
+            continue
+        normalized.append(profile)
+        used.add(ratio)
+    for ratio, profile in existing.items():
+        if ratio not in used:
+            normalized.append(profile)
+    return normalized
+
+
 def normalize_fbt_ratio_rows(rows: Any, record: dict[str, Any], default_ratio: str) -> list[dict[str, Any]]:
     existing: dict[str, dict[str, Any]] = {}
     if isinstance(rows, list):
@@ -1256,15 +1673,22 @@ def normalize_fbt_payload(payload: FbtPayload, current: dict[str, Any] | None = 
     if record["splitterType"] == "FBT":
         record["ratioRows"] = normalize_fbt_ratio_rows(record.get("ratioRows"), record, record["splitRatio"])
         record["splitRatio"] = record["ratioRows"][0]["ratio"] if record["ratioRows"] else record["splitRatio"]
+        record["ratioProfiles"] = []
         record["portLosses"] = []
     else:
         record["ratioRows"] = []
+        record["ratioProfiles"] = normalize_splitter_ratio_profiles(record["splitterType"], record.get("ratioProfiles"), record, record["splitRatio"])
+        record["splitRatio"] = record["ratioProfiles"][0]["splitRatio"] if record["ratioProfiles"] else record["splitRatio"]
     derived_outputs = splitter_output_ports_from_ratio(record["splitRatio"])
     if record["splitterType"] in PORT_LOSS_SPLITTER_TYPES:
         record["inputPorts"] = 1
         record["outputPorts"] = derived_outputs or defaults["outputPorts"]
         record["portCapacity"] = record["outputPorts"]
-        record["portLosses"] = normalize_splitter_port_losses(record["splitRatio"], record.get("portLosses"), record.get("insertionLossDb"))
+        record["portLosses"] = (
+            record["ratioProfiles"][0]["portLosses"]
+            if record["ratioProfiles"]
+            else normalize_splitter_port_losses(record["splitRatio"], record.get("portLosses"), record.get("insertionLossDb"))
+        )
     else:
         record["inputPorts"] = int(record.get("inputPorts") or 1)
         record["outputPorts"] = int(record.get("outputPorts") or record.get("portCapacity") or derived_outputs or defaults["outputPorts"])
@@ -1429,6 +1853,7 @@ def normalize_device_payload(payload: DevicePayload, current: dict[str, Any] | N
     )
     record["pollerGroup"] = clean_text(record.get("pollerGroup")) or "0"
     record["pollIntervalSeconds"] = int(record.get("pollIntervalSeconds") or DEFAULT_DEVICE_POLL_INTERVAL_SECONDS)
+    record["displayOrder"] = normalize_display_order(record.get("displayOrder"))
     record["forceAdd"] = normalize_bool(record.get("forceAdd"))
     record["snmpAuthLevel"] = ensure_choice(
         record.get("snmpAuthLevel"),
@@ -2014,6 +2439,10 @@ def apply_pon_technology_defaults(row: dict[str, Any], context_technology: str =
         changed = True
     if int(row.get("capacity") or 0) != int(defaults["capacity"]):
         row["capacity"] = defaults["capacity"]
+        changed = True
+    next_color = normalize_hex_color(row.get("colorHex"), default_pon_color(row.get("portNumber")))
+    if row.get("colorHex") != next_color:
+        row["colorHex"] = next_color
         changed = True
     return changed
 
@@ -2616,6 +3045,7 @@ def reconcile_olt_capture(device: dict[str, Any], capture_data: dict[str, Any], 
         vendor, model = guess_vendor_model(sys_descr, sys_object_id)
     captured_pon_target = max(4, min(128, len(pon_candidates) or 4))
     olt = find_captured_olt(device)
+    device_display_order = normalize_display_order(device.get("displayOrder"))
     olt_created = False
     if olt is None:
         olt_created = True
@@ -2632,6 +3062,7 @@ def reconcile_olt_capture(device: dict[str, Any], capture_data: dict[str, Any], 
             "firmwareVersion": firmware_from_descr(sys_descr),
             "status": "ACTIVE",
             "defaultPonCount": captured_pon_target,
+            "displayOrder": device_display_order or next_display_order(visible_olts()),
             "notes": f"Auto-created from SNMP capture. sysObjectID: {sys_object_id}",
             "sourceDeviceId": device.get("id"),
             "sourceSysObjectID": sys_object_id,
@@ -2645,6 +3076,8 @@ def reconcile_olt_capture(device: dict[str, Any], capture_data: dict[str, Any], 
         olt["sourceSysObjectID"] = sys_object_id
         olt["sourceSysDescr"] = sys_descr
         olt["lastCapturedAt"] = timestamp
+        if device_display_order:
+            olt["displayOrder"] = device_display_order
         if not clean_text(olt.get("managementIp")):
             olt["managementIp"] = clean_text(device.get("managementIp"))
         if should_replace_captured_identity(olt.get("vendor")):
@@ -2969,6 +3402,7 @@ def create_pon_record(olt_id: str, port_number: int, timestamp: str, technology:
         "oltId": olt_id,
         "portNumber": port_number,
         "label": canonical_pon_label_from_number(port_number),
+        "colorHex": default_pon_color(port_number),
         "technology": normalized_technology,
         "adminStatus": "ENABLED",
         "operationalStatus": "UNKNOWN",
@@ -3023,9 +3457,11 @@ def pon_summary(pon: dict[str, Any]) -> dict[str, Any]:
     pon_onus = onu_rows_for_pon(pon["id"])
     fbt_count = sum(len(fbt_rows_for_nap(nap["id"])) for nap in naps)
     display_label = canonical_pon_label(pon)
+    color_hex = normalize_hex_color(pon.get("colorHex"), default_pon_color(pon.get("portNumber")))
     return {
         **pon,
         "label": display_label,
+        "colorHex": color_hex,
         "sourceLabel": clean_text(pon.get("sourceLabel")) or clean_text(pon.get("label")),
         "ponLabel": display_label,
         "oltName": olt["name"],
@@ -3044,9 +3480,11 @@ def nap_summary(nap: dict[str, Any]) -> dict[str, Any]:
     olt = find_olt(pon["oltId"])
     nap_fbts = fbt_rows_for_nap(nap["id"])
     pon_label = canonical_pon_label(pon)
+    pon_color_hex = normalize_hex_color(pon.get("colorHex"), default_pon_color(pon.get("portNumber")))
     return {
         **nap,
         "ponLabel": pon_label,
+        "ponColorHex": pon_color_hex,
         "oltId": olt["id"],
         "oltName": olt["name"],
         "oltVendor": clean_text(olt.get("vendor")),
@@ -3068,11 +3506,14 @@ def fbt_summary(fbt: dict[str, Any]) -> dict[str, Any]:
         except HTTPException:
             split_ratio = SPLITTER_DEFAULTS[splitter_type]["splitRatio"]
     ratio_rows = normalize_fbt_ratio_rows(fbt.get("ratioRows"), fbt, split_ratio) if splitter_type == "FBT" else []
+    ratio_profiles = normalize_splitter_ratio_profiles(splitter_type, fbt.get("ratioProfiles"), fbt, split_ratio) if splitter_type in PORT_LOSS_SPLITTER_TYPES else []
+    if ratio_profiles:
+        split_ratio = ratio_profiles[0]["splitRatio"]
     if splitter_type in PORT_LOSS_SPLITTER_TYPES:
         output_ports = splitter_output_ports_from_ratio(split_ratio) or SPLITTER_DEFAULTS[splitter_type]["outputPorts"]
     else:
         output_ports = int(fbt.get("outputPorts") or fbt.get("portCapacity") or splitter_output_ports_from_ratio(split_ratio) or SPLITTER_DEFAULTS[splitter_type]["outputPorts"])
-    port_losses = normalize_splitter_port_losses(split_ratio, fbt.get("portLosses"), fbt.get("insertionLossDb")) if splitter_type in PORT_LOSS_SPLITTER_TYPES else []
+    port_losses = ratio_profiles[0]["portLosses"] if ratio_profiles else (normalize_splitter_port_losses(split_ratio, fbt.get("portLosses"), fbt.get("insertionLossDb")) if splitter_type in PORT_LOSS_SPLITTER_TYPES else [])
     nap: dict[str, Any] | None = None
     pon: dict[str, Any] | None = None
     olt: dict[str, Any] | None = None
@@ -3092,6 +3533,7 @@ def fbt_summary(fbt: dict[str, Any]) -> dict[str, Any]:
         "splitterType": splitter_type,
         "splitRatio": ratio_rows[0]["ratio"] if ratio_rows else split_ratio,
         "ratioRows": ratio_rows,
+        "ratioProfiles": ratio_profiles,
         "portLosses": port_losses,
         "inputPorts": 1 if splitter_type in PORT_LOSS_SPLITTER_TYPES else int(fbt.get("inputPorts") or 1),
         "outputPorts": output_ports,
@@ -3167,7 +3609,10 @@ def fiber_optic_loss_summary(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def device_summary(device: dict[str, Any]) -> dict[str, Any]:
-    sanitized = {key: value for key, value in device.items() if key not in SECRET_DEVICE_FIELDS}
+    hidden_fields = SECRET_DEVICE_FIELDS - {"apiPassword"}
+    sanitized = {key: value for key, value in device.items() if key not in hidden_fields}
+    if device.get("accessMethod") != "API":
+        sanitized["apiPassword"] = ""
     poll_interval = int(device.get("pollIntervalSeconds") or DEFAULT_DEVICE_POLL_INTERVAL_SECONDS)
     raw_bound_locations = device.get("boundLocations") if isinstance(device.get("boundLocations"), list) else []
     raw_bound_location_ids = device.get("boundLocationIds") if isinstance(device.get("boundLocationIds"), list) else []
@@ -3385,6 +3830,7 @@ def network_settings_meta(admin=Depends(require_admin)) -> dict[str, Any]:
         "subNav": SUB_NAV,
         "oltStatuses": OLT_STATUSES,
         "ponTechnologies": PON_TECHNOLOGIES,
+        "ponColorPalette": PON_COLOR_BASES,
         "adminStatuses": ADMIN_STATUSES,
         "operationalStatuses": OPER_STATUS,
         "napStatuses": NAP_STATUSES,
@@ -3541,7 +3987,7 @@ def list_network_devices(accessMethod: str = "", search: str = "", admin=Depends
         for row in visible_devices()
         if (not method or row["accessMethod"] == method) and matches_search(device_summary(row), search)
     ]
-    return sorted(rows, key=lambda item: (item["accessMethod"], item["deviceType"], item["name"]))
+    return sorted(rows, key=device_sort_key)
 
 
 @router.post("/devices")
@@ -3550,6 +3996,13 @@ def create_network_device(payload: DevicePayload, admin=Depends(require_admin)):
     record = normalize_device_payload(payload)
     test_mikrotik_api_reachability(record)
     timestamp = now_iso()
+    if not normalize_display_order(record.get("displayOrder")):
+        scope = [
+            device
+            for device in visible_devices()
+            if device.get("accessMethod") == record["accessMethod"] and device.get("deviceType") == record["deviceType"]
+        ]
+        record["displayOrder"] = next_display_order(scope)
     device = {"id": str(uuid4()), "createdAt": timestamp, "updatedAt": timestamp, "deletedAt": None, **record}
     network_devices.append(device)
     add_audit(
@@ -3563,6 +4016,54 @@ def create_network_device(payload: DevicePayload, admin=Depends(require_admin)):
     return device_summary(device)
 
 
+@router.patch("/devices/order")
+def reorder_network_devices(payload: DeviceOrderPayload, admin=Depends(require_admin)):
+    seed_network_settings_data()
+    method = normalize_upper(payload.accessMethod)
+    device_type = normalize_upper(payload.deviceType)
+    if method and method not in DEVICE_ACCESS_METHODS:
+        raise HTTPException(status_code=400, detail="Invalid device access method")
+    if device_type and device_type not in DEVICE_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid device type")
+    ordered_ids = clean_unique_texts(payload.orderedIds)
+    scope_devices = [
+        device
+        for device in visible_devices()
+        if (not method or device.get("accessMethod") == method)
+        and (not device_type or device.get("deviceType") == device_type)
+    ]
+    scope_by_id = {device["id"]: device for device in scope_devices}
+    invalid_ids = [device_id for device_id in ordered_ids if device_id not in scope_by_id]
+    if invalid_ids:
+        raise HTTPException(status_code=400, detail="Device order includes records outside the selected scope")
+    requested = set(ordered_ids)
+    ordered_scope = [scope_by_id[device_id] for device_id in ordered_ids]
+    ordered_scope.extend(device for device in sorted(scope_devices, key=device_sort_key) if device["id"] not in requested)
+    timestamp = now_iso()
+    linked_olt_count = 0
+    for index, device in enumerate(ordered_scope, start=1):
+        device["displayOrder"] = index
+        device["updatedAt"] = timestamp
+        if is_olt_snmp_device(device):
+            linked_olt = find_captured_olt(device)
+            if linked_olt is not None:
+                linked_olt["displayOrder"] = index
+                linked_olt["updatedAt"] = timestamp
+                linked_olt_count += 1
+    add_audit(
+        "network_device_order_updated",
+        "NetworkDevice",
+        method or "ALL",
+        {"deviceType": device_type or "ALL", "orderedCount": len(ordered_scope), "linkedOlts": linked_olt_count},
+        actor_name(admin),
+    )
+    save_network_settings_data()
+    return {
+        "devices": [device_summary(device) for device in sorted(visible_devices(), key=device_sort_key)],
+        "olts": [olt_summary(olt) for olt in sorted(visible_olts(), key=olt_sort_key)],
+    }
+
+
 @router.patch("/devices/{device_id}")
 def update_network_device(device_id: str, payload: DevicePayload, admin=Depends(require_admin)):
     seed_network_settings_data()
@@ -3571,6 +4072,11 @@ def update_network_device(device_id: str, payload: DevicePayload, admin=Depends(
     test_mikrotik_api_reachability(record)
     current.update(record)
     current["updatedAt"] = now_iso()
+    if is_olt_snmp_device(current):
+        linked_olt = find_captured_olt(current)
+        if linked_olt is not None and normalize_display_order(current.get("displayOrder")):
+            linked_olt["displayOrder"] = normalize_display_order(current.get("displayOrder"))
+            linked_olt["updatedAt"] = current["updatedAt"]
     add_audit(
         "network_device_updated",
         "NetworkDevice",
@@ -3654,6 +4160,7 @@ def update_device_olt_location(device_id: str, payload: DeviceOltLocationPayload
             "locationName": label,
             "status": "ACTIVE",
             "defaultPonCount": 4,
+            "displayOrder": normalize_display_order(current.get("displayOrder")) or next_display_order(visible_olts()),
             "notes": "Created from SNMP OLT map location binding.",
             "sourceDeviceId": current.get("id"),
             "lastCapturedAt": current.get("lastCapturedAt") or "",
@@ -3671,6 +4178,7 @@ def update_device_olt_location(device_id: str, payload: DeviceOltLocationPayload
                 "locationId": location_id,
                 "locationName": label,
                 "sourceDeviceId": current.get("id"),
+                "displayOrder": normalize_display_order(current.get("displayOrder")) or normalize_display_order(olt.get("displayOrder")),
             }
         )
     add_audit(
@@ -3754,7 +4262,7 @@ def capture_network_device(device_id: str, admin=Depends(require_admin)):
 def list_olts(search: str = "", admin=Depends(require_admin)):
     seed_network_settings_data()
     rows = [olt_summary(row) for row in visible_olts() if matches_search(row, search)]
-    return sorted(rows, key=lambda item: item["updatedAt"], reverse=True)
+    return sorted(rows, key=olt_sort_key)
 
 
 @router.post("/olts")
@@ -3762,6 +4270,8 @@ def create_olt(payload: OltPayload, admin=Depends(require_admin)):
     seed_network_settings_data()
     record = normalize_olt_payload(payload)
     timestamp = now_iso()
+    if not normalize_display_order(record.get("displayOrder")):
+        record["displayOrder"] = next_display_order(visible_olts())
     olt = {"id": str(uuid4()), "createdAt": timestamp, "updatedAt": timestamp, "deletedAt": None, **record}
     olts.append(olt)
     created_pons = ensure_pon_count(olt["id"], olt["defaultPonCount"])
@@ -4114,6 +4624,10 @@ def update_fiber_mapping(payload: FiberMappingPayload, admin=Depends(require_adm
             "nodes": len(fiber_mapping.get("nodes", {})),
             "edges": len(fiber_mapping.get("edges", {})),
             "napSplitters": len(fiber_mapping.get("napSplitters", {})),
+            "junctionBoxes": len(fiber_mapping.get("junctionBoxes", {})),
+            "containerSplitters": len(fiber_mapping.get("containerSplitters", {})),
+            "containerSplitterAssignments": len(fiber_mapping.get("containerSplitterAssignments", {})),
+            "connectionPoints": len(fiber_mapping.get("connectionPoints", {})),
         },
         actor_name(admin),
     )

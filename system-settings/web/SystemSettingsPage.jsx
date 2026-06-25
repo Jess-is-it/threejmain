@@ -1,15 +1,22 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
+  IconAlertTriangle,
+  IconBell,
   IconBrandOpenai,
   IconCircleCheck,
   IconCircleOff,
   IconCopy,
+  IconClock,
   IconDatabase,
   IconDeviceFloppy,
   IconEdit,
+  IconInfoCircle,
   IconKey,
+  IconListDetails,
+  IconMap,
   IconMapPin,
   IconMail,
+  IconMessageCircle,
   IconNetwork,
   IconPhoto,
   IconPlayerPlay,
@@ -17,6 +24,7 @@ import {
   IconRefresh,
   IconRobot,
   IconSearch,
+  IconSend,
   IconSettings,
   IconShieldCheck,
   IconShieldLock,
@@ -27,9 +35,45 @@ import {
   IconUsers
 } from '@tabler/icons-react';
 import { CUSTOMER_AVATAR_GENDERS, DEFAULT_CUSTOMER_EMOTION_SETTINGS } from './avatarEmotion';
+import {
+  DEFAULT_MAP_PROVIDER_SETTINGS,
+  MAP_PROVIDER_TYPES,
+  isProviderConfigured,
+  isProviderUsable,
+  mapProviderTypeLabel,
+  normalizeMapProviderId,
+  normalizeMapProviderSettings
+} from './mapProviders';
 import './systemSettings.css';
 
 const API = '/api';
+const MAP_PROVIDER_VENDOR_META = {
+  google: { label: 'Google', tone: 'blue' },
+  esri: { label: 'Esri', tone: 'cyan' },
+  openstreetmap: { label: 'OpenStreetMap', tone: 'green' },
+  tomtom: { label: 'TomTom', tone: 'red' },
+  maptiler: { label: 'MapTiler', tone: 'teal' },
+  mapbox: { label: 'Mapbox', tone: 'indigo' },
+  custom: { label: 'Custom', tone: 'purple' },
+  other: { label: 'Other', tone: 'secondary' }
+};
+const MAP_PROVIDER_VENDOR_ORDER = ['google', 'esri', 'openstreetmap', 'tomtom', 'maptiler', 'mapbox', 'custom', 'other'];
+
+function mapProviderVendorId(provider) {
+  if (!provider?.builtIn) return 'custom';
+  const haystack = `${provider.id || ''} ${provider.label || ''}`.toLowerCase();
+  if (haystack.includes('google')) return 'google';
+  if (haystack.includes('esri') || haystack.includes('arcgis')) return 'esri';
+  if (haystack.includes('openstreetmap') || haystack.includes('osm')) return 'openstreetmap';
+  if (haystack.includes('tomtom')) return 'tomtom';
+  if (haystack.includes('maptiler')) return 'maptiler';
+  if (haystack.includes('mapbox')) return 'mapbox';
+  return 'other';
+}
+
+function mapProviderVendorLabel(vendorId) {
+  return MAP_PROVIDER_VENDOR_META[vendorId]?.label || 'Other';
+}
 
 function token() {
   return localStorage.getItem('threejmain_token');
@@ -157,12 +201,28 @@ function formatUsdPerMTok(value) {
   return `$${numeric.toFixed(precision).replace(/\.?0+$/, '')}`;
 }
 
+function formatDateTime(value) {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString();
+}
+
 function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
     reader.onerror = () => reject(new Error('Unable to read image.'));
     reader.readAsDataURL(file);
+  });
+}
+
+function readFileAsText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Unable to read backup file.'));
+    reader.readAsText(file);
   });
 }
 
@@ -869,6 +929,347 @@ function AvatarTab() {
   );
 }
 
+function MapsTab() {
+  const [config, setConfig] = useState(normalizeMapProviderSettings(DEFAULT_MAP_PROVIDER_SETTINGS));
+  const [providerDrafts, setProviderDrafts] = useState(normalizeMapProviderSettings(DEFAULT_MAP_PROVIDER_SETTINGS).providers);
+  const [defaultProviderId, setDefaultProviderId] = useState(DEFAULT_MAP_PROVIDER_SETTINGS.defaultProviderId);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [activeProviderVendor, setActiveProviderVendor] = useState('google');
+  const [activeProviderType, setActiveProviderType] = useState('street');
+
+  function applyMapProviderConfig(nextConfig) {
+    const normalized = normalizeMapProviderSettings(nextConfig);
+    setConfig(nextConfig);
+    setProviderDrafts(normalized.providers);
+    setDefaultProviderId(normalized.defaultProviderId);
+  }
+
+  async function loadMapProviders() {
+    setLoading(true);
+    setError('');
+    try {
+      applyMapProviderConfig(await request('/system-settings/map-providers'));
+    } catch (err) {
+      setError(err.message);
+      applyMapProviderConfig(DEFAULT_MAP_PROVIDER_SETTINGS);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadMapProviders();
+  }, []);
+
+  function updateProvider(providerId, patch) {
+    setProviderDrafts((current) => current.map((provider) => (
+      provider.id === providerId
+        ? {
+          ...provider,
+          ...patch,
+          requiresApiKey: patch.tileUrl !== undefined
+            ? String(patch.tileUrl || '').includes('{apiKey}') || String(patch.tileUrl || '').includes('{token}') || provider.requiresApiKey
+            : provider.requiresApiKey
+        }
+        : provider
+    )));
+  }
+
+  function addCustomProvider() {
+    const id = `custom-${Date.now()}`;
+    setProviderDrafts((current) => ([
+      ...current,
+      {
+        id,
+        label: 'Custom XYZ Tiles',
+        type: 'custom',
+        tileUrl: 'https://example.com/tiles/{z}/{x}/{y}.png',
+        attribution: '',
+        minZoom: 1,
+        maxZoom: 19,
+        enabled: false,
+        builtIn: false,
+        requiresApiKey: false,
+        apiKey: '',
+        notes: 'Replace with a production tile URL.'
+      }
+    ]));
+    setActiveProviderVendor('custom');
+    setActiveProviderType('custom');
+  }
+
+  function removeCustomProvider(providerId) {
+    const provider = providerDrafts.find((item) => item.id === providerId);
+    if (!provider || provider.builtIn) return;
+    if (!window.confirm(`Remove ${provider.label || provider.id}?`)) return;
+    setProviderDrafts((current) => current.filter((item) => item.id !== providerId));
+    if (defaultProviderId === providerId) setDefaultProviderId(DEFAULT_MAP_PROVIDER_SETTINGS.defaultProviderId);
+  }
+
+  async function saveMapProviders(event) {
+    event.preventDefault();
+    setSaving(true);
+    setError('');
+    setMessage('');
+    try {
+      const payload = normalizeMapProviderSettings({
+        defaultProviderId,
+        providers: providerDrafts.map((provider) => ({
+          ...provider,
+          id: normalizeMapProviderId(provider.id, provider.label)
+        }))
+      });
+      const nextConfig = await request('/system-settings/map-providers', {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      });
+      applyMapProviderConfig(nextConfig);
+      setMessage('Map provider options saved.');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const usableProviders = providerDrafts.filter(isProviderUsable);
+  const enabledProviders = providerDrafts.filter((provider) => provider.enabled);
+  const customProviders = providerDrafts.filter((provider) => !provider.builtIn);
+  const providerGroups = useMemo(() => {
+    const grouped = new Map();
+    providerDrafts.forEach((provider) => {
+      const vendorId = mapProviderVendorId(provider);
+      if (!grouped.has(vendorId)) {
+        grouped.set(vendorId, {
+          id: vendorId,
+          label: mapProviderVendorLabel(vendorId),
+          tone: MAP_PROVIDER_VENDOR_META[vendorId]?.tone || 'secondary',
+          providers: []
+        });
+      }
+      grouped.get(vendorId).providers.push(provider);
+    });
+    return [...grouped.values()].sort((left, right) => {
+      const leftOrder = MAP_PROVIDER_VENDOR_ORDER.indexOf(left.id);
+      const rightOrder = MAP_PROVIDER_VENDOR_ORDER.indexOf(right.id);
+      return (leftOrder === -1 ? 99 : leftOrder) - (rightOrder === -1 ? 99 : rightOrder) || left.label.localeCompare(right.label);
+    });
+  }, [providerDrafts]);
+  const activeProviderGroup = providerGroups.find((group) => group.id === activeProviderVendor) || providerGroups[0];
+  const providerTypeTabs = useMemo(() => {
+    if (!activeProviderGroup) return [];
+    const byType = new Map();
+    activeProviderGroup.providers.forEach((provider) => {
+      if (!byType.has(provider.type)) {
+        byType.set(provider.type, {
+          id: provider.type,
+          label: mapProviderTypeLabel(provider.type),
+          providers: []
+        });
+      }
+      byType.get(provider.type).providers.push(provider);
+    });
+    return [...byType.values()].sort((left, right) => {
+      const leftIndex = MAP_PROVIDER_TYPES.findIndex((type) => type.id === left.id);
+      const rightIndex = MAP_PROVIDER_TYPES.findIndex((type) => type.id === right.id);
+      return (leftIndex === -1 ? 99 : leftIndex) - (rightIndex === -1 ? 99 : rightIndex) || left.label.localeCompare(right.label);
+    });
+  }, [activeProviderGroup]);
+  const activeProviderTypeTab = providerTypeTabs.find((type) => type.id === activeProviderType) || providerTypeTabs[0];
+  const visibleProviders = activeProviderTypeTab?.providers || [];
+  const guidelines = config?.guidelines || [
+    'Use XYZ raster tile URL templates with {z}, {x}, and {y} placeholders.',
+    'Use {apiKey} or {token} in the URL when a provider requires a browser-side public key.',
+    'Google Maps built-in providers use the official Map Tiles API session flow and require a Google API key with Map Tiles API enabled.',
+    'Set the provider max zoom to the highest zoom level that returns real tiles in your service area.'
+  ];
+
+  useEffect(() => {
+    if (!providerGroups.length) return;
+    if (!providerGroups.some((group) => group.id === activeProviderVendor)) {
+      setActiveProviderVendor(providerGroups[0].id);
+    }
+  }, [providerGroups, activeProviderVendor]);
+
+  useEffect(() => {
+    if (!providerTypeTabs.length) return;
+    if (!providerTypeTabs.some((type) => type.id === activeProviderType)) {
+      setActiveProviderType(providerTypeTabs[0].id);
+    }
+  }, [providerTypeTabs, activeProviderType]);
+
+  function renderProviderCard(provider) {
+    const configured = isProviderConfigured(provider);
+    const usable = isProviderUsable(provider);
+    return (
+      <div className="system-settings-map-provider-card" key={provider.id}>
+        <div className="system-settings-map-provider-status">
+          <label className="form-check form-switch m-0">
+            <input className="form-check-input" type="checkbox" checked={provider.enabled} onChange={(event) => updateProvider(provider.id, { enabled: event.target.checked })} />
+            <span className="form-check-label">Enabled</span>
+          </label>
+          <span className={`badge ${usable ? 'bg-green-lt text-green' : configured ? 'bg-yellow-lt text-yellow' : 'bg-red-lt text-red'}`}>
+            {usable ? 'Usable' : configured ? 'Configured' : 'Needs key or URL'}
+          </span>
+          {provider.builtIn && <span className="badge bg-blue-lt text-blue">Built-in</span>}
+          {defaultProviderId === provider.id && <span className="badge bg-purple-lt text-purple">Default</span>}
+        </div>
+        <div className="row g-3">
+          <div className="col-md-3">
+            <label className="form-label">Provider ID</label>
+            <input className="form-control" value={provider.id} disabled={provider.builtIn} onChange={(event) => updateProvider(provider.id, { id: normalizeMapProviderId(event.target.value, provider.id) })} />
+          </div>
+          <div className="col-md-3">
+            <label className="form-label">Provider Name</label>
+            <input className="form-control" value={provider.label} onChange={(event) => updateProvider(provider.id, { label: event.target.value })} />
+          </div>
+          <div className="col-md-2">
+            <label className="form-label">Type</label>
+            <select className="form-select" value={provider.type} onChange={(event) => updateProvider(provider.id, { type: event.target.value })}>
+              {MAP_PROVIDER_TYPES.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
+            </select>
+          </div>
+          <div className="col-md-2">
+            <label className="form-label">Min Zoom</label>
+            <input className="form-control" type="number" min="0" max="24" value={provider.minZoom} onChange={(event) => updateProvider(provider.id, { minZoom: event.target.value })} />
+          </div>
+          <div className="col-md-2">
+            <label className="form-label">Max Zoom</label>
+            <input className="form-control" type="number" min="1" max="24" value={provider.maxZoom} onChange={(event) => updateProvider(provider.id, { maxZoom: event.target.value })} />
+          </div>
+          <div className="col-12">
+            <label className="form-label">Tile URL Template</label>
+            <input className="form-control font-monospace" value={provider.tileUrl} onChange={(event) => updateProvider(provider.id, { tileUrl: event.target.value })} placeholder="https://tiles.example.com/{z}/{x}/{y}.png" />
+          </div>
+          <div className="col-md-5">
+            <label className="form-label">API Key / Public Token</label>
+            <input className="form-control" value={provider.apiKey || ''} onChange={(event) => updateProvider(provider.id, { apiKey: event.target.value })} placeholder={provider.requiresApiKey ? 'Required for this provider' : 'Optional'} />
+          </div>
+          <div className="col-md-3">
+            <label className="form-label">Attribution</label>
+            <input className="form-control" value={provider.attribution || ''} onChange={(event) => updateProvider(provider.id, { attribution: event.target.value })} />
+          </div>
+          <div className="col-md-4">
+            <label className="form-label">Notes</label>
+            <input className="form-control" value={provider.notes || ''} onChange={(event) => updateProvider(provider.id, { notes: event.target.value })} />
+          </div>
+          <div className="col-12">
+            <div className="btn-list justify-content-end">
+              <button type="button" className="btn btn-outline-secondary btn-sm" disabled={!usable} onClick={() => setDefaultProviderId(provider.id)}>
+                Set Default
+              </button>
+              {!provider.builtIn && (
+                <button type="button" className="btn btn-outline-danger btn-sm" onClick={() => removeCustomProvider(provider.id)}>
+                  <IconTrash size={16} className="me-2" />Remove
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (loading) return <div className="empty">Loading map provider options...</div>;
+
+  return (
+    <form className="row row-cards system-settings-map-providers" onSubmit={saveMapProviders}>
+      {message && <div className="col-12"><div className="alert alert-success">{message}</div></div>}
+      {error && <div className="col-12"><div className="alert alert-danger">{error}</div></div>}
+      <KpiCard icon={IconMap} label="Providers" value={providerDrafts.length} tone="blue" />
+      <KpiCard icon={IconCircleCheck} label="Usable" value={usableProviders.length} tone="green" />
+      <KpiCard icon={IconSettings} label="Enabled" value={enabledProviders.length} tone="cyan" />
+      <KpiCard icon={IconPlus} label="Custom" value={customProviders.length} tone="purple" />
+      <div className="col-12">
+        <Card
+          title="Map Provider Options"
+          icon={IconMap}
+          actions={(
+            <div className="btn-list">
+              <button type="button" className="btn btn-outline-secondary btn-sm" onClick={loadMapProviders} disabled={saving}>
+                <IconRefresh size={16} className="me-2" />Refresh
+              </button>
+              <button type="button" className="btn btn-outline-primary btn-sm" onClick={addCustomProvider} disabled={saving}>
+                <IconPlus size={16} className="me-2" />Add Custom Provider
+              </button>
+              <button type="submit" className="btn btn-primary btn-sm" disabled={saving}>
+                <IconDeviceFloppy size={16} className="me-2" />{saving ? 'Saving...' : 'Save Maps'}
+              </button>
+            </div>
+          )}
+        >
+          <div className="row g-3 mb-3">
+            <div className="col-md-6 col-xl-4">
+              <label className="form-label">Default Map Provider</label>
+              <select className="form-select" value={defaultProviderId} onChange={(event) => setDefaultProviderId(event.target.value)}>
+                {usableProviders.map((provider) => (
+                  <option key={provider.id} value={provider.id}>
+                    {provider.label} / {mapProviderTypeLabel(provider.type)}
+                  </option>
+                ))}
+              </select>
+              <div className="form-hint">Mapping, Serviceability Check, OLT location capture, and Customer Profiling maps use this default.</div>
+            </div>
+            <div className="col-md-6 col-xl-8">
+              <label className="form-label">Guidelines</label>
+              <ul className="system-settings-map-provider-guidelines">
+                {guidelines.map((guideline) => <li key={guideline}>{guideline}</li>)}
+              </ul>
+            </div>
+          </div>
+          <div className="system-settings-map-provider-tabs">
+            <ul className="nav nav-tabs" role="tablist" aria-label="Map provider vendors">
+              {providerGroups.map((group) => (
+                <li className="nav-item" role="presentation" key={group.id}>
+                  <button
+                    type="button"
+                    className={`nav-link ${activeProviderGroup?.id === group.id ? 'active' : ''}`}
+                    onClick={() => {
+                      setActiveProviderVendor(group.id);
+                      setActiveProviderType(group.providers[0]?.type || 'custom');
+                    }}
+                    role="tab"
+                    aria-selected={activeProviderGroup?.id === group.id}
+                  >
+                    <span>{group.label}</span>
+                    <span className={`badge bg-${group.tone}-lt text-${group.tone}`}>{group.providers.length}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <div className="system-settings-map-provider-subtabs">
+              <div className="system-settings-map-provider-subtab-list" role="tablist" aria-label={`${activeProviderGroup?.label || 'Provider'} map types`}>
+                {providerTypeTabs.map((type) => (
+                  <button
+                    key={type.id}
+                    type="button"
+                    className={`btn btn-sm ${activeProviderTypeTab?.id === type.id ? 'btn-primary' : 'btn-outline-secondary'}`}
+                    onClick={() => setActiveProviderType(type.id)}
+                    role="tab"
+                    aria-selected={activeProviderTypeTab?.id === type.id}
+                  >
+                    {type.label}
+                    <span className="badge bg-white text-muted ms-2">{type.providers.length}</span>
+                  </button>
+                ))}
+              </div>
+              <span className="system-settings-map-provider-tab-note">
+                Showing {activeProviderGroup?.label || 'Provider'} / {activeProviderTypeTab?.label || 'Type'}
+              </span>
+            </div>
+            <div className="system-settings-map-provider-list">
+              {visibleProviders.length ? visibleProviders.map(renderProviderCard) : <div className="empty">No map providers in this type.</div>}
+            </div>
+          </div>
+        </Card>
+      </div>
+    </form>
+  );
+}
+
 const MAP_IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp';
 const DEFAULT_MAP_IMAGE_MAX_BYTES = 524288;
 
@@ -902,12 +1303,12 @@ function ImagesTab() {
     setError('');
     setMessage('');
     if (!acceptedTypes.includes(file.type)) {
-      setError('Accepted map marker formats are PNG, JPG/JPEG, and WebP.');
+      setError('Accepted image formats are PNG, JPG/JPEG, and WebP.');
       input.value = '';
       return;
     }
     if (file.size > maxBytes) {
-      setError(`Map marker image must be ${formatBytes(maxBytes)} or smaller.`);
+      setError(`Image must be ${formatBytes(maxBytes)} or smaller.`);
       input.value = '';
       return;
     }
@@ -923,7 +1324,7 @@ function ImagesTab() {
         })
       });
       setConfig(nextConfig);
-      setMessage(`${target.label} map image saved.`);
+      setMessage(`${target.label} image saved.`);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -933,13 +1334,13 @@ function ImagesTab() {
   }
 
   async function removeMapImage(target) {
-    if (!window.confirm(`Remove the ${target.label} map image?`)) return;
+    if (!window.confirm(`Remove the ${target.label} image?`)) return;
     setBusyTarget(target.id);
     setError('');
     setMessage('');
     try {
       setConfig(await request(`/system-settings/map-images/${target.id}`, { method: 'DELETE' }));
-      setMessage(`${target.label} map image removed.`);
+      setMessage(`${target.label} image removed.`);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -949,25 +1350,81 @@ function ImagesTab() {
 
   const targets = config?.targets || [
     { id: 'nap', label: 'NAP Box', recommended_size: '128 x 128 px', description: 'Marker shown for NAP boxes on the Network Settings map.' },
-    { id: 'olt', label: 'OLT', recommended_size: '160 x 160 px', description: 'Marker shown for OLT devices on the Network Settings map.' }
+    { id: 'olt', label: 'OLT', recommended_size: '160 x 160 px', description: 'Marker shown for OLT devices on the Network Settings map.' },
+    { id: 'plc-splitter-1x8', label: 'PLC Splitter 1x8', recommended_size: '180 x 120 px', description: 'Equipment image shown for 1x8 PLC splitter ports in Network Settings.' },
+    { id: 'plc-splitter-1x16', label: 'PLC Splitter 1x16', recommended_size: '220 x 120 px', description: 'Equipment image shown for 1x16 PLC splitter ports in Network Settings.' }
+  ];
+  const plcTargets = targets.filter((target) => target.id.startsWith('plc-splitter-'));
+  const imageTabs = [
+    ...targets.filter((target) => !target.id.startsWith('plc-splitter-')),
+    ...(plcTargets.length ? [{ id: 'plc', label: 'PLC' }] : [])
   ];
   const selectedTarget = targets.find((target) => target.id === imageView) || targets[0];
   const savedCount = targets.filter((target) => target.image).length;
   const maxBytes = config?.max_bytes || DEFAULT_MAP_IMAGE_MAX_BYTES;
   const formats = (config?.accepted_formats || ['PNG', 'JPG/JPEG', 'WebP']).join(' ');
   const guidelines = config?.guidelines || [
-    'Use PNG or WebP for crisp transparent marker icons.',
-    'Use JPG only for photo-like markers; transparent backgrounds are not preserved in JPG.',
-    'Keep icons centered with safe padding so they remain readable at small map zoom levels.',
-    'Recommended marker art is 128 x 128 px for NAP boxes and 160 x 160 px for OLT devices.',
+    'Use PNG or WebP for crisp transparent network equipment artwork.',
+    'Use JPG only for photo-like images; transparent backgrounds are not preserved in JPG.',
+    'Keep icons centered with safe padding so they remain readable at small map and canvas zoom levels.',
+    'Recommended art is 128 x 128 px for NAP boxes, 160 x 160 px for OLT devices, and wide 1x8 or 1x16 PLC splitter artwork.',
     'Keep each image at or below 512 KB.'
   ];
+
+  function renderImageTargetCard(target, compact = false) {
+    return (
+      <div className={`card system-settings-map-image-card ${compact ? 'system-settings-map-image-card-compact' : ''}`} key={target.id}>
+        <div className="card-body">
+          <div className="system-settings-map-image-layout">
+            <div className="system-settings-map-image-preview">
+              {target?.image?.data_url ? (
+                <img src={target.image.data_url} alt={`${target.label} image`} />
+              ) : (
+                <IconPhoto size={42} className="text-muted" />
+              )}
+            </div>
+            <div>
+              <h3 className="card-title mb-1">{target.label}</h3>
+              <div className="text-muted">{target.description}</div>
+              <div className="system-settings-avatar-meta">
+                <span className="badge bg-blue-lt text-blue">{target.recommended_size}</span>
+                <span className="badge bg-secondary-lt">{target.image ? target.image.mime_type : 'No image'}</span>
+                <span className="text-muted small">
+                  {target.image ? `${target.image.file_name || 'image'} · ${formatBytes(target.image.byte_size)}` : 'Upload image.'}
+                </span>
+              </div>
+              <div className="btn-list mt-3">
+                <input
+                  id={`map-image-upload-${target.id}`}
+                  className="d-none"
+                  type="file"
+                  accept={MAP_IMAGE_ACCEPT}
+                  onChange={(e) => uploadMapImage(target, e.target.files?.[0], e.target)}
+                />
+                <label className={`btn btn-outline-primary btn-sm ${busyTarget === target.id ? 'disabled' : ''}`} htmlFor={busyTarget === target.id ? undefined : `map-image-upload-${target.id}`} aria-disabled={busyTarget === target.id}>
+                  <IconUpload size={16} className="me-2" />{busyTarget === target.id ? 'Saving...' : target.image ? 'Replace' : 'Upload'}
+                </label>
+                {target.image && (
+                  <button className="btn btn-outline-danger btn-sm" type="button" onClick={() => removeMapImage(target)} disabled={busyTarget === target.id}>
+                    <IconTrash size={16} className="me-2" />Remove
+                  </button>
+                )}
+                <button className="btn btn-outline-secondary btn-sm" type="button" onClick={loadMapImages} disabled={busyTarget === target.id}>
+                  <IconRefresh size={16} className="me-2" />Refresh
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="row row-cards system-settings-images">
       <div className="col-12">
         <div className="alert alert-info mb-0">
-          These images are used as custom marker icons on the Network Settings Map page for OLT and NAP box records.
+          These images are used as Network Settings visual assets for map markers and fiber equipment such as OLTs, NAP boxes, and PLC splitters.
         </div>
       </div>
       <div className="col-12">
@@ -977,13 +1434,13 @@ function ImagesTab() {
       </div>
       {message && <div className="col-12"><div className="alert alert-success">{message}</div></div>}
       {error && <div className="col-12"><div className="alert alert-danger">{error}</div></div>}
-      <KpiCard icon={IconPhoto} label="Marker Types" value={targets.length || 2} tone="blue" />
+      <KpiCard icon={IconPhoto} label="Image Types" value={targets.length || 4} tone="blue" />
       <KpiCard icon={IconDatabase} label="Uploaded" value={savedCount} tone="green" />
       <KpiCard icon={IconSettings} label="Formats" value={formats} tone="cyan" />
       <KpiCard icon={IconNetwork} label="Max Size" value={formatBytes(maxBytes)} tone="purple" />
       <div className="col-12">
         <ul className="nav nav-tabs" role="tablist" aria-label="Map image tabs">
-          {targets.map((target) => (
+          {imageTabs.map((target) => (
             <li className="nav-item" role="presentation" key={target.id}>
               <button className={`nav-link ${imageView === target.id ? 'active' : ''}`} type="button" role="tab" aria-selected={imageView === target.id} onClick={() => setImageView(target.id)}>
                 {target.label}
@@ -997,51 +1454,14 @@ function ImagesTab() {
       ) : (
         <>
           <div className="col-lg-7">
-            <div className="card system-settings-map-image-card">
-              <div className="card-body">
-                <div className="system-settings-map-image-layout">
-                  <div className="system-settings-map-image-preview">
-                    {selectedTarget?.image?.data_url ? (
-                      <img src={selectedTarget.image.data_url} alt={`${selectedTarget.label} map marker`} />
-                    ) : (
-                      <IconPhoto size={42} className="text-muted" />
-                    )}
-                  </div>
-                  <div>
-                    <h3 className="card-title mb-1">{selectedTarget.label}</h3>
-                    <div className="text-muted">{selectedTarget.description}</div>
-                    <div className="system-settings-avatar-meta">
-                      <span className="badge bg-blue-lt text-blue">{selectedTarget.recommended_size}</span>
-                      <span className="badge bg-secondary-lt">{selectedTarget.image ? selectedTarget.image.mime_type : 'No image'}</span>
-                      <span className="text-muted small">
-                        {selectedTarget.image ? `${selectedTarget.image.file_name || 'marker'} · ${formatBytes(selectedTarget.image.byte_size)}` : 'Upload marker image.'}
-                      </span>
-                    </div>
-                    <div className="btn-list mt-3">
-                      <input
-                        id={`map-image-upload-${selectedTarget.id}`}
-                        className="d-none"
-                        type="file"
-                        accept={MAP_IMAGE_ACCEPT}
-                        onChange={(e) => uploadMapImage(selectedTarget, e.target.files?.[0], e.target)}
-                      />
-                      <label className={`btn btn-outline-primary btn-sm ${busyTarget === selectedTarget.id ? 'disabled' : ''}`} htmlFor={busyTarget === selectedTarget.id ? undefined : `map-image-upload-${selectedTarget.id}`} aria-disabled={busyTarget === selectedTarget.id}>
-                        <IconUpload size={16} className="me-2" />{busyTarget === selectedTarget.id ? 'Saving...' : selectedTarget.image ? 'Replace' : 'Upload'}
-                      </label>
-                      {selectedTarget.image && (
-                        <button className="btn btn-outline-danger btn-sm" type="button" onClick={() => removeMapImage(selectedTarget)} disabled={busyTarget === selectedTarget.id}>
-                          <IconTrash size={16} className="me-2" />Remove
-                        </button>
-                      )}
-                      <button className="btn btn-outline-secondary btn-sm" type="button" onClick={loadMapImages} disabled={busyTarget === selectedTarget.id}>
-                        <IconRefresh size={16} className="me-2" />Refresh
-                      </button>
-                    </div>
-                  </div>
-                </div>
+            {imageView === 'plc' ? (
+              <div className="system-settings-plc-grid">
+                {plcTargets.map((target) => renderImageTargetCard(target, true))}
               </div>
+            ) : (
+              renderImageTargetCard(selectedTarget)
+            )}
             </div>
-          </div>
           <div className="col-lg-5">
             <Card title="Upload Guidelines" icon={IconPhoto}>
               <ul className="system-settings-image-guidelines">
@@ -1051,6 +1471,769 @@ function ImagesTab() {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+function A2PMessagingSettingsTab() {
+  const emptyForm = {
+    enabled: false,
+    provider: 'SMART_MESSAGING_SUITE',
+    base_url: 'https://enterprise.messagingsuite.smart.com.ph',
+    send_path: '/cgphttp/servlet/sendmsg',
+    query_path: '/cgphttp/servlet/querymsg',
+    cancel_path: '/cgphttp/servlet/cancelmsg',
+    start_batch_path: '/cgphttp/servlet/startbatch',
+    send_batch_path: '/cgphttp/servlet/sendbatch',
+    credits_path: '/cgpapi/service1/credits',
+    auth_method: 'API_KEY_HEADERS',
+    api_id: '',
+    api_key: '',
+    username: '',
+    password: '',
+    default_source: '',
+    source_addresses: '',
+    registered_delivery: true,
+    monthly_credit_limit: '',
+    monthly_reset_day: 1,
+    notes: ''
+  };
+  const [config, setConfig] = useState(null);
+  const [form, setForm] = useState(emptyForm);
+  const [section, setSection] = useState(() => {
+    const subtab = new URLSearchParams(window.location.search).get('subtab');
+    return String(subtab || '').toLowerCase() === 'messages' ? 'messages' : 'settings';
+  });
+  const [testForm, setTestForm] = useState({
+    destination: '',
+    message_text: '3J ISP Management A2P test message.',
+    source: '',
+    registered_delivery: true
+  });
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [creditMessage, setCreditMessage] = useState('');
+  const [creditError, setCreditError] = useState('');
+  const [testMessage, setTestMessage] = useState('');
+  const [testError, setTestError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [checkingCredits, setCheckingCredits] = useState(false);
+  const [sendingTest, setSendingTest] = useState(false);
+
+  function hydrateForm(nextConfig) {
+    setForm({
+      ...emptyForm,
+      enabled: Boolean(nextConfig.enabled),
+      provider: nextConfig.provider || emptyForm.provider,
+      base_url: nextConfig.base_url || emptyForm.base_url,
+      send_path: nextConfig.send_path || emptyForm.send_path,
+      query_path: nextConfig.query_path || emptyForm.query_path,
+      cancel_path: nextConfig.cancel_path || emptyForm.cancel_path,
+      start_batch_path: nextConfig.start_batch_path || emptyForm.start_batch_path,
+      send_batch_path: nextConfig.send_batch_path || emptyForm.send_batch_path,
+      credits_path: nextConfig.credits_path || emptyForm.credits_path,
+      auth_method: nextConfig.auth_method || emptyForm.auth_method,
+      api_id: nextConfig.api_id || '',
+      api_key: '',
+      username: nextConfig.username || '',
+      password: '',
+      default_source: nextConfig.default_source || '',
+      source_addresses: (nextConfig.source_addresses || []).join('\n'),
+      registered_delivery: Boolean(nextConfig.registered_delivery),
+      monthly_credit_limit: nextConfig.monthly_credit_limit ?? '',
+      monthly_reset_day: nextConfig.monthly_reset_day || 1,
+      notes: nextConfig.notes || ''
+    });
+  }
+
+  async function loadA2PSettings() {
+    setLoading(true);
+    try {
+      const nextConfig = await request('/system-settings/a2p-messaging');
+      setConfig(nextConfig);
+      hydrateForm(nextConfig);
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadA2PSettings();
+  }, []);
+
+  useEffect(() => {
+    const syncSubtab = () => {
+      const params = new URLSearchParams(window.location.search);
+      if (String(params.get('subtab') || '').toLowerCase() === 'messages') setSection('messages');
+    };
+    syncSubtab();
+    window.addEventListener('popstate', syncSubtab);
+    return () => window.removeEventListener('popstate', syncSubtab);
+  }, []);
+
+  function updateField(key, value) {
+    setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  async function saveA2PSettings(event) {
+    event.preventDefault();
+    setSaving(true);
+    setError('');
+    setMessage('');
+    try {
+      const payload = {
+        enabled: form.enabled,
+        provider: form.provider,
+        base_url: form.base_url,
+        send_path: form.send_path,
+        query_path: form.query_path,
+        cancel_path: form.cancel_path,
+        start_batch_path: form.start_batch_path,
+        send_batch_path: form.send_batch_path,
+        credits_path: form.credits_path,
+        auth_method: form.auth_method,
+        api_id: form.api_id,
+        username: form.username,
+        default_source: form.default_source,
+        source_addresses: form.source_addresses.split(/\n|,/).map((item) => item.trim()).filter(Boolean),
+        registered_delivery: form.registered_delivery,
+        monthly_credit_limit: form.monthly_credit_limit === '' ? null : Number(form.monthly_credit_limit),
+        monthly_reset_day: Number(form.monthly_reset_day) || 1,
+        notes: form.notes
+      };
+      if (form.api_key.trim()) payload.api_key = form.api_key.trim();
+      if (form.password.trim()) payload.password = form.password.trim();
+      const nextConfig = await request('/system-settings/a2p-messaging', {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      });
+      setConfig(nextConfig);
+      hydrateForm(nextConfig);
+      setMessage('A2P messaging settings saved.');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function clearA2PSecret(secret) {
+    const label = secret === 'api_key' ? 'API key' : 'password';
+    if (!window.confirm(`Remove the saved A2P ${label}?`)) return;
+    setSaving(true);
+    setError('');
+    setMessage('');
+    try {
+      const nextConfig = await request('/system-settings/a2p-messaging', {
+        method: 'PATCH',
+        body: JSON.stringify(secret === 'api_key' ? { clear_api_key: true } : { clear_password: true })
+      });
+      setConfig(nextConfig);
+      hydrateForm(nextConfig);
+      setMessage(`A2P ${label} removed.`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function checkCredits() {
+    setCheckingCredits(true);
+    setCreditMessage('');
+    setCreditError('');
+    try {
+      const nextConfig = await request('/system-settings/a2p-messaging/check-credits', { method: 'POST' });
+      setConfig(nextConfig);
+      hydrateForm(nextConfig);
+      const available = nextConfig.credit_check?.available ?? nextConfig.last_credit_available;
+      const responseSummary = nextConfig.credit_check?.response_summary || nextConfig.last_credit_response || '';
+      setCreditMessage(available === null || available === undefined
+        ? `Credits check completed, but Smart did not return a parsable Available value.${responseSummary ? ` Response: ${responseSummary}` : ''}`
+        : `Credits check completed. Available credits: ${available}.`);
+    } catch (err) {
+      setCreditError(err.message);
+      await loadA2PSettings();
+    } finally {
+      setCheckingCredits(false);
+    }
+  }
+
+  async function sendTestMessage(event) {
+    event.preventDefault();
+    setSendingTest(true);
+    setTestMessage('');
+    setTestError('');
+    try {
+      const nextConfig = await request('/system-settings/a2p-messaging/test-send', {
+        method: 'POST',
+        body: JSON.stringify({
+          destination: testForm.destination,
+          message_text: testForm.message_text,
+          source: testForm.source || null,
+          registered_delivery: testForm.registered_delivery
+        })
+      });
+      setConfig(nextConfig);
+      hydrateForm(nextConfig);
+      setTestMessage(`Test SMS accepted by Smart${nextConfig.test_send?.message_id ? ` · Message-ID ${nextConfig.test_send.message_id}` : ''}.`);
+      window.dispatchEvent(new CustomEvent('admin-notification-refresh'));
+    } catch (err) {
+      setTestError(err.message);
+      window.dispatchEvent(new CustomEvent('admin-notification-refresh'));
+      await loadA2PSettings();
+    } finally {
+      setSendingTest(false);
+    }
+  }
+
+  if (loading) return <div className="empty">Loading A2P messaging settings...</div>;
+
+  const authMethod = form.auth_method || 'API_KEY_HEADERS';
+  const hasApiKey = Boolean(config?.api_key_configured);
+  const hasPassword = Boolean(config?.password_configured);
+  const senderOptions = Array.from(new Set([
+    ...String(form.source_addresses || '').split(/\n|,/).map((item) => item.trim()).filter(Boolean),
+    form.default_source
+  ].filter(Boolean)));
+  const capabilities = config?.capabilities || {};
+  const groupHeader = (icon, title, tooltip) => (
+    <div className="col-12">
+      <div className="d-flex align-items-center gap-2 border-bottom pb-2 mb-1">
+        {icon}
+        <div className="fw-bold">{title}</div>
+        {tooltip && <IconInfoCircle size={17} className="text-muted" title={tooltip} />}
+      </div>
+    </div>
+  );
+
+  return (
+    <>
+      <div className="card mb-3">
+        <div className="card-header p-0">
+          <ul className="nav nav-tabs card-header-tabs" role="tablist">
+            <li className="nav-item" role="presentation">
+              <button className={`nav-link ${section === 'settings' ? 'active' : ''}`} type="button" onClick={() => setSection('settings')}>
+                <IconSettings size={18} className="me-2" />Settings
+              </button>
+            </li>
+            <li className="nav-item" role="presentation">
+              <button className={`nav-link ${section === 'messages' ? 'active' : ''}`} type="button" onClick={() => setSection('messages')}>
+                <IconMessageCircle size={18} className="me-2" />Messages
+              </button>
+            </li>
+          </ul>
+        </div>
+      </div>
+      {section === 'settings' ? (
+        <div className="row row-cards system-settings-a2p">
+          {message && <div className="col-12"><div className="alert alert-success">{message}</div></div>}
+          {error && <div className="col-12"><div className="alert alert-danger">{error}</div></div>}
+
+          <div className="col-12 col-xl-8">
+            <Card title="A2P Messaging API" icon={IconSend}>
+              <form onSubmit={saveA2PSettings}>
+                <div className="row g-4">
+                  {groupHeader(<IconSettings size={22} className="text-primary flex-shrink-0" />, '1. Integration Status', 'Enable A2P only after Smart/Soprano has provisioned HTTP API access for the account.')}
+                  <div className="col-12">
+                    <label className="form-check form-switch">
+                      <input className="form-check-input" type="checkbox" checked={form.enabled} onChange={(e) => updateField('enabled', e.target.checked)} />
+                      <span className="form-check-label">Enable A2P messaging integration</span>
+                    </label>
+                  </div>
+                  {groupHeader(<IconDatabase size={22} className="text-primary flex-shrink-0" />, '2. Provider and Account', 'Default values are based on the Smart Messaging Suite HTTP developer guide.')}
+                  <div className="col-md-6">
+                    <label className="form-label">Provider</label>
+                    <input className="form-control" value={form.provider} onChange={(e) => updateField('provider', e.target.value)} />
+                  </div>
+                  <div className="col-md-6">
+                    <label className="form-label">Base URL</label>
+                    <input className="form-control" value={form.base_url} onChange={(e) => updateField('base_url', e.target.value)} />
+                  </div>
+                  {groupHeader(<IconShieldLock size={22} className="text-primary flex-shrink-0" />, '3. Authentication', 'API key headers are recommended by the Smart guide. Basic Auth and body credentials are kept for compatibility.')}
+                  <div className="col-md-4">
+                    <label className="form-label">Auth Method</label>
+                    <select className="form-select" value={authMethod} onChange={(e) => updateField('auth_method', e.target.value)}>
+                      <option value="API_KEY_HEADERS">API key headers</option>
+                      <option value="BASIC_AUTH">Basic authentication</option>
+                      <option value="BODY_CREDENTIALS">Username/password body fields</option>
+                    </select>
+                    <div className="text-muted small mt-1">Smart recommends X-MEMS API ID and API Key headers.</div>
+                  </div>
+                  <div className="col-md-4">
+                    <label className="form-label">API ID</label>
+                    <input className="form-control" autoComplete="off" value={form.api_id} onChange={(e) => updateField('api_id', e.target.value)} />
+                  </div>
+                  <div className="col-md-4">
+                    <label className="form-label">API Key</label>
+                    <input className="form-control" type="password" autoComplete="off" value={form.api_key} placeholder={hasApiKey ? `Saved: ${config.api_key_hint}` : ''} onChange={(e) => updateField('api_key', e.target.value)} />
+                    {hasApiKey && <button className="btn btn-link px-0 py-1" type="button" onClick={() => clearA2PSecret('api_key')}>Clear saved API key</button>}
+                  </div>
+                  <div className="col-md-6">
+                    <label className="form-label">Username</label>
+                    <input className="form-control" autoComplete="off" value={form.username} onChange={(e) => updateField('username', e.target.value)} />
+                  </div>
+                  <div className="col-md-6">
+                    <label className="form-label">Password</label>
+                    <input className="form-control" type="password" autoComplete="off" value={form.password} placeholder={hasPassword ? `Saved: ${config.password_hint}` : ''} onChange={(e) => updateField('password', e.target.value)} />
+                    {hasPassword && <button className="btn btn-link px-0 py-1" type="button" onClick={() => clearA2PSecret('password')}>Clear saved password</button>}
+                  </div>
+                  {groupHeader(<IconListDetails size={22} className="text-primary flex-shrink-0" />, '4. API Endpoint Paths', 'Keep these default paths unless Smart gives a tenant-specific interface.')}
+                  {[
+                    ['send_path', 'Send SMS'],
+                    ['query_path', 'Query Message'],
+                    ['cancel_path', 'Cancel Message'],
+                    ['start_batch_path', 'Start Batch'],
+                    ['send_batch_path', 'Send Batch'],
+                    ['credits_path', 'Current Credits']
+                  ].map(([field, label]) => (
+                    <div className="col-md-4" key={field}>
+                      <label className="form-label">{label}</label>
+                      <input className="form-control" value={form[field]} onChange={(e) => updateField(field, e.target.value)} />
+                    </div>
+                  ))}
+                  {groupHeader(<IconBell size={22} className="text-primary flex-shrink-0" />, '5. Sender IDs and Delivery Receipts', 'Use the Sender IDs provisioned for the Smart A2P account.')}
+                  <div className="col-md-6">
+                    <label className="form-label">Default Sender ID</label>
+                    <input className="form-control" value={form.default_source} onChange={(e) => updateField('default_source', e.target.value)} placeholder="Example: 3J ALERT" />
+                  </div>
+                  <div className="col-md-6">
+                    <label className="form-label">Registered Sender IDs</label>
+                    <textarea className="form-control" rows="3" value={form.source_addresses} onChange={(e) => updateField('source_addresses', e.target.value)} placeholder="One sender ID per line" />
+                  </div>
+                  <div className="col-12">
+                    <label className="form-check">
+                      <input className="form-check-input" type="checkbox" checked={form.registered_delivery} onChange={(e) => updateField('registered_delivery', e.target.checked)} />
+                      <span className="form-check-label">Request delivery receipts by default</span>
+                    </label>
+                  </div>
+                  {groupHeader(<IconKey size={22} className="text-primary flex-shrink-0" />, '6. Local Credit Rules', 'Monthly consumption tracking uses local A2P message logs; direct credits require Smart prepaid credits API access.')}
+                  <div className="col-md-4">
+                    <label className="form-label">Monthly Credit Limit</label>
+                    <input className="form-control" type="number" min="0" value={form.monthly_credit_limit} onChange={(e) => updateField('monthly_credit_limit', e.target.value)} placeholder="Optional" />
+                  </div>
+                  <div className="col-md-4">
+                    <label className="form-label">Monthly Reset Day</label>
+                    <input className="form-control" type="number" min="1" max="31" value={form.monthly_reset_day} onChange={(e) => updateField('monthly_reset_day', e.target.value)} />
+                  </div>
+                  <div className="col-md-4">
+                    <label className="form-label">Direct Credits API</label>
+                    <div className="form-control-plaintext">Supported for prepaid accounts</div>
+                  </div>
+                  <div className="col-12">
+                    <label className="form-label">Notes</label>
+                    <textarea className="form-control" rows="3" value={form.notes} onChange={(e) => updateField('notes', e.target.value)} placeholder="Account notes, source IDs, support tickets, or whitelist details." />
+                  </div>
+                  <div className="col-12 text-end">
+                    <button className="btn btn-primary" disabled={saving}><IconDeviceFloppy size={18} className="me-2" />{saving ? 'Saving...' : 'Save A2P Settings'}</button>
+                  </div>
+                </div>
+              </form>
+            </Card>
+          </div>
+
+          <div className="col-12 col-xl-4">
+            <div className="row row-cards">
+              <div className="col-12">
+                <Card title="Smart API Summary" icon={IconInfoCircle}>
+                  <div className="d-flex flex-column gap-3">
+                    <div><strong>SMS sending</strong><div className="text-muted small">Use sendmsg for one or more destinations. The guide documents up to {capabilities.max_destinations_per_sendmsg || 300} destinations per request.</div></div>
+                    <div><strong>Message lifecycle</strong><div className="text-muted small">querymsg checks status by Message-ID; cancelmsg can cancel queued or scheduled messages when still cancellable.</div></div>
+                    <div><strong>Batch and reports</strong><div className="text-muted small">startbatch/sendbatch can send templated batches. Local logs show API attempts in real time.</div></div>
+                    <div><strong>Provisioning</strong><div className="text-muted small">HTTP API must be enabled by Smart/Soprano. Source IP whitelisting can be requested during provisioning.</div></div>
+                  </div>
+                </Card>
+              </div>
+              <div className="col-12">
+                <Card title="Credit Check" icon={IconDatabase}>
+                  <button className="btn btn-outline-primary w-100" type="button" onClick={checkCredits} disabled={checkingCredits}>
+                    <IconRefresh size={18} className="me-2" />{checkingCredits ? 'Checking...' : 'Check Smart Credits'}
+                  </button>
+                  {creditMessage && <div className="alert alert-success py-2 mt-3">{creditMessage}</div>}
+                  {creditError && <div className="alert alert-danger py-2 mt-3">{creditError}</div>}
+                  {(config?.last_credit_check_status || config?.last_credit_response || config?.last_credit_error) && (
+                    <div className="mt-3 border rounded p-2">
+                      <div className="d-flex align-items-center gap-2 mb-2">
+                        <span className={`badge ${config?.last_credit_check_status === 'SUCCESS' ? 'bg-success' : 'bg-danger'}`}>{config?.last_credit_check_status || 'UNKNOWN'}</span>
+                        <span className="text-muted small">{formatDateTime(config?.last_credit_check_at)}</span>
+                      </div>
+                      <div className="small"><strong>Available:</strong> {config?.last_credit_available ?? '-'}</div>
+                      <div className="text-muted small mt-2">{config?.last_credit_error || config?.last_credit_response}</div>
+                    </div>
+                  )}
+                </Card>
+              </div>
+              <div className="col-12">
+                <Card title="Send Test SMS" icon={IconBell}>
+                  <form onSubmit={sendTestMessage}>
+                    <div className="mb-3">
+                      <label className="form-label">Destination</label>
+                      <input className="form-control" value={testForm.destination} onChange={(e) => setTestForm({ ...testForm, destination: e.target.value })} placeholder="639171234567 or 09171234567" />
+                    </div>
+                    <div className="mb-3">
+                      <label className="form-label">Message</label>
+                      <textarea className="form-control" rows="3" value={testForm.message_text} maxLength={500} onChange={(e) => setTestForm({ ...testForm, message_text: e.target.value })} />
+                    </div>
+                    <div className="mb-3">
+                      <label className="form-label">Sender ID</label>
+                      <select className="form-select" value={testForm.source} onChange={(e) => setTestForm({ ...testForm, source: e.target.value })}>
+                        <option value="">Use default sender</option>
+                        {senderOptions.map((source) => <option key={source} value={source}>{source}</option>)}
+                      </select>
+                    </div>
+                    <label className="form-check mb-3">
+                      <input className="form-check-input" type="checkbox" checked={testForm.registered_delivery} onChange={(e) => setTestForm({ ...testForm, registered_delivery: e.target.checked })} />
+                      <span className="form-check-label">Request delivery receipt for this test</span>
+                    </label>
+                    <button className="btn btn-primary w-100" disabled={sendingTest || !testForm.destination.trim() || !testForm.message_text.trim()}>
+                      <IconSend size={18} className="me-2" />{sendingTest ? 'Sending...' : 'Send Test SMS'}
+                    </button>
+                    {testMessage && <div className="alert alert-success py-2 mt-3">{testMessage}</div>}
+                    {testError && <div className="alert alert-danger py-2 mt-3">{testError}</div>}
+                    {(config?.last_test_send_status || config?.last_test_send_response || config?.last_test_send_error) && (
+                      <div className="mt-3 border rounded p-2">
+                        <div className="d-flex align-items-center gap-2 mb-2">
+                          <span className={`badge ${config?.last_test_send_status === 'SUCCESS' ? 'bg-success' : 'bg-danger'}`}>{config?.last_test_send_status || 'UNKNOWN'}</span>
+                          <span className="text-muted small">{formatDateTime(config?.last_test_send_at)}</span>
+                        </div>
+                        <div className="small"><strong>Destination:</strong> {config?.last_test_send_destination || '-'}</div>
+                        <div className="small"><strong>Message ID:</strong> {config?.last_test_send_message_id || '-'}</div>
+                        <div className="text-muted small mt-2">{config?.last_test_send_error || config?.last_test_send_response}</div>
+                      </div>
+                    )}
+                  </form>
+                </Card>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <A2PMessageLogsPanel />
+      )}
+    </>
+  );
+}
+
+function A2PMessageLogsPanel() {
+  const [items, setItems] = useState([]);
+  const [summary, setSummary] = useState({});
+  const [purposes, setPurposes] = useState([]);
+  const [status, setStatus] = useState('ALL');
+  const [purpose, setPurpose] = useState('ALL');
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  async function loadMessages(nextPage = page) {
+    setLoading(true);
+    setError('');
+    try {
+      const params = new URLSearchParams({ status, purpose, search, page: String(nextPage), page_size: String(pageSize) });
+      const data = await request(`/system-settings/a2p-messaging/messages?${params.toString()}`);
+      setItems(data.items || []);
+      setSummary(data.summary || {});
+      setPurposes(data.purposes || []);
+      setTotal(Number(data.total || 0));
+      setPage(Number(data.page || nextPage));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => loadMessages(1), 250);
+    return () => window.clearTimeout(timer);
+  }, [status, purpose, search, pageSize]);
+
+  const maxPage = Math.max(1, Math.ceil(total / pageSize));
+  const statusBadge = (value) => value === 'SUCCESS'
+    ? 'bg-success-lt text-success'
+    : value === 'FAILED'
+      ? 'bg-danger-lt text-danger'
+      : 'bg-warning-lt text-warning';
+
+  return (
+    <div className="row row-cards system-settings-a2p-messages">
+      {error && <div className="col-12"><div className="alert alert-danger">{error}</div></div>}
+      <KpiCard icon={IconSend} label="Total SMS Logs" value={summary.total || 0} tone="blue" />
+      <KpiCard icon={IconCircleCheck} label="Successful" value={summary.success || 0} tone="green" />
+      <KpiCard icon={IconAlertTriangle} label="Failed" value={summary.failed || 0} tone="red" />
+      <KpiCard icon={IconClock} label="This Month" value={summary.this_month || 0} tone="purple" />
+
+      <div className="col-12">
+        <Card title="A2P Messages" icon={IconMessageCircle}>
+          <div className="row g-3 align-items-end mb-3">
+            <div className="col-12 col-lg-4">
+              <label className="form-label">Search</label>
+              <div className="input-icon">
+                <span className="input-icon-addon"><IconSearch size={18} /></span>
+                <input className="form-control" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search phone, sender, message ID, text, or error..." />
+              </div>
+            </div>
+            <div className="col-6 col-lg-2">
+              <label className="form-label">Status</label>
+              <select className="form-select" value={status} onChange={(e) => setStatus(e.target.value)}>
+                <option value="ALL">All</option>
+                <option value="SUCCESS">Success</option>
+                <option value="FAILED">Failed</option>
+                <option value="PENDING">Pending</option>
+              </select>
+            </div>
+            <div className="col-6 col-lg-2">
+              <label className="form-label">Purpose</label>
+              <select className="form-select" value={purpose} onChange={(e) => setPurpose(e.target.value)}>
+                <option value="ALL">All purposes</option>
+                {purposes.map((item) => <option key={item.purpose} value={item.purpose}>{item.purpose} ({item.count})</option>)}
+              </select>
+            </div>
+            <div className="col-6 col-lg-2">
+              <label className="form-label">Show entries</label>
+              <select className="form-select" value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))}>
+                {[10, 20, 50, 100].map((value) => <option key={value} value={value}>{value}</option>)}
+              </select>
+            </div>
+            <div className="col-6 col-lg-2">
+              <button className="btn btn-outline-primary w-100" type="button" onClick={() => loadMessages(page)} disabled={loading}>
+                <IconRefresh size={18} className="me-2" />{loading ? 'Loading...' : 'Refresh'}
+              </button>
+            </div>
+          </div>
+
+          <div className="table-responsive table-sticky-wrap">
+            <table className="table card-table table-vcenter">
+              <thead>
+                <tr>
+                  <th>Status</th>
+                  <th>Purpose</th>
+                  <th>To</th>
+                  <th>Sender ID</th>
+                  <th>Message</th>
+                  <th>Smart / Message ID</th>
+                  <th>Result</th>
+                  <th>Created</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((item) => (
+                  <tr key={item.id}>
+                    <td><span className={`badge ${statusBadge(item.status)}`}>{item.status}</span></td>
+                    <td><span className="badge bg-secondary-lt text-secondary">{item.purpose || 'GENERAL'}</span></td>
+                    <td>{item.destination_masked || '-'}</td>
+                    <td>{item.source || '-'}</td>
+                    <td className="text-wrap" style={{ minWidth: 260 }}><div className="fw-semibold">{item.message_preview || '-'}</div></td>
+                    <td>
+                      <div>{item.smart_status || '-'}</div>
+                      <div className="text-muted small">{item.message_id || '-'}</div>
+                    </td>
+                    <td className="text-wrap" style={{ minWidth: 260 }}>
+                      {item.error_message ? <span className="text-danger">{item.error_message}</span> : <span className="text-muted">{item.response_summary || '-'}</span>}
+                      {item.http_status && <div className="small text-muted">HTTP {item.http_status}</div>}
+                    </td>
+                    <td>{formatDateTime(item.created_at)}</td>
+                  </tr>
+                ))}
+                {!items.length && (
+                  <tr><td colSpan="8" className="text-center text-muted py-4">No A2P messages found.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="d-flex flex-wrap align-items-center justify-content-between gap-2 mt-3">
+            <div className="text-muted small">Showing {items.length ? ((page - 1) * pageSize) + 1 : 0}-{Math.min(total, page * pageSize)} of {total}</div>
+            <div className="btn-list">
+              <button className="btn btn-outline-secondary" type="button" disabled={page <= 1 || loading} onClick={() => { const next = Math.max(1, page - 1); setPage(next); loadMessages(next); }}>Previous</button>
+              <span className="btn disabled">Page {page} of {maxPage}</span>
+              <button className="btn btn-outline-secondary" type="button" disabled={page >= maxPage || loading} onClick={() => { const next = Math.min(maxPage, page + 1); setPage(next); loadMessages(next); }}>Next</button>
+            </div>
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function backupFilename(response, fallback) {
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const match = disposition.match(/filename="?([^";]+)"?/i);
+  return match?.[1] || fallback;
+}
+
+function BackupTab() {
+  const [metadata, setMetadata] = useState(null);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState('');
+  const [restoreResult, setRestoreResult] = useState(null);
+
+  async function loadBackupMetadata() {
+    try {
+      setMetadata(await request('/system-settings/backups'));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  useEffect(() => {
+    loadBackupMetadata();
+  }, []);
+
+  async function downloadBackup(kind) {
+    setBusy(`download-${kind}`);
+    setError('');
+    setMessage('');
+    try {
+      const response = await fetch(`${API}/system-settings/backups/${kind}`, {
+        headers: token() ? { Authorization: `Bearer ${token()}` } : {}
+      });
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(detail.detail || 'Backup download failed');
+      }
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = backupFilename(response, `threejmain-${kind}-backup.json`);
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+      setMessage(`${kind === 'full' ? 'Full system' : 'Configuration'} backup downloaded.`);
+      loadBackupMetadata();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function restoreBackupFile(file, input) {
+    if (!file) return;
+    setError('');
+    setMessage('');
+    setRestoreResult(null);
+    if (!file.name.toLowerCase().endsWith('.json') && file.type !== 'application/json') {
+      setError('Backup restore accepts JSON backup files only.');
+      input.value = '';
+      return;
+    }
+    if (!window.confirm('Restore this backup file? This replaces the matching configuration and data sections in the current system.')) {
+      input.value = '';
+      return;
+    }
+    setBusy('restore');
+    try {
+      const text = await readFileAsText(file);
+      const backup = JSON.parse(text);
+      const result = await request('/system-settings/backups/restore', {
+        method: 'POST',
+        body: JSON.stringify({ backup })
+      });
+      setRestoreResult(result);
+      setMessage(`${result.backupType === 'full' ? 'Full system' : 'Configuration'} backup restored.`);
+      loadBackupMetadata();
+    } catch (err) {
+      setError(err instanceof SyntaxError ? 'Backup file is not valid JSON.' : err.message);
+    } finally {
+      setBusy('');
+      input.value = '';
+    }
+  }
+
+  const configurationCounts = metadata?.configuration?.counts || {};
+  const systemCounts = configurationCounts.systemSettings || {};
+  const networkCounts = configurationCounts.networkSettings || {};
+  const databaseStatus = metadata?.full?.database || {};
+  const databaseRows = Object.values(databaseStatus.rowCounts || {}).reduce((total, value) => total + Number(value || 0), 0);
+  const isBusy = Boolean(busy);
+
+  return (
+    <div className="row row-cards system-settings-backup">
+      <div className="col-12">
+        <div className="alert alert-warning mb-0">
+          {metadata?.sensitiveNotice || 'Backup files can include API keys, router passwords, SNMP secrets, access users, and uploaded image data. Store downloaded backups securely.'}
+        </div>
+      </div>
+      {message && <div className="col-12"><div className="alert alert-success">{message}</div></div>}
+      {error && <div className="col-12"><div className="alert alert-danger">{error}</div></div>}
+      <KpiCard icon={IconSettings} label="Locations" value={systemCounts.locations ?? '-'} tone="blue" />
+      <KpiCard icon={IconPhoto} label="Image Assets" value={systemCounts.mapImages ?? '-'} tone="green" />
+      <KpiCard icon={IconNetwork} label="Network Devices" value={(networkCounts.mikrotikRouters || 0) + (networkCounts.snmpOlts || 0)} tone="cyan" />
+      <KpiCard icon={IconDatabase} label="DB Rows" value={databaseStatus.enabled ? databaseRows : 'N/A'} tone="purple" />
+
+      <div className="col-lg-6">
+        <Card title="Configuration Backup" icon={IconSettings}>
+          <div className="system-settings-backup-card">
+            <p className="text-muted">
+              Download restorable configuration for System Settings and Network Settings, including MikroTik API routers and SNMP OLT credentials.
+            </p>
+            <ul className="system-settings-backup-list">
+              {(metadata?.configuration?.includes || []).map((item) => <li key={item}>{item}</li>)}
+            </ul>
+            <button className="btn btn-primary mt-3" type="button" onClick={() => downloadBackup('configuration')} disabled={isBusy}>
+              <IconDeviceFloppy size={18} className="me-2" />{busy === 'download-configuration' ? 'Preparing...' : 'Download Configuration Backup'}
+            </button>
+          </div>
+        </Card>
+      </div>
+
+      <div className="col-lg-6">
+        <Card title="Full System Backup" icon={IconDatabase}>
+          <div className="system-settings-backup-card">
+            <p className="text-muted">
+              Download configuration plus supported PostgreSQL application data. Customer records are included when the database is available.
+            </p>
+            <ul className="system-settings-backup-list">
+              {(metadata?.full?.includes || []).map((item) => <li key={item}>{item}</li>)}
+            </ul>
+            <div className="system-settings-avatar-meta">
+              <span className={`badge ${databaseStatus.enabled ? 'bg-green-lt text-green' : 'bg-secondary-lt'}`}>Database {databaseStatus.status || 'checking'}</span>
+              <span className="text-muted small">{databaseStatus.tables?.length ? `${databaseStatus.tables.length} public tables detected` : 'No database tables detected'}</span>
+            </div>
+            <button className="btn btn-primary mt-3" type="button" onClick={() => downloadBackup('full')} disabled={isBusy}>
+              <IconDatabase size={18} className="me-2" />{busy === 'download-full' ? 'Preparing...' : 'Download Full System Backup'}
+            </button>
+          </div>
+        </Card>
+      </div>
+
+      <div className="col-lg-6">
+        <Card title="Restore Backup" icon={IconUpload}>
+          <p className="text-muted">
+            Restore a downloaded configuration or full system backup JSON file. Configuration restore refreshes System Settings and Network Settings immediately when the module is loaded.
+          </p>
+          <input
+            id="system-settings-backup-restore"
+            className="d-none"
+            type="file"
+            accept=".json,application/json"
+            onChange={(e) => restoreBackupFile(e.target.files?.[0], e.target)}
+          />
+          <label className={`btn btn-outline-primary ${busy === 'restore' ? 'disabled' : ''}`} htmlFor={busy === 'restore' ? undefined : 'system-settings-backup-restore'} aria-disabled={busy === 'restore'}>
+            <IconUpload size={18} className="me-2" />{busy === 'restore' ? 'Restoring...' : 'Choose Backup File'}
+          </label>
+        </Card>
+      </div>
+
+      <div className="col-lg-6">
+        <Card title="Restore Result" icon={IconCircleCheck}>
+          {restoreResult ? (
+            <pre className="system-settings-backup-result">{JSON.stringify(restoreResult, null, 2)}</pre>
+          ) : (
+            <div className="empty">No restore has been run in this browser session.</div>
+          )}
+        </Card>
+      </div>
     </div>
   );
 }
@@ -1945,8 +3128,12 @@ function AccessTab() {
 }
 
 export default function SystemSettingsPage({ refreshShell }) {
-  const tabs = ['General', 'Location Management', 'Images', 'Avatar', 'OPENAI', 'Access', 'Ports', 'Runtime'];
-  const [tab, setTab] = useState('General');
+  const tabs = ['General', 'Location Management', 'Maps', 'Images', 'Backup', 'Avatar', 'OPENAI', 'A2P Messaging', 'Access', 'Ports', 'Runtime'];
+  const initialTab = () => {
+    const requested = new URLSearchParams(window.location.search).get('tab');
+    return tabs.includes(requested) ? requested : 'General';
+  };
+  const [tab, setTab] = useState(initialTab);
   const [settings, setSettings] = useState(null);
   const [ports, setPorts] = useState([]);
   const [message, setMessage] = useState('');
@@ -1962,6 +3149,16 @@ export default function SystemSettingsPage({ refreshShell }) {
 
   useEffect(() => {
     load().catch((err) => setMessage(err.message));
+  }, []);
+
+  useEffect(() => {
+    const syncTabFromUrl = () => {
+      const requested = new URLSearchParams(window.location.search).get('tab');
+      if (tabs.includes(requested)) setTab(requested);
+    };
+    syncTabFromUrl();
+    window.addEventListener('popstate', syncTabFromUrl);
+    return () => window.removeEventListener('popstate', syncTabFromUrl);
   }, []);
 
   async function save(e) {
@@ -2016,9 +3213,12 @@ export default function SystemSettingsPage({ refreshShell }) {
         </Card>
       )}
       {tab === 'Location Management' && <LocationManagementTab />}
+      {tab === 'Maps' && <MapsTab />}
       {tab === 'Images' && <ImagesTab />}
+      {tab === 'Backup' && <BackupTab />}
       {tab === 'Avatar' && <AvatarTab />}
       {tab === 'OPENAI' && <OpenAISettingsTab />}
+      {tab === 'A2P Messaging' && <A2PMessagingSettingsTab />}
       {tab === 'Access' && <AccessTab />}
       {tab === 'Ports' && (
         <Card title="System Port Registry" icon={IconNetwork} actions={<button className="btn btn-sm" onClick={load}><IconRefresh size={16} className="me-1" />Refresh</button>}>

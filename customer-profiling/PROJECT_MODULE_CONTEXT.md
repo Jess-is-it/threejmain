@@ -32,6 +32,8 @@ Customer Profiling manages customer records, account identity, service addresses
 - Customer detail view uses a desktop split side panel sized to about 25% of the workspace on larger screens and switches to a modal dialog on mobile widths.
 - Customer Profiling overrides the app-shell desktop content container only when this module is active, using 100px left/right page gutters so the workspace sits closer to the left navigation while preserving responsive smaller gutters.
 - Business customer profiles include a required `businessName` field on final save, and customer details show a compact coordinates map preview that opens Google Maps when clicked.
+- Customer coordinate capture and detail preview maps use System Settings -> Maps provider settings through `system-settings/web/mapProviders.js`. The capture modal has a compact provider selector, honors the selected provider's max zoom, and creates provider sessions when a session-based provider such as Google Map Tiles is selected. Google Maps open-link and Street View remain external helpers.
+- Customer table action badges include Check Serviceability, which navigates to `/network-settings/serviceability-check?customerId=<customer id>` so Network Settings opens the selected customer in its serviceability split view.
 - Secondary contacts
 - Bulk upload CSV modal with template download, preview validation, duplicate checks, and guarded import
 - `/api/customer-profiling/readiness` reports whether Customer Profiling is using PostgreSQL storage and lists remaining production-hardening stages.
@@ -42,6 +44,8 @@ Customer Profiling manages customer records, account identity, service addresses
 - Other modules may read Customer Profiling contracts for customer lookup prerequisites.
 - Customer Profiling reads `/api/system-settings/locations` in the frontend and uses System Settings' internal `ensure_location_record` helper in the API to create or link minimal location records during customer create/update.
 - Customer Profiling reads `/api/system-settings/avatars` in the frontend to resolve configured male/female customer avatars and emotion score display. Baseline mood is currently driven by customer lifecycle status.
+- Customer Profiling reads `/api/system-settings/map-providers` in the frontend so the customer detail map preview and coordinate capture modal use the same shared tile providers as Network Settings.
+- Customer Profiling links to Network Settings Serviceability Check by customer id only; Network Settings owns serviceability status calculation, NAP selection, and map display.
 - Province, city, barangay, and coordinates are optional on customer saves so incomplete locations can be finished later in System Settings -> Location Management.
 - Service Catalog/Order owns service assignment CRUD. Customer Profiling does not display or manage Service Orders.
 - Integration Codex should read this file before changing Customer Profiling app-shell wiring.

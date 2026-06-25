@@ -3,20 +3,34 @@ import binascii
 import hashlib
 import json
 import os
+import re
 import secrets
 import smtplib
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+
+try:
+    import psycopg
+    from psycopg import sql
+    from psycopg.rows import dict_row
+    from psycopg.types.json import Json
+except Exception:  # pragma: no cover - optional when DATABASE_URL is not configured
+    psycopg = None
+    sql = None
+    dict_row = None
+    Json = None
 
 
 router = APIRouter(tags=["system-settings"])
@@ -80,6 +94,12 @@ class MapImageUploadPayload(BaseModel):
     mime_type: str | None = None
 
 
+class MapProviderSettingsPayload(BaseModel):
+    defaultProviderId: str | None = None
+    default_provider_id: str | None = None
+    providers: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class AvatarEmotionSettingsPayload(BaseModel):
     thresholds: dict[str, int | float] | None = None
     weights: dict[str, int | float] | None = None
@@ -99,6 +119,38 @@ class OpenAITestPayload(BaseModel):
     model_id: str | None = Field(default=None, max_length=80)
     reasoning_effort: str | None = Field(default=None, max_length=20)
     max_output_tokens: int = Field(default=120, ge=16, le=512)
+
+
+class A2PMessagingSettingsPayload(BaseModel):
+    enabled: bool | None = None
+    provider: str | None = Field(default=None, max_length=80)
+    base_url: str | None = Field(default=None, max_length=300)
+    send_path: str | None = Field(default=None, max_length=200)
+    query_path: str | None = Field(default=None, max_length=200)
+    cancel_path: str | None = Field(default=None, max_length=200)
+    start_batch_path: str | None = Field(default=None, max_length=200)
+    send_batch_path: str | None = Field(default=None, max_length=200)
+    credits_path: str | None = Field(default=None, max_length=200)
+    auth_method: str | None = Field(default=None, max_length=40)
+    api_id: str | None = Field(default=None, max_length=200)
+    api_key: str | None = Field(default=None, max_length=500)
+    clear_api_key: bool = False
+    username: str | None = Field(default=None, max_length=200)
+    password: str | None = Field(default=None, max_length=500)
+    clear_password: bool = False
+    default_source: str | None = Field(default=None, max_length=80)
+    source_addresses: list[str] | None = None
+    registered_delivery: bool | None = None
+    monthly_credit_limit: int | None = Field(default=None, ge=0, le=1_000_000_000)
+    monthly_reset_day: int | None = Field(default=None, ge=1, le=31)
+    notes: str | None = Field(default=None, max_length=1000)
+
+
+class A2PMessagingTestSendPayload(BaseModel):
+    destination: str = Field(..., min_length=8, max_length=32)
+    message_text: str = Field(..., min_length=1, max_length=500)
+    source: str | None = Field(default=None, max_length=80)
+    registered_delivery: bool | None = None
 
 
 class AccessSmtpPayload(BaseModel):
@@ -145,6 +197,10 @@ class AccessResetPasswordPayload(BaseModel):
     emailTemporaryPassword: bool = False
 
 
+class BackupRestorePayload(BaseModel):
+    backup: dict[str, Any] = Field(default_factory=dict)
+
+
 ALLOWED_AVATAR_MIME_TYPES = {
     "image/png": "PNG",
     "image/jpeg": "JPG/JPEG",
@@ -171,7 +227,174 @@ MAP_IMAGE_TARGETS = [
         "description": "Marker shown for OLT devices on the Network Settings map.",
         "recommended_size": "160 x 160 px",
     },
+    {
+        "id": "plc-splitter-1x8",
+        "label": "PLC Splitter 1x8",
+        "description": "Equipment image shown for 1x8 PLC splitter ports in Network Settings.",
+        "recommended_size": "180 x 120 px",
+    },
+    {
+        "id": "plc-splitter-1x16",
+        "label": "PLC Splitter 1x16",
+        "description": "Equipment image shown for 1x16 PLC splitter ports in Network Settings.",
+        "recommended_size": "220 x 120 px",
+    },
 ]
+MAP_PROVIDER_TYPES = {"street", "satellite", "hybrid", "custom"}
+DEFAULT_MAP_PROVIDER_ID = "esri-streets"
+DEFAULT_MAP_PROVIDERS = [
+    {
+        "id": "esri-streets",
+        "label": "Esri Streets",
+        "type": "street",
+        "tileUrl": "https://services.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
+        "attribution": "Esri World Street Map",
+        "minZoom": 1,
+        "maxZoom": 19,
+        "enabled": True,
+        "builtIn": True,
+        "requiresApiKey": False,
+        "apiKey": "",
+        "notes": "Default street map provider. Some high zoom areas may stop before the nominal service limit.",
+    },
+    {
+        "id": "esri-satellite",
+        "label": "Esri Satellite",
+        "type": "satellite",
+        "tileUrl": "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        "attribution": "Esri World Imagery",
+        "minZoom": 1,
+        "maxZoom": 19,
+        "enabled": True,
+        "builtIn": True,
+        "requiresApiKey": False,
+        "apiKey": "",
+        "notes": "Satellite imagery. Some areas return provider placeholders at high zoom.",
+    },
+    {
+        "id": "osm-standard",
+        "label": "OpenStreetMap",
+        "type": "street",
+        "tileUrl": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+        "attribution": "OpenStreetMap contributors",
+        "minZoom": 1,
+        "maxZoom": 19,
+        "enabled": True,
+        "builtIn": True,
+        "requiresApiKey": False,
+        "apiKey": "",
+        "notes": "Use responsibly; public OSM tiles are not intended for heavy production load.",
+    },
+    {
+        "id": "google-roadmap",
+        "label": "Google Roadmap",
+        "type": "street",
+        "tileUrl": "https://tile.googleapis.com/v1/2dtiles/{z}/{x}/{y}?session={sessionToken}&key={apiKey}",
+        "attribution": "Google Maps",
+        "minZoom": 0,
+        "maxZoom": 22,
+        "enabled": False,
+        "builtIn": True,
+        "requiresApiKey": True,
+        "apiKey": "",
+        "sessionProvider": "google-map-tiles",
+        "googleMapType": "roadmap",
+        "googleLanguage": "en-US",
+        "googleRegion": "PH",
+        "notes": "Requires Google Maps Platform Map Tiles API. The browser creates a Google tile session before loading tiles.",
+    },
+    {
+        "id": "google-satellite",
+        "label": "Google Satellite",
+        "type": "satellite",
+        "tileUrl": "https://tile.googleapis.com/v1/2dtiles/{z}/{x}/{y}?session={sessionToken}&key={apiKey}",
+        "attribution": "Google Maps",
+        "minZoom": 0,
+        "maxZoom": 22,
+        "enabled": False,
+        "builtIn": True,
+        "requiresApiKey": True,
+        "apiKey": "",
+        "sessionProvider": "google-map-tiles",
+        "googleMapType": "satellite",
+        "googleLanguage": "en-US",
+        "googleRegion": "PH",
+        "notes": "Requires Google Maps Platform Map Tiles API. Satellite imagery availability can vary by area.",
+    },
+    {
+        "id": "tomtom-basic",
+        "label": "TomTom Basic",
+        "type": "street",
+        "tileUrl": "https://api.tomtom.com/map/1/tile/basic/main/{z}/{x}/{y}.png?key={apiKey}",
+        "attribution": "TomTom",
+        "minZoom": 1,
+        "maxZoom": 22,
+        "enabled": False,
+        "builtIn": True,
+        "requiresApiKey": True,
+        "apiKey": "",
+        "notes": "Requires a TomTom API key.",
+    },
+    {
+        "id": "maptiler-streets",
+        "label": "MapTiler Streets",
+        "type": "street",
+        "tileUrl": "https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key={apiKey}",
+        "attribution": "MapTiler, OpenStreetMap contributors",
+        "minZoom": 1,
+        "maxZoom": 22,
+        "enabled": False,
+        "builtIn": True,
+        "requiresApiKey": True,
+        "apiKey": "",
+        "notes": "Requires a MapTiler API key.",
+    },
+    {
+        "id": "maptiler-satellite",
+        "label": "MapTiler Satellite",
+        "type": "satellite",
+        "tileUrl": "https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key={apiKey}",
+        "attribution": "MapTiler",
+        "minZoom": 1,
+        "maxZoom": 20,
+        "enabled": False,
+        "builtIn": True,
+        "requiresApiKey": True,
+        "apiKey": "",
+        "notes": "Requires a MapTiler API key.",
+    },
+    {
+        "id": "mapbox-streets",
+        "label": "Mapbox Streets",
+        "type": "street",
+        "tileUrl": "https://api.mapbox.com/styles/v1/mapbox/streets-v12/tiles/256/{z}/{x}/{y}?access_token={apiKey}",
+        "attribution": "Mapbox, OpenStreetMap",
+        "minZoom": 1,
+        "maxZoom": 22,
+        "enabled": False,
+        "builtIn": True,
+        "requiresApiKey": True,
+        "apiKey": "",
+        "notes": "Requires a Mapbox public access token.",
+    },
+    {
+        "id": "mapbox-satellite-streets",
+        "label": "Mapbox Satellite Streets",
+        "type": "hybrid",
+        "tileUrl": "https://api.mapbox.com/styles/v1/mapbox/satellite-streets-v12/tiles/256/{z}/{x}/{y}?access_token={apiKey}",
+        "attribution": "Mapbox",
+        "minZoom": 1,
+        "maxZoom": 22,
+        "enabled": False,
+        "builtIn": True,
+        "requiresApiKey": True,
+        "apiKey": "",
+        "notes": "Requires a Mapbox public access token.",
+    },
+]
+BACKUP_SCHEMA_ID = "threejmain.system-backup"
+BACKUP_SCHEMA_VERSION = 1
+BACKUP_APPLICATION_TABLE_EXCLUDES = {"schema_migrations"}
 AVATAR_GENDERS = [
     {"id": "male", "label": "Male"},
     {"id": "female", "label": "Female"},
@@ -357,6 +580,43 @@ OPENAI_MODEL_OPTIONS = [
 ]
 DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
 DEFAULT_OPENAI_REASONING_EFFORT = "medium"
+
+A2P_AUTH_METHODS = {"API_KEY_HEADERS", "BASIC_AUTH", "BODY_CREDENTIALS"}
+A2P_DEFAULT_SOURCE_ADDRESSES = ["3JXENTRONET", "3J BILL", "3J ALERT", "3J PROMO", "3J FibrWIFI"]
+A2P_DEFAULT_SETTINGS = {
+    "enabled": False,
+    "provider": "SMART_MESSAGING_SUITE",
+    "base_url": "https://enterprise.messagingsuite.smart.com.ph",
+    "send_path": "/cgphttp/servlet/sendmsg",
+    "query_path": "/cgphttp/servlet/querymsg",
+    "cancel_path": "/cgphttp/servlet/cancelmsg",
+    "start_batch_path": "/cgphttp/servlet/startbatch",
+    "send_batch_path": "/cgphttp/servlet/sendbatch",
+    "credits_path": "/cgpapi/service1/credits",
+    "auth_method": "API_KEY_HEADERS",
+    "api_id": "",
+    "api_key": "",
+    "username": "",
+    "password": "",
+    "default_source": "",
+    "source_addresses": A2P_DEFAULT_SOURCE_ADDRESSES,
+    "registered_delivery": True,
+    "monthly_credit_limit": None,
+    "monthly_reset_day": 1,
+    "notes": "",
+    "last_credit_check_at": "",
+    "last_credit_check_status": "",
+    "last_credit_available": None,
+    "last_credit_response": "",
+    "last_credit_error": "",
+    "last_test_send_at": "",
+    "last_test_send_status": "",
+    "last_test_send_destination": "",
+    "last_test_send_message_id": "",
+    "last_test_send_response": "",
+    "last_test_send_error": "",
+}
+A2P_MAX_MESSAGE_LOGS = 500
 
 ACCESS_PASSWORD_MIN_LENGTH = 8
 ACCESS_PERMISSION_SEEDS = [
@@ -609,6 +869,11 @@ def load_persisted_system_settings() -> None:
         return
     _system_settings_persistence_loaded = True
     persisted = read_persisted_system_settings()
+    store = settings_store()
+    for section_name in ["branding", "business", "deployment"]:
+        section = persisted.get(section_name)
+        if isinstance(section, dict):
+            store.setdefault(section_name, {}).update(section)
     locations = persisted.get("locations")
     if isinstance(locations, list):
         _locations[:] = [normalize_persisted_location(location) for location in locations if isinstance(location, dict)]
@@ -621,16 +886,22 @@ def load_persisted_system_settings() -> None:
                 _deleted_default_location_fingerprints.add(normalized)
     avatar = persisted.get("avatar")
     if isinstance(avatar, dict):
-        settings_store()["avatar"] = avatar
+        store["avatar"] = avatar
     openai = persisted.get("openai")
     if isinstance(openai, dict):
-        settings_store()["openai"] = openai
+        store["openai"] = openai
+    a2p_messaging = persisted.get("a2pMessaging")
+    if isinstance(a2p_messaging, dict):
+        store["a2pMessaging"] = a2p_messaging
     access = persisted.get("access")
     if isinstance(access, dict):
-        settings_store()["access"] = normalize_access_store(access)
+        store["access"] = normalize_access_store(access)
     map_images = persisted.get("mapImages")
     if isinstance(map_images, dict):
-        settings_store()["mapImages"] = normalize_map_image_store(map_images)
+        store["mapImages"] = normalize_map_image_store(map_images)
+    map_providers = persisted.get("mapProviders")
+    if isinstance(map_providers, dict):
+        store["mapProviders"] = normalize_map_provider_store(map_providers)
 
 
 def save_persisted_system_settings(*section_names: str) -> None:
@@ -667,12 +938,445 @@ def save_persisted_map_image_store() -> None:
     save_persisted_system_settings("mapImages")
 
 
+def save_persisted_map_provider_store() -> None:
+    save_persisted_system_settings("mapProviders")
+
+
 def save_persisted_location_store() -> None:
     save_persisted_system_settings("locations")
 
 
 def save_persisted_access_store() -> None:
     save_persisted_system_settings("access")
+
+
+def save_persisted_a2p_messaging_store() -> None:
+    save_persisted_system_settings("a2pMessaging")
+
+
+def network_settings_persistence_path() -> Path | None:
+    default_path = "/app/data/network_settings.json" if os.path.isdir("/app/data") else ""
+    configured = os.getenv("NETWORK_SETTINGS_DATA_PATH", default_path).strip()
+    return Path(configured) if configured else None
+
+
+def read_json_file(path: Path | None, label: str) -> dict[str, Any]:
+    if path is None or not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail=f"Stored {label} data could not be loaded") from exc
+    return payload if isinstance(payload, dict) else {}
+
+
+def write_json_file(path: Path, payload: dict[str, Any], label: str) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = path.with_name(f".{path.name}.tmp")
+        temp_path.write_text(
+            json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        os.replace(temp_path, path)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"{label} data could not be restored") from exc
+
+
+def json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [json_safe(item) for item in value]
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, bytes):
+        return base64.b64encode(value).decode("ascii")
+    return value
+
+
+def backup_timestamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def settings_snapshot_for_backup() -> dict[str, Any]:
+    load_persisted_system_settings()
+    store = settings_store()
+    return json_safe({
+        "branding": store.get("branding", {}),
+        "business": store.get("business", {}),
+        "deployment": store.get("deployment", {}),
+    })
+
+
+def system_settings_backup_counts(payload: dict[str, Any]) -> dict[str, int]:
+    avatar_uploads = payload.get("avatar", {}).get("uploads", {}) if isinstance(payload.get("avatar"), dict) else {}
+    map_uploads = payload.get("mapImages", {}).get("uploads", {}) if isinstance(payload.get("mapImages"), dict) else {}
+    map_providers = payload.get("mapProviders", {}).get("providers", []) if isinstance(payload.get("mapProviders"), dict) else []
+    avatar_count = 0
+    if isinstance(avatar_uploads, dict):
+        for gender_uploads in avatar_uploads.values():
+            if isinstance(gender_uploads, dict):
+                avatar_count += len(gender_uploads)
+    return {
+        "locations": len(payload.get("locations") or []),
+        "deletedLocationMarkers": len(payload.get("deleted_default_location_fingerprints") or []),
+        "mapImages": len(map_uploads) if isinstance(map_uploads, dict) else 0,
+        "mapProviders": len(map_providers) if isinstance(map_providers, list) else 0,
+        "avatarImages": avatar_count,
+        "a2pMessageLogs": len(payload.get("a2pMessaging", {}).get("messageLogs", []) if isinstance(payload.get("a2pMessaging"), dict) else []),
+        "accessRoles": len(payload.get("access", {}).get("roles", []) if isinstance(payload.get("access"), dict) else []),
+        "accessUsers": len(payload.get("access", {}).get("users", []) if isinstance(payload.get("access"), dict) else []),
+    }
+
+
+def network_settings_backup_counts(payload: dict[str, Any]) -> dict[str, int]:
+    return {
+        "mikrotikRouters": len([
+            item for item in payload.get("networkDevices", [])
+            if isinstance(item, dict) and item.get("deviceType") == "MIKROTIK" and item.get("accessMethod") == "API" and not item.get("deletedAt")
+        ]),
+        "snmpOlts": len([
+            item for item in payload.get("networkDevices", [])
+            if isinstance(item, dict) and item.get("accessMethod") == "SNMP" and not item.get("deletedAt")
+        ]),
+        "olts": len([item for item in payload.get("olts", []) if isinstance(item, dict) and not item.get("deletedAt")]),
+        "ponPorts": len([item for item in payload.get("ponPorts", []) if isinstance(item, dict) and not item.get("deletedAt")]),
+        "napBoxes": len([item for item in payload.get("napBoxes", []) if isinstance(item, dict) and not item.get("deletedAt")]),
+        "splitters": len([item for item in payload.get("fbts", []) if isinstance(item, dict) and not item.get("deletedAt")]),
+        "onus": len([item for item in payload.get("onus", []) if isinstance(item, dict) and not item.get("deletedAt")]),
+    }
+
+
+def database_connection_status() -> dict[str, Any]:
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if not database_url:
+        return {"enabled": False, "status": "not_configured", "tables": []}
+    if psycopg is None or dict_row is None:
+        return {"enabled": False, "status": "driver_unavailable", "tables": []}
+    try:
+        with psycopg.connect(database_url, row_factory=dict_row) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+                    ORDER BY table_name
+                    """
+                )
+                table_names = [row["table_name"] for row in cursor.fetchall()]
+                counts = {}
+                for table_name in table_names:
+                    cursor.execute(sql.SQL("SELECT count(*) AS total FROM {}").format(sql.Identifier(table_name)))
+                    counts[table_name] = int(cursor.fetchone()["total"])
+        return {"enabled": True, "status": "available", "tables": table_names, "rowCounts": counts}
+    except Exception as exc:
+        return {"enabled": False, "status": "unavailable", "message": str(exc), "tables": []}
+
+
+def database_backup_snapshot() -> dict[str, Any]:
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if not database_url:
+        return {"enabled": False, "status": "not_configured", "tables": {}, "metadataTables": {}}
+    if psycopg is None or dict_row is None or sql is None:
+        return {"enabled": False, "status": "driver_unavailable", "tables": {}, "metadataTables": {}}
+    try:
+        with psycopg.connect(database_url, row_factory=dict_row) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+                    ORDER BY table_name
+                    """
+                )
+                table_names = [row["table_name"] for row in cursor.fetchall()]
+                tables: dict[str, Any] = {}
+                metadata_tables: dict[str, Any] = {}
+                for table_name in table_names:
+                    cursor.execute(
+                        """
+                        SELECT column_name, data_type
+                        FROM information_schema.columns
+                        WHERE table_schema = 'public' AND table_name = %s
+                        ORDER BY ordinal_position
+                        """,
+                        (table_name,),
+                    )
+                    columns = [dict(row) for row in cursor.fetchall()]
+                    cursor.execute(sql.SQL("SELECT * FROM {}").format(sql.Identifier(table_name)))
+                    rows = [json_safe(dict(row)) for row in cursor.fetchall()]
+                    table_snapshot = {"columns": columns, "rowCount": len(rows), "rows": rows}
+                    if table_name in BACKUP_APPLICATION_TABLE_EXCLUDES:
+                        metadata_tables[table_name] = table_snapshot
+                    else:
+                        tables[table_name] = table_snapshot
+        return {"enabled": True, "status": "ok", "tables": tables, "metadataTables": metadata_tables}
+    except Exception as exc:
+        return {"enabled": False, "status": "error", "message": str(exc), "tables": {}, "metadataTables": {}}
+
+
+def build_backup_payload(backup_type: str, admin: dict[str, Any]) -> dict[str, Any]:
+    system_data = read_persisted_system_settings()
+    network_path = network_settings_persistence_path()
+    network_data = read_json_file(network_path, "Network Settings")
+    sections: dict[str, Any] = {
+        "applicationSettings": {
+            "description": "Current branding, business, and deployment settings from the running app shell.",
+            "data": settings_snapshot_for_backup(),
+        },
+        "systemSettings": {
+            "description": "Persisted System Settings data including locations, map providers, Access, OPENAI, A2P Messaging, avatars, and image assets.",
+            "path": str(system_settings_persistence_path()),
+            "counts": system_settings_backup_counts(system_data),
+            "data": json_safe(system_data),
+        },
+        "networkSettings": {
+            "description": "Persisted Network Settings data including MikroTik API routers, SNMP OLT devices, OLT/PON/NAP, splitter, fiber mapping, capture, and ONU records.",
+            "path": str(network_path) if network_path else "",
+            "counts": network_settings_backup_counts(network_data),
+            "data": json_safe(network_data),
+        },
+    }
+    if backup_type == "full":
+        sections["database"] = {
+            "description": "Supported PostgreSQL application tables. Migration bookkeeping is exported as metadata and is not restored.",
+            "data": database_backup_snapshot(),
+        }
+    return {
+        "schema": BACKUP_SCHEMA_ID,
+        "schemaVersion": BACKUP_SCHEMA_VERSION,
+        "backupType": backup_type,
+        "createdAt": now_iso(),
+        "createdBy": {
+            "id": admin.get("id"),
+            "username": admin.get("username"),
+        },
+        "sensitive": True,
+        "sensitiveNotice": "This backup can include map provider API keys, OpenAI API keys, A2P Messaging API keys, MikroTik API credentials, SNMP communities, SNMPv3 secrets, access users, and uploaded image data.",
+        "sections": sections,
+    }
+
+
+def backup_json_response(payload: dict[str, Any], backup_type: str) -> JSONResponse:
+    filename = f"threejmain-{backup_type}-backup-{backup_timestamp()}.json"
+    return JSONResponse(
+        content=payload,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def backup_section_data(backup: dict[str, Any], section_name: str) -> Any:
+    section = backup.get("sections", {}).get(section_name) if isinstance(backup.get("sections"), dict) else None
+    if isinstance(section, dict):
+        return section.get("data")
+    return None
+
+
+def restore_application_settings(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        return {"status": "skipped", "message": "No application settings section found."}
+    store = settings_store()
+    restored = []
+    for section_name in ["branding", "business", "deployment"]:
+        if isinstance(data.get(section_name), dict):
+            store[section_name] = json_safe(data[section_name])
+            restored.append(section_name)
+    if restored:
+        save_persisted_system_settings(*restored)
+    return {"status": "restored", "sections": restored}
+
+
+def restore_system_settings_data(data: Any) -> dict[str, Any]:
+    global _system_settings_persistence_loaded
+    if not isinstance(data, dict):
+        return {"status": "skipped", "message": "No System Settings data section found."}
+    write_json_file(system_settings_persistence_path(), json_safe(data), "System Settings")
+    store = settings_store()
+    for section_name in ["avatar", "openai", "a2pMessaging", "access", "mapImages", "mapProviders"]:
+        store.pop(section_name, None)
+    _locations.clear()
+    _deleted_default_location_fingerprints.clear()
+    _system_settings_persistence_loaded = False
+    load_persisted_system_settings()
+    return {"status": "restored", "counts": system_settings_backup_counts(data)}
+
+
+def apply_network_settings_runtime_state(data: dict[str, Any]) -> dict[str, Any]:
+    try:
+        import importlib
+
+        network_router = importlib.import_module("network_settings.router")
+        network_router.olts = list(data.get("olts") or [])
+        network_router.pon_ports = list(data.get("ponPorts") or [])
+        network_router.nap_boxes = list(data.get("napBoxes") or [])
+        network_router.fbts = list(data.get("fbts") or [])
+        network_router.fiber_optic_losses = list(data.get("fiberOpticLosses") or [])
+        network_router.fiber_color_settings = network_router.normalize_fiber_color_settings(data.get("fiberColorSettings"))
+        network_router.fiber_mapping = network_router.normalize_fiber_mapping(data.get("fiberMapping"))
+        network_router.network_devices = list(data.get("networkDevices") or [])
+        network_router.device_captures = list(data.get("deviceCaptures") or [])
+        network_router.onus = list(data.get("onus") or [])
+        network_router._data_loaded = True
+        capture_history_changed = network_router.normalize_capture_history()
+        inventory_changed = network_router.normalize_pon_inventory_defaults()
+        if capture_history_changed or inventory_changed:
+            network_router.save_network_settings_data()
+        return {"status": "active", "message": "Network Settings runtime state updated."}
+    except Exception as exc:
+        return {"status": "file_restored", "message": f"Network Settings data file restored; restart API to load active runtime state. {exc}"}
+
+
+def restore_network_settings_data(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        return {"status": "skipped", "message": "No Network Settings data section found."}
+    path = network_settings_persistence_path()
+    if path is None:
+        return {"status": "skipped", "message": "NETWORK_SETTINGS_DATA_PATH is not configured."}
+    write_json_file(path, json_safe(data), "Network Settings")
+    return {"status": "restored", "counts": network_settings_backup_counts(data), "runtime": apply_network_settings_runtime_state(data)}
+
+
+def restore_database_snapshot(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict) or not isinstance(data.get("tables"), dict):
+        return {"status": "skipped", "message": "No database table data section found."}
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if not database_url:
+        return {"status": "skipped", "message": "DATABASE_URL is not configured."}
+    if psycopg is None or dict_row is None or sql is None or Json is None:
+        return {"status": "skipped", "message": "PostgreSQL driver is unavailable."}
+    restored: dict[str, int] = {}
+    skipped: dict[str, str] = {}
+    try:
+        with psycopg.connect(database_url, row_factory=dict_row) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+                    """
+                )
+                existing_tables = {row["table_name"] for row in cursor.fetchall()}
+                for table_name, table_payload in data.get("tables", {}).items():
+                    if table_name in BACKUP_APPLICATION_TABLE_EXCLUDES:
+                        skipped[table_name] = "Metadata table restore is intentionally skipped."
+                        continue
+                    if table_name not in existing_tables:
+                        skipped[table_name] = "Table does not exist in this deployment."
+                        continue
+                    rows = table_payload.get("rows") if isinstance(table_payload, dict) else None
+                    if not isinstance(rows, list):
+                        skipped[table_name] = "Table backup rows are missing or invalid."
+                        continue
+                    cursor.execute(
+                        """
+                        SELECT column_name, data_type
+                        FROM information_schema.columns
+                        WHERE table_schema = 'public' AND table_name = %s
+                        ORDER BY ordinal_position
+                        """,
+                        (table_name,),
+                    )
+                    column_types = {row["column_name"]: row["data_type"] for row in cursor.fetchall()}
+                    if not column_types:
+                        skipped[table_name] = "No restorable columns found."
+                        continue
+                    cursor.execute(sql.SQL("TRUNCATE TABLE {} RESTART IDENTITY CASCADE").format(sql.Identifier(table_name)))
+                    inserted = 0
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            continue
+                        columns = [column for column in column_types if column in row]
+                        if not columns:
+                            continue
+                        values = []
+                        for column in columns:
+                            value = row.get(column)
+                            if column_types[column] in {"json", "jsonb"} and value is not None:
+                                values.append(Json(value))
+                            else:
+                                values.append(value)
+                        placeholders = sql.SQL(", ").join(sql.Placeholder() for _ in columns)
+                        cursor.execute(
+                            sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
+                                sql.Identifier(table_name),
+                                sql.SQL(", ").join(sql.Identifier(column) for column in columns),
+                                placeholders,
+                            ),
+                            values,
+                        )
+                        inserted += 1
+                    restored[table_name] = inserted
+        return {"status": "restored", "tables": restored, "skipped": skipped}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Database data could not be restored: {exc}") from exc
+
+
+def restore_backup_data(backup: dict[str, Any], admin: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(backup, dict):
+        raise HTTPException(status_code=400, detail="Backup file must contain a JSON object")
+    if backup.get("schema") != BACKUP_SCHEMA_ID:
+        raise HTTPException(status_code=400, detail="Backup file is not a 3J ISP Management backup")
+    if int(backup.get("schemaVersion") or 0) != BACKUP_SCHEMA_VERSION:
+        raise HTTPException(status_code=400, detail="Backup schema version is not supported")
+    backup_type = normalize_location_text(backup.get("backupType")).lower()
+    if backup_type not in {"configuration", "full"}:
+        raise HTTPException(status_code=400, detail="Backup type is not supported")
+    result = {
+        "backupType": backup_type,
+        "systemSettings": restore_system_settings_data(backup_section_data(backup, "systemSettings")),
+        "applicationSettings": restore_application_settings(backup_section_data(backup, "applicationSettings")),
+        "networkSettings": restore_network_settings_data(backup_section_data(backup, "networkSettings")),
+    }
+    if backup_type == "full":
+        result["database"] = restore_database_snapshot(backup_section_data(backup, "database"))
+    add_audit(
+        "system_backup_restored",
+        "SystemBackup",
+        backup_type,
+        {"backup_type": backup_type, "created_at": backup.get("createdAt"), "result": {key: value.get("status") if isinstance(value, dict) else "unknown" for key, value in result.items()}},
+        admin["username"],
+    )
+    return result
+
+
+def public_backup_metadata() -> dict[str, Any]:
+    system_data = read_persisted_system_settings()
+    network_data = read_json_file(network_settings_persistence_path(), "Network Settings")
+    database_status = database_connection_status()
+    return {
+        "schema": BACKUP_SCHEMA_ID,
+        "schemaVersion": BACKUP_SCHEMA_VERSION,
+        "acceptedFileTypes": [".json", "application/json"],
+        "sensitiveNotice": "Backup files can include map provider API keys, OpenAI API keys, A2P Messaging API keys, MikroTik API passwords, SNMP communities, SNMPv3 secrets, access users, and uploaded image data. Store downloaded backups securely.",
+        "configuration": {
+            "includes": [
+                "Branding, business, and deployment settings from the running app shell.",
+                "System Settings persisted configuration: locations, map providers, Access, OPENAI, A2P Messaging, avatar, and Images uploads.",
+                "Network Settings persisted configuration: MikroTik API routers, SNMP OLT devices, OLT/PON/NAP, splitters, fiber mapping, capture history, and ONU records.",
+            ],
+            "counts": {
+                "systemSettings": system_settings_backup_counts(system_data),
+                "networkSettings": network_settings_backup_counts(network_data),
+            },
+            "restoreBehavior": "Restoring a configuration backup replaces the persisted System Settings and Network Settings configuration stores. Network Settings runtime state is refreshed immediately when its module is loaded.",
+        },
+        "full": {
+            "includes": [
+                "Everything in the configuration backup.",
+                "Supported PostgreSQL application tables such as Customer Profiling customer records.",
+            ],
+            "database": database_status,
+            "restoreBehavior": "Restoring a full backup replaces supported application table rows. Migration metadata is exported for reference and is not overwritten.",
+        },
+    }
 
 
 def normalize_access_text(value: Any) -> str:
@@ -1077,6 +1781,146 @@ def map_image_payload_summary(record: dict[str, Any] | None) -> dict[str, Any] |
     }
 
 
+def normalize_map_provider_id(value: Any, fallback: str = "") -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "-", normalize_location_text(value).lower()).strip("-")
+    return normalized or fallback
+
+
+def map_provider_number(value: Any, fallback: int, minimum: int = 0, maximum: int = 24) -> int:
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        return fallback
+    return max(minimum, min(maximum, number))
+
+
+def normalize_map_provider_record(raw: dict[str, Any] | None, preset: dict[str, Any] | None = None) -> dict[str, Any]:
+    raw = raw if isinstance(raw, dict) else {}
+    preset = preset if isinstance(preset, dict) else {}
+    merged = {**preset, **raw}
+    tile_url = normalize_location_text(merged.get("tileUrl") or merged.get("tile_url"))[:600]
+    provider_type = normalize_location_text(merged.get("type")).lower()
+    if provider_type not in MAP_PROVIDER_TYPES:
+        provider_type = normalize_location_text(preset.get("type") or "custom").lower()
+    if provider_type not in MAP_PROVIDER_TYPES:
+        provider_type = "custom"
+    requires_api_key = bool(
+        merged.get("requiresApiKey")
+        or merged.get("requires_api_key")
+        or "{apiKey}" in tile_url
+        or "{token}" in tile_url
+    )
+    google_layer_types = merged.get("googleLayerTypes") or merged.get("google_layer_types") or []
+    if not isinstance(google_layer_types, list):
+        google_layer_types = []
+    return {
+        "id": normalize_map_provider_id(merged.get("id"), normalize_map_provider_id(preset.get("id"))),
+        "label": normalize_location_text(merged.get("label"))[:120]
+        or normalize_location_text(preset.get("label"))[:120]
+        or "Map Provider",
+        "type": provider_type,
+        "tileUrl": tile_url,
+        "attribution": normalize_location_text(merged.get("attribution"))[:240],
+        "minZoom": map_provider_number(merged.get("minZoom") or merged.get("min_zoom"), int(preset.get("minZoom") or 1), 0, 24),
+        "maxZoom": map_provider_number(merged.get("maxZoom") or merged.get("max_zoom"), int(preset.get("maxZoom") or 19), 1, 24),
+        "enabled": bool(merged.get("enabled")),
+        "builtIn": bool(preset.get("builtIn") or preset.get("built_in") or merged.get("builtIn") or merged.get("built_in")),
+        "requiresApiKey": requires_api_key,
+        "apiKey": normalize_location_text(merged.get("apiKey") or merged.get("api_key"))[:300],
+        "sessionProvider": normalize_location_text(merged.get("sessionProvider") or merged.get("session_provider"))[:80],
+        "googleMapType": normalize_location_text(merged.get("googleMapType") or merged.get("google_map_type"))[:40],
+        "googleLanguage": normalize_location_text(merged.get("googleLanguage") or merged.get("google_language") or "en-US")[:24],
+        "googleRegion": normalize_location_text(merged.get("googleRegion") or merged.get("google_region") or "PH").upper()[:8],
+        "googleLayerTypes": [
+            normalize_location_text(item)[:40]
+            for item in google_layer_types
+            if normalize_location_text(item)
+        ],
+        "googleOverlay": bool(merged.get("googleOverlay") or merged.get("google_overlay")),
+        "notes": normalize_location_text(merged.get("notes"))[:300],
+    }
+
+
+def map_provider_is_configured(provider: dict[str, Any]) -> bool:
+    if not provider.get("tileUrl"):
+        return False
+    if not provider.get("requiresApiKey"):
+        return True
+    return bool(normalize_location_text(provider.get("apiKey")))
+
+
+def map_provider_is_usable(provider: dict[str, Any]) -> bool:
+    return bool(provider.get("enabled") and map_provider_is_configured(provider))
+
+
+def normalize_map_provider_store(raw: dict[str, Any] | None) -> dict[str, Any]:
+    raw = raw if isinstance(raw, dict) else {}
+    provided = raw.get("providers") if isinstance(raw.get("providers"), list) else []
+    provided_by_id: dict[str, dict[str, Any]] = {}
+    for item in provided:
+        if not isinstance(item, dict):
+            continue
+        provider_id = normalize_map_provider_id(item.get("id"))
+        if provider_id and provider_id not in provided_by_id:
+            provided_by_id[provider_id] = item
+
+    presets_by_id = {provider["id"]: provider for provider in DEFAULT_MAP_PROVIDERS}
+    providers = [
+        normalize_map_provider_record(provided_by_id.get(preset["id"]), preset)
+        for preset in DEFAULT_MAP_PROVIDERS
+    ]
+    for provider_id, item in provided_by_id.items():
+        if provider_id in presets_by_id:
+            continue
+        provider = normalize_map_provider_record(item)
+        if provider["id"] and provider["tileUrl"]:
+            providers.append(provider)
+
+    requested_default = normalize_map_provider_id(raw.get("defaultProviderId") or raw.get("default_provider_id"), DEFAULT_MAP_PROVIDER_ID)
+    usable_ids = {provider["id"] for provider in providers if map_provider_is_usable(provider)}
+    first_usable_id = next((provider["id"] for provider in providers if map_provider_is_usable(provider)), DEFAULT_MAP_PROVIDER_ID)
+    default_provider_id = requested_default if requested_default in usable_ids else first_usable_id
+    return {
+        "defaultProviderId": default_provider_id,
+        "providers": providers,
+    }
+
+
+def map_provider_store() -> dict[str, Any]:
+    load_persisted_system_settings()
+    store = settings_store()
+    map_providers = normalize_map_provider_store(store.setdefault("mapProviders", {}))
+    store["mapProviders"] = map_providers
+    return map_providers
+
+
+def public_map_provider_settings() -> dict[str, Any]:
+    store = map_provider_store()
+    return {
+        "defaultProviderId": store.get("defaultProviderId") or DEFAULT_MAP_PROVIDER_ID,
+        "providerTypes": [
+            {"id": "street", "label": "Street"},
+            {"id": "satellite", "label": "Satellite"},
+            {"id": "hybrid", "label": "Hybrid"},
+            {"id": "custom", "label": "Custom"},
+        ],
+        "providers": [
+            {
+                **provider,
+                "configured": map_provider_is_configured(provider),
+                "usable": map_provider_is_usable(provider),
+            }
+            for provider in store.get("providers", [])
+        ],
+        "guidelines": [
+            "Use XYZ raster tile URL templates with {z}, {x}, and {y} placeholders.",
+            "Use {apiKey} or {token} in the URL when a provider requires a browser-side public key.",
+            "Google Maps built-in providers use the official Map Tiles API session flow and require a Google API key with Map Tiles API enabled.",
+            "Set the provider max zoom to the highest zoom level that returns real tiles in your service area.",
+        ],
+    }
+
+
 def public_map_image_settings() -> dict[str, Any]:
     store = map_image_store()
     uploads = store.get("uploads", {})
@@ -1085,10 +1929,10 @@ def public_map_image_settings() -> dict[str, Any]:
         "accepted_mime_types": list(ALLOWED_MAP_IMAGE_MIME_TYPES.keys()),
         "max_bytes": MAX_MAP_IMAGE_BYTES,
         "guidelines": [
-            "Use PNG or WebP for crisp transparent marker icons.",
-            "Use JPG only for photo-like markers; transparent backgrounds are not preserved in JPG.",
-            "Keep icons centered with safe padding so they remain readable at small map zoom levels.",
-            "Recommended marker art is 128 x 128 px for NAP boxes and 160 x 160 px for OLT devices.",
+            "Use PNG or WebP for crisp transparent network equipment artwork.",
+            "Use JPG only for photo-like images; transparent backgrounds are not preserved in JPG.",
+            "Keep icons centered with safe padding so they remain readable at small map and canvas zoom levels.",
+            "Recommended art is 128 x 128 px for NAP boxes, 160 x 160 px for OLT devices, and wide 1x8 or 1x16 PLC splitter artwork.",
             "Keep each image at or below 512 KB.",
         ],
         "targets": [
@@ -1317,6 +2161,472 @@ def extract_openai_response_text(response_data: dict[str, Any]) -> str:
                     if isinstance(text, str) and text.strip():
                         texts.append(text.strip())
     return "\n".join(texts).strip()
+
+
+def normalize_a2p_text(value: Any, max_length: int = 500) -> str:
+    text = "" if value is None else str(value)
+    text = text.replace("\x00", "")
+    text = re.sub(r"[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    return text.strip()[:max_length]
+
+
+def normalize_a2p_path(value: Any, fallback: str) -> str:
+    path = normalize_a2p_text(value or fallback, 200)
+    if not path:
+        path = fallback
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return path
+
+
+def normalize_a2p_base_url(value: Any) -> str:
+    url = normalize_a2p_text(value or A2P_DEFAULT_SETTINGS["base_url"], 300).rstrip("/")
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="A2P base URL must be a valid http or https URL")
+    return url
+
+
+def normalize_a2p_source_addresses(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_items = re.split(r"[\n,]+", value)
+    elif isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = []
+    addresses: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        source = normalize_a2p_text(item, 80)
+        if not source or source in seen:
+            continue
+        seen.add(source)
+        addresses.append(source)
+    return addresses[:50]
+
+
+def mask_a2p_secret(value: str | None) -> str | None:
+    text = normalize_a2p_text(value)
+    if not text:
+        return None
+    if len(text) <= 8:
+        return f"{text[:2]}..."
+    return f"{text[:4]}...{text[-4:]}"
+
+
+def a2p_join_url(base_url: str, path: str) -> str:
+    return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+
+
+def normalize_a2p_destination(value: str) -> str:
+    digits = re.sub(r"\D", "", normalize_a2p_text(value, 32))
+    if digits.startswith("09") and len(digits) == 11:
+        digits = f"63{digits[1:]}"
+    if not re.fullmatch(r"\d{8,15}", digits or ""):
+        raise HTTPException(status_code=400, detail="Destination must be an international-format mobile number, for example 639171234567")
+    return digits
+
+
+def safe_mask_a2p_destination(destination: str | None) -> str:
+    digits = re.sub(r"\D", "", normalize_a2p_text(destination, 32))
+    if not digits:
+        return ""
+    if len(digits) <= 6:
+        return "***"
+    return f"{digits[:4]}...{digits[-3:]}"
+
+
+def a2p_messaging_store() -> dict[str, Any]:
+    load_persisted_system_settings()
+    store = settings_store()
+    current = store.setdefault("a2pMessaging", {})
+    for key, value in A2P_DEFAULT_SETTINGS.items():
+        if key not in current:
+            current[key] = json.loads(json.dumps(value))
+    current["enabled"] = bool(current.get("enabled"))
+    current["provider"] = normalize_a2p_text(current.get("provider") or A2P_DEFAULT_SETTINGS["provider"], 80)
+    current["base_url"] = normalize_a2p_base_url(current.get("base_url"))
+    for key in ("send_path", "query_path", "cancel_path", "start_batch_path", "send_batch_path", "credits_path"):
+        current[key] = normalize_a2p_path(current.get(key), A2P_DEFAULT_SETTINGS[key])
+    auth_method = normalize_a2p_text(current.get("auth_method") or "API_KEY_HEADERS", 40).upper()
+    current["auth_method"] = auth_method if auth_method in A2P_AUTH_METHODS else "API_KEY_HEADERS"
+    current["api_id"] = normalize_a2p_text(current.get("api_id"), 200)
+    current["api_key"] = normalize_a2p_text(current.get("api_key"), 500)
+    current["username"] = normalize_a2p_text(current.get("username"), 200)
+    current["password"] = normalize_a2p_text(current.get("password"), 500)
+    current["default_source"] = normalize_a2p_text(current.get("default_source"), 80)
+    current["source_addresses"] = normalize_a2p_source_addresses(current.get("source_addresses")) or A2P_DEFAULT_SOURCE_ADDRESSES.copy()
+    current["registered_delivery"] = bool(current.get("registered_delivery", True))
+    monthly_credit_limit = current.get("monthly_credit_limit")
+    current["monthly_credit_limit"] = int(monthly_credit_limit) if monthly_credit_limit not in (None, "") else None
+    current["monthly_reset_day"] = min(31, max(1, int(current.get("monthly_reset_day") or 1)))
+    current["notes"] = normalize_a2p_text(current.get("notes"), 1000)
+    logs = current.get("messageLogs")
+    current["messageLogs"] = logs if isinstance(logs, list) else []
+    read_ids = current.get("notificationReadIds")
+    current["notificationReadIds"] = [normalize_a2p_text(item, 120) for item in read_ids if normalize_a2p_text(item, 120)] if isinstance(read_ids, list) else []
+    return current
+
+
+def public_a2p_messaging_settings() -> dict[str, Any]:
+    store = a2p_messaging_store()
+    return {
+        "enabled": bool(store.get("enabled")),
+        "provider": store.get("provider"),
+        "base_url": store.get("base_url"),
+        "send_path": store.get("send_path"),
+        "query_path": store.get("query_path"),
+        "cancel_path": store.get("cancel_path"),
+        "start_batch_path": store.get("start_batch_path"),
+        "send_batch_path": store.get("send_batch_path"),
+        "credits_path": store.get("credits_path"),
+        "auth_method": store.get("auth_method"),
+        "api_id": store.get("api_id"),
+        "api_key_configured": bool(normalize_a2p_text(store.get("api_key"))),
+        "api_key_hint": mask_a2p_secret(store.get("api_key")),
+        "username": store.get("username"),
+        "password_configured": bool(normalize_a2p_text(store.get("password"))),
+        "password_hint": mask_a2p_secret(store.get("password")),
+        "default_source": store.get("default_source"),
+        "source_addresses": store.get("source_addresses") or [],
+        "registered_delivery": bool(store.get("registered_delivery")),
+        "monthly_credit_limit": store.get("monthly_credit_limit"),
+        "monthly_reset_day": store.get("monthly_reset_day"),
+        "notes": store.get("notes"),
+        "last_credit_check_at": store.get("last_credit_check_at"),
+        "last_credit_check_status": store.get("last_credit_check_status"),
+        "last_credit_available": store.get("last_credit_available"),
+        "last_credit_response": store.get("last_credit_response"),
+        "last_credit_error": store.get("last_credit_error"),
+        "last_test_send_at": store.get("last_test_send_at"),
+        "last_test_send_status": store.get("last_test_send_status"),
+        "last_test_send_destination": store.get("last_test_send_destination"),
+        "last_test_send_message_id": store.get("last_test_send_message_id"),
+        "last_test_send_response": store.get("last_test_send_response"),
+        "last_test_send_error": store.get("last_test_send_error"),
+        "capabilities": {
+            "send_sms": True,
+            "send_batch": True,
+            "query_message": True,
+            "cancel_message": True,
+            "delivery_receipts": True,
+            "mobile_originated_replies": True,
+            "credits_query": True,
+            "max_destinations_per_sendmsg": 300,
+            "documented_request_rate_per_customer_ip": "100 requests/second",
+        },
+        "credits_tracking": {
+            "smart_prepaid_credits_endpoint": "/cgpapi/service1/credits",
+            "direct_balance_check_supported": True,
+            "monthly_usage_requires_local_message_logs": True,
+            "portal_reports_available": True,
+        },
+    }
+
+
+def a2p_auth_headers_and_params(store: dict[str, Any]) -> tuple[dict[str, str], dict[str, str]]:
+    headers = {"User-Agent": "3JMain/0.1 a2p-messaging"}
+    extra_params: dict[str, str] = {}
+    api_key = normalize_a2p_text(store.get("api_key"), 500)
+    username = normalize_a2p_text(store.get("username"), 200)
+    password = normalize_a2p_text(store.get("password"), 500)
+    auth_method = store.get("auth_method")
+    if auth_method == "API_KEY_HEADERS":
+        if not store.get("api_id") or not api_key:
+            raise HTTPException(status_code=400, detail="Save API ID and API key first")
+        headers["X-MEMS-API-ID"] = store["api_id"]
+        headers["X-MEMS-API-KEY"] = api_key
+    elif auth_method == "BASIC_AUTH":
+        if not username or not password:
+            raise HTTPException(status_code=400, detail="Save username and password first")
+        token_value = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+        headers["Authorization"] = f"Basic {token_value}"
+    else:
+        if not username or not password:
+            raise HTTPException(status_code=400, detail="Save username and password first")
+        extra_params["username"] = username
+        extra_params["password"] = password
+    return headers, extra_params
+
+
+def a2p_http_request(
+    url: str,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+    form_data: dict[str, Any] | None = None,
+    timeout: int = 30,
+) -> tuple[int, str]:
+    encoded = None
+    request_headers = headers.copy() if headers else {}
+    if form_data is not None:
+        encoded = urllib.parse.urlencode(form_data).encode("utf-8")
+        request_headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
+    request = urllib.request.Request(url, data=encoded, headers=request_headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+            return int(response.status), raw.decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        raw = exc.read()
+        return int(exc.code), raw.decode("utf-8", errors="replace")
+    except urllib.error.URLError as exc:
+        raise HTTPException(status_code=400, detail=f"Smart request failed: {exc.reason}") from exc
+
+
+def parse_a2p_credit_available(text: str):
+    clean = normalize_a2p_text(text, 1000)
+    patterns = [
+        r"Available\s*[:=]?\s*([\d,]+(?:\.\d+)?)",
+        r"Credits?\s*[:=]?\s*([\d,]+(?:\.\d+)?)",
+        r"Balance\s*[:=]?\s*([\d,]+(?:\.\d+)?)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, clean, re.IGNORECASE)
+        if match:
+            value = match.group(1).replace(",", "")
+            return float(value) if "." in value else int(value)
+    if re.fullmatch(r"[\d,]+(?:\.\d+)?", clean):
+        value = clean.replace(",", "")
+        return float(value) if "." in value else int(value)
+    return None
+
+
+def a2p_message_log_public(log: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": log.get("id"),
+        "provider": log.get("provider"),
+        "purpose": log.get("purpose"),
+        "destination": log.get("destination"),
+        "destination_masked": log.get("destination_masked") or safe_mask_a2p_destination(log.get("destination")),
+        "source": log.get("source"),
+        "message_text": log.get("message_text"),
+        "message_preview": log.get("message_preview"),
+        "status": log.get("status"),
+        "smart_status": log.get("smart_status"),
+        "http_status": log.get("http_status"),
+        "message_id": log.get("message_id"),
+        "response_summary": log.get("response_summary"),
+        "error_message": log.get("error_message"),
+        "request_context": sanitize_summary(log.get("request_context") or {}),
+        "created_at": log.get("created_at"),
+        "updated_at": log.get("updated_at"),
+    }
+
+
+def record_a2p_message_log(
+    *,
+    status: str,
+    destination: str | None,
+    source: str | None,
+    message_text: str | None,
+    purpose: str = "GENERAL",
+    provider: str = "SMART_MESSAGING_SUITE",
+    smart_status: str | None = None,
+    http_status: int | None = None,
+    message_id: str | None = None,
+    response_summary: str | None = None,
+    error_message: str | None = None,
+    request_context: dict[str, Any] | None = None,
+    created_by_admin_id: str | None = None,
+) -> str:
+    normalized_status = normalize_a2p_text(status, 20).upper() or "FAILED"
+    if normalized_status not in {"PENDING", "SUCCESS", "FAILED"}:
+        normalized_status = "FAILED"
+    now = now_iso()
+    log = {
+        "id": str(uuid4()),
+        "provider": normalize_a2p_text(provider, 80) or "SMART_MESSAGING_SUITE",
+        "purpose": normalize_a2p_text(purpose, 80).upper() or "GENERAL",
+        "destination": normalize_a2p_text(destination, 32),
+        "destination_masked": safe_mask_a2p_destination(destination),
+        "source": normalize_a2p_text(source, 80),
+        "message_text": normalize_a2p_text(message_text, 1000),
+        "message_preview": normalize_a2p_text(message_text, 160),
+        "status": normalized_status,
+        "smart_status": normalize_a2p_text(smart_status, 80),
+        "http_status": http_status,
+        "message_id": normalize_a2p_text(message_id, 120),
+        "response_summary": normalize_a2p_text(response_summary, 1000),
+        "error_message": normalize_a2p_text(error_message, 1000),
+        "request_context": sanitize_summary(request_context or {}),
+        "created_by_admin_id": created_by_admin_id,
+        "created_at": now,
+        "updated_at": now,
+    }
+    store = a2p_messaging_store()
+    logs = [log, *[item for item in store.get("messageLogs", []) if isinstance(item, dict)]]
+    store["messageLogs"] = logs[:A2P_MAX_MESSAGE_LOGS]
+    save_persisted_a2p_messaging_store()
+    return log["id"]
+
+
+def send_a2p_sms_message(
+    destination: str,
+    message_text: str,
+    source: str | None = None,
+    *,
+    purpose: str = "GENERAL",
+    request_context: dict[str, Any] | None = None,
+    created_by_admin_id: str | None = None,
+    registered_delivery: bool | None = None,
+) -> dict[str, Any]:
+    raw_destination = normalize_a2p_text(destination, 32)
+    raw_message = normalize_a2p_text(message_text, 1000)
+    clean_source = ""
+    store = a2p_messaging_store()
+    try:
+        if not store.get("enabled"):
+            raise HTTPException(status_code=400, detail="A2P Messaging is disabled in System Settings.")
+        clean_message = normalize_a2p_text(message_text, 500)
+        if not clean_message:
+            raise HTTPException(status_code=400, detail="SMS message text is required.")
+        clean_destination = normalize_a2p_destination(destination)
+        clean_source = normalize_a2p_text(source if source is not None else store.get("default_source"), 80)
+        headers, extra_params = a2p_auth_headers_and_params(store)
+        headers["Accept"] = "text/plain"
+        delivery_requested = store.get("registered_delivery") if registered_delivery is None else bool(registered_delivery)
+        form_data = {
+            **extra_params,
+            "destination": clean_destination,
+            "text": clean_message,
+            "registered": "1" if delivery_requested else "0",
+        }
+        if clean_source:
+            form_data["source"] = clean_source
+        status_code, response_text = a2p_http_request(
+            a2p_join_url(store["base_url"], store["send_path"]),
+            method="POST",
+            headers=headers,
+            form_data=form_data,
+            timeout=30,
+        )
+        text = normalize_a2p_text(response_text, 1000)
+        message_id_match = re.search(r"Message[- ]ID\s*:\s*([^\s]+)", text, re.IGNORECASE)
+        message_id = message_id_match.group(1) if message_id_match else ""
+        if status_code >= 400:
+            error = f"Smart SMS send failed: HTTP {status_code} {text[:240]}"
+            record_a2p_message_log(
+                status="FAILED",
+                destination=clean_destination,
+                source=clean_source,
+                message_text=clean_message,
+                purpose=purpose,
+                http_status=status_code,
+                message_id=message_id,
+                response_summary=text[:500],
+                error_message=error,
+                request_context=request_context,
+                created_by_admin_id=created_by_admin_id,
+            )
+            raise HTTPException(status_code=400, detail=error)
+        accepted = bool(re.match(r"^\s*0\s+\d{3}\s+OK", text, re.IGNORECASE))
+        if not accepted:
+            error = f"Smart SMS was not accepted: {text[:300]}"
+            record_a2p_message_log(
+                status="FAILED",
+                destination=clean_destination,
+                source=clean_source,
+                message_text=clean_message,
+                purpose=purpose,
+                http_status=status_code,
+                smart_status="NOT_ACCEPTED",
+                message_id=message_id,
+                response_summary=text[:500],
+                error_message=error,
+                request_context=request_context,
+                created_by_admin_id=created_by_admin_id,
+            )
+            raise HTTPException(status_code=400, detail=error)
+        record_a2p_message_log(
+            status="SUCCESS",
+            destination=clean_destination,
+            source=clean_source,
+            message_text=clean_message,
+            purpose=purpose,
+            http_status=status_code,
+            smart_status="ACCEPTED",
+            message_id=message_id,
+            response_summary=text[:500],
+            request_context=request_context,
+            created_by_admin_id=created_by_admin_id,
+        )
+        return {
+            "status": "SUCCESS",
+            "destination": safe_mask_a2p_destination(clean_destination),
+            "message_id": message_id,
+            "response_summary": text[:300],
+        }
+    except HTTPException as exc:
+        if not str(exc.detail).startswith("Smart SMS"):
+            record_a2p_message_log(
+                status="FAILED",
+                destination=raw_destination,
+                source=clean_source or source,
+                message_text=raw_message,
+                purpose=purpose,
+                error_message=str(exc.detail),
+                request_context=request_context,
+                created_by_admin_id=created_by_admin_id,
+            )
+        raise
+    except Exception as exc:
+        record_a2p_message_log(
+            status="FAILED",
+            destination=raw_destination,
+            source=clean_source or source,
+            message_text=raw_message,
+            purpose=purpose,
+            error_message=str(exc),
+            request_context=request_context,
+            created_by_admin_id=created_by_admin_id,
+        )
+        raise HTTPException(status_code=400, detail=f"Smart SMS send failed: {exc}") from exc
+
+
+def a2p_admin_notification_from_log(log: dict[str, Any], read_ids: set[str]) -> dict[str, Any]:
+    status = normalize_a2p_text(log.get("status"), 20).upper()
+    notification_id = f"a2p-{log.get('id')}"
+    failed = status == "FAILED"
+    success = status == "SUCCESS"
+    return {
+        "id": notification_id,
+        "category": "A2P_SMS_FAILED" if failed else "A2P_SMS_SUCCESS" if success else "A2P_SMS_PENDING",
+        "severity": "DANGER" if failed else "SUCCESS" if success else "WARNING",
+        "title": "A2P SMS failed" if failed else "A2P SMS accepted" if success else "A2P SMS pending",
+        "message": (
+            f"{log.get('purpose') or 'SMS'} to {log.get('destination_masked') or 'destination'} failed: {log.get('error_message') or log.get('response_summary') or 'No response detail'}"
+            if failed else
+            f"{log.get('purpose') or 'SMS'} to {log.get('destination_masked') or 'destination'} was accepted by Smart."
+            if success else
+            f"{log.get('purpose') or 'SMS'} to {log.get('destination_masked') or 'destination'} is pending."
+        ),
+        "target_page": "System Settings",
+        "target_url": "/system-settings?tab=A2P%20Messaging&subtab=Messages",
+        "related_table": "a2p_message_logs",
+        "related_id": str(log.get("id") or ""),
+        "status": "READ" if notification_id in read_ids else "UNREAD",
+        "metadata": {
+            "purpose": log.get("purpose"),
+            "destination": log.get("destination_masked"),
+            "http_status": log.get("http_status"),
+            "smart_status": log.get("smart_status"),
+            "message_id": log.get("message_id"),
+        },
+        "created_at": log.get("created_at"),
+        "read_at": log.get("read_at") if notification_id in read_ids else None,
+        "source": "SYSTEM",
+    }
+
+
+def a2p_admin_notifications(limit: int = 40) -> list[dict[str, Any]]:
+    store = a2p_messaging_store()
+    read_ids = set(store.get("notificationReadIds") or [])
+    logs = [log for log in store.get("messageLogs", []) if isinstance(log, dict)]
+    notifications = [a2p_admin_notification_from_log(log, read_ids) for log in logs]
+    notifications.sort(key=lambda item: (item.get("status") == "UNREAD", str(item.get("created_at") or "")), reverse=True)
+    return notifications[:limit]
 
 
 def public_avatar_settings() -> dict[str, Any]:
@@ -1595,6 +2905,47 @@ def extract_geocode_suggestion(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@router.get("/api/system-settings/backups")
+def get_backup_metadata(admin=Depends(require_admin)):
+    return public_backup_metadata()
+
+
+@router.get("/api/system-settings/backups/configuration")
+def download_configuration_backup(admin=Depends(require_admin)):
+    payload = build_backup_payload("configuration", admin)
+    add_audit(
+        "system_configuration_backup_downloaded",
+        "SystemBackup",
+        "configuration",
+        {"backup_type": "configuration"},
+        admin["username"],
+    )
+    return backup_json_response(payload, "configuration")
+
+
+@router.get("/api/system-settings/backups/full")
+def download_full_backup(admin=Depends(require_admin)):
+    payload = build_backup_payload("full", admin)
+    database_section = payload.get("sections", {}).get("database", {})
+    database_data = database_section.get("data", {}) if isinstance(database_section, dict) else {}
+    add_audit(
+        "system_full_backup_downloaded",
+        "SystemBackup",
+        "full",
+        {
+            "backup_type": "full",
+            "database_status": database_data.get("status") if isinstance(database_data, dict) else "unknown",
+        },
+        admin["username"],
+    )
+    return backup_json_response(payload, "full")
+
+
+@router.post("/api/system-settings/backups/restore")
+def restore_backup(payload: BackupRestorePayload, admin=Depends(require_admin)):
+    return restore_backup_data(payload.backup, admin)
+
+
 @router.get("/api/system-settings/access")
 def get_access(admin=Depends(require_admin)):
     return public_access_store(access_store())
@@ -1844,6 +3195,7 @@ def update_settings(payload: SettingsPayload, admin=Depends(require_admin)):
         value = changed.get(section)
         if value is not None:
             store.setdefault(section, {}).update(value)
+    save_persisted_system_settings(*[section for section in ["branding", "business", "deployment"] if section in changed])
     add_audit("settings_updated", "system", "settings", {"sections": list(changed.keys())}, admin["username"])
     return store
 
@@ -1980,6 +3332,289 @@ def test_openai_settings(payload: OpenAITestPayload, admin=Depends(require_admin
     }
 
 
+@router.get("/api/system-settings/a2p-messaging")
+def get_a2p_messaging_settings(admin=Depends(require_admin)):
+    return public_a2p_messaging_settings()
+
+
+@router.patch("/api/system-settings/a2p-messaging")
+def update_a2p_messaging_settings(payload: A2PMessagingSettingsPayload, admin=Depends(require_admin)):
+    store = a2p_messaging_store()
+    data = payload.model_dump(exclude_unset=True)
+    for key in ("enabled", "registered_delivery"):
+        if key in data and data.get(key) is not None:
+            store[key] = bool(data.get(key))
+    for key in ("provider", "api_id", "default_source", "notes"):
+        if key in data and data.get(key) is not None:
+            store[key] = normalize_a2p_text(data.get(key), 1000 if key == "notes" else 200)
+    if "base_url" in data and data.get("base_url") is not None:
+        store["base_url"] = normalize_a2p_base_url(data.get("base_url"))
+    for key in ("send_path", "query_path", "cancel_path", "start_batch_path", "send_batch_path", "credits_path"):
+        if key in data and data.get(key) is not None:
+            store[key] = normalize_a2p_path(data.get(key), A2P_DEFAULT_SETTINGS[key])
+    if "auth_method" in data and data.get("auth_method") is not None:
+        auth_method = normalize_a2p_text(data.get("auth_method"), 40).upper()
+        if auth_method not in A2P_AUTH_METHODS:
+            raise HTTPException(status_code=400, detail="Unsupported A2P authentication method")
+        store["auth_method"] = auth_method
+    if data.get("clear_api_key"):
+        store["api_key"] = ""
+    elif "api_key" in data:
+        api_key = normalize_a2p_text(data.get("api_key"), 500)
+        if api_key:
+            store["api_key"] = api_key
+    if "username" in data and data.get("username") is not None:
+        store["username"] = normalize_a2p_text(data.get("username"), 200)
+    if data.get("clear_password"):
+        store["password"] = ""
+    elif "password" in data:
+        password = normalize_a2p_text(data.get("password"), 500)
+        if password:
+            store["password"] = password
+    if "monthly_credit_limit" in data:
+        store["monthly_credit_limit"] = data.get("monthly_credit_limit")
+    if "monthly_reset_day" in data and data.get("monthly_reset_day") is not None:
+        store["monthly_reset_day"] = min(31, max(1, int(data.get("monthly_reset_day"))))
+    if "source_addresses" in data and data.get("source_addresses") is not None:
+        store["source_addresses"] = normalize_a2p_source_addresses(data.get("source_addresses"))
+    save_persisted_a2p_messaging_store()
+    add_audit(
+        "system_a2p_messaging_settings_updated",
+        "SystemA2PMessaging",
+        "a2p_messaging",
+        {
+            "enabled": bool(store.get("enabled")),
+            "provider": store.get("provider"),
+            "auth_method": store.get("auth_method"),
+            "api_key_configured": bool(normalize_a2p_text(store.get("api_key"))),
+            "username_configured": bool(normalize_a2p_text(store.get("username"))),
+            "password_configured": bool(normalize_a2p_text(store.get("password"))),
+        },
+        admin["username"],
+    )
+    return public_a2p_messaging_settings()
+
+
+@router.post("/api/system-settings/a2p-messaging/check-credits")
+def check_a2p_messaging_credits(admin=Depends(require_admin)):
+    store = a2p_messaging_store()
+    url = a2p_join_url(store["base_url"], store["credits_path"])
+    username = normalize_a2p_text(store.get("username"), 200)
+    password = normalize_a2p_text(store.get("password"), 500)
+    if not username or not password:
+        raise HTTPException(
+            status_code=400,
+            detail="Smart credits check requires the HTTP API username and password. The credits endpoint is documented with Basic Authentication, even if SMS sending uses API key headers.",
+        )
+    token_value = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+    headers = {
+        "Accept": "text/plain",
+        "Authorization": f"Basic {token_value}",
+        "User-Agent": "3JMain/0.1 a2p-credits-check",
+    }
+    checked_at = now_iso()
+    try:
+        status_code, response_text = a2p_http_request(url, method="GET", headers=headers, timeout=20)
+        text = normalize_a2p_text(response_text, 1000)
+        if status_code >= 400:
+            auth_hint = " The Smart credits endpoint is documented for prepaid accounts using Basic Authentication. Verify the saved username/password and confirm credits API access is provisioned on the Smart account."
+            raise HTTPException(status_code=400, detail=f"Smart credits check failed: HTTP {status_code} {text[:200]}{auth_hint}")
+        available = parse_a2p_credit_available(text)
+        store["last_credit_check_at"] = checked_at
+        store["last_credit_check_status"] = "SUCCESS"
+        store["last_credit_available"] = available
+        store["last_credit_response"] = text[:500]
+        store["last_credit_error"] = "" if available is not None else f"Could not parse credits response: {text[:200]}"
+        save_persisted_a2p_messaging_store()
+        add_audit(
+            "system_a2p_messaging_credits_checked",
+            "SystemA2PMessaging",
+            "a2p_messaging",
+            {"status": "SUCCESS", "available": available},
+            admin["username"],
+        )
+        return {
+            **public_a2p_messaging_settings(),
+            "credit_check": {
+                "status": "SUCCESS",
+                "available": available,
+                "response_summary": text[:300],
+                "checked_at": checked_at,
+            },
+        }
+    except HTTPException as exc:
+        store["last_credit_check_at"] = checked_at
+        store["last_credit_check_status"] = "FAILED"
+        store["last_credit_error"] = str(exc.detail)
+        save_persisted_a2p_messaging_store()
+        raise
+
+
+@router.post("/api/system-settings/a2p-messaging/test-send")
+def test_send_a2p_messaging(payload: A2PMessagingTestSendPayload, admin=Depends(require_admin)):
+    store = a2p_messaging_store()
+    message_text = normalize_a2p_text(payload.message_text, 500)
+    if not message_text:
+        raise HTTPException(status_code=400, detail="Message text is required")
+    source = normalize_a2p_text(payload.source if payload.source is not None else store.get("default_source"), 80)
+    registered = store.get("registered_delivery") if payload.registered_delivery is None else bool(payload.registered_delivery)
+    sent_at = now_iso()
+    destination = normalize_a2p_text(payload.destination, 32)
+    try:
+        sms_result = send_a2p_sms_message(
+            destination,
+            message_text,
+            source=source,
+            purpose="TEST_SEND",
+            request_context={"origin": "system_settings_test_send"},
+            created_by_admin_id=admin["id"],
+            registered_delivery=registered,
+        )
+        store["last_test_send_at"] = sent_at
+        store["last_test_send_status"] = "SUCCESS"
+        store["last_test_send_destination"] = sms_result.get("destination") or safe_mask_a2p_destination(destination)
+        store["last_test_send_message_id"] = sms_result.get("message_id")
+        store["last_test_send_response"] = sms_result.get("response_summary") or ""
+        store["last_test_send_error"] = ""
+        save_persisted_a2p_messaging_store()
+        add_audit(
+            "system_a2p_messaging_test_sms_sent",
+            "SystemA2PMessaging",
+            "a2p_messaging",
+            {
+                "status": "SUCCESS",
+                "destination": sms_result.get("destination") or safe_mask_a2p_destination(destination),
+                "message_id": sms_result.get("message_id"),
+            },
+            admin["username"],
+        )
+        return {
+            **public_a2p_messaging_settings(),
+            "test_send": {
+                "status": "SUCCESS",
+                "destination": sms_result.get("destination") or safe_mask_a2p_destination(destination),
+                "message_id": sms_result.get("message_id"),
+                "response_summary": sms_result.get("response_summary") or "",
+                "sent_at": sent_at,
+            },
+        }
+    except HTTPException as exc:
+        store["last_test_send_at"] = sent_at
+        store["last_test_send_status"] = "FAILED"
+        store["last_test_send_destination"] = safe_mask_a2p_destination(destination)
+        store["last_test_send_message_id"] = None
+        store["last_test_send_response"] = ""
+        store["last_test_send_error"] = str(exc.detail)
+        save_persisted_a2p_messaging_store()
+        raise
+    except Exception as exc:
+        store["last_test_send_at"] = sent_at
+        store["last_test_send_status"] = "FAILED"
+        store["last_test_send_destination"] = safe_mask_a2p_destination(destination)
+        store["last_test_send_message_id"] = None
+        store["last_test_send_response"] = ""
+        store["last_test_send_error"] = str(exc)
+        save_persisted_a2p_messaging_store()
+        raise HTTPException(status_code=400, detail=f"Smart test SMS failed: {exc}") from exc
+
+
+@router.get("/api/system-settings/a2p-messaging/messages")
+def list_a2p_messaging_messages(
+    status: str | None = None,
+    search: str | None = None,
+    purpose: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+    admin=Depends(require_admin),
+):
+    selected_status = normalize_a2p_text(status, 20).upper() if status else ""
+    selected_purpose = normalize_a2p_text(purpose, 80).upper() if purpose else ""
+    query_text = normalize_a2p_text(search, 120).lower()
+    if selected_status and selected_status != "ALL" and selected_status not in {"PENDING", "SUCCESS", "FAILED"}:
+        raise HTTPException(status_code=400, detail="Unsupported A2P message status filter.")
+    logs = [log for log in a2p_messaging_store().get("messageLogs", []) if isinstance(log, dict)]
+
+    def matches(log: dict[str, Any]) -> bool:
+        if selected_status and selected_status != "ALL" and normalize_a2p_text(log.get("status"), 20).upper() != selected_status:
+            return False
+        if selected_purpose and selected_purpose != "ALL" and normalize_a2p_text(log.get("purpose"), 80).upper() != selected_purpose:
+            return False
+        if query_text:
+            haystack = " ".join(
+                normalize_a2p_text(log.get(key), 1000)
+                for key in ["destination", "destination_masked", "source", "purpose", "message_text", "message_id", "response_summary", "error_message"]
+            ).lower()
+            return query_text in haystack
+        return True
+
+    filtered = [log for log in logs if matches(log)]
+    safe_page_size = min(100, max(5, int(page_size or 20)))
+    safe_page = max(1, int(page or 1))
+    offset = (safe_page - 1) * safe_page_size
+    items = filtered[offset:offset + safe_page_size]
+    purpose_counts: dict[str, int] = {}
+    for log in logs:
+        key = normalize_a2p_text(log.get("purpose"), 80).upper() or "GENERAL"
+        purpose_counts[key] = purpose_counts.get(key, 0) + 1
+    return {
+        "items": [a2p_message_log_public(log) for log in items],
+        "total": len(filtered),
+        "page": safe_page,
+        "page_size": safe_page_size,
+        "summary": {
+            "total": len(logs),
+            "success": sum(1 for log in logs if normalize_a2p_text(log.get("status"), 20).upper() == "SUCCESS"),
+            "failed": sum(1 for log in logs if normalize_a2p_text(log.get("status"), 20).upper() == "FAILED"),
+            "today": sum(1 for log in logs if normalize_a2p_text(log.get("created_at"), 32)[:10] == datetime.now(timezone.utc).date().isoformat()),
+            "this_month": sum(1 for log in logs if normalize_a2p_text(log.get("created_at"), 32)[:7] == datetime.now(timezone.utc).strftime("%Y-%m")),
+            "last_failed_at": next((log.get("created_at") for log in logs if normalize_a2p_text(log.get("status"), 20).upper() == "FAILED"), None),
+            "last_sent_at": logs[0].get("created_at") if logs else None,
+        },
+        "purposes": [{"purpose": key, "count": count} for key, count in sorted(purpose_counts.items())],
+    }
+
+
+@router.get("/api/admin/notifications")
+def list_admin_notifications(limit: int = 40, admin=Depends(require_admin)):
+    safe_limit = min(100, max(10, int(limit or 40)))
+    items = a2p_admin_notifications(safe_limit)
+    unread_items = [item for item in items if item.get("status") == "UNREAD"]
+    return {
+        "items": items,
+        "unread_count": len(unread_items),
+        "a2p_failure_unread_count": sum(1 for item in unread_items if item.get("category") == "A2P_SMS_FAILED"),
+        "a2p_success_unread_count": sum(1 for item in unread_items if item.get("category") == "A2P_SMS_SUCCESS"),
+        "support_unread_count": 0,
+    }
+
+
+@router.post("/api/admin/notifications/read-all")
+def mark_all_admin_notifications_read(admin=Depends(require_admin)):
+    store = a2p_messaging_store()
+    notifications = a2p_admin_notifications(100)
+    read_ids = set(store.get("notificationReadIds") or [])
+    read_ids.update(item["id"] for item in notifications)
+    store["notificationReadIds"] = sorted(read_ids)
+    save_persisted_a2p_messaging_store()
+    return {"status": "OK"}
+
+
+@router.post("/api/admin/notifications/{notification_id}/read")
+def mark_admin_notification_read(notification_id: str, admin=Depends(require_admin)):
+    normalized_id = normalize_a2p_text(notification_id, 120)
+    if not normalized_id.startswith("a2p-"):
+        raise HTTPException(status_code=404, detail="Notification not found")
+    store = a2p_messaging_store()
+    known_ids = {item["id"] for item in a2p_admin_notifications(100)}
+    if normalized_id not in known_ids:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    read_ids = set(store.get("notificationReadIds") or [])
+    read_ids.add(normalized_id)
+    store["notificationReadIds"] = sorted(read_ids)
+    save_persisted_a2p_messaging_store()
+    return next(item for item in a2p_admin_notifications(100) if item["id"] == normalized_id)
+
+
 @router.get("/api/system-settings/avatars")
 def get_avatars(admin=Depends(require_admin)):
     return public_avatar_settings()
@@ -1988,6 +3623,40 @@ def get_avatars(admin=Depends(require_admin)):
 @router.get("/api/system-settings/map-images")
 def get_map_images(admin=Depends(require_admin)):
     return public_map_image_settings()
+
+
+@router.get("/api/system-settings/map-providers")
+@router.get("/api/system/map-providers")
+def get_map_providers(admin=Depends(require_admin)):
+    return public_map_provider_settings()
+
+
+@router.patch("/api/system-settings/map-providers")
+@router.patch("/api/system/map-providers")
+def update_map_providers(payload: MapProviderSettingsPayload, admin=Depends(require_admin)):
+    changed = payload.model_dump()
+    normalized = normalize_map_provider_store({
+        "defaultProviderId": changed.get("defaultProviderId") or changed.get("default_provider_id"),
+        "providers": changed.get("providers") or [],
+    })
+    usable = [provider for provider in normalized["providers"] if map_provider_is_usable(provider)]
+    if not usable:
+        raise HTTPException(status_code=400, detail="Enable and configure at least one map provider")
+    store = settings_store()
+    store["mapProviders"] = normalized
+    save_persisted_map_provider_store()
+    add_audit(
+        "system_map_providers_updated",
+        "SystemMapProviders",
+        "map-providers",
+        {
+            "defaultProviderId": normalized.get("defaultProviderId"),
+            "enabled": [provider["id"] for provider in normalized["providers"] if provider.get("enabled")],
+            "usable": [provider["id"] for provider in usable],
+        },
+        admin["username"],
+    )
+    return public_map_provider_settings()
 
 
 @router.put("/api/system-settings/map-images/{target_id}")

@@ -18,6 +18,7 @@ import {
   IconFileSpreadsheet,
   IconFilter,
   IconHome,
+  IconHomeSignal,
   IconMapPin,
   IconMinus,
   IconPlus,
@@ -33,6 +34,16 @@ import {
   IconX
 } from '@tabler/icons-react';
 import CustomerEmotionAvatar from '../../system-settings/web/CustomerEmotionAvatar';
+import {
+  createMapProviderSession,
+  defaultMapProvider,
+  enabledMapProviders,
+  mapProviderById,
+  mapProviderNeedsSession,
+  mapProviderTileUrl,
+  mapProviderWithSession,
+  normalizeMapProviderSettings
+} from '../../system-settings/web/mapProviders';
 import './customerProfiling.css';
 
 const API = '/api';
@@ -307,19 +318,23 @@ function normalizeMapLongitude(longitude) {
   return ((((longitude + 180) % 360) + 360) % 360) - 180;
 }
 
-function coordinateTileData(centerLatitude, centerLongitude, selectedLatitude, selectedLongitude, zoom = COORDINATE_CAPTURE_ZOOM) {
+function coordinateTileData(centerLatitude, centerLongitude, selectedLatitude, selectedLongitude, zoom = COORDINATE_CAPTURE_ZOOM, provider = null) {
   const centerX = lonToTileX(centerLongitude, zoom);
   const centerY = latToTileY(centerLatitude, zoom);
   const baseX = Math.floor(centerX) - 1;
   const baseY = Math.floor(centerY) - 1;
+  const tileProvider = provider || defaultMapProvider();
+  const tileProviderId = tileProvider?.id || 'map';
   const tiles = [];
   for (let row = 0; row < MAP_TILE_COUNT; row += 1) {
     for (let column = 0; column < MAP_TILE_COUNT; column += 1) {
       const x = baseX + column;
       const y = baseY + row;
+      const url = mapProviderTileUrl(tileProvider, x, y, zoom);
+      if (!url) continue;
       tiles.push({
-        key: `${zoom}-${x}-${y}`,
-        url: `https://tile.openstreetmap.org/${zoom}/${x}/${y}.png`
+        key: `${tileProviderId}-${zoom}-${x}-${y}`,
+        url
       });
     }
   }
@@ -561,6 +576,10 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const [meta, setMeta] = useState({ customerTypes: [], customerStatuses: [], customerGenders: [], provinces: [], cities: [], citiesByProvince: {}, barangays: [], barangaysByProvinceCity: {}, bulkUploadHeaders: [] });
   const [locations, setLocations] = useState([]);
   const [avatarConfig, setAvatarConfig] = useState(null);
+  const [mapProviderSettings, setMapProviderSettings] = useState(normalizeMapProviderSettings());
+  const [customerMapProviderId, setCustomerMapProviderId] = useState('');
+  const [customerMapProviderSession, setCustomerMapProviderSession] = useState(null);
+  const [customerMapProviderSessionError, setCustomerMapProviderSessionError] = useState('');
   const [customers, setCustomers] = useState({ data: [], page: 1, pageSize: 10, total: 0, totalPages: 1 });
   const [filters, setFilters] = useState(blankCustomerFilters);
   const [selected, setSelected] = useState(null);
@@ -657,13 +676,18 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     })
     .slice(0, 12);
   const filteredReferralOptions = referralOptions.filter((customer) => customer.id !== editingId);
+  const customerMapProviderOptions = enabledMapProviders(mapProviderSettings);
+  const customerMapProvider = mapProviderById(mapProviderSettings, customerMapProviderId) || defaultMapProvider(mapProviderSettings);
+  const activeCustomerMapProvider = mapProviderWithSession(customerMapProvider, customerMapProviderSession);
+  const coordinateCaptureMaxZoom = Math.max(COORDINATE_CAPTURE_MIN_ZOOM, Number(customerMapProvider?.maxZoom) || COORDINATE_CAPTURE_MAX_ZOOM);
   const coordinateMap = coordinateCapture
     ? coordinateTileData(
       coordinateCapture.centerLatitude,
       coordinateCapture.centerLongitude,
       coordinateCapture.selectedLatitude,
       coordinateCapture.selectedLongitude,
-      coordinateCapture.zoom
+      coordinateCapture.zoom,
+      activeCustomerMapProvider
     )
     : null;
   const statusTabs = [
@@ -711,18 +735,20 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       if (value !== '') params.set(key, value);
     });
     try {
-      const [nextOverview, nextCustomers, nextMeta, nextLocations, nextAvatarConfig] = await Promise.all([
+      const [nextOverview, nextCustomers, nextMeta, nextLocations, nextAvatarConfig, nextMapProviders] = await Promise.all([
         request('/customer-profiling/customers/overview'),
         request(`/customer-profiling/customers?${params.toString()}`),
         request('/customer-profiling/meta'),
         request('/system-settings/locations').catch(() => []),
-        request('/system-settings/avatars').catch(() => null)
+        request('/system-settings/avatars').catch(() => null),
+        request('/system-settings/map-providers').catch(() => null)
       ]);
       setOverview(nextOverview);
       setCustomers(nextCustomers);
       setMeta(nextMeta);
       setLocations(Array.isArray(nextLocations) ? nextLocations : []);
       setAvatarConfig(nextAvatarConfig);
+      setMapProviderSettings(normalizeMapProviderSettings(nextMapProviders || undefined));
     } catch (err) {
       setError(err.message);
     }
@@ -786,6 +812,29 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       window.removeEventListener('scroll', handleReposition, true);
     };
   }, [isColumnMenuOpen]);
+  useEffect(() => {
+    let cancelled = false;
+    setCustomerMapProviderSession(null);
+    setCustomerMapProviderSessionError('');
+    if (!mapProviderNeedsSession(customerMapProvider)) return undefined;
+    createMapProviderSession(customerMapProvider)
+      .then((session) => {
+        if (!cancelled) setCustomerMapProviderSession(session);
+      })
+      .catch((err) => {
+        if (!cancelled) setCustomerMapProviderSessionError(err.message || 'Map provider session failed.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    customerMapProvider?.id,
+    customerMapProvider?.apiKey,
+    customerMapProvider?.sessionProvider,
+    customerMapProvider?.googleMapType,
+    customerMapProvider?.googleLanguage,
+    customerMapProvider?.googleRegion
+  ]);
 
   function updateFilters(next) {
     const merged = { ...latestFiltersRef.current, ...next, page: 1 };
@@ -1022,6 +1071,11 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   function viewCustomer(customer) {
     if (!customer?.id) return;
     loadCustomer(customer.id);
+  }
+
+  function checkCustomerServiceability(customer) {
+    if (!customer?.id) return;
+    window.location.assign(`/network-settings/serviceability-check?customerId=${encodeURIComponent(customer.id)}`);
   }
 
   function handleCustomerRowClick(event, customer) {
@@ -1265,7 +1319,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   function changeCoordinateZoom(delta) {
     setCoordinateCapture((current) => {
       if (!current) return current;
-      const zoom = Math.min(COORDINATE_CAPTURE_MAX_ZOOM, Math.max(COORDINATE_CAPTURE_MIN_ZOOM, current.zoom + delta));
+      const zoom = Math.min(coordinateCaptureMaxZoom, Math.max(COORDINATE_CAPTURE_MIN_ZOOM, current.zoom + delta));
       return {
         ...current,
         zoom,
@@ -1765,7 +1819,8 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
         detailsCoordinates.longitude,
         detailsCoordinates.latitude,
         detailsCoordinates.longitude,
-        COORDINATE_CAPTURE_ZOOM
+        COORDINATE_CAPTURE_ZOOM,
+        activeCustomerMapProvider
       )
       : null;
     const basicInfoRows = [
@@ -1976,6 +2031,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     const actions = [
       { label: 'View', icon: IconEye, tone: 'blue', onClick: viewCustomer },
       { label: 'Edit', icon: IconEdit, tone: 'azure', onClick: editCustomer },
+      { label: 'Check Serviceability', icon: IconHomeSignal, tone: 'green', onClick: checkCustomerServiceability },
       { label: 'Archive', icon: IconTrash, tone: 'red', onClick: deleteCustomer }
     ];
     return actions.map(({ label, icon: ActionIcon, tone, onClick }) => (
@@ -2505,10 +2561,28 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                     <span className="customer-coordinate-marker" style={coordinateMap.marker}><IconMapPin size={28} /></span>
                   </div>
                   <div className="customer-coordinate-controls" aria-label="Map controls">
-                    <button type="button" className="btn btn-icon btn-sm" title="Zoom in" onClick={() => changeCoordinateZoom(1)} disabled={coordinateCapture.zoom >= COORDINATE_CAPTURE_MAX_ZOOM}><IconPlus size={16} /></button>
+                    <select
+                      className="form-select form-select-sm customer-coordinate-provider-select"
+                      value={customerMapProvider?.id || ''}
+                      onChange={(event) => setCustomerMapProviderId(event.target.value)}
+                      aria-label="Coordinate map provider"
+                    >
+                      {customerMapProviderOptions.map((provider) => (
+                        <option key={provider.id} value={provider.id}>
+                          {provider.label}
+                        </option>
+                      ))}
+                    </select>
+                    <button type="button" className="btn btn-icon btn-sm" title="Zoom in" onClick={() => changeCoordinateZoom(1)} disabled={coordinateCapture.zoom >= coordinateCaptureMaxZoom}><IconPlus size={16} /></button>
                     <button type="button" className="btn btn-icon btn-sm" title="Zoom out" onClick={() => changeCoordinateZoom(-1)} disabled={coordinateCapture.zoom <= COORDINATE_CAPTURE_MIN_ZOOM}><IconMinus size={16} /></button>
                     <button type="button" className="btn btn-icon btn-sm" title="Center on barangay location" onClick={recenterCoordinateCapture}><IconCurrentLocation size={16} /></button>
                   </div>
+                  {mapProviderNeedsSession(customerMapProvider) && !customerMapProviderSession && !customerMapProviderSessionError && (
+                    <small className="customer-coordinate-provider-status">Starting Google map session...</small>
+                  )}
+                  {customerMapProviderSessionError && (
+                    <small className="customer-coordinate-provider-status error">{customerMapProviderSessionError}</small>
+                  )}
                 </div>
                 <div className="customer-coordinate-readout">
                   <div><span>Longitude</span><strong>{coordinateCapture.selectedLongitude.toFixed(6)}</strong></div>

@@ -32,6 +32,8 @@ Restored workflows from the previous standalone Customer Profiling module:
 - Primary contact, alternate mobile, Facebook account/link, email, service address, and GPS fields
 - Service location selector connected to System Settings -> Location Management, with manual customer locations added to Location Management when no saved record matches
 - Customer table and detail drawer display System Settings emotion avatars using the reusable `CustomerEmotionAvatar` component
+- Customer coordinate capture and detail map preview consume System Settings -> Maps provider settings, including Google Map Tiles session providers when configured, with Google Maps open-link and Street View retained as external helpers
+- Customer table actions include Check Serviceability, which opens Network Settings -> Serviceability Check filtered to the selected customer
 - Secondary contact fields
 - Bulk upload CSV modal with template download, client-side preview validation, duplicate checks, and guarded import
 

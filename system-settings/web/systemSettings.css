@@ -103,6 +103,21 @@
   height: 100%;
 }
 
+.system-settings-plc-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+}
+
+.system-settings-map-image-card-compact .system-settings-map-image-layout {
+  align-items: flex-start;
+}
+
+.system-settings-map-image-card-compact .system-settings-map-image-preview {
+  height: 6rem;
+  width: 8rem;
+}
+
 .system-settings-map-image-layout {
   align-items: center;
   display: flex;
@@ -136,11 +151,100 @@
   width: 100%;
 }
 
+.system-settings-map-provider-list {
+  display: grid;
+  gap: 1rem;
+}
+
+.system-settings-map-provider-tabs {
+  display: grid;
+  gap: 1rem;
+}
+
+.system-settings-map-provider-tabs .nav-link {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.45rem;
+}
+
+.system-settings-map-provider-subtabs {
+  align-items: center;
+  background: var(--tblr-bg-surface-secondary, #f6f8fb);
+  border: 1px solid var(--tblr-border-color, #dadfe5);
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  justify-content: space-between;
+  padding: 0.7rem;
+}
+
+.system-settings-map-provider-subtab-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.system-settings-map-provider-tab-note {
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.system-settings-map-provider-card {
+  background: #fff;
+  border: 1px solid var(--tblr-border-color, #dadfe5);
+  border-radius: 8px;
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem;
+}
+
+.system-settings-map-provider-status {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.system-settings-map-provider-guidelines {
+  background: var(--tblr-bg-surface-secondary, #f6f8fb);
+  border: 1px solid var(--tblr-border-color, #dadfe5);
+  border-radius: 8px;
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0.75rem 1rem 0.75rem 1.35rem;
+}
+
 .system-settings-image-guidelines {
   display: grid;
   gap: 0.6rem;
   margin: 0;
   padding-left: 1rem;
+}
+
+.system-settings-backup-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 16rem;
+}
+
+.system-settings-backup-list {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0;
+  padding-left: 1rem;
+}
+
+.system-settings-backup-result {
+  background: var(--tblr-bg-surface-secondary, #f6f8fb);
+  border: 1px solid var(--tblr-border-color, #dadfe5);
+  border-radius: 8px;
+  max-height: 18rem;
+  overflow: auto;
+  padding: 0.85rem;
+  white-space: pre-wrap;
 }
 
 .system-settings-avatar-meta {

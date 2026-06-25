@@ -18,6 +18,10 @@
       "route": "/network-settings/map"
     },
     {
+      "name": "Serviceability Check",
+      "route": "/network-settings/serviceability-check"
+    },
+    {
       "name": "Fiber Mapping",
       "route": "/network-settings/fiber-mapping"
     },
@@ -62,6 +66,7 @@
     "fbt_insertion_loss_management",
     "fiber_optic_insertion_loss_management",
     "fiber_mapping_canvas",
+    "serviceability_check",
     "device_management",
     "api_device_registry",
     "snmp_device_registry",
