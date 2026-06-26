@@ -4,11 +4,13 @@ import '@tabler/core/dist/css/tabler.min.css';
 import {
   IconActivity,
   IconAlertTriangle,
+  IconBell,
   IconBox,
   IconBuildingStore,
   IconCash,
   IconChevronDown,
   IconChevronUp,
+  IconCircleCheck,
   IconClock,
   IconCpu,
   IconDashboard,
@@ -19,10 +21,14 @@ import {
   IconListDetails,
   IconLogout,
   IconMap,
+  IconHomeSearch,
   IconMenu2,
+  IconMessageCircle,
   IconNetwork,
   IconPackage,
+  IconRefresh,
   IconRouter,
+  IconSend,
   IconSettings,
   IconShieldLock,
   IconTicket,
@@ -30,20 +36,21 @@ import {
   IconUser,
   IconUserCog,
   IconUsers,
-  IconWifi
+  IconWifi,
+  IconX
 } from '@tabler/icons-react';
-import AccountAdminPage from '../../../account-admin/web/AccountAdminPage.jsx';
-import BillingPage from '../../../billing/web/BillingPage.jsx';
-import CustomerProfilingPage from '../../../customer-profiling/web/CustomerProfilingPage.jsx';
-import CustomerServiceManagementPage from '../../../customer-service-management/web/CustomerServiceManagementPage.jsx';
-import InventoryPage from '../../../inventory/web/InventoryPage.jsx';
-import LogsPage from '../../../logs/web/LogsPage.jsx';
-import NetworkSettingsPage from '../../../network-settings/web/NetworkSettingsPage.jsx';
-import PointOfSalePage from '../../../point-of-sale/web/PointOfSalePage.jsx';
-import ProcessFlowPage from '../../../process-flow/web/ProcessFlowPage.jsx';
-import ServicePage from '../../../service/web/ServicePage.jsx';
-import SystemSettingsPage from '../../../system-settings/web/SystemSettingsPage.jsx';
-import TicketingPage from '../../../ticketing/web/TicketingPage.jsx';
+import AccountAdminPage from '../../../features/account-admin/web/AccountAdminPage.jsx';
+import BillingPage from '../../../features/billing/web/BillingPage.jsx';
+import CustomerProfilingPage from '../../../features/customer-profiling/web/CustomerProfilingPage.jsx';
+import CustomerServiceManagementPage from '../../../features/customer-service-management/web/CustomerServiceManagementPage.jsx';
+import InventoryPage from '../../../features/inventory/web/InventoryPage.jsx';
+import LogsPage from '../../../features/logs/web/LogsPage.jsx';
+import NetworkSettingsPage from '../../../features/network-settings/web/NetworkSettingsPage.jsx';
+import PointOfSalePage from '../../../features/point-of-sale/web/PointOfSalePage.jsx';
+import ProcessFlowPage from '../../../features/process-flow/web/ProcessFlowPage.jsx';
+import ServicePage from '../../../features/service/web/ServicePage.jsx';
+import SystemSettingsPage from '../../../features/system-settings/web/SystemSettingsPage.jsx';
+import TicketingPage from '../../../features/ticketing/web/TicketingPage.jsx';
 import './styles.css';
 
 const API = '/api';
@@ -75,8 +82,9 @@ const moduleNav = [
     icon: IconNetwork,
     tone: 'indigo',
     children: [
-      { page: 'Map', slug: 'network-settings/map', icon: IconMap, tone: 'indigo' },
-      { page: 'Fiber Mapping', slug: 'network-settings/fiber-mapping', icon: IconNetwork, tone: 'teal' },
+      { page: 'Mapping', slug: 'network-settings/map', icon: IconMap, tone: 'indigo' },
+      { page: 'Serviceability Check', slug: 'network-settings/serviceability-check', icon: IconHomeSearch, tone: 'green' },
+      { page: 'Topology', slug: 'network-settings/fiber-mapping', icon: IconNetwork, tone: 'teal' },
       {
         page: 'MikroTik',
         icon: IconRouter,
@@ -176,8 +184,8 @@ function routeForPage(page) {
   return '/dashboard';
 }
 
-function pageFromLocation() {
-  const slug = window.location.pathname.replace(/^\/+|\/+$/g, '') || 'dashboard';
+function pageFromPath(pathname) {
+  const slug = String(pathname || '').replace(/^\/+|\/+$/g, '') || 'dashboard';
   const item = navItems().find((navItem) => navItem.slug && navItem.slug === slug);
   if (item) return item.page;
   if (slug === 'network-settings/devices') return 'MikroTik API';
@@ -185,6 +193,10 @@ function pageFromLocation() {
   if (slug === 'profile') return 'View Profile';
   if (slug === 'change-password') return 'Change Password';
   return 'Dashboard';
+}
+
+function pageFromLocation() {
+  return pageFromPath(window.location.pathname);
 }
 
 function pageMeta(page) {
@@ -206,6 +218,13 @@ function fmt(value) {
   if (value === null || value === undefined || value === '') return '-';
   if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
+}
+
+function formatDateTime(value) {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString();
 }
 
 function Card({ title, icon: Icon, children, actions }) {
@@ -408,7 +427,152 @@ function Sidebar({ page, setPage, me, logout, branding, versionInfo, collapsed }
   );
 }
 
-function Header({ page, resources, onToggleSidebar, sidebarCollapsed }) {
+function AdminNotificationBell({ onNavigate }) {
+  const [open, setOpen] = useState(false);
+  const [items, setItems] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [a2pFailureCount, setA2PFailureCount] = useState(0);
+  const [a2pSuccessCount, setA2PSuccessCount] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  async function loadNotifications() {
+    setLoading(true);
+    try {
+      const data = await request('/admin/notifications');
+      setItems(data.items || []);
+      setUnreadCount(Number(data.unread_count || 0));
+      setA2PFailureCount(Number(data.a2p_failure_unread_count || 0));
+      setA2PSuccessCount(Number(data.a2p_success_unread_count || 0));
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadNotifications();
+    const timer = window.setInterval(loadNotifications, 30000);
+    window.addEventListener('admin-notification-refresh', loadNotifications);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('admin-notification-refresh', loadNotifications);
+    };
+  }, []);
+
+  async function markAllRead() {
+    try {
+      await request('/admin/notifications/read-all', { method: 'POST' });
+      await loadNotifications();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  function notificationIcon(item) {
+    if (item.category === 'SUPPORT_MESSAGE') return IconMessageCircle;
+    if (String(item.category || '').startsWith('A2P_SMS')) return IconSend;
+    if (item.severity === 'DANGER' || item.severity === 'WARNING') return IconAlertTriangle;
+    return IconBell;
+  }
+
+  function notificationTone(item) {
+    if (item.severity === 'DANGER') return 'red';
+    if (item.severity === 'WARNING') return 'yellow';
+    if (item.severity === 'SUCCESS') return 'green';
+    if (item.category === 'SUPPORT_MESSAGE') return 'orange';
+    return 'blue';
+  }
+
+  function targetFromUrl(targetUrl, fallbackPage) {
+    if (!targetUrl) return { page: fallbackPage || 'Dashboard', path: routeForPage(fallbackPage || 'Dashboard') };
+    try {
+      const url = new URL(targetUrl, window.location.origin);
+      return { page: pageFromPath(url.pathname), path: `${url.pathname}${url.search}` };
+    } catch (_err) {
+      return { page: fallbackPage || 'Dashboard', path: routeForPage(fallbackPage || 'Dashboard') };
+    }
+  }
+
+  async function openNotification(item) {
+    if (item.status === 'UNREAD') {
+      await request(`/admin/notifications/${encodeURIComponent(item.id)}/read`, { method: 'POST' }).catch(() => {});
+    }
+    setOpen(false);
+    const target = targetFromUrl(item.target_url, item.target_page);
+    onNavigate(target.page, false, target.path);
+    window.setTimeout(loadNotifications, 350);
+  }
+
+  return (
+    <div className="admin-notification-shell">
+      <button className="admin-notification-trigger" type="button" onClick={() => { setOpen(true); loadNotifications(); }} aria-label="Open notifications">
+        <IconBell size={20} />
+        {unreadCount > 0 && <span className="admin-notification-count">{unreadCount > 99 ? '99+' : unreadCount}</span>}
+      </button>
+      {open && (
+        <div className="admin-notification-overlay" onMouseDown={() => setOpen(false)}>
+          <aside className="admin-notification-drawer" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="admin-notification-header">
+              <div>
+                <div className="h3 mb-1">Notifications</div>
+                <div className="text-muted small">A2P SMS success and failure messages.</div>
+              </div>
+              <button className="btn btn-icon" type="button" onClick={() => setOpen(false)} aria-label="Close notifications"><IconX size={18} /></button>
+            </div>
+            <div className="admin-notification-kpis">
+              <div className="admin-notification-kpi">
+                <IconBell size={18} />
+                <span>Unread</span>
+                <strong>{unreadCount}</strong>
+              </div>
+              <div className="admin-notification-kpi">
+                <IconSend size={18} />
+                <span>SMS Failed</span>
+                <strong>{a2pFailureCount}</strong>
+              </div>
+              <div className="admin-notification-kpi">
+                <IconCircleCheck size={18} />
+                <span>SMS Success</span>
+                <strong>{a2pSuccessCount}</strong>
+              </div>
+            </div>
+            <div className="d-flex align-items-center justify-content-between gap-2 px-3 py-2 border-bottom">
+              <button className="btn btn-sm btn-outline-secondary" type="button" onClick={loadNotifications} disabled={loading}><IconRefresh size={16} className="me-1" />Refresh</button>
+              <button className="btn btn-sm btn-outline-primary" type="button" onClick={markAllRead} disabled={loading || unreadCount === 0}>Mark all read</button>
+            </div>
+            {error && <div className="alert alert-danger m-3 py-2">{error}</div>}
+            <div className="admin-notification-list">
+              {items.map((item) => {
+                const Icon = notificationIcon(item);
+                const tone = notificationTone(item);
+                return (
+                  <button className={`admin-notification-item ${item.status === 'UNREAD' ? 'is-unread' : ''}`} type="button" key={item.id} onClick={() => openNotification(item)}>
+                    <span className={`badge bg-${tone}-lt text-${tone} admin-notification-icon`}><Icon size={18} /></span>
+                    <span className="admin-notification-body">
+                      <span className="admin-notification-title">{item.title}</span>
+                      <span className="admin-notification-message">{item.message}</span>
+                      <span className="admin-notification-meta">
+                        <span className={`badge ${item.status === 'UNREAD' ? 'bg-red-lt text-red' : 'bg-secondary-lt text-secondary'}`}>{item.status}</span>
+                        <span>{formatDateTime(item.created_at)}</span>
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+              {!items.length && !loading && <div className="empty py-5">No notifications yet.</div>}
+              {loading && !items.length && <div className="empty py-5">Loading notifications...</div>}
+            </div>
+          </aside>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Header({ page, resources, onToggleSidebar, sidebarCollapsed, onNavigatePage }) {
   const meta = pageMeta(page);
   const PageIcon = meta.icon;
   return (
@@ -424,6 +588,9 @@ function Header({ page, resources, onToggleSidebar, sidebarCollapsed }) {
             <div className="sys-metric text-muted"><IconActivity size={18} /><span>RAM {resources?.ram_pressure_pct ?? 0}%</span></div>
             <div className="sys-metric text-muted"><IconDatabase size={18} /><span>DISK {resources?.disk_pct ?? 0}%</span></div>
             <div className="sys-metric text-muted"><IconClock size={18} /><span>UPTIME {formatUptime(resources?.uptime_seconds)}</span></div>
+          </div>
+          <div className="ms-3">
+            <AdminNotificationBell onNavigate={onNavigatePage} />
           </div>
         </div>
       </div>
@@ -598,10 +765,11 @@ function App() {
     }
   }
 
-  function navigate(nextPage, replace = false) {
+  function navigate(nextPage, replace = false, targetPath = '') {
     setPage(nextPage);
-    const path = routeForPage(nextPage);
-    if (window.location.pathname !== path) window.history[replace ? 'replaceState' : 'pushState']({ page: nextPage }, '', path);
+    const path = targetPath || routeForPage(nextPage);
+    const currentPath = `${window.location.pathname}${window.location.search}`;
+    if (currentPath !== path) window.history[replace ? 'replaceState' : 'pushState']({ page: nextPage }, '', path);
   }
 
   const moduleByPage = useMemo(() => {
@@ -649,7 +817,7 @@ function App() {
     <div className={`page ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       <Sidebar page={page} setPage={navigate} me={me} logout={logout} branding={branding} versionInfo={versionInfo} collapsed={sidebarCollapsed} />
       <div className="page-wrapper">
-        <Header page={page} resources={resources} onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)} sidebarCollapsed={sidebarCollapsed} />
+        <Header page={page} resources={resources} onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)} sidebarCollapsed={sidebarCollapsed} onNavigatePage={navigate} />
         <div className="page-body">
           <div className="container-xl">
             {page === 'Dashboard' && <Dashboard data={dashboard} />}
@@ -668,8 +836,9 @@ function App() {
             {page === 'MikroTik API' && <NetworkSettingsPage initialSection="mikrotik-settings" refreshShell={refresh} />}
             {page === 'PPPoE Accounts' && <NetworkSettingsPage initialSection="pppoe" refreshShell={refresh} />}
             {page === 'OLT SNMP' && <NetworkSettingsPage initialSection="olt-settings" refreshShell={refresh} />}
-            {page === 'Map' && <NetworkSettingsPage initialSection="map" refreshShell={refresh} />}
-            {page === 'Fiber Mapping' && <NetworkSettingsPage initialSection="fiber-mapping" refreshShell={refresh} />}
+            {page === 'Mapping' && <NetworkSettingsPage initialSection="map" refreshShell={refresh} />}
+            {page === 'Serviceability Check' && <NetworkSettingsPage initialSection="serviceability" refreshShell={refresh} />}
+            {page === 'Topology' && <NetworkSettingsPage initialSection="fiber-mapping" refreshShell={refresh} />}
             {page === 'OLT & PON' && <NetworkSettingsPage initialSection="olts" refreshShell={refresh} />}
             {page === 'ONUs' && <NetworkSettingsPage initialSection="onus" refreshShell={refresh} />}
             {page === 'NAP Boxes' && <NetworkSettingsPage initialSection="naps" refreshShell={refresh} />}

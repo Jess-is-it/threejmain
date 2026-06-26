@@ -1,0 +1,11 @@
+{
+  "slug": "billing",
+  "name": "Billing",
+  "status": "functional-shell",
+  "owner": "threejmain",
+  "description": "ISP subscriptions, invoices, payments, adjustments, balances, billing cycles, and collections.",
+  "app_shell_route": "/billing",
+  "api_prefix": "/api/billing",
+  "frontend_entry": "features/billing/web/BillingPage.jsx",
+  "api_entry": "features/billing/api/billing/router.py"
+}

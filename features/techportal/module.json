@@ -1,0 +1,40 @@
+{
+  "slug": "techportal",
+  "name": "Tech Portal",
+  "status": "planned-shell",
+  "owner": "threejmain",
+  "description": "Technician-only field portal for assigned work, ticket execution, activity logs, and portal-safe technician settings.",
+  "app_shell_route": "/techportal",
+  "web_url": "http://192.168.50.70:8280/techportal",
+  "api_prefix": "/api/techportal",
+  "frontend_entry": "features/techportal/web/TechPortalPage.jsx",
+  "api_entry": "features/techportal/api/techportal/router.py",
+  "feature_folders": [
+    {
+      "name": "Dashboard",
+      "folder": "features/techportal/features/dashboard"
+    },
+    {
+      "name": "Ticketing",
+      "folder": "features/techportal/features/ticketing"
+    },
+    {
+      "name": "Logs",
+      "folder": "features/techportal/features/logs"
+    },
+    {
+      "name": "System Settings",
+      "folder": "features/techportal/features/system-settings"
+    }
+  ],
+  "features": [
+    "technician_dashboard",
+    "assigned_ticket_queue",
+    "ticket_status_updates",
+    "field_checklists",
+    "evidence_capture",
+    "material_usage",
+    "technician_activity_logs",
+    "portal_safe_settings"
+  ]
+}

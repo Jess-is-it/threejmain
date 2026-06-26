@@ -1,8 +1,0 @@
-{
-  "slug": "customer-service-management",
-  "name": "Customer Service Management",
-  "status": "functional-shell",
-  "owner": "threejmain",
-  "description": "Customer interactions, omni-channel inbox, service requests, follow-ups, callbacks, and care workflows.",
-  "app_shell_route": "/customer-service-management"
-}

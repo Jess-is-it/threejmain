@@ -6,15 +6,21 @@ The shared working shell lives in `app-shell/` and provides the common Tabler ad
 
 ## Modules
 
-- `customer-profiling`
-- `billing`
-- `point-of-sale`
-- `inventory`
-- `account-admin`
-- `customer-service-management`
-- `ticketing`
+- `features/customer-profiling`
+- `features/billing`
+- `features/point-of-sale`
+- `features/inventory`
+- `features/account-admin`
+- `features/customer-service-management`
+- `features/ticketing`
+- `features/service`
+- `features/process-flow`
+- `features/network-settings`
+- `features/system-settings`
+- `features/logs`
+- `features/techportal`
 
-Each module owns its own root-level folder. New modules should follow the same folder pattern.
+Each module owns its own folder under `features/`. New modules should follow the same folder pattern.
 
 ## Stack
 

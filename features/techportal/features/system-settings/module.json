@@ -1,0 +1,11 @@
+{
+  "slug": "techportal-system-settings",
+  "name": "Tech Portal System Settings",
+  "status": "planned-shell",
+  "owner": "techportal",
+  "description": "Portal-safe technician profile, session, notification, device, and future offline sync preferences.",
+  "parent_module": "techportal",
+  "route": "/techportal/system-settings",
+  "api_prefix": "/api/techportal/settings",
+  "context": "features/techportal/features/system-settings/PROJECT_MODULE_CONTEXT.md"
+}

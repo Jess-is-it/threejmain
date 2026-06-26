@@ -9,18 +9,18 @@ COPY app-shell/api/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app-shell/api/app ./app
-COPY customer-profiling/api/customer_profiling ./customer_profiling
-COPY billing/api/billing ./billing
-COPY point-of-sale/api/point_of_sale ./point_of_sale
-COPY inventory/api/inventory ./inventory
-COPY account-admin/api/account_admin ./account_admin
-COPY customer-service-management/api/customer_service_management ./customer_service_management
-COPY ticketing/api/ticketing ./ticketing
-COPY service/api/service ./service
-COPY process-flow/api/process_flow ./process_flow
-COPY network-settings/api/network_settings ./network_settings
-COPY system-settings/api/system_settings ./system_settings
-COPY logs/api/logs ./logs
+COPY features/customer-profiling/api/customer_profiling ./customer_profiling
+COPY features/billing/api/billing ./billing
+COPY features/point-of-sale/api/point_of_sale ./point_of_sale
+COPY features/inventory/api/inventory ./inventory
+COPY features/account-admin/api/account_admin ./account_admin
+COPY features/customer-service-management/api/customer_service_management ./customer_service_management
+COPY features/ticketing/api/ticketing ./ticketing
+COPY features/service/api/service ./service
+COPY features/process-flow/api/process_flow ./process_flow
+COPY features/network-settings/api/network_settings ./network_settings
+COPY features/system-settings/api/system_settings ./system_settings
+COPY features/logs/api/logs ./logs
 
 EXPOSE 8100
 

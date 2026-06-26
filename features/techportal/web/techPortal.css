@@ -1,0 +1,73 @@
+.techportal-page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 24px;
+}
+
+.techportal-header {
+  align-items: flex-start;
+  background: #ffffff;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 24px;
+}
+
+.techportal-kicker {
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 700;
+  margin: 0 0 8px;
+  text-transform: uppercase;
+}
+
+.techportal-header h1,
+.techportal-card h2,
+.techportal-panel h2 {
+  color: #111827;
+  margin: 0;
+}
+
+.techportal-header p,
+.techportal-card p,
+.techportal-panel li {
+  color: #4b5563;
+}
+
+.techportal-route {
+  background: #ecfdf5;
+  border: 1px solid #99f6e4;
+  border-radius: 999px;
+  color: #0f766e;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 8px 12px;
+  white-space: nowrap;
+}
+
+.techportal-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.techportal-card,
+.techportal-panel {
+  background: #ffffff;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  padding: 18px;
+}
+
+.techportal-card {
+  min-height: 132px;
+}
+
+@media (max-width: 720px) {
+  .techportal-header {
+    flex-direction: column;
+  }
+}

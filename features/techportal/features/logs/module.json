@@ -1,0 +1,11 @@
+{
+  "slug": "techportal-logs",
+  "name": "Tech Portal Logs",
+  "status": "planned-shell",
+  "owner": "techportal",
+  "description": "Technician-scoped activity history for ticket actions, evidence, inventory use, and provisioning requests.",
+  "parent_module": "techportal",
+  "route": "/techportal/logs",
+  "api_prefix": "/api/techportal/logs",
+  "context": "features/techportal/features/logs/PROJECT_MODULE_CONTEXT.md"
+}

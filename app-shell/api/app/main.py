@@ -32,9 +32,13 @@ MODULE_API_PATHS = [
 
 for parent in Path(__file__).resolve().parents:
     for module_folder, api_folder in MODULE_API_PATHS:
-        local_module_api_root = parent / module_folder / api_folder
-        if local_module_api_root.exists():
-            sys.path.insert(0, str(local_module_api_root))
+        candidate_roots = [
+            parent / "features" / module_folder / api_folder,
+            parent / module_folder / api_folder,
+        ]
+        for local_module_api_root in candidate_roots:
+            if local_module_api_root.exists():
+                sys.path.insert(0, str(local_module_api_root))
 
 from account_admin import account_admin_metrics, configure_account_admin, router as account_admin_router, seed_account_admin_data
 from billing import billing_metrics, configure_billing, router as billing_router, seed_billing_data
@@ -118,7 +122,7 @@ modules = [
     {
         "slug": "customer-profiling",
         "name": "Customer Profiling",
-        "folder": "customer-profiling",
+        "folder": "features/customer-profiling",
         "status": "functional-shell",
         "description": "Customer records, account identity, service addresses, contacts, bulk upload workflow, account lifecycle, and Service Order references.",
         "metrics": {"customers": 0, "active": 0, "pending": 0},
@@ -126,7 +130,7 @@ modules = [
     {
         "slug": "billing",
         "name": "Billing",
-        "folder": "billing",
+        "folder": "features/billing",
         "status": "functional-shell",
         "description": "ISP subscriptions, invoices, payments, adjustments, balances, billing cycles, and collections.",
         "metrics": {"open_invoices": 0, "overdue": 0, "collections": 0},
@@ -134,7 +138,7 @@ modules = [
     {
         "slug": "point-of-sale",
         "name": "Point of Sale",
-        "folder": "point-of-sale",
+        "folder": "features/point-of-sale",
         "status": "functional-shell",
         "description": "Counter sales, receipts, payment capture, daily cashier sessions, and sales reports.",
         "metrics": {"today_sales": 0, "transactions": 0, "open_shift": 0},
@@ -142,7 +146,7 @@ modules = [
     {
         "slug": "inventory",
         "name": "Inventory",
-        "folder": "inventory",
+        "folder": "features/inventory",
         "status": "functional-shell",
         "description": "Inventory items, stock movements, asset assignments, serialized CPE tracking placeholders, and reorder alerts.",
         "metrics": {"items": 0, "low_stock": 0, "assigned_assets": 0},
@@ -150,7 +154,7 @@ modules = [
     {
         "slug": "account-admin",
         "name": "Account Admin",
-        "folder": "account-admin",
+        "folder": "features/account-admin",
         "status": "functional-shell",
         "description": "Admin account CRUD, active/inactive lifecycle, account security, and future audit controls.",
         "metrics": {"admins": 1, "roles": 1, "locked_accounts": 0},
@@ -158,7 +162,7 @@ modules = [
     {
         "slug": "customer-service-management",
         "name": "Customer Service Management",
-        "folder": "customer-service-management",
+        "folder": "features/customer-service-management",
         "status": "functional-shell",
         "description": "Customer interactions, service requests, follow-ups, callbacks, and care workflows.",
         "metrics": {"open_requests": 0, "callbacks_due": 0, "sla_risks": 0},
@@ -166,7 +170,7 @@ modules = [
     {
         "slug": "ticketing",
         "name": "Ticketing",
-        "folder": "ticketing",
+        "folder": "features/ticketing",
         "status": "functional-shell",
         "description": "Trouble tickets, customer issue intake, priorities, assignment placeholders, notes, and resolution history.",
         "metrics": {"open_tickets": 0, "urgent": 0, "field_jobs": 0},
@@ -174,7 +178,7 @@ modules = [
     {
         "slug": "service",
         "name": "Service",
-        "folder": "service",
+        "folder": "features/service",
         "status": "functional-shell",
         "description": "Service catalog speed plans, service accounts, customer service orders, and canonical service references for billing and support.",
         "metrics": {"catalog_items": 0, "open_orders": 0, "active_orders": 0},
@@ -182,7 +186,7 @@ modules = [
     {
         "slug": "process-flow",
         "name": "Process Flow",
-        "folder": "process-flow",
+        "folder": "features/process-flow",
         "status": "functional-shell",
         "description": "Interactive process topology reference for customer, service, ticketing, billing, inventory, and network workflows.",
         "metrics": {"flows": 0, "stages": 0},
@@ -190,7 +194,7 @@ modules = [
     {
         "slug": "network-settings",
         "name": "Network Settings",
-        "folder": "network-settings",
+        "folder": "features/network-settings",
         "status": "functional-shell",
         "description": "Network source-of-truth for OLTs, generated PON ports, NAP boxes, and FBT assignments.",
         "metrics": {"olts": 0, "pon_ports": 0, "nap_boxes": 0, "fbts": 0},
@@ -198,7 +202,7 @@ modules = [
     {
         "slug": "system-settings",
         "name": "System Settings",
-        "folder": "system-settings",
+        "folder": "features/system-settings",
         "status": "functional-shell",
         "description": "Branding, business profile, runtime paths, and system port registry.",
         "metrics": {"sections": 3, "registered_ports": 0},
@@ -206,7 +210,7 @@ modules = [
     {
         "slug": "logs",
         "name": "Logs",
-        "folder": "logs",
+        "folder": "features/logs",
         "status": "functional-shell",
         "description": "Shared audit log viewer for app-shell and module actions.",
         "metrics": {"audit_events": 0},
@@ -629,8 +633,8 @@ def dashboard(admin=Depends(current_admin)):
         "modules": modules,
         "module_counts": module_counts,
         "alerts": [
-            {"level": "info", "message": "Customer Profiling is loaded from the customer-profiling module folder."},
-            {"level": "info", "message": "Business modules, System Settings, and Logs are loaded from module folders."},
+            {"level": "info", "message": "Customer Profiling is loaded from the features/customer-profiling module folder."},
+            {"level": "info", "message": "Business modules, System Settings, and Logs are loaded from features module folders."},
             {"level": "warning", "message": "Default admin password should be changed before deployment."},
         ],
     }
