@@ -20,18 +20,7 @@ export default defineConfig({
     fs: {
       allow: [
         path.resolve(__dirname),
-        path.resolve(__dirname, '../../customer-profiling'),
-        path.resolve(__dirname, '../../billing'),
-        path.resolve(__dirname, '../../point-of-sale'),
-        path.resolve(__dirname, '../../inventory'),
-        path.resolve(__dirname, '../../account-admin'),
-        path.resolve(__dirname, '../../customer-service-management'),
-        path.resolve(__dirname, '../../ticketing'),
-        path.resolve(__dirname, '../../service'),
-        path.resolve(__dirname, '../../process-flow'),
-        path.resolve(__dirname, '../../network-settings'),
-        path.resolve(__dirname, '../../system-settings'),
-        path.resolve(__dirname, '../../logs')
+        path.resolve(__dirname, '../../features')
       ]
     },
     proxy: {

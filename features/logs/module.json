@@ -1,0 +1,11 @@
+{
+  "slug": "logs",
+  "name": "Logs",
+  "status": "functional-shell",
+  "owner": "threejmain",
+  "description": "Shared audit log viewer for app-shell and module activity.",
+  "app_shell_route": "/logs",
+  "api_prefix": "/api/logs",
+  "frontend_entry": "features/logs/web/LogsPage.jsx",
+  "api_entry": "features/logs/api/logs/router.py"
+}

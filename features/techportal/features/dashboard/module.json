@@ -1,0 +1,11 @@
+{
+  "slug": "techportal-dashboard",
+  "name": "Tech Portal Dashboard",
+  "status": "planned-shell",
+  "owner": "techportal",
+  "description": "Technician landing dashboard for assigned work, urgent jobs, route context, and quick field status actions.",
+  "parent_module": "techportal",
+  "route": "/techportal",
+  "api_prefix": "/api/techportal/dashboard",
+  "context": "features/techportal/features/dashboard/PROJECT_MODULE_CONTEXT.md"
+}

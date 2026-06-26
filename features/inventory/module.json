@@ -1,0 +1,11 @@
+{
+  "slug": "inventory",
+  "name": "Inventory",
+  "status": "functional-shell",
+  "owner": "threejmain",
+  "description": "Inventory items, stock movements, asset assignments, serialized CPE tracking placeholders, and reorder alerts.",
+  "app_shell_route": "/inventory",
+  "api_prefix": "/api/inventory",
+  "frontend_entry": "features/inventory/web/InventoryPage.jsx",
+  "api_entry": "features/inventory/api/inventory/router.py"
+}

@@ -38,10 +38,10 @@ python3 scripts/ai_coord.py update <agent> "<task-name>" "<what changed>" --file
 This repo uses a modular monolith for fastest AI-assisted development:
 
 - `app-shell/` owns shared application code only: login/session, layout, navigation, runtime health, and Docker entry points.
-- Each business module owns its module-specific frontend and API code inside its root-level module folder.
+- Each business module owns its module-specific frontend and API code inside its folder under `features/`.
 - Modules are loaded by the shared shell through imports/routers; they are not separate apps and should not run their own login/session system.
 - The app uses one shared PostgreSQL database. Modules should use separate tables/schemas inside the shared database, not separate databases, unless the user explicitly approves a future split.
-- New module code should be placed in that module folder first, then registered/imported by `app-shell`.
+- New module code should be placed in `features/<module-name>/` first, then registered/imported by `app-shell`.
 
 Current module code layout:
 
@@ -50,46 +50,50 @@ app-shell/
   web/        shared React/Vite shell
   api/        shared FastAPI shell
 
-customer-profiling/
-  web/        Customer Profiling page/components/styles
-  api/        Customer Profiling FastAPI router/service shell
-
-billing/
-point-of-sale/
-inventory/
-account-admin/
-customer-service-management/
-ticketing/
-service/
-process-flow/
-network-settings/
-  web/        module-owned React pages/styles
-  api/        module-owned FastAPI routers
+features/
+  customer-profiling/
+    web/        Customer Profiling page/components/styles
+    api/        Customer Profiling FastAPI router/service shell
+  billing/
+  point-of-sale/
+  inventory/
+  account-admin/
+  customer-service-management/
+  ticketing/
+  service/
+  process-flow/
+  network-settings/
+  system-settings/
+  logs/
+  techportal/
+    web/        module-owned React pages/styles
+    api/        module-owned FastAPI routers
 ```
 
 ## Module Structure
 
-Root-level business module folders:
+Business module folders under `features/`:
 
-- `customer-profiling`: customer records, account identity, contacts, addresses, lifecycle state, and bulk upload workflow
-- `billing`: invoices, subscriptions, payments, adjustments, balances, and billing cycles
-- `point-of-sale`: counter sales, receipts, payment capture, cashier sessions, and sales reports
-- `inventory`: routers, ONUs/CPEs, cables, installation materials, stock movement, and reorder alerts
-- `account-admin`: customer account administration placeholder; customer-account lifecycle/configuration work belongs here next
-- `customer-service-management`: customer interactions, service requests, follow-ups, callbacks, and care workflows
-- `ticketing`: trouble tickets, outage tracking, field jobs, dispatch, notes, and resolution history
-- `service`: ISP service catalog, speed plans, Service Accounts, customer Service Orders, installation requirements, and canonical service references for Billing and Ticketing
-- `process-flow`: shared business-process maps that explain how Customer Profiling, Service, Ticketing, Billing, Inventory, Network Settings, and operational flows connect
-- `network-settings`: OLTs, generated/editable PON ports, NAP boxes, and PLC/LCP/FBT splitter assignments for ISP access-network source-of-truth
-- `system-settings`: branding, business profile, reusable locations, Avatar settings, OPENAI settings, A2P Messaging, system Access controls, runtime paths, and system port registry
-- `logs`: shared audit log viewer for app-shell and module activity
+- `features/customer-profiling`: customer records, account identity, contacts, addresses, lifecycle state, and bulk upload workflow
+- `features/billing`: invoices, subscriptions, payments, adjustments, balances, and billing cycles
+- `features/point-of-sale`: counter sales, receipts, payment capture, cashier sessions, and sales reports
+- `features/inventory`: routers, ONUs/CPEs, cables, installation materials, stock movement, and reorder alerts
+- `features/account-admin`: customer account administration placeholder; customer-account lifecycle/configuration work belongs here next
+- `features/customer-service-management`: customer interactions, service requests, follow-ups, callbacks, and care workflows
+- `features/ticketing`: trouble tickets, outage tracking, field jobs, dispatch, notes, and resolution history
+- `features/service`: ISP service catalog, speed plans, Service Accounts, customer Service Orders, installation requirements, and canonical service references for Billing and Ticketing
+- `features/process-flow`: shared business-process maps that explain how Customer Profiling, Service, Ticketing, Billing, Inventory, Network Settings, and operational flows connect
+- `features/network-settings`: OLTs, generated/editable PON ports, NAP boxes, and PLC/LCP/FBT splitter assignments for ISP access-network source-of-truth
+- `features/system-settings`: branding, business profile, reusable locations, Avatar settings, OPENAI settings, A2P Messaging, system Access controls, runtime paths, and system port registry
+- `features/logs`: shared audit log viewer for app-shell and module activity
+- `features/techportal`: technician-only portal shell with Dashboard, Ticketing, Logs, and System Settings feature folders for field technicians
 
-New business modules must get their own root-level folder and follow the module-folder pattern used by `customer-profiling/`.
+New business modules must get their own folder under `features/` and follow the module-folder pattern used by `features/customer-profiling/`.
 
 Required module-folder skeleton:
 
 ```text
-<module-name>/
+features/<module-name>/
   README.md
   module.json
   PROJECT_MODULE_CONTEXT.md
@@ -104,13 +108,13 @@ Required module-folder skeleton:
 
 Module folder rules:
 
-- Use lowercase kebab-case folder names such as `billing`, `inventory`, and `customer-service-management`.
+- Use lowercase kebab-case folder names under `features/`, such as `features/billing`, `features/inventory`, and `features/customer-service-management`.
 - Put module-specific CRUD pages, styles, API routers, services, fixtures, and helpers inside the module folder.
 - Do not put module-specific CRUD implementation directly inside `app-shell/`.
-- Put module-local context in `<module-name>/PROJECT_MODULE_CONTEXT.md`.
+- Put module-local context in `features/<module-name>/PROJECT_MODULE_CONTEXT.md`.
 - Module Codex sessions should update their own module context instead of the main `Project_Context.md` for ordinary module progress.
 - The main `Project_Context.md` should only receive cross-project facts such as shared architecture, app-shell behavior, shared API contracts, shared database decisions, runtime ports, deployment workflow, cross-module dependencies, and integration status.
-- Use FastAPI `APIRouter` from `<module-name>/api/<python_package>/router.py`.
+- Use FastAPI `APIRouter` from `features/<module-name>/api/<python_package>/router.py`.
 - Use API prefix `/api/<module-name>` unless the user explicitly chooses another prefix.
 - Keep first-phase CRUD shells in-memory unless the user asks for database persistence.
 - Use the shared PostgreSQL database for durable data later; do not create per-module databases unless the user explicitly approves.
@@ -128,10 +132,10 @@ Each `PROJECT_MODULE_CONTEXT.md` should include:
 
 ## Customer Profiling Module
 
-The previous standalone `customer-profiling` work has been restored into the modular monolith at `/customer-profiling` using the new React/Vite + FastAPI stack. Customer Profiling-specific code now lives in the module folder:
+The previous standalone `customer-profiling` work has been restored into the modular monolith under `features/customer-profiling` using the new React/Vite + FastAPI stack. Customer Profiling-specific code now lives in the module folder:
 
-- Frontend page/styles: `customer-profiling/web/`
-- API router/state: `customer-profiling/api/customer_profiling/`
+- Frontend page/styles: `features/customer-profiling/web/`
+- API router/state: `features/customer-profiling/api/customer_profiling/`
 
 The current module includes:
 
@@ -154,30 +158,30 @@ The Integration Codex wired these completed module folders into `app-shell` as f
 
 | Module | Web route | API prefix | Frontend entry | API package |
 | --- | --- | --- | --- | --- |
-| Billing | `/billing` | `/api/billing` | `billing/web/BillingPage.jsx` | `billing/api/billing` |
-| Point of Sale | `/point-of-sale` | `/api/point-of-sale` | `point-of-sale/web/PointOfSalePage.jsx` | `point-of-sale/api/point_of_sale` |
-| Inventory | `/inventory` | `/api/inventory` | `inventory/web/InventoryPage.jsx` | `inventory/api/inventory` |
-| Account Admin | `/account-admin` | `/api/account-admin` | `account-admin/web/AccountAdminPage.jsx` | `account-admin/api/account_admin` |
-| Customer Service Management | `/customer-service-management` | `/api/customer-service-management` | `customer-service-management/web/CustomerServiceManagementPage.jsx` | `customer-service-management/api/customer_service_management` |
-| Ticketing | `/ticketing` | `/api/ticketing` | `ticketing/web/TicketingPage.jsx` | `ticketing/api/ticketing` |
-| Service Catalog | `/service/catalog` | `/api/service` | `service/web/ServicePage.jsx` | `service/api/service` |
-| Service Account | `/service/account` | `/api/service` | `service/web/ServicePage.jsx` | `service/api/service` |
-| Service Order | `/service/order` | `/api/service` | `service/web/ServicePage.jsx` | `service/api/service` |
-| Process Flow | `/process-flow` | `/api/process-flow` | `process-flow/web/ProcessFlowPage.jsx` | `process-flow/api/process_flow` |
-| Network Settings | `/network-settings` | `/api/network-settings` | `network-settings/web/NetworkSettingsPage.jsx` | `network-settings/api/network_settings` |
-| Network Settings - MikroTik API | `/network-settings/mikrotik/settings` | `/api/network-settings` | `network-settings/web/NetworkSettingsPage.jsx` | `network-settings/api/network_settings` |
-| Network Settings - PPPoE Accounts | `/network-settings/pppoe-accounts` | `/api/network-settings` | `network-settings/web/NetworkSettingsPage.jsx` | `network-settings/api/network_settings` |
-| Network Settings - OLT SNMP | `/network-settings/olt/settings` | `/api/network-settings` | `network-settings/web/NetworkSettingsPage.jsx` | `network-settings/api/network_settings` |
-| Network Settings - Mapping | `/network-settings/map` | `/api/network-settings` | `network-settings/web/NetworkSettingsPage.jsx` | `network-settings/api/network_settings` |
-| Network Settings - Serviceability Check | `/network-settings/serviceability-check` | `/api/network-settings` | `network-settings/web/NetworkSettingsPage.jsx` | `network-settings/api/network_settings` |
-| Network Settings - Topology | `/network-settings/fiber-mapping` | `/api/network-settings` | `network-settings/web/NetworkSettingsPage.jsx` | `network-settings/api/network_settings` |
-| Network Settings - OLT & PON | `/network-settings/olts` | `/api/network-settings` | `network-settings/web/NetworkSettingsPage.jsx` | `network-settings/api/network_settings` |
-| Network Settings - ONUs | `/network-settings/onus` | `/api/network-settings` | `network-settings/web/NetworkSettingsPage.jsx` | `network-settings/api/network_settings` |
-| Network Settings - NAP Boxes | `/network-settings/nap-boxes` | `/api/network-settings` | `network-settings/web/NetworkSettingsPage.jsx` | `network-settings/api/network_settings` |
-| Network Settings - Insertion Loss / Splitters | `/network-settings/insertion-loss/splitters` | `/api/network-settings` | `network-settings/web/NetworkSettingsPage.jsx` | `network-settings/api/network_settings` |
-| Network Settings - Insertion Loss / Fiber Optic | `/network-settings/insertion-loss/fiber-optic` | `/api/network-settings` | `network-settings/web/NetworkSettingsPage.jsx` | `network-settings/api/network_settings` |
-| System Settings | `/system-settings` | `/api/system-settings` | `system-settings/web/SystemSettingsPage.jsx` | `system-settings/api/system_settings` |
-| Logs | `/logs` | `/api/logs` | `logs/web/LogsPage.jsx` | `logs/api/logs` |
+| Billing | `/billing` | `/api/billing` | `features/billing/web/BillingPage.jsx` | `features/billing/api/billing` |
+| Point of Sale | `/point-of-sale` | `/api/point-of-sale` | `features/point-of-sale/web/PointOfSalePage.jsx` | `features/point-of-sale/api/point_of_sale` |
+| Inventory | `/inventory` | `/api/inventory` | `features/inventory/web/InventoryPage.jsx` | `features/inventory/api/inventory` |
+| Account Admin | `/account-admin` | `/api/account-admin` | `features/account-admin/web/AccountAdminPage.jsx` | `features/account-admin/api/account_admin` |
+| Customer Service Management | `/customer-service-management` | `/api/customer-service-management` | `features/customer-service-management/web/CustomerServiceManagementPage.jsx` | `features/customer-service-management/api/customer_service_management` |
+| Ticketing | `/ticketing` | `/api/ticketing` | `features/ticketing/web/TicketingPage.jsx` | `features/ticketing/api/ticketing` |
+| Service Catalog | `/service/catalog` | `/api/service` | `features/service/web/ServicePage.jsx` | `features/service/api/service` |
+| Service Account | `/service/account` | `/api/service` | `features/service/web/ServicePage.jsx` | `features/service/api/service` |
+| Service Order | `/service/order` | `/api/service` | `features/service/web/ServicePage.jsx` | `features/service/api/service` |
+| Process Flow | `/process-flow` | `/api/process-flow` | `features/process-flow/web/ProcessFlowPage.jsx` | `features/process-flow/api/process_flow` |
+| Network Settings | `/network-settings` | `/api/network-settings` | `features/network-settings/web/NetworkSettingsPage.jsx` | `features/network-settings/api/network_settings` |
+| Network Settings - MikroTik API | `/network-settings/mikrotik/settings` | `/api/network-settings` | `features/network-settings/web/NetworkSettingsPage.jsx` | `features/network-settings/api/network_settings` |
+| Network Settings - PPPoE Accounts | `/network-settings/pppoe-accounts` | `/api/network-settings` | `features/network-settings/web/NetworkSettingsPage.jsx` | `features/network-settings/api/network_settings` |
+| Network Settings - OLT SNMP | `/network-settings/olt/settings` | `/api/network-settings` | `features/network-settings/web/NetworkSettingsPage.jsx` | `features/network-settings/api/network_settings` |
+| Network Settings - Mapping | `/network-settings/map` | `/api/network-settings` | `features/network-settings/web/NetworkSettingsPage.jsx` | `features/network-settings/api/network_settings` |
+| Network Settings - Serviceability Check | `/network-settings/serviceability-check` | `/api/network-settings` | `features/network-settings/web/NetworkSettingsPage.jsx` | `features/network-settings/api/network_settings` |
+| Network Settings - Topology | `/network-settings/fiber-mapping` | `/api/network-settings` | `features/network-settings/web/NetworkSettingsPage.jsx` | `features/network-settings/api/network_settings` |
+| Network Settings - OLT & PON | `/network-settings/olts` | `/api/network-settings` | `features/network-settings/web/NetworkSettingsPage.jsx` | `features/network-settings/api/network_settings` |
+| Network Settings - ONUs | `/network-settings/onus` | `/api/network-settings` | `features/network-settings/web/NetworkSettingsPage.jsx` | `features/network-settings/api/network_settings` |
+| Network Settings - NAP Boxes | `/network-settings/nap-boxes` | `/api/network-settings` | `features/network-settings/web/NetworkSettingsPage.jsx` | `features/network-settings/api/network_settings` |
+| Network Settings - Insertion Loss / Splitters | `/network-settings/insertion-loss/splitters` | `/api/network-settings` | `features/network-settings/web/NetworkSettingsPage.jsx` | `features/network-settings/api/network_settings` |
+| Network Settings - Insertion Loss / Fiber Optic | `/network-settings/insertion-loss/fiber-optic` | `/api/network-settings` | `features/network-settings/web/NetworkSettingsPage.jsx` | `features/network-settings/api/network_settings` |
+| System Settings | `/system-settings` | `/api/system-settings` | `features/system-settings/web/SystemSettingsPage.jsx` | `features/system-settings/api/system_settings` |
+| Logs | `/logs` | `/api/logs` | `features/logs/web/LogsPage.jsx` | `features/logs/api/logs` |
 
 Shared app-shell wiring now imports each module page in `app-shell/web/src/main.jsx`, includes each router in `app-shell/api/app/main.py`, injects shared auth/audit hooks, and exposes module metrics through `/api/modules` and `/api/dashboard`.
 
@@ -202,12 +206,12 @@ Account Admin is not the system-login admin area. It is now reserved for custome
 
 The app exposes a System Settings -> Ports page backed by `/api/system/ports` so operators can view reserved and in-use ports. The registry explicitly labels threejmain Production ports (`8180` web, `8100` API), threejmain Staging ports (`8280` web, `8200` API), internal PostgreSQL container ports for both Compose projects, and existing 3JCentralPisowifi reservations.
 
-System Settings now lives in the `system-settings/` module folder. Logs now lives in the `logs/` module folder. App-shell imports their pages and API routers while retaining compatibility endpoints:
+System Settings now lives in the `features/system-settings/` module folder. Logs now lives in the `features/logs/` module folder. App-shell imports their pages and API routers while retaining compatibility endpoints:
 
-- `system-settings/web/SystemSettingsPage.jsx`
-- `system-settings/api/system_settings/router.py`
-- `logs/web/LogsPage.jsx`
-- `logs/api/logs/router.py`
+- `features/system-settings/web/SystemSettingsPage.jsx`
+- `features/system-settings/api/system_settings/router.py`
+- `features/logs/web/LogsPage.jsx`
+- `features/logs/api/logs/router.py`
 - `/api/system/settings`
 - `/api/system/ports`
 - `/api/locations`
@@ -344,8 +348,8 @@ Cross-module work is allowed only after locking every affected module folder and
 
 - `integration_codex.md` is the operating guide for the dedicated Integration Codex terminal.
 - Module Codex sessions should build CRUD inside their own module folders first.
-- Module Codex sessions should keep module-local lasting context in `<module-name>/PROJECT_MODULE_CONTEXT.md`.
-- Integration Codex owns wiring completed module folders into `app-shell`, Docker/Vite access, shared API/router imports, shared navigation/page imports, and integration notes.
+- Module Codex sessions should keep module-local lasting context in `features/<module-name>/PROJECT_MODULE_CONTEXT.md`.
+- Integration Codex owns wiring completed module folders into `app-shell`, shared API/router imports, shared navigation/page imports, auth/session decisions, and integration notes. Docker/Vite now copy and allow the repository-level `features/` folder, so per-module Docker/Vite changes should usually be verification-only unless the runtime layout changes.
 - Integration Codex reads each module's `PROJECT_MODULE_CONTEXT.md` and merges only stable cross-project summaries into the main `Project_Context.md`.
 - Integration Codex may prepare shared staging commits and push coordinated integration changes directly to `staging`.
 - Integration Codex should decline unrelated work and only accept app-shell integration requests such as `Integrate inventory into app-shell` or `Integrate these completed modules into app-shell as a batch: inventory, ticketing`.

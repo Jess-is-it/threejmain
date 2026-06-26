@@ -80,7 +80,7 @@ python3 scripts/ai_coord.py lock <file-or-folder> <agent> "<task-name>" "<why th
 Examples:
 
 ```bash
-python3 scripts/ai_coord.py lock billing codex-3 "billing-service-order" "Update Billing to use Service Orders"
+python3 scripts/ai_coord.py lock features/billing codex-3 "billing-service-order" "Update Billing to use Service Orders"
 python3 scripts/ai_coord.py lock app-shell codex-9 "wire-service" "Update shared navigation and router imports"
 ```
 
@@ -129,7 +129,7 @@ Read-only checks such as `docker compose ps` and `curl` do not require the runti
 Module-specific work belongs inside the module folder first:
 
 ```text
-<module-name>/
+features/<module-name>/
   README.md
   module.json
   PROJECT_MODULE_CONTEXT.md
@@ -137,14 +137,14 @@ Module-specific work belongs inside the module folder first:
   web/
 ```
 
-Use `customer-profiling/` as the reference pattern.
+Use `features/customer-profiling/` as the reference pattern.
 
 If the task is only to create a new feature or new module folder, first follow the `AGENTS.md` New Feature Creation Research Rule. Research how mature enterprise systems and ISP operators handle the feature, review the existing modules, map required functions and cross-feature connections, then capture the summary in the new module `README.md` and `PROJECT_MODULE_CONTEXT.md`.
 
 For module-local lasting notes, update:
 
 ```text
-<module-name>/PROJECT_MODULE_CONTEXT.md
+features/<module-name>/PROJECT_MODULE_CONTEXT.md
 ```
 
 Only update the main `Project_Context.md` for shared architecture, app-shell behavior, shared contracts, runtime ports, deployment workflow, cross-module dependencies, or integration status.

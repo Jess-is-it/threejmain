@@ -1,0 +1,11 @@
+{
+  "slug": "ticketing",
+  "name": "Ticketing",
+  "status": "functional-shell",
+  "owner": "threejmain",
+  "description": "Trouble tickets, customer issue intake, priorities, assignment placeholders, notes, and resolution history.",
+  "app_shell_route": "/ticketing",
+  "api_prefix": "/api/ticketing",
+  "frontend_entry": "features/ticketing/web/TicketingPage.jsx",
+  "api_entry": "features/ticketing/api/ticketing/router.py"
+}

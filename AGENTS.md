@@ -71,7 +71,7 @@ Do not use `Project_Context.md` as a noisy activity log.
 Module-specific details should live in that module's local context file:
 
 ```text
-<module-name>/PROJECT_MODULE_CONTEXT.md
+features/<module-name>/PROJECT_MODULE_CONTEXT.md
 ```
 
 Module Codex sessions should update their own `PROJECT_MODULE_CONTEXT.md` for module-local facts such as CRUD scope, API routes, frontend components, local data model notes, placeholders, test notes, and module-specific risks.
@@ -101,14 +101,14 @@ python3 scripts/ai_coord.py update <agent> "<task-name>" "<what changed>" --file
 
 # Module Folder Pattern Rules
 
-This project uses a modular monolith. Business module work must live in that module's root-level folder first.
+This project uses a modular monolith. Business module work must live under the repository-level `features/` folder first.
 
-Use `customer-profiling/` as the reference pattern for module layout and ownership.
+Use `features/customer-profiling/` as the reference pattern for module layout and ownership.
 
-When creating a new business module, create a root-level folder using a lowercase kebab-case module name:
+When creating a new business module, create a folder under `features/` using a lowercase kebab-case module name:
 
 ```text
-<module-name>/
+features/<module-name>/
   README.md
   module.json
   PROJECT_MODULE_CONTEXT.md
@@ -124,12 +124,12 @@ When creating a new business module, create a root-level folder using a lowercas
 Examples:
 
 ```text
-billing/
-inventory/
-point-of-sale/
-account-admin/
-customer-service-management/
-ticketing/
+features/billing/
+features/inventory/
+features/point-of-sale/
+features/account-admin/
+features/customer-service-management/
+features/ticketing/
 ```
 
 Module Codex sessions should implement module CRUD inside their own module folder only.
@@ -143,7 +143,7 @@ The dedicated Integration Codex owns wiring completed module folders into `app-s
 New module APIs should expose a FastAPI `APIRouter` under:
 
 ```text
-<module-name>/api/<python_package>/router.py
+features/<module-name>/api/<python_package>/router.py
 ```
 
 Use this API prefix format unless the user specifies otherwise:
@@ -155,7 +155,7 @@ Use this API prefix format unless the user specifies otherwise:
 New module frontend code should live under:
 
 ```text
-<module-name>/web/
+features/<module-name>/web/
 ```
 
 For first-phase CRUD shells, in-memory module state is acceptable unless the user explicitly asks for database persistence. Durable tables should use the shared project database later, not a separate database, unless the user explicitly approves.
@@ -447,9 +447,9 @@ Module folders remain the ownership boundary. A module Codex may edit its own mo
 Examples:
 
 ```bash
-python3 scripts/ai_coord.py lock billing codex-3 "service-order-billing" "Update Billing to use Service Orders"
-python3 scripts/ai_coord.py lock service codex-14 "service-orders" "Update Service Order contracts"
-python3 scripts/ai_coord.py lock ticketing codex-6 "ticket-service-order" "Tag tickets with Service Orders"
+python3 scripts/ai_coord.py lock features/billing codex-3 "service-order-billing" "Update Billing to use Service Orders"
+python3 scripts/ai_coord.py lock features/service codex-14 "service-orders" "Update Service Order contracts"
+python3 scripts/ai_coord.py lock features/ticketing codex-6 "ticket-service-order" "Tag tickets with Service Orders"
 ```
 
 Shared app-shell files still require explicit locks before edits:

@@ -1,9 +1,0 @@
-{
-  "slug": "point-of-sale",
-  "name": "Point of Sale",
-  "status": "functional-shell",
-  "owner": "threejmain",
-  "description": "Counter sales, receipts, payment capture, daily cashier sessions, and sales reports.",
-  "app_shell_route": "/point-of-sale",
-  "api_prefix": "/api/point-of-sale"
-}

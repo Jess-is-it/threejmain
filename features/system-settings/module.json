@@ -1,0 +1,11 @@
+{
+  "slug": "system-settings",
+  "name": "System Settings",
+  "status": "functional-shell",
+  "owner": "threejmain",
+  "description": "Branding, business profile, avatar moods, Location Management, Access controls, runtime paths, and system port registry.",
+  "app_shell_route": "/system-settings",
+  "api_prefix": "/api/system-settings",
+  "frontend_entry": "features/system-settings/web/SystemSettingsPage.jsx",
+  "api_entry": "features/system-settings/api/system_settings/router.py"
+}

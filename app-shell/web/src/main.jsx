@@ -39,18 +39,18 @@ import {
   IconWifi,
   IconX
 } from '@tabler/icons-react';
-import AccountAdminPage from '../../../account-admin/web/AccountAdminPage.jsx';
-import BillingPage from '../../../billing/web/BillingPage.jsx';
-import CustomerProfilingPage from '../../../customer-profiling/web/CustomerProfilingPage.jsx';
-import CustomerServiceManagementPage from '../../../customer-service-management/web/CustomerServiceManagementPage.jsx';
-import InventoryPage from '../../../inventory/web/InventoryPage.jsx';
-import LogsPage from '../../../logs/web/LogsPage.jsx';
-import NetworkSettingsPage from '../../../network-settings/web/NetworkSettingsPage.jsx';
-import PointOfSalePage from '../../../point-of-sale/web/PointOfSalePage.jsx';
-import ProcessFlowPage from '../../../process-flow/web/ProcessFlowPage.jsx';
-import ServicePage from '../../../service/web/ServicePage.jsx';
-import SystemSettingsPage from '../../../system-settings/web/SystemSettingsPage.jsx';
-import TicketingPage from '../../../ticketing/web/TicketingPage.jsx';
+import AccountAdminPage from '../../../features/account-admin/web/AccountAdminPage.jsx';
+import BillingPage from '../../../features/billing/web/BillingPage.jsx';
+import CustomerProfilingPage from '../../../features/customer-profiling/web/CustomerProfilingPage.jsx';
+import CustomerServiceManagementPage from '../../../features/customer-service-management/web/CustomerServiceManagementPage.jsx';
+import InventoryPage from '../../../features/inventory/web/InventoryPage.jsx';
+import LogsPage from '../../../features/logs/web/LogsPage.jsx';
+import NetworkSettingsPage from '../../../features/network-settings/web/NetworkSettingsPage.jsx';
+import PointOfSalePage from '../../../features/point-of-sale/web/PointOfSalePage.jsx';
+import ProcessFlowPage from '../../../features/process-flow/web/ProcessFlowPage.jsx';
+import ServicePage from '../../../features/service/web/ServicePage.jsx';
+import SystemSettingsPage from '../../../features/system-settings/web/SystemSettingsPage.jsx';
+import TicketingPage from '../../../features/ticketing/web/TicketingPage.jsx';
 import './styles.css';
 
 const API = '/api';
