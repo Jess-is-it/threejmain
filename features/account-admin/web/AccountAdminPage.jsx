@@ -1,12 +1,15 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   IconDeviceFloppy,
+  IconEdit,
   IconFilter,
+  IconPlus,
   IconRefresh,
   IconSearch,
   IconSend,
   IconSettings,
   IconShieldLock,
+  IconTrash,
   IconUsers,
   IconWifi,
   IconX
@@ -101,6 +104,7 @@ export default function AccountAdminPage() {
   const [hotspotLoading, setHotspotLoading] = useState(false);
   const [hotspotBusy, setHotspotBusy] = useState('');
   const [hotspotMessage, setHotspotMessage] = useState(null);
+  const [hotspotContactModal, setHotspotContactModal] = useState(null);
   const [tabs, setTabs] = useState(defaultTabs);
   const [filters, setFilters] = useState(blankFilters);
   const [mappingView, setMappingView] = useState(MAPPING_WITHOUT_ONUS);
@@ -230,6 +234,91 @@ export default function AccountAdminPage() {
       loadHotspot();
     } catch (err) {
       setHotspotMessage({ tone: 'danger', text: err.message });
+    } finally {
+      setHotspotBusy('');
+    }
+  }
+
+  function openHotspotContactModal(row) {
+    const contacts = (row.contacts || []).map((contact) => ({
+      contactNumber: contact.contact_number || '',
+      label: contact.label || 'Contact',
+      enabled: contact.enabled !== false
+    }));
+    setHotspotContactModal({
+      row,
+      contacts: contacts.length ? contacts : [{ contactNumber: '', label: 'Primary', enabled: true }],
+      message: null
+    });
+  }
+
+  function updateHotspotContact(index, patch) {
+    setHotspotContactModal((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        contacts: current.contacts.map((contact, contactIndex) => (
+          contactIndex === index ? { ...contact, ...patch } : contact
+        )),
+        message: null
+      };
+    });
+  }
+
+  function addHotspotContact() {
+    setHotspotContactModal((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        contacts: [
+          ...current.contacts,
+          { contactNumber: '', label: `Contact ${current.contacts.length + 1}`, enabled: true }
+        ],
+        message: null
+      };
+    });
+  }
+
+  function removeHotspotContact(index) {
+    setHotspotContactModal((current) => {
+      if (!current) return current;
+      const contacts = current.contacts.filter((_, contactIndex) => contactIndex !== index);
+      return {
+        ...current,
+        contacts: contacts.length ? contacts : [{ contactNumber: '', label: 'Primary', enabled: true }],
+        message: null
+      };
+    });
+  }
+
+  async function saveHotspotContacts(syncAfterSave = false) {
+    if (!hotspotContactModal?.row) return;
+    const row = hotspotContactModal.row;
+    const contacts = hotspotContactModal.contacts
+      .map((contact) => ({
+        contactNumber: String(contact.contactNumber || '').trim(),
+        label: String(contact.label || '').trim() || 'Contact',
+        enabled: contact.enabled !== false
+      }))
+      .filter((contact) => contact.contactNumber);
+    setHotspotBusy('contacts');
+    setHotspotContactModal((current) => current ? { ...current, message: null } : current);
+    try {
+      await request(`/account-admin/hotspot-access/subscribers/${encodeURIComponent(row.external_subscriber_id)}/contacts`, {
+        method: 'PATCH',
+        body: JSON.stringify({ contacts })
+      });
+      if (syncAfterSave) {
+        await request(`/account-admin/hotspot-access/subscribers/${encodeURIComponent(row.external_subscriber_id)}/sync`, {
+          method: 'POST',
+          body: JSON.stringify({})
+        });
+      }
+      await loadHotspot();
+      setHotspotMessage({ tone: 'success', text: syncAfterSave ? 'Subscriber contacts saved and synced.' : 'Subscriber contacts saved.' });
+      setHotspotContactModal(null);
+    } catch (err) {
+      setHotspotContactModal((current) => current ? { ...current, message: { tone: 'danger', text: err.message } } : current);
     } finally {
       setHotspotBusy('');
     }
@@ -396,9 +485,14 @@ export default function AccountAdminPage() {
                           </td>
                           <td><StatusBadge value={row.status} /></td>
                           <td>
-                            <button className="btn btn-outline-primary btn-sm" type="button" disabled={!!hotspotBusy} onClick={() => syncHotspot(row.external_subscriber_id)}>
-                              {hotspotBusy === `sync-${row.external_subscriber_id}` ? 'Syncing...' : 'Sync'}
-                            </button>
+                            <div className="btn-list flex-nowrap">
+                              <button className="btn btn-icon btn-outline-secondary btn-sm" type="button" disabled={!!hotspotBusy} onClick={() => openHotspotContactModal(row)} title="Edit allowed contact numbers">
+                                <IconEdit size={16} />
+                              </button>
+                              <button className="btn btn-outline-primary btn-sm" type="button" disabled={!!hotspotBusy} onClick={() => syncHotspot(row.external_subscriber_id)}>
+                                {hotspotBusy === `sync-${row.external_subscriber_id}` ? 'Syncing...' : 'Sync'}
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -430,6 +524,74 @@ export default function AccountAdminPage() {
             </div>
           </div>
         </div>
+        {hotspotContactModal && (
+          <div className="modal modal-blur d-block account-admin-modal-backdrop" tabIndex="-1" role="dialog" aria-modal="true">
+            <div className="modal-dialog modal-lg modal-dialog-centered" role="document">
+              <div className="modal-content">
+                <div className="modal-header">
+                  <div>
+                    <h5 className="modal-title">Allowed Monthly Login Contacts</h5>
+                    <div className="text-muted small">
+                      {hotspotContactModal.row.customer_name} · {hotspotContactModal.row.service_account_number || hotspotContactModal.row.account_number || hotspotContactModal.row.external_subscriber_id}
+                    </div>
+                  </div>
+                  <button type="button" className="btn-close" aria-label="Close" onClick={() => setHotspotContactModal(null)} />
+                </div>
+                <div className="modal-body">
+                  {hotspotContactModal.message && (
+                    <div className={`alert alert-${hotspotContactModal.message.tone || 'info'}`}>{hotspotContactModal.message.text}</div>
+                  )}
+                  <div className="alert alert-info">
+                    One contact number can bind to one captive portal device. Add one contact per monthly device that should get free subscriber access.
+                  </div>
+                  <div className="account-admin-hotspot-contact-list">
+                    {hotspotContactModal.contacts.map((contact, index) => (
+                      <div className="account-admin-hotspot-contact-row" key={`${index}-${contact.contactNumber}`}>
+                        <div>
+                          <label className="form-label">Contact number</label>
+                          <input
+                            className="form-control"
+                            placeholder="09000000000"
+                            value={contact.contactNumber}
+                            onChange={(event) => updateHotspotContact(index, { contactNumber: event.target.value })}
+                          />
+                        </div>
+                        <div>
+                          <label className="form-label">Label</label>
+                          <input
+                            className="form-control"
+                            placeholder="Primary, spouse, child"
+                            value={contact.label}
+                            onChange={(event) => updateHotspotContact(index, { label: event.target.value })}
+                          />
+                        </div>
+                        <label className="form-check form-switch account-admin-hotspot-contact-switch">
+                          <input className="form-check-input" type="checkbox" checked={contact.enabled !== false} onChange={(event) => updateHotspotContact(index, { enabled: event.target.checked })} />
+                          <span className="form-check-label">Enabled</span>
+                        </label>
+                        <button className="btn btn-icon btn-outline-danger" type="button" onClick={() => removeHotspotContact(index)} title="Remove contact">
+                          <IconTrash size={17} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <button className="btn btn-outline-primary mt-3" type="button" onClick={addHotspotContact}>
+                    <IconPlus size={17} className="me-2" />Add contact number
+                  </button>
+                </div>
+                <div className="modal-footer">
+                  <button className="btn" type="button" onClick={() => setHotspotContactModal(null)}>Cancel</button>
+                  <button className="btn btn-outline-primary" type="button" disabled={hotspotBusy === 'contacts'} onClick={() => saveHotspotContacts(false)}>
+                    {hotspotBusy === 'contacts' ? 'Saving...' : 'Save Contacts'}
+                  </button>
+                  <button className="btn btn-primary" type="button" disabled={hotspotBusy === 'contacts'} onClick={() => saveHotspotContacts(true)}>
+                    {hotspotBusy === 'contacts' ? 'Saving...' : 'Save & Sync'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }

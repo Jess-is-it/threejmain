@@ -81,7 +81,8 @@ The page shows:
 - A temporary PPPoE/ONU mapping table with inner matched/unmatched tabs, PPPoE username, router, status, caller ID/MAC, active IP, matched ONU details, and match reason.
 - A top-level view switch between Customer Accounts and Hotspot Access.
 - Hotspot Access settings for Pisowifi API base URL, API key, API secret, and enable/disable state.
-- Hotspot Access subscriber table showing active monthly subscribers, Service Account/plan, synced contact numbers, and Sync actions.
+- Hotspot Access subscriber table showing active monthly subscribers, Service Account/plan, synced contact numbers, contact edit actions, and Sync actions.
+- Contact edit modal supports multiple allowed contact numbers per subscriber. One enabled contact number equals one captive portal device after Pisowifi SMS verification.
 
 ## Local Data Model
 
@@ -137,4 +138,4 @@ Passwords are not returned by the API. Phase 1 only records whether a password c
 - Network configuration editing, PPPoE binding, live PPPoE create/update/disable, WiFi/CPE writes, and router profile changes are future steps.
 - PPPoE creation is not implemented yet. The next step should allow create only from an eligible `INSTALLATION` ticket, resolve the customer's System Settings `locationId`/address to a MikroTik router through Network Settings location bindings, then call the live RouterOS provisioning adapter.
 - Durable PostgreSQL tables and audit-grade sync history are future work.
-- Hotspot Access settings/contact overrides currently persist to the configured JSON state file. Move this to a durable module database table if 3J Main later standardizes module persistence beyond Customer Profiling.
+- Hotspot Access settings/contact overrides currently persist to the configured JSON state file. Docker deployments should set `ACCOUNT_ADMIN_HOTSPOT_STATE_PATH=/app/data/account_admin_hotspot.json` so the file is stored in the API data volume. Move this to a durable module database table if 3J Main later standardizes module persistence beyond Customer Profiling.

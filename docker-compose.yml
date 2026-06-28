@@ -33,6 +33,9 @@ services:
       CUSTOMER_PROFILING_SEED_DEMO: ${CUSTOMER_PROFILING_SEED_DEMO:-false}
       CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:8180,http://127.0.0.1:8180}
       SYSTEM_SETTINGS_DATA_PATH: /app/data/system_settings.json
+      ACCOUNT_ADMIN_HOTSPOT_STATE_PATH: ${ACCOUNT_ADMIN_HOTSPOT_STATE_PATH:-/app/data/account_admin_hotspot.json}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy

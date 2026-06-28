@@ -373,7 +373,8 @@ Cross-module work is allowed only after locking every affected module folder and
 
 - 3J Main is the source system for monthly internet subscriber eligibility. Account Admin exports active customer/service accounts and their allowed contact numbers to the hotspot system.
 - Pisowifi is the captive portal enforcement target. It receives signed subscriber sync requests, handles customer SMS verification in the captive portal, binds one contact number to one device, and authorizes the device through Omada.
-- The Account Admin source-side UI is `Account Admin -> Hotspot Access`. It stores the Pisowifi API base URL, API key, and API secret in `ACCOUNT_ADMIN_HOTSPOT_STATE_PATH` (default `/tmp/threejmain_account_admin_hotspot.json`) unless deployment overrides that path.
+- The Account Admin source-side UI is `Account Admin -> Hotspot Access`. It stores the Pisowifi API base URL, API key, and API secret in `ACCOUNT_ADMIN_HOTSPOT_STATE_PATH`. Docker deployments should keep this under the API data volume, currently `/app/data/account_admin_hotspot.json`, so settings survive rebuilds.
+- Hotspot Access operators can edit the allowed login contact numbers per monthly subscriber. Each enabled contact number is one allowed captive portal device after SMS verification.
 - Outbound requests are signed with `X-3J-Integration-Key`, `X-3J-Timestamp`, `X-3J-Signature`, and `X-3J-Idempotency-Key`. The signature is HMAC-SHA256 over `<timestamp>.<raw request body>` using the shared API secret.
 - Do not expose the shared secret in frontend responses, logs, screenshots, or commits.
 

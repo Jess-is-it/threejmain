@@ -223,6 +223,34 @@
   max-width: 28rem;
 }
 
+.account-admin-modal-backdrop {
+  background: rgba(15, 23, 42, 0.46);
+}
+
+.account-admin-hotspot-contact-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.account-admin-hotspot-contact-row {
+  align-items: end;
+  background: #f8fafc;
+  border: 1px solid var(--admin-border);
+  border-radius: 0.5rem;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(11rem, 1.1fr) minmax(10rem, 0.9fr) auto auto;
+  padding: 0.85rem;
+}
+
+.account-admin-hotspot-contact-switch {
+  align-items: center;
+  display: flex;
+  gap: 0.45rem;
+  min-height: 2.25rem;
+  white-space: nowrap;
+}
+
 @media (max-width: 768px) {
   .account-admin-table-card > .card-header {
     align-items: flex-start;
@@ -250,5 +278,13 @@
   .account-admin-hotspot-search,
   .account-admin-hotspot-status {
     width: 100%;
+  }
+
+  .account-admin-hotspot-contact-row {
+    grid-template-columns: 1fr;
+  }
+
+  .account-admin-hotspot-contact-switch {
+    justify-content: flex-start;
   }
 }
