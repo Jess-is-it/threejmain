@@ -76,6 +76,34 @@ function StatusBadge({ value }) {
   return <span className={`badge bg-${badgeTone(value)}-lt text-${badgeTone(value)}`}>{titleize(value)}</span>;
 }
 
+function hotspotSyncResult(log) {
+  return log?.details?.result || log?.details || {};
+}
+
+function HotspotSyncResultChips({ log }) {
+  const result = hotspotSyncResult(log);
+  const mode = String(result.sync_mode || '').toUpperCase();
+  const disabledSubscribers = Number(result.disabled_subscriber_count || 0);
+  const disabledContacts = Number(result.disabled_contact_count || 0);
+  const revokedSessions = Number(result.revoked_session_count || 0);
+  const contactCount = Number(result.contact_count || 0);
+  const subscriberCount = Number(result.subscriber_count || 0);
+  const chips = [];
+  if (mode) chips.push({ label: mode, tone: mode === 'FULL' ? 'blue' : 'secondary' });
+  if (subscriberCount || contactCount) chips.push({ label: `${subscriberCount} subs / ${contactCount} contacts`, tone: 'secondary' });
+  if (disabledSubscribers) chips.push({ label: `${disabledSubscribers} disabled subs`, tone: 'orange' });
+  if (disabledContacts) chips.push({ label: `${disabledContacts} disabled contacts`, tone: 'orange' });
+  if (revokedSessions) chips.push({ label: `${revokedSessions} sessions revoked`, tone: 'red' });
+  if (!chips.length) return null;
+  return (
+    <div className="d-flex flex-wrap gap-1 mt-2">
+      {chips.map((chip) => (
+        <span key={`${chip.label}-${chip.tone}`} className={`badge bg-${chip.tone}-lt text-${chip.tone}`}>{chip.label}</span>
+      ))}
+    </div>
+  );
+}
+
 function Card({ title, icon: Icon, children, actions, className = '' }) {
   return (
     <div className={`card ${className}`.trim()}>
@@ -440,11 +468,14 @@ export default function AccountAdminPage() {
                       <option value="SUSPENDED">Suspended</option>
                     </select>
                     <button className="btn btn-primary btn-sm" type="button" disabled={!!hotspotBusy || hotspotLoading} onClick={() => syncHotspot()}>
-                      <IconSend size={17} className="me-2" />{hotspotBusy === 'sync-all' ? 'Syncing...' : 'Sync All'}
+                      <IconSend size={17} className="me-2" />{hotspotBusy === 'sync-all' ? 'Syncing...' : 'Full Sync'}
                     </button>
                   </div>
                 )}
               >
+                <div className="alert alert-info mb-3">
+                  Full Sync is authoritative. Customers or contact numbers missing from this 3J Main export are disabled in Pisowifi.
+                </div>
                 <div className="table-responsive">
                   <table className="table table-vcenter card-table account-admin-table">
                     <thead>
@@ -510,6 +541,7 @@ export default function AccountAdminPage() {
                         <div>
                           <div className="fw-semibold">{log.action || 'SYNC'}</div>
                           <div className="text-muted small">{log.message || '-'}</div>
+                          <HotspotSyncResultChips log={log} />
                         </div>
                         <div className="text-end">
                           <StatusBadge value={log.status || 'SUCCESS'} />

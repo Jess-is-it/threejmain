@@ -83,6 +83,7 @@ The page shows:
 - Hotspot Access settings for Pisowifi API base URL, API key, API secret, and enable/disable state.
 - Hotspot Access subscriber table showing active monthly subscribers, Service Account/plan, synced contact numbers, contact edit actions, and Sync actions.
 - Contact edit modal supports multiple allowed contact numbers per subscriber. One enabled contact number equals one captive portal device after Pisowifi SMS verification.
+- Recent Hotspot Access sync logs display result chips for sync mode, exported subscriber/contact counts, cleanup counts, and revoked monthly sessions so operators can verify full-sync impact.
 
 ## Local Data Model
 

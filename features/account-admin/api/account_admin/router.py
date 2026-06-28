@@ -403,20 +403,42 @@ def signed_hotspot_request(method: str, path: str, payload: dict[str, Any] | Non
 
 
 def sync_hotspot_subscribers(rows: list[dict[str, Any]], actor: str, action: str = "SYNC_ALL") -> dict[str, Any]:
+    sync_mode = "FULL" if action == "SYNC_ALL" else "PARTIAL"
     payload = {
         "source_system": "3J Main",
         "synced_by": actor,
-        "sync_mode": "FULL" if action == "SYNC_ALL" else "PARTIAL",
+        "sync_mode": sync_mode,
         "subscribers": rows,
     }
     result = signed_hotspot_request("POST", "/api/integrations/monthly-subscribers/upsert", payload)
+    message = hotspot_sync_result_message(result, sync_mode)
     hotspot_sync_log(
         action,
         "SUCCESS",
-        f"Hotspot subscriber sync completed: {result.get('subscriber_count', len(rows))} subscriber(s).",
+        message,
         {"result": result},
     )
-    return result
+    return {**result, "message": message}
+
+
+def hotspot_sync_result_message(result: dict[str, Any], sync_mode: str) -> str:
+    subscriber_count = int(result.get("subscriber_count") or 0)
+    contact_count = int(result.get("contact_count") or 0)
+    disabled_subscriber_count = int(result.get("disabled_subscriber_count") or 0)
+    disabled_contact_count = int(result.get("disabled_contact_count") or 0)
+    revoked_session_count = int(result.get("revoked_session_count") or 0)
+    mode_label = "Full" if sync_mode == "FULL" else "Partial"
+    parts = [f"{mode_label} hotspot subscriber sync completed: {subscriber_count} subscriber(s), {contact_count} contact(s)."]
+    cleanup_parts = []
+    if disabled_subscriber_count:
+        cleanup_parts.append(f"{disabled_subscriber_count} subscriber(s) disabled")
+    if disabled_contact_count:
+        cleanup_parts.append(f"{disabled_contact_count} contact(s) disabled")
+    if revoked_session_count:
+        cleanup_parts.append(f"{revoked_session_count} active session(s) revoked")
+    if cleanup_parts:
+        parts.append("Cleanup: " + ", ".join(cleanup_parts) + ".")
+    return " ".join(parts)
 
 
 def add_audit(action: str, target_type: str, target_id: str, details: dict[str, Any] | None, actor: str) -> None:
@@ -1575,7 +1597,7 @@ def sync_hotspot_access(admin=Depends(require_admin)):
         hotspot_sync_log("SYNC_ALL", "FAILED", str(exc.detail), {"subscriber_count": len(rows)})
         raise
     add_audit("hotspot_access_synced", "HotspotAccess", "all", {"subscribers": len(rows), "result": result}, admin["username"])
-    return {"status": "SUCCESS", "message": "Monthly subscriber sync completed.", "result": result}
+    return {"status": "SUCCESS", "message": result.get("message") or "Monthly subscriber sync completed.", "result": result}
 
 
 @router.post("/hotspot-access/subscribers/{customer_id}/sync")
@@ -1592,7 +1614,7 @@ def sync_hotspot_access_subscriber(customer_id: str, admin=Depends(require_admin
         hotspot_sync_log("SYNC_SUBSCRIBER", "FAILED", str(exc.detail), {"customer_id": customer_id})
         raise
     add_audit("hotspot_access_subscriber_synced", "HotspotAccessSubscriber", customer_id, {"result": result}, admin["username"])
-    return {"status": "SUCCESS", "message": "Monthly subscriber synced.", "result": result}
+    return {"status": "SUCCESS", "message": result.get("message") or "Monthly subscriber synced.", "result": result}
 
 
 @router.get("/customer-accounts")
