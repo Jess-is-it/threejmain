@@ -21,6 +21,7 @@ COPY features/process-flow/api/process_flow ./process_flow
 COPY features/network-settings/api/network_settings ./network_settings
 COPY features/system-settings/api/system_settings ./system_settings
 COPY features/logs/api/logs ./logs
+COPY features/techportal/api/techportal ./techportal
 
 EXPOSE 8100
 

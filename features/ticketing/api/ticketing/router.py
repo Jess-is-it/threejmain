@@ -22,6 +22,24 @@ TICKET_CATEGORIES = ["CONNECTIVITY", "BILLING", "INSTALLATION", "EQUIPMENT", "OU
 TICKET_SOURCES = ["PHONE", "WALK_IN", "FACEBOOK", "SMS", "EMAIL", "PORTAL", "INTERNAL"]
 NOTE_VISIBILITIES = ["INTERNAL", "CUSTOMER_VISIBLE"]
 CLOSED_STATUSES = ["RESOLVED", "CLOSED", "CANCELLED"]
+TECHNICIAN_WORK_STATUSES = ["ASSIGNED", "ACCEPTED", "EN_ROUTE", "ON_SITE", "IN_PROGRESS", "ON_HOLD", "COMPLETED"]
+TECHNICIAN_STATUS_TO_TICKET_STATUS = {
+    "ASSIGNED": "OPEN",
+    "ACCEPTED": "OPEN",
+    "EN_ROUTE": "IN_PROGRESS",
+    "ON_SITE": "IN_PROGRESS",
+    "IN_PROGRESS": "IN_PROGRESS",
+    "ON_HOLD": "WAITING_INTERNAL",
+    "COMPLETED": "RESOLVED",
+}
+TECHNICIAN_STATUS_TIMESTAMPS = {
+    "ACCEPTED": "acceptedAt",
+    "EN_ROUTE": "enRouteAt",
+    "ON_SITE": "arrivedAt",
+    "IN_PROGRESS": "fieldStartedAt",
+    "ON_HOLD": "heldAt",
+    "COMPLETED": "fieldCompletedAt",
+}
 
 
 class TicketPayload(BaseModel):
@@ -224,6 +242,66 @@ def apply_status_dates(ticket: dict[str, Any], previous_status: str | None = Non
             ticket["resolvedAt"] = ""
 
 
+def add_ticket_note_record(ticket: dict[str, Any], body: str, visibility: str, actor: str) -> dict[str, Any]:
+    note_body = str(body or "").strip()
+    if not note_body:
+        raise HTTPException(status_code=400, detail="Note body is required")
+    note_visibility = validate_choice(visibility or "INTERNAL", NOTE_VISIBILITIES, "note visibility")
+    note = {
+        "id": str(uuid4()),
+        "body": note_body,
+        "visibility": note_visibility,
+        "createdAt": now_iso(),
+        "createdBy": actor,
+    }
+    ticket.setdefault("notes", []).append(note)
+    ticket["updatedAt"] = now_iso()
+    add_audit("ticket_note_added", ticket["id"], {"ticketNumber": ticket["ticketNumber"], "visibility": note_visibility}, actor)
+    return note
+
+
+def update_ticket_from_techportal(
+    ticket_id: str,
+    work_status: str,
+    actor: str,
+    note: str = "",
+    resolution_summary: str = "",
+) -> dict[str, Any]:
+    ticket = find_ticket(ticket_id)
+    normalized_status = validate_choice(work_status, TECHNICIAN_WORK_STATUSES, "technician status")
+    previous_status = ticket.get("status")
+    next_ticket_status = TECHNICIAN_STATUS_TO_TICKET_STATUS[normalized_status]
+    timestamp = now_iso()
+    ticket["fieldStatus"] = normalized_status
+    ticket["status"] = next_ticket_status
+    ticket["updatedAt"] = timestamp
+    timestamp_field = TECHNICIAN_STATUS_TIMESTAMPS.get(normalized_status)
+    if timestamp_field and not ticket.get(timestamp_field):
+        ticket[timestamp_field] = timestamp
+    if normalized_status == "COMPLETED":
+        ticket["resolutionSummary"] = str(resolution_summary or ticket.get("resolutionSummary") or "").strip()
+    apply_status_dates(ticket, previous_status)
+    if str(note or "").strip():
+        add_ticket_note_record(ticket, note, "INTERNAL", actor)
+    add_audit(
+        "ticket_field_status_updated",
+        ticket["id"],
+        {
+            "ticketNumber": ticket["ticketNumber"],
+            "fieldStatus": normalized_status,
+            "status": ticket["status"],
+        },
+        actor,
+    )
+    return ticket
+
+
+def add_ticket_note_from_techportal(ticket_id: str, body: str, visibility: str, actor: str) -> dict[str, Any]:
+    ticket = find_ticket(ticket_id)
+    add_ticket_note_record(ticket, body, visibility, actor)
+    return ticket
+
+
 def ticket_matches(
     ticket: dict[str, Any],
     search: str = "",
@@ -293,34 +371,55 @@ def seed_ticketing_data() -> None:
         return
     customers = search_customers("")
     first_customer = customers[0] if customers else None
-    sample = {
-        "customerId": first_customer["id"] if first_customer else None,
-        "requestorName": first_customer["name"] if first_customer else "Walk-in customer",
-        "contactNumber": first_customer["contactNumber"] if first_customer else "09170000000",
-        "subject": "Intermittent fiber connection",
-        "description": "Connection drops every few minutes during peak evening hours.",
-        "category": "CONNECTIVITY",
-        "priority": "HIGH",
-        "status": "OPEN",
-        "source": "PHONE",
-        "assignedTo": "Support Desk",
-        "serviceId": "SERVICE-PLACEHOLDER-001",
-        "dueDate": today_iso(),
-    }
-    record = normalize_ticket_payload(TicketPayload(**sample))
-    record.update(
+    samples = [
         {
-            "id": str(uuid4()),
-            "ticketNumber": next_ticket_number(),
-            "openedAt": now_iso(),
-            "updatedAt": now_iso(),
-            "resolvedAt": "",
-            "closedAt": "",
-            "deletedAt": "",
-            "notes": [],
-        }
-    )
-    tickets.append(record)
+            "customerId": first_customer["id"] if first_customer else None,
+            "requestorName": first_customer["name"] if first_customer else "Walk-in customer",
+            "contactNumber": first_customer["contactNumber"] if first_customer else "09170000000",
+            "subject": "Intermittent fiber connection",
+            "description": "Connection drops every few minutes during peak evening hours.",
+            "category": "CONNECTIVITY",
+            "priority": "HIGH",
+            "status": "OPEN",
+            "source": "PHONE",
+            "assignedTo": "Support Desk",
+            "serviceId": "SERVICE-PLACEHOLDER-001",
+            "dueDate": today_iso(),
+        },
+        {
+            "customerId": first_customer["id"] if first_customer else None,
+            "requestorName": first_customer["name"] if first_customer else "Tech test customer",
+            "contactNumber": first_customer["contactNumber"] if first_customer else "09170000001",
+            "subject": "Tech Portal test installation",
+            "description": "Assigned field job for validating Tech Portal ticket detail, notes, and field status updates.",
+            "category": "INSTALLATION",
+            "priority": "URGENT",
+            "status": "OPEN",
+            "source": "INTERNAL",
+            "assignedTo": "tech",
+            "serviceId": "FIBER-TECH-DEMO",
+            "serviceOrderNumber": "SO-TECH-DEMO-001",
+            "serviceOrderType": "NEW_INSTALLATION",
+            "dueDate": today_iso(),
+        },
+    ]
+    for sample in samples:
+        record = normalize_ticket_payload(TicketPayload(**sample))
+        timestamp = now_iso()
+        record.update(
+            {
+                "id": str(uuid4()),
+                "ticketNumber": next_ticket_number(),
+                "fieldStatus": "ASSIGNED",
+                "openedAt": timestamp,
+                "updatedAt": timestamp,
+                "resolvedAt": "",
+                "closedAt": "",
+                "deletedAt": "",
+                "notes": [],
+            }
+        )
+        tickets.append(record)
 
 
 def ticket_category_for_service_order(order_type: str) -> str:
@@ -364,6 +463,7 @@ def create_ticket_record(
         {
             "id": str(uuid4()),
             "ticketNumber": next_ticket_number(),
+            "fieldStatus": record.get("fieldStatus") or "ASSIGNED",
             "openedAt": timestamp,
             "updatedAt": timestamp,
             "resolvedAt": "",

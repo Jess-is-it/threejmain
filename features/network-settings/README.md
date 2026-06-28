@@ -40,7 +40,7 @@ Planned sub-navigation:
 | --- | --- |
 | Overview | Network KPIs and recent OLT/NAP/splitter records. |
 | Mapping | Network mapping page shown first in the shared sidebar, above MikroTik. |
-| Serviceability Check | Customer-first serviceability workflow: table of Customer Profiling records with computed serviceability status including future mapped-customer detection, then a split customer/map view with only location-matched GPS NAP boxes, toolbar map provider menu beside HD, marker-click NAP details, topology splitter capacity/PLC-LCP equipment display, nearest or manually selected NAP, port availability, and connected/disconnected service-line state. |
+| Serviceability Check | Customer-first serviceability workflow: table of Customer Profiling records with computed serviceability status including future mapped-customer detection, then a split customer/map view with only location-matched GPS NAP boxes, toolbar map provider menu beside HD, marker-click NAP details, topology PLC capacity/equipment display, placeholder customer port occupancy, nearest or manually selected NAP, port availability, and connected/disconnected service-line state. |
 | Topology | Network Topology TreeView control for building OLT-to-PON-to-NAP/Junction fiber paths, adding/removing branches, assigning splitters to NAP/Junction containers through a modal, and assigning PON-owned fiber links without user-movable topology objects. |
 | MikroTik / Settings | MikroTik API device records used for PPPoE discovery and future provisioning. |
 | PPPoE Accounts | Live MikroTik RouterOS API view of PPP secrets and active sessions. |

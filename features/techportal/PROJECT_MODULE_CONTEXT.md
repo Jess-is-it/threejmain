@@ -2,9 +2,9 @@
 
 ## Purpose
 
-Tech Portal is planned as a technician-only web portal for installers, repair technicians, and field crews. It should expose field-work views connected to the existing ISP management system without exposing the full admin shell.
+Tech Portal is a technician-only web portal for installers, repair technicians, and field crews. It exposes field-work views connected to the existing ISP management system without exposing the full admin shell.
 
-The portal should eventually be available at:
+The portal is available on staging at:
 
 ```text
 http://192.168.50.70:8280/techportal
@@ -12,13 +12,14 @@ http://192.168.50.70:8280/techportal
 
 ## Current Status
 
-- Status from `module.json`: `planned-shell`
-- Planned web route: `/techportal`
-- Planned API prefix: `/api/techportal`
-- Frontend entry: `features/techportal/web/TechPortalPage.jsx`
+- Status from `module.json`: `functional-dashboard-ticketing`
+- Web routes: `/techportal` for KPI dashboard, `/techportal/ticketing` for technician Ticketing
+- API prefix: `/api/techportal`
+- Frontend entries: `features/techportal/web/TechPortalPage.jsx` and `features/techportal/web/TechPortalTicketingPage.jsx`
 - API entry: `features/techportal/api/techportal/router.py`
-- The repository-level app-shell Docker/Vite setup now copies and allows `features/`, but this folder is not registered in app-shell routes, API startup, authentication, navigation, or runtime routing yet.
-- Current implementation is a documentation-heavy skeleton with metadata endpoints only.
+- App-shell imports the Tech Portal dashboard and Ticketing pages, includes the Tech Portal API router, lists both routes in navigation, and restricts technician-role sessions to the Tech Portal dashboard, Tech Portal Ticketing, and profile/password pages.
+- System Settings -> Access now seeds Tech Portal permission codes, a built-in `technician` role, and a temporary test user `tech` / `tech12345`; app-shell login accepts Access users while keeping the legacy admin fallback.
+- Current implementation includes a KPI-only Dashboard page plus a separate mobile-first Ticketing Kanban page with assigned ticket queue/detail views, ticket status updates, and internal technician notes. Logs, evidence/materials, and portal-safe Settings remain planned feature folders.
 
 ## Research Summary
 
@@ -62,15 +63,15 @@ features/techportal/
     module.json
 ```
 
-## Planned Feature Folders
+## Feature Folders
 
 ### `features/techportal/features/dashboard`
 
-Technician daily work summary and quick actions.
+Technician KPI summary only.
 
 ### `features/techportal/features/ticketing`
 
-Technician-specific ticket queue, detail, status updates, field checklist, notes, attachments, and completion flow.
+Technician-specific ticket queue, detail, status updates, field checklist, notes, attachments, and completion flow. First pass is functional at `/techportal/ticketing` with a mobile-first Kanban field-stage board for queue/detail/status/notes; evidence, attachments, material usage, and durable work sessions remain future work.
 
 ### `features/techportal/features/logs`
 
@@ -80,21 +81,21 @@ Technician-scoped activity log and audit history.
 
 Portal-safe technician profile, password/session preferences, notification settings, device preferences, and offline sync status later.
 
-## Planned API Endpoints
+## API Endpoints
 
-Current metadata-only endpoints:
+Current endpoints:
 
 - `GET /api/techportal/health`
 - `GET /api/techportal/meta`
 - `GET /api/techportal/plan`
+- `GET /api/techportal/dashboard`
+- `GET /api/techportal/tickets`
+- `GET /api/techportal/tickets/{ticket_id}`
+- `POST /api/techportal/tickets/{ticket_id}/status`
+- `POST /api/techportal/tickets/{ticket_id}/notes`
 
 Future endpoints should be added under:
 
-- `/api/techportal/dashboard`
-- `/api/techportal/tickets`
-- `/api/techportal/tickets/{ticket_id}`
-- `/api/techportal/tickets/{ticket_id}/status`
-- `/api/techportal/tickets/{ticket_id}/notes`
 - `/api/techportal/tickets/{ticket_id}/evidence`
 - `/api/techportal/tickets/{ticket_id}/materials`
 - `/api/techportal/work-sessions`
@@ -106,9 +107,10 @@ Future endpoints should be added under:
 ### Assigned Work
 
 1. Technician logs into Tech Portal.
-2. Dashboard shows assigned tickets, urgent work, due work, and today's route.
-3. Technician opens a ticket and accepts it or starts work.
-4. Status changes are written back to Ticketing and Logs.
+2. Dashboard shows KPI counters only.
+3. Technician opens Ticketing to see assigned tickets on a Kanban stage board.
+4. Technician opens a ticket and accepts it or starts work.
+5. Status changes are written back to Ticketing and Logs.
 
 ### Installation
 
@@ -138,23 +140,24 @@ Future endpoints should be added under:
 - Billing: read-only suspension/payment context.
 - Customer Service Management: customer follow-up context.
 
-## Integration Notes For Integration Codex
+## Integration Notes
 
-- Do not wire this portal until the user requests Tech Portal integration.
-- Planned frontend import: `features/techportal/web/TechPortalPage.jsx`.
-- Planned backend import: `features/techportal/api/techportal/router.py`.
-- Planned API router export: `router`.
-- Planned metrics export: `techportal_metrics`.
-- Planned configure hook: `configure_techportal(current_admin, audit_logger)`.
-- Planned route: `/techportal`.
-- Planned API prefix: `/api/techportal`.
-- Planned staging URL: `http://192.168.50.70:8280/techportal`.
+- Frontend imports: `features/techportal/web/TechPortalPage.jsx` and `features/techportal/web/TechPortalTicketingPage.jsx`.
+- Backend import: `features/techportal/api/techportal/router.py`.
+- API router export: `router`.
+- Metrics export: `techportal_metrics`.
+- Configure hook: `configure_techportal(current_admin, audit_logger, ticket_provider, ticket_seed, ticket_status_updater, ticket_note_adder)`.
+- Routes: `/techportal`, `/techportal/ticketing`.
+- API prefix: `/api/techportal`.
+- Staging URL: `http://192.168.50.70:8280/techportal`.
 - Treat `8280` as the existing staging web runtime, not a new per-Codex preview server.
-- Integration still needs app-shell route, navigation, frontend import, API router registration, and auth/session decisions for `/techportal`.
+- Dashboard reads Ticketing-derived KPI metrics only. Ticketing reads assigned Ticketing rows through an app-shell provider hook.
+- Ticket status and note actions call Ticketing provider hooks and mutate the shared in-memory Ticketing records.
 
 ## Known Risks And Boundaries
 
-- Technician access control is not implemented yet.
+- Technician access control is first-pass only: app-shell login accepts System Settings -> Access users and hides admin navigation for the `technician` role, but per-endpoint permission enforcement across all admin modules is not complete yet.
+- Ticketing data and Tech Portal field status are still in memory with the Ticketing module and reset on API restart.
 - This folder does not start, build, or serve a separate app.
 - The portal must not expose full admin controls, device credentials, or PPPoE secrets.
 - Offline/PWA support is planned, but should be added only after online ticket workflow is stable.
@@ -164,8 +167,8 @@ Future endpoints should be added under:
 
 ## Next Recommended Work
 
-1. Confirm whether Tech Portal should be integrated into the existing app-shell build or served as a dedicated Vite entry behind the same staging web port.
-2. Define technician auth/role rules with System Settings -> Access.
-3. Build Dashboard and Ticketing read-only views from existing Ticketing records.
-4. Add technician ticket status transitions and notes.
-5. Add installation checklist/evidence/material capture.
+1. Add editable checklist completion, evidence upload, and material capture to ticket detail.
+2. Add technician-scoped Logs view.
+3. Add Network Settings context for NAP/ONU/PPPoE/serviceability records.
+4. Persist Ticketing/Tech Portal field-work state in PostgreSQL.
+5. Remove the temporary prefilled `tech` test credentials from the login form before production use.

@@ -1,12 +1,12 @@
 # Tech Portal
 
-Tech Portal is the planned technician-only web portal for field technicians, installers, and repair crews. It should be accessible as a dedicated technician workspace at:
+Tech Portal is the technician-only web portal for field technicians, installers, and repair crews. It is accessible as a dedicated technician workspace at:
 
 ```text
 http://192.168.50.70:8280/techportal
 ```
 
-This folder lives at `features/techportal/` and is intentionally created as a self-contained feature folder first. The repository-level app-shell Docker/Vite setup now copies and allows `features/`, but Tech Portal is not registered in app-shell routes, API startup, authentication, navigation, or runtime routing yet.
+This folder lives at `features/techportal/`. The app-shell now imports the Tech Portal page, includes the Tech Portal API router, registers `/techportal`, and uses System Settings -> Access users for technician login.
 
 ## Research Baseline
 
@@ -50,7 +50,7 @@ Important runtime note:
 - `8280` is already documented as the staging web port.
 - Tech Portal should initially be a route under the staging web runtime, not a separate preview server.
 - Do not start a separate techportal dev server or bind a new port unless the user explicitly approves a runtime architecture change.
-- Integration Codex should later decide whether `/techportal` is served by the existing app-shell route registration or a dedicated Vite entry behind the same staging web server.
+- The shared app-shell currently serves `/techportal` under the existing staging web runtime.
 
 ## Folder Layout
 
@@ -91,21 +91,33 @@ features/techportal/
 
 ### Dashboard
 
+Current status: implemented as the KPI-only Tech Portal landing screen.
+
 Technician home screen for:
 
-- Assigned tickets for today.
-- Upcoming scheduled jobs.
-- Urgent or overdue work.
-- Installation, repair, relocation, and reconnection queues.
-- Route/map summary.
-- Quick check-in/check-out status.
-- Recent notifications and safety reminders.
+- Assigned ticket count.
+- Urgent ticket count.
+- Due-today ticket count.
+- Overdue ticket count.
+- In-progress ticket count.
+- Completed-today ticket count.
+
+Current API:
+
+- `GET /api/techportal/dashboard`
+- Reads Ticketing-derived counters through an app-shell provider hook.
+- Does not render ticket lists or ticket detail UI.
 
 ### Ticketing
+
+Current status: first functional workflow at `/techportal/ticketing`.
 
 Technician-facing ticket workspace for:
 
 - Assigned ticket list.
+- Kanban-style field-stage board, following the admin Ticketing stage-board pattern.
+- Search, due-date, status, priority, and work-type filters.
+- Ticket detail with customer, service, and placeholder network context.
 - Accept/start/on-site/hold/complete status flow.
 - Installation and repair checklist.
 - Customer and service address details.
@@ -114,6 +126,15 @@ Technician-facing ticket workspace for:
 - Notes, photos, attachments, and customer-visible/internal updates.
 - Materials used from Inventory.
 - Follow-up request creation.
+
+Current API:
+
+- `GET /api/techportal/tickets`
+- `GET /api/techportal/tickets/{ticket_id}`
+- `POST /api/techportal/tickets/{ticket_id}/status`
+- `POST /api/techportal/tickets/{ticket_id}/notes`
+
+The current implementation writes ticket status and internal notes back to the shared in-memory Ticketing records. The page is intentionally mobile-first: filters stack on small screens, Kanban columns are horizontally swipeable, and ticket details open in a full-screen drawer on phones. Evidence uploads, material usage, checklist persistence, Network Settings lookups, and technician-scoped Logs remain future work.
 
 ### Logs
 
@@ -238,10 +259,10 @@ Planned technician work-session fields:
 
 1. Create this folder and planning docs.
 2. Integration Codex wires `/techportal` route under staging web at `8280` when requested.
-3. Add technician-only auth gate using shared access/session model.
-4. Add Dashboard assigned-work summary from Ticketing.
-5. Add Ticketing feature with assigned ticket list and detail view.
-6. Add technician status transitions and ticket notes.
+3. Add technician-only auth gate using shared access/session model. Done for first-pass login/navigation.
+4. Add Dashboard KPI summary from Ticketing. Done as KPI-only `/techportal`.
+5. Add Ticketing feature with assigned ticket list and detail view. Done as separate `/techportal/ticketing` Kanban workflow.
+6. Add technician status transitions and ticket notes. Done for internal notes and core field statuses.
 7. Add checklist/evidence upload model.
 8. Add Network Settings context panel for NAP/ONU/PPPoE/serviceability data.
 9. Add Inventory material usage capture.
@@ -252,7 +273,11 @@ Planned technician work-session fields:
 ## Current Status
 
 - Folder created: `features/techportal/`
-- Status: `planned-shell`
-- No app-shell route is wired yet.
-- No live technician auth or ticket workflow is implemented yet.
-- No runtime restart is required for this folder-only creation.
+- Status: `functional-dashboard-ticketing`
+- App-shell route `/techportal` is wired.
+- App-shell route `/techportal/ticketing` is wired for technician Ticketing.
+- API router `/api/techportal` is wired.
+- Current Tech Portal APIs include dashboard plus ticket queue/detail/status/note endpoints.
+- System Settings -> Access seeds Tech Portal permissions, a built-in `technician` role, and the temporary test user `tech` / `tech12345`.
+- Shared login is intentionally prefilled with `tech` / `tech12345` for quick testing; remove this before production use.
+- Technician-role sessions are limited in the app-shell UI to Tech Portal, View Profile, and Change Password, but full cross-module backend permission enforcement is still future work.

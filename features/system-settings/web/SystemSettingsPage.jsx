@@ -2982,7 +2982,7 @@ function AccessTab() {
 
       {accessTab === 'Roles' && (
         <Card title="Roles" icon={IconShieldCheck} actions={<button className="btn btn-primary btn-sm" type="button" onClick={() => openRole()}><IconPlus size={16} className="me-1" />Add Role</button>}>
-          <div className="alert alert-info">Pre-created roles: owner, admin, and viewer. Owner is locked with full permissions.</div>
+          <div className="alert alert-info">Pre-created roles: owner, admin, viewer, and technician. Owner is locked with full permissions.</div>
           <div className="table-responsive">
             <table className="table card-table table-vcenter">
               <thead><tr><th>Role</th><th>Description</th><th>Assigned Permissions</th><th className="text-end">Actions</th></tr></thead>

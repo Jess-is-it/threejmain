@@ -1,6 +1,7 @@
 import base64
 import binascii
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -723,6 +724,36 @@ ACCESS_PERMISSION_SEEDS = [
         "description": "Edit customer account administration when the module is implemented.",
         "category": "Customer Account Admin",
     },
+    {
+        "code": "techportal.dashboard.view",
+        "label": "Tech Portal Dashboard View",
+        "description": "View the technician portal dashboard.",
+        "category": "Tech Portal",
+    },
+    {
+        "code": "techportal.ticketing.view",
+        "label": "Tech Portal Ticketing View",
+        "description": "View assigned technician tickets in Tech Portal.",
+        "category": "Tech Portal",
+    },
+    {
+        "code": "techportal.ticketing.update",
+        "label": "Tech Portal Ticket Updates",
+        "description": "Update assigned technician ticket status, notes, and field progress in Tech Portal.",
+        "category": "Tech Portal",
+    },
+    {
+        "code": "techportal.logs.view",
+        "label": "Tech Portal Logs View",
+        "description": "View technician-scoped activity in Tech Portal.",
+        "category": "Tech Portal",
+    },
+    {
+        "code": "techportal.settings.view",
+        "label": "Tech Portal Settings View",
+        "description": "View technician-safe portal settings.",
+        "category": "Tech Portal",
+    },
 ]
 ACCESS_PERMISSION_DEPENDENCIES = {
     "system.settings.edit": ["system.settings.view"],
@@ -738,7 +769,20 @@ ACCESS_PERMISSION_DEPENDENCIES = {
     "customer-service-management.edit": ["customer-service-management.view"],
     "network-settings.edit": ["network-settings.view"],
     "account-admin.customer.edit": ["account-admin.customer.view"],
+    "techportal.ticketing.update": ["techportal.ticketing.view", "techportal.dashboard.view"],
 }
+
+TECHNICIAN_TEST_USERNAME = "tech"
+TECHNICIAN_TEST_PASSWORD = "tech12345"
+TECHNICIAN_PERMISSION_CODES = [
+    "techportal.dashboard.view",
+    "techportal.ticketing.view",
+    "techportal.ticketing.update",
+    "techportal.logs.view",
+    "techportal.settings.view",
+    "ticketing.view",
+    "logs.view",
+]
 
 
 DEFAULT_LOCATION_SEEDS = [
@@ -1512,6 +1556,14 @@ def normalize_access_store(raw: dict[str, Any] | None) -> dict[str, Any]:
             "isLocked": False,
             "permissionCodes": [code for code in permission_codes if code.endswith(".view") or code.endswith(".permissions.view")],
         },
+        {
+            "id": "role-technician",
+            "name": "technician",
+            "description": "Field technician access for Tech Portal assigned-work workflows.",
+            "isBuiltin": True,
+            "isLocked": False,
+            "permissionCodes": expand_access_permission_codes(TECHNICIAN_PERMISSION_CODES)[0],
+        },
     ]
     for role in default_roles:
         if role["name"] not in role_names:
@@ -1556,6 +1608,24 @@ def normalize_access_store(raw: dict[str, Any] | None) -> dict[str, Any]:
                 "roleId": "role-owner",
                 "password": os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123"),
                 "passwordHash": "",
+                "isActive": True,
+                "mustChangePassword": False,
+                "lastLoginAt": None,
+                "createdAt": timestamp,
+                "updatedAt": timestamp,
+            }
+        )
+    if not any(user["username"].lower() == TECHNICIAN_TEST_USERNAME for user in normalized_users):
+        timestamp = now_iso()
+        normalized_users.append(
+            {
+                "id": "user-tech",
+                "username": TECHNICIAN_TEST_USERNAME,
+                "email": "tech@example.local",
+                "fullName": "Test Technician",
+                "roleId": "role-technician",
+                "password": "",
+                "passwordHash": hash_access_password(TECHNICIAN_TEST_PASSWORD),
                 "isActive": True,
                 "mustChangePassword": False,
                 "lastLoginAt": None,
@@ -1673,6 +1743,82 @@ def hash_access_password(password: str) -> str:
     salt = secrets.token_hex(12)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000)
     return f"pbkdf2_sha256${salt}${digest.hex()}"
+
+
+def verify_access_password(user: dict[str, Any], password: str) -> bool:
+    candidate = normalize_access_text(password)
+    password_hash = normalize_access_text(user.get("passwordHash"))
+    if password_hash:
+        try:
+            algorithm, salt, digest_hex = password_hash.split("$", 2)
+        except ValueError:
+            return False
+        if algorithm != "pbkdf2_sha256" or not salt or not digest_hex:
+            return False
+        digest = hashlib.pbkdf2_hmac("sha256", candidate.encode("utf-8"), salt.encode("utf-8"), 120_000)
+        return hmac.compare_digest(digest.hex(), digest_hex)
+    legacy_password = normalize_access_text(user.get("password"))
+    return bool(legacy_password) and hmac.compare_digest(legacy_password, candidate)
+
+
+def access_session_user(user: dict[str, Any], role: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": user["id"],
+        "username": user["username"],
+        "full_name": user.get("fullName") or user["username"],
+        "email": user.get("email", ""),
+        "role": role.get("name", ""),
+        "status": "active" if user.get("isActive") else "inactive",
+        "permissions": role.get("permissionCodes") or [],
+        "mustChangePassword": bool(user.get("mustChangePassword")),
+        "auth_source": "system_access",
+    }
+
+
+def authenticate_access_user(username: str, password: str) -> dict[str, Any] | None:
+    access = access_store()
+    normalized_username = normalize_access_text(username).lower()
+    for user in access.get("users", []):
+        if user.get("username", "").lower() != normalized_username:
+            continue
+        if not user.get("isActive", True) or not verify_access_password(user, password):
+            return None
+        if user.get("password") and not user.get("passwordHash"):
+            user["passwordHash"] = hash_access_password(password)
+            user["password"] = ""
+        user["lastLoginAt"] = now_iso()
+        user["updatedAt"] = now_iso()
+        save_persisted_access_store()
+        return access_session_user(user, role_by_id(access, user["roleId"]))
+    return None
+
+
+def update_access_session_user(user_id: str, full_name: str | None = None, email: str | None = None) -> dict[str, Any]:
+    access = access_store()
+    user = user_by_id(access, user_id)
+    if full_name is not None:
+        user["fullName"] = normalize_access_text(full_name)
+    if email is not None:
+        user["email"] = normalize_access_text(email).lower()
+    user["updatedAt"] = now_iso()
+    save_persisted_access_store()
+    return access_session_user(user, role_by_id(access, user["roleId"]))
+
+
+def change_access_session_password(user_id: str, current_password: str, new_password: str, confirm_password: str) -> None:
+    if new_password != confirm_password:
+        raise HTTPException(status_code=400, detail="Password confirmation does not match")
+    if len(normalize_access_text(new_password)) < ACCESS_PASSWORD_MIN_LENGTH:
+        raise HTTPException(status_code=400, detail=f"Password must be at least {ACCESS_PASSWORD_MIN_LENGTH} characters")
+    access = access_store()
+    user = user_by_id(access, user_id)
+    if not verify_access_password(user, current_password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    user["password"] = ""
+    user["passwordHash"] = hash_access_password(new_password)
+    user["mustChangePassword"] = False
+    user["updatedAt"] = now_iso()
+    save_persisted_access_store()
 
 
 def generated_access_password(length: int = 14) -> str:

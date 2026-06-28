@@ -50,6 +50,8 @@ import PointOfSalePage from '../../../features/point-of-sale/web/PointOfSalePage
 import ProcessFlowPage from '../../../features/process-flow/web/ProcessFlowPage.jsx';
 import ServicePage from '../../../features/service/web/ServicePage.jsx';
 import SystemSettingsPage from '../../../features/system-settings/web/SystemSettingsPage.jsx';
+import TechPortalPage from '../../../features/techportal/web/TechPortalPage.jsx';
+import TechPortalTicketingPage from '../../../features/techportal/web/TechPortalTicketingPage.jsx';
 import TicketingPage from '../../../features/ticketing/web/TicketingPage.jsx';
 import './styles.css';
 
@@ -58,6 +60,8 @@ const API = '/api';
 const moduleNav = [
   { page: 'Dashboard', slug: 'dashboard', icon: IconDashboard, tone: 'blue' },
   { page: 'Process Flow', slug: 'process-flow', icon: IconActivity, tone: 'cyan' },
+  { page: 'Tech Portal', slug: 'techportal', icon: IconTool, tone: 'teal' },
+  { page: 'Tech Portal Ticketing', slug: 'techportal/ticketing', icon: IconTicket, tone: 'red' },
   { page: 'Customer Profiling', slug: 'customer-profiling', icon: IconUsers, tone: 'azure' },
   { page: 'Billing', slug: 'billing', icon: IconCash, tone: 'green' },
   { page: 'Point of Sale', slug: 'point-of-sale', icon: IconBuildingStore, tone: 'yellow' },
@@ -124,6 +128,62 @@ const profilePages = {
   'View Profile': { icon: IconId, tone: 'blue' },
   'Change Password': { icon: IconKey, tone: 'blue' }
 };
+
+const technicianNav = [
+  { page: 'Tech Portal', label: 'Dashboard', slug: 'techportal', icon: IconDashboard, tone: 'teal' },
+  { page: 'Tech Portal Ticketing', label: 'Ticketing', slug: 'techportal/ticketing', icon: IconTicket, tone: 'red' }
+];
+
+const TECHNICIAN_ALLOWED_PAGES = new Set(['Tech Portal', 'Tech Portal Ticketing', 'View Profile', 'Change Password']);
+const LOGIN_VARIANTS = {
+  admin: {
+    credentials: { username: 'admin', password: 'admin123' },
+    icon: IconShieldLock,
+    title: 'Admin Portal',
+    eyebrow: 'Operations console',
+    subtitle: 'Full access for office operations, system settings, billing, inventory, and customer workflows.',
+    cardTitle: 'Admin Login',
+    buttonText: 'Sign in to Admin',
+    hint: 'Testing admin credentials are prefilled: admin / admin123.',
+    switchText: 'Technician portal',
+    switchHref: '/techportal',
+    stats: [
+      ['Modules', 'All'],
+      ['Access', 'Owner'],
+      ['Scope', 'Main portal']
+    ]
+  },
+  tech: {
+    credentials: { username: 'tech', password: 'tech12345' },
+    icon: IconTool,
+    title: 'Technician Portal',
+    eyebrow: 'Field service login',
+    subtitle: 'Mobile-first access for assigned tickets, field-stage updates, notes, and technician KPIs.',
+    cardTitle: 'Technician Login',
+    buttonText: 'Sign in to Tech Portal',
+    hint: 'Testing technician credentials are prefilled: tech / tech12345.',
+    switchText: 'Admin portal',
+    switchHref: '/dashboard',
+    stats: [
+      ['Queue', 'Assigned'],
+      ['Board', 'Kanban'],
+      ['Scope', 'Field work']
+    ]
+  }
+};
+
+function isTechnicianUser(user) {
+  return String(user?.role || '').toLowerCase() === 'technician';
+}
+
+function isTechPortalPath(pathname) {
+  const slug = String(pathname || '').replace(/^\/+|\/+$/g, '');
+  return slug === 'techportal' || slug.startsWith('techportal/');
+}
+
+function loginVariantForPath(pathname) {
+  return isTechPortalPath(pathname) ? 'tech' : 'admin';
+}
 
 function token() {
   return localStorage.getItem('threejmain_token');
@@ -264,10 +324,17 @@ function Table({ rows, columns }) {
   );
 }
 
-function Login({ branding, onLogin }) {
-  const [form, setForm] = useState({ username: 'admin', password: 'admin123' });
+function Login({ branding, variant = 'admin', onLogin }) {
+  const config = LOGIN_VARIANTS[variant] || LOGIN_VARIANTS.admin;
+  const LoginIcon = config.icon;
+  const [form, setForm] = useState(() => ({ ...config.credentials }));
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    setForm({ ...config.credentials });
+    setError('');
+  }, [variant]);
 
   async function submit(e) {
     e.preventDefault();
@@ -276,7 +343,7 @@ function Login({ branding, onLogin }) {
     try {
       const data = await request('/auth/login', { method: 'POST', body: JSON.stringify(form) });
       localStorage.setItem('threejmain_token', data.access_token);
-      onLogin();
+      onLogin(data.user);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -285,28 +352,48 @@ function Login({ branding, onLogin }) {
   }
 
   return (
-    <div className="login-page">
-      <div className="login-panel">
-        <div className="login-brand">
-          <span className="brand-compact"><IconWifi size={24} /></span>
-          <h1>{branding.display_name}</h1>
-          <p>{branding.portal_subtitle}</p>
+    <div className={`login-page login-page-${variant}`}>
+      <div className="login-shell">
+        <section className="login-identity" aria-label={`${config.title} identity`}>
+          <div className="login-brand">
+            <span className="brand-compact"><LoginIcon size={24} /></span>
+            <div className="login-eyebrow">{config.eyebrow}</div>
+            <h1>{config.title}</h1>
+            <p>{config.subtitle}</p>
+          </div>
+          <div className="login-stats" aria-label={`${config.title} summary`}>
+            {config.stats.map(([label, value]) => (
+              <div className="login-stat" key={label}>
+                <span>{label}</span>
+                <strong>{value}</strong>
+              </div>
+            ))}
+          </div>
+          <div className="login-product">
+            <IconWifi size={18} />
+            <span>{branding.display_name}</span>
+          </div>
+        </section>
+        <div className="login-panel">
+          <Card title={config.cardTitle} icon={LoginIcon}>
+            {error && <div className="alert alert-danger">{error}</div>}
+            <form onSubmit={submit}>
+              <div className="mb-3">
+                <label className="form-label">Username</label>
+                <input className="form-control" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
+              </div>
+              <div className="mb-3">
+                <label className="form-label">Password</label>
+                <input className="form-control" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+              </div>
+              <button className="btn btn-primary w-100" disabled={loading}>{loading ? 'Signing in...' : config.buttonText}</button>
+              <div className="form-hint mt-3">{config.hint}</div>
+              <div className="login-switch">
+                <a href={config.switchHref}>{config.switchText}</a>
+              </div>
+            </form>
+          </Card>
         </div>
-        <Card title="Admin Login" icon={IconShieldLock}>
-          {error && <div className="alert alert-danger">{error}</div>}
-          <form onSubmit={submit}>
-            <div className="mb-3">
-              <label className="form-label">Username</label>
-              <input className="form-control" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
-            </div>
-            <div className="mb-3">
-              <label className="form-label">Password</label>
-              <input className="form-control" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
-            </div>
-            <button className="btn btn-primary w-100" disabled={loading}>{loading ? 'Signing in...' : 'Sign in'}</button>
-            <div className="form-hint mt-3">Default local credentials: admin / admin123. Change the password before deployment.</div>
-          </form>
-        </Card>
       </div>
     </div>
   );
@@ -319,7 +406,7 @@ function environmentTone(environment) {
   return 'local';
 }
 
-function Sidebar({ page, setPage, me, logout, branding, versionInfo, collapsed }) {
+function Sidebar({ page, setPage, me, logout, branding, versionInfo, collapsed, navItems = moduleNav }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [navOpen, setNavOpen] = useState({});
@@ -333,7 +420,7 @@ function Sidebar({ page, setPage, me, logout, branding, versionInfo, collapsed }
   };
 
   useEffect(() => {
-    const parents = navParentChainForPage(page);
+    const parents = navParentChainForPage(page, navItems);
     if (parents.length) {
       setNavOpen((current) => ({
         ...current,
@@ -394,7 +481,7 @@ function Sidebar({ page, setPage, me, logout, branding, versionInfo, collapsed }
         </h1>
         <div className={`collapse navbar-collapse d-lg-flex flex-lg-column ${mobileOpen ? 'show' : ''}`}>
           <ul className="navbar-nav pt-lg-3">
-            {moduleNav.map((item) => renderNavItem(item))}
+            {navItems.map((item) => renderNavItem(item))}
           </ul>
           <div className="sidebar-user mt-auto">
             <button className="sidebar-user-trigger" type="button" onClick={() => !collapsed && setProfileOpen(!profileOpen)}>
@@ -772,6 +859,11 @@ function App() {
     if (currentPath !== path) window.history[replace ? 'replaceState' : 'pushState']({ page: nextPage }, '', path);
   }
 
+  const technicianUser = isTechnicianUser(me);
+  const activeNavItems = technicianUser ? technicianNav : moduleNav;
+  const activePage = technicianUser && !TECHNICIAN_ALLOWED_PAGES.has(page) ? 'Tech Portal' : page;
+  const loginVariant = loginVariantForPath(window.location.pathname);
+
   const moduleByPage = useMemo(() => {
     const map = new Map();
     modules.forEach((module) => map.set(module.name, module));
@@ -785,6 +877,11 @@ function App() {
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
   useEffect(() => { if (authed) refresh().catch(() => setAuthed(false)); }, [authed]);
+  useEffect(() => {
+    if (authed && technicianUser && !TECHNICIAN_ALLOWED_PAGES.has(page)) {
+      navigate('Tech Portal', true);
+    }
+  }, [authed, technicianUser, page]);
   useEffect(() => { document.documentElement.style.setProperty('--tblr-primary', branding.accent_color || '#206bc4'); }, [branding.accent_color]);
   useEffect(() => {
     if (!authed) return undefined;
@@ -805,7 +902,20 @@ function App() {
     };
   }, [authed]);
 
-  if (!authed) return <Login branding={branding} onLogin={() => setAuthed(true)} />;
+  if (!authed) {
+    return (
+      <Login
+        branding={branding}
+        variant={loginVariant}
+        onLogin={(user) => {
+          setMe(user || null);
+          setAuthed(true);
+          if (isTechnicianUser(user)) navigate('Tech Portal', true);
+          else if (loginVariant === 'tech') navigate('Dashboard', true);
+        }}
+      />
+    );
+  }
 
   const logout = async () => {
     await request('/auth/logout', { method: 'POST' }).catch(() => {});
@@ -815,38 +925,42 @@ function App() {
 
   return (
     <div className={`page ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
-      <Sidebar page={page} setPage={navigate} me={me} logout={logout} branding={branding} versionInfo={versionInfo} collapsed={sidebarCollapsed} />
+      <Sidebar page={activePage} setPage={navigate} me={me} logout={logout} branding={branding} versionInfo={versionInfo} collapsed={sidebarCollapsed} navItems={activeNavItems} />
       <div className="page-wrapper">
-        <Header page={page} resources={resources} onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)} sidebarCollapsed={sidebarCollapsed} onNavigatePage={navigate} />
+        <Header page={activePage} resources={resources} onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)} sidebarCollapsed={sidebarCollapsed} onNavigatePage={navigate} />
         <div className="page-body">
           <div className="container-xl">
-            {page === 'Dashboard' && <Dashboard data={dashboard} />}
-            {page === 'Process Flow' && <ProcessFlowPage refreshShell={refresh} />}
-            {page === 'Customer Profiling' && <CustomerProfilingPage refreshShell={refresh} />}
-            {page === 'Billing' && <BillingPage refreshShell={refresh} />}
-            {page === 'Point of Sale' && <PointOfSalePage refreshShell={refresh} />}
-            {page === 'Inventory' && <InventoryPage refreshShell={refresh} />}
-            {page === 'Account Admin' && <AccountAdminPage refreshShell={refresh} />}
-            {page === 'Customer Service Management' && <CustomerServiceManagementPage refreshShell={refresh} />}
-            {page === 'Ticketing' && <TicketingPage refreshShell={refresh} />}
-            {page === 'Service Catalog' && <ServicePage initialSection="catalog" refreshShell={refresh} />}
-            {page === 'Service Account' && <ServicePage initialSection="accounts" refreshShell={refresh} />}
-            {page === 'Service Order' && <ServicePage initialSection="orders" refreshShell={refresh} />}
-            {page === 'Network Settings' && <NetworkSettingsPage initialSection="overview" refreshShell={refresh} />}
-            {page === 'MikroTik API' && <NetworkSettingsPage initialSection="mikrotik-settings" refreshShell={refresh} />}
-            {page === 'PPPoE Accounts' && <NetworkSettingsPage initialSection="pppoe" refreshShell={refresh} />}
-            {page === 'OLT SNMP' && <NetworkSettingsPage initialSection="olt-settings" refreshShell={refresh} />}
-            {page === 'Mapping' && <NetworkSettingsPage initialSection="map" refreshShell={refresh} />}
-            {page === 'Serviceability Check' && <NetworkSettingsPage initialSection="serviceability" refreshShell={refresh} />}
-            {page === 'Topology' && <NetworkSettingsPage initialSection="fiber-mapping" refreshShell={refresh} />}
-            {page === 'OLT & PON' && <NetworkSettingsPage initialSection="olts" refreshShell={refresh} />}
-            {page === 'ONUs' && <NetworkSettingsPage initialSection="onus" refreshShell={refresh} />}
-            {page === 'NAP Boxes' && <NetworkSettingsPage initialSection="naps" refreshShell={refresh} />}
-            {page === 'Splitters' && <NetworkSettingsPage initialSection="fbts" refreshShell={refresh} />}
-            {page === 'Fiber Optic' && <NetworkSettingsPage initialSection="fiber-optic-loss" refreshShell={refresh} />}
+            {activePage === 'Tech Portal' && <TechPortalPage refreshShell={refresh} currentUser={me} onNavigatePage={navigate} />}
+            {activePage === 'Tech Portal Ticketing' && <TechPortalTicketingPage refreshShell={refresh} currentUser={me} onNavigatePage={navigate} />}
+            {!technicianUser && activePage === 'Dashboard' && <Dashboard data={dashboard} />}
+            {!technicianUser && activePage === 'Process Flow' && <ProcessFlowPage refreshShell={refresh} />}
+            {!technicianUser && activePage === 'Customer Profiling' && <CustomerProfilingPage refreshShell={refresh} />}
+            {!technicianUser && activePage === 'Billing' && <BillingPage refreshShell={refresh} />}
+            {!technicianUser && activePage === 'Point of Sale' && <PointOfSalePage refreshShell={refresh} />}
+            {!technicianUser && activePage === 'Inventory' && <InventoryPage refreshShell={refresh} />}
+            {!technicianUser && activePage === 'Account Admin' && <AccountAdminPage refreshShell={refresh} />}
+            {!technicianUser && activePage === 'Customer Service Management' && <CustomerServiceManagementPage refreshShell={refresh} />}
+            {!technicianUser && activePage === 'Ticketing' && <TicketingPage refreshShell={refresh} />}
+            {!technicianUser && activePage === 'Service Catalog' && <ServicePage initialSection="catalog" refreshShell={refresh} />}
+            {!technicianUser && activePage === 'Service Account' && <ServicePage initialSection="accounts" refreshShell={refresh} />}
+            {!technicianUser && activePage === 'Service Order' && <ServicePage initialSection="orders" refreshShell={refresh} />}
+            {!technicianUser && activePage === 'Network Settings' && <NetworkSettingsPage initialSection="overview" refreshShell={refresh} />}
+            {!technicianUser && activePage === 'MikroTik API' && <NetworkSettingsPage initialSection="mikrotik-settings" refreshShell={refresh} />}
+            {!technicianUser && activePage === 'PPPoE Accounts' && <NetworkSettingsPage initialSection="pppoe" refreshShell={refresh} />}
+            {!technicianUser && activePage === 'OLT SNMP' && <NetworkSettingsPage initialSection="olt-settings" refreshShell={refresh} />}
+            {!technicianUser && activePage === 'Mapping' && <NetworkSettingsPage initialSection="map" refreshShell={refresh} />}
+            {!technicianUser && activePage === 'Serviceability Check' && <NetworkSettingsPage initialSection="serviceability" refreshShell={refresh} />}
+            {!technicianUser && activePage === 'Topology' && <NetworkSettingsPage initialSection="fiber-mapping" refreshShell={refresh} />}
+            {!technicianUser && activePage === 'OLT & PON' && <NetworkSettingsPage initialSection="olts" refreshShell={refresh} />}
+            {!technicianUser && activePage === 'ONUs' && <NetworkSettingsPage initialSection="onus" refreshShell={refresh} />}
+            {!technicianUser && activePage === 'NAP Boxes' && <NetworkSettingsPage initialSection="naps" refreshShell={refresh} />}
+            {!technicianUser && activePage === 'Splitters' && <NetworkSettingsPage initialSection="fbts" refreshShell={refresh} />}
+            {!technicianUser && activePage === 'Fiber Optic' && <NetworkSettingsPage initialSection="fiber-optic-loss" refreshShell={refresh} />}
             {moduleNav.filter((item) => ![
               'Dashboard',
               'Process Flow',
+              'Tech Portal',
+              'Tech Portal Ticketing',
               'Customer Profiling',
               'Billing',
               'Point of Sale',
@@ -859,12 +973,12 @@ function App() {
               'System Settings',
               'Logs'
             ].includes(item.page)).map((item) => (
-              page === item.page ? <ModulePage key={item.page} module={moduleByPage.get(item.page)} /> : null
+              !technicianUser && activePage === item.page ? <ModulePage key={item.page} module={moduleByPage.get(item.page)} /> : null
             ))}
-            {page === 'System Settings' && <SystemSettingsPage refreshShell={refresh} />}
-            {page === 'Logs' && <LogsPage />}
-            {page === 'View Profile' && <ProfilePage mode="profile" onSaved={refresh} />}
-            {page === 'Change Password' && <ProfilePage mode="password" onSaved={refresh} />}
+            {!technicianUser && activePage === 'System Settings' && <SystemSettingsPage refreshShell={refresh} />}
+            {!technicianUser && activePage === 'Logs' && <LogsPage />}
+            {activePage === 'View Profile' && <ProfilePage mode="profile" onSaved={refresh} />}
+            {activePage === 'Change Password' && <ProfilePage mode="password" onSaved={refresh} />}
           </div>
         </div>
       </div>

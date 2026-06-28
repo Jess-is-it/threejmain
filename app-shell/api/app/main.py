@@ -28,6 +28,7 @@ MODULE_API_PATHS = [
     ("network-settings", "api"),
     ("system-settings", "api"),
     ("logs", "api"),
+    ("techportal", "api"),
 ]
 
 for parent in Path(__file__).resolve().parents:
@@ -63,14 +64,24 @@ from point_of_sale import configure_point_of_sale, point_of_sale_metrics, router
 from process_flow import configure_process_flow, process_flow_metrics, router as process_flow_router
 from logs import configure_logs, router as logs_router
 from service import configure_service, router as service_router, seed_service_data, service_metrics
-from system_settings import configure_system_settings, router as system_settings_router
+from system_settings import (
+    authenticate_access_user,
+    change_access_session_password,
+    configure_system_settings,
+    router as system_settings_router,
+    update_access_session_user,
+)
+from techportal import configure_techportal, router as techportal_router, seed_techportal_data, techportal_metrics
 from ticketing import (
+    add_ticket_note_from_techportal,
     configure_ticketing,
     create_ticket_from_service_order,
     router as ticketing_router,
     seed_ticketing_data,
     ticketing_metrics,
+    update_ticket_from_techportal,
 )
+from ticketing.router import visible_tickets
 
 
 APP_STARTED_AT = time.time()
@@ -90,11 +101,13 @@ admin_user = {
     "full_name": os.getenv("DEFAULT_ADMIN_NAME", "System Administrator"),
     "email": os.getenv("DEFAULT_ADMIN_EMAIL", "admin@example.local"),
     "role": "owner",
+    "permissions": ["*"],
+    "auth_source": "default_admin",
     "status": "active",
     "created_at": datetime.now(timezone.utc).isoformat(),
 }
 
-active_tokens: dict[str, str] = {}
+active_tokens: dict[str, dict[str, Any]] = {}
 audit_logs: list[dict[str, Any]] = []
 
 settings = {
@@ -190,6 +203,14 @@ modules = [
         "status": "functional-shell",
         "description": "Interactive process topology reference for customer, service, ticketing, billing, inventory, and network workflows.",
         "metrics": {"flows": 0, "stages": 0},
+    },
+    {
+        "slug": "techportal",
+        "name": "Tech Portal",
+        "folder": "features/techportal",
+        "status": "functional-dashboard-ticketing",
+        "description": "Technician portal for assigned work, ticket execution, activity logs, and portal-safe technician settings.",
+        "metrics": {"assigned_tickets": 0, "urgent_tickets": 0, "in_progress_jobs": 0, "completed_today": 0},
     },
     {
         "slug": "network-settings",
@@ -309,13 +330,14 @@ def current_admin(authorization: str | None = Header(default=None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Authentication required")
     token = authorization.removeprefix("Bearer ").strip()
-    if active_tokens.get(token) != admin_user["id"]:
+    session_user = active_tokens.get(token)
+    if not session_user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-    return admin_user
+    return session_user
 
 
 def public_user(user: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in user.items() if key != "password"}
+    return {key: value for key, value in user.items() if key not in {"password", "passwordHash"}}
 
 
 def resolve_customer_for_modules(customer_id: str) -> dict[str, Any]:
@@ -338,6 +360,7 @@ def seed_module_data() -> None:
     seed_ticketing_data()
     seed_service_data()
     seed_network_settings_data()
+    seed_techportal_data()
 
 
 def sync_module_metrics() -> None:
@@ -351,6 +374,7 @@ def sync_module_metrics() -> None:
         "ticketing": ticketing_metrics,
         "service": service_metrics,
         "process-flow": process_flow_metrics,
+        "techportal": techportal_metrics,
         "network-settings": network_settings_metrics,
         "system-settings": lambda: {"sections": len(settings), "registered_ports": len(port_registry())},
         "logs": lambda: {"audit_events": len(audit_logs)},
@@ -518,6 +542,14 @@ configure_process_flow(current_admin)
 configure_network_settings(current_admin, add_audit)
 configure_system_settings(current_admin, add_audit, settings, port_registry)
 configure_logs(current_admin, audit_logs)
+configure_techportal(
+    current_admin,
+    add_audit,
+    visible_tickets,
+    seed_ticketing_data,
+    update_ticket_from_techportal,
+    add_ticket_note_from_techportal,
+)
 
 app.include_router(customer_profiling_router)
 app.include_router(billing_router)
@@ -531,6 +563,7 @@ app.include_router(process_flow_router)
 app.include_router(network_settings_router)
 app.include_router(system_settings_router)
 app.include_router(logs_router)
+app.include_router(techportal_router)
 
 
 @app.on_event("startup")
@@ -560,11 +593,24 @@ def system_version():
 
 @app.post("/api/auth/login")
 def login(payload: LoginPayload, request: Request):
+    access_user = authenticate_access_user(payload.username, payload.password)
+    if access_user:
+        token = str(uuid4())
+        active_tokens[token] = access_user
+        add_audit(
+            "login_success",
+            "system_access_user",
+            access_user["id"],
+            {"username": access_user["username"], "role": access_user.get("role")},
+            access_user["username"],
+        )
+        return {"access_token": token, "token_type": "bearer", "user": public_user(access_user)}
+
     if payload.username != admin_user["username"] or payload.password != admin_user["password"]:
         add_audit("login_failed", "admin", payload.username, {"client": request.client.host if request.client else None})
         raise HTTPException(status_code=401, detail="Invalid username or password")
     token = str(uuid4())
-    active_tokens[token] = admin_user["id"]
+    active_tokens[token] = admin_user
     add_audit("login_success", "admin", admin_user["id"], {"username": admin_user["username"]}, admin_user["username"])
     return {"access_token": token, "token_type": "bearer", "user": public_user(admin_user)}
 
@@ -588,6 +634,11 @@ def get_me(admin=Depends(current_admin)):
 
 @app.patch("/api/me")
 def update_me(payload: ProfilePayload, admin=Depends(current_admin)):
+    if admin.get("auth_source") == "system_access":
+        updated = update_access_session_user(admin["id"], payload.full_name, payload.email)
+        admin.update(updated)
+        add_audit("profile_updated", "system_access_user", admin["id"], {"username": admin["username"]}, admin["username"])
+        return public_user(admin)
     if payload.full_name is not None:
         admin["full_name"] = payload.full_name
     if payload.email is not None:
@@ -598,6 +649,11 @@ def update_me(payload: ProfilePayload, admin=Depends(current_admin)):
 
 @app.post("/api/me/change-password")
 def change_password(payload: PasswordPayload, admin=Depends(current_admin)):
+    if admin.get("auth_source") == "system_access":
+        change_access_session_password(admin["id"], payload.current_password, payload.new_password, payload.confirm_password)
+        admin["mustChangePassword"] = False
+        add_audit("password_changed", "system_access_user", admin["id"], {"username": admin["username"]}, admin["username"])
+        return {"status": "ok"}
     if payload.current_password != admin["password"]:
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     if payload.new_password != payload.confirm_password:
