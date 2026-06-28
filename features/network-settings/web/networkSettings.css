@@ -1621,6 +1621,12 @@
   stroke-width: 2;
 }
 
+.network-fiber-map-plc-port.occupied {
+  fill: #dcfce7;
+  stroke: #16a34a;
+  stroke-width: 3;
+}
+
 .network-fiber-map-plc-port.mapped {
   fill: #dbeafe;
   stroke: #2563eb;
@@ -4731,6 +4737,18 @@
   background: #dbeafe;
   border-color: #93c5fd;
   color: #1d4ed8;
+}
+
+.network-serviceability-splitter-meta span.occupied {
+  background: #dcfce7;
+  border-color: #86efac;
+  color: #15803d;
+}
+
+.network-serviceability-splitter-meta span.placeholder {
+  background: #f8fafc;
+  border-color: rgba(148, 163, 184, 0.45);
+  color: #64748b;
 }
 
 .network-serviceability-splitter-empty {

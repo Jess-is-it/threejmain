@@ -1116,12 +1116,12 @@ function normalizeFiberMapping(mapping) {
     if (!containerSplitters[key]) containerSplitters[key] = splitterIds;
   });
   Object.entries(containerSplitters).forEach(([containerKey, splitterIds]) => {
-    if (containerSplitterAssignments[containerKey] || !Array.isArray(splitterIds)) return;
-    containerSplitterAssignments[containerKey] = splitterIds.map((splitterId, index) => ({
-      assignmentId: `${splitterId}-${index + 1}`,
-      splitterId,
-      ratio: ''
-    }));
+    if (!Array.isArray(splitterIds)) return;
+    const assignments = Array.isArray(containerSplitterAssignments[containerKey]) ? containerSplitterAssignments[containerKey] : [];
+    if (assignments.length) return;
+    containerSplitterAssignments[containerKey] = splitterIds
+      .map((splitterValue, index) => fiberMappingAssignmentFromSplitterValue(splitterValue, index))
+      .filter(Boolean);
   });
   return {
     ...blankFiberMapping,
@@ -1143,6 +1143,30 @@ function fiberMapNodeKey(type, id) {
 
 function fiberMapEdgeKey(fromKey, toKey) {
   return `${fromKey}->${toKey}`;
+}
+
+function fiberMappingAssignmentFromSplitterValue(value, index = 0) {
+  if (!value) return null;
+  const [splitterId = '', ratio = ''] = String(value).split('::', 2);
+  const cleanSplitterId = splitterId.trim();
+  if (!cleanSplitterId) return null;
+  return {
+    assignmentId: `${cleanSplitterId}-${index + 1}`,
+    splitterId: cleanSplitterId,
+    ratio: ratio.trim()
+  };
+}
+
+function fiberMappingAssignmentsForContainer(mapping, containerKey) {
+  const source = mapping || {};
+  const assignments = source.containerSplitterAssignments?.[containerKey];
+  if (Array.isArray(assignments) && assignments.length) return assignments;
+  const splitterIds = containerKey.startsWith('nap:')
+    ? source.containerSplitters?.[containerKey] || source.napSplitters?.[containerKey.split(':', 2)[1]] || []
+    : source.containerSplitters?.[containerKey] || [];
+  return Array.isArray(splitterIds)
+    ? splitterIds.map((splitterValue, index) => fiberMappingAssignmentFromSplitterValue(splitterValue, index)).filter(Boolean)
+    : [];
 }
 
 function fiberMapConnectionPointKey(containerKey, splitterId, terminal) {
@@ -1797,7 +1821,7 @@ function serviceabilitySplitterPortLosses(assignment = {}) {
 
 function serviceabilityTopologyForNap(napId, mapping, splittersById) {
   const containerKey = fiberMapNodeKey('nap', napId);
-  const rawAssignments = mapping.containerSplitterAssignments?.[containerKey] || [];
+  const rawAssignments = fiberMappingAssignmentsForContainer(mapping, containerKey);
   const splitterAssignments = rawAssignments.map((assignment, index) => {
     const splitter = splittersById.get(assignment.splitterId);
     if (!splitter) return null;
@@ -1812,12 +1836,14 @@ function serviceabilityTopologyForNap(napId, mapping, splittersById) {
       portLosses: serviceabilitySplitterPortLosses({ ...assignment, splitter })
     };
   }).filter(Boolean);
-  const primarySplitter = [...splitterAssignments].reverse().find((assignment) => isPortLossSplitterType(assignment.splitterType))
-    || splitterAssignments.find((assignment) => isPortLossSplitterType(assignment.splitterType))
+  const plcAssignments = splitterAssignments.filter((assignment) => assignment.splitterType === 'PLC');
+  const primarySplitter = [...plcAssignments].reverse().find((assignment) => assignment.outputPorts)
+    || plcAssignments.find((assignment) => assignment.outputPorts)
     || null;
   return {
     containerKey,
     splitterAssignments,
+    plcAssignments,
     primarySplitter,
     topologyCapacity: primarySplitter?.outputPorts || 0
   };
@@ -3579,13 +3605,25 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
       serviceabilityTopologyForNap(nap.id, mapping, splittersById)
     ]));
   }, [fiberMapping, naps, splittersById]);
+  const serviceabilityMappedPortsByNapId = useMemo(() => {
+    const groups = new Map();
+    customerProfiles.forEach((customer) => {
+      const mapping = serviceabilityCustomerMapping(customer);
+      if (!mapping.napId || !mapping.portNumber) return;
+      const key = String(mapping.napId).trim();
+      const ports = groups.get(key) || new Set();
+      ports.add(Number(mapping.portNumber));
+      groups.set(key, ports);
+    });
+    return groups;
+  }, [customerProfiles]);
   const serviceabilityNapCandidates = useMemo(() => uniqueNapRows(naps)
     .filter(hasCoordinates)
     .map((nap) => {
       const topology = serviceabilityNapTopologyById.get(nap.id) || serviceabilityTopologyForNap(nap.id, normalizeFiberMapping(fiberMapping), splittersById);
       const coordinates = rowCoordinates(nap);
       const capacity = topology.topologyCapacity || napServiceCapacity(nap);
-      const usedPorts = napUsedServicePorts(nap);
+      const usedPorts = Math.max(napUsedServicePorts(nap), serviceabilityMappedPortsByNapId.get(String(nap.id).trim())?.size || 0);
       const remainingPorts = Math.max(0, capacity - usedPorts);
       const serviceable = remainingPorts > 0 && !['FULL', 'OFFLINE', 'ARCHIVED'].includes(String(nap.status || '').toUpperCase());
       return {
@@ -3604,7 +3642,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
         ponColorHex: normalizeHexColor(ponsById.get(nap.ponPortId) ? ponColor(ponsById.get(nap.ponPortId), meta.ponColorPalette) : nap.ponColorHex, PON_COLOR_BASES[0]),
         sourceNap: nap
       };
-    }), [naps, ponsById, meta.ponColorPalette, serviceabilityNapTopologyById, fiberMapping, splittersById]);
+    }), [naps, ponsById, meta.ponColorPalette, serviceabilityNapTopologyById, fiberMapping, splittersById, serviceabilityMappedPortsByNapId]);
   const serviceabilityAllCustomerRows = useMemo(() => customerProfiles.map((customer) => {
     const coordinates = rowCoordinates(customer);
     const customerMapping = serviceabilityCustomerMapping(customer);
@@ -5306,6 +5344,12 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
   function renderPlcSplitterSvg(display, options = {}) {
     if (!display) return null;
     const highlightedPortNumber = Number(options.highlightedPortNumber || 0);
+    const portOccupancyByNumber = options.portOccupancyByNumber instanceof Map ? options.portOccupancyByNumber : new Map();
+    const optionOccupiedPortNumbers = Array.from(options.occupiedPortNumbers || []);
+    const occupiedPortNumbers = new Set([
+      ...optionOccupiedPortNumbers.map((value) => Number(value)),
+      ...Array.from(portOccupancyByNumber.keys()).map((value) => Number(value))
+    ].filter((value) => Number.isFinite(value) && value > 0));
     const outputPorts = [4, 8, 16].includes(display.outputPorts) ? display.outputPorts : 8;
     const twoRows = outputPorts === 16;
     const viewWidth = outputPorts === 4 ? 132 : twoRows ? 186 : 162;
@@ -5338,11 +5382,18 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
         <rect className="network-fiber-map-plc-body" x={bodyX} y={bodyY} width={bodyWidth} height={bodyHeight} rx="12" />
         <rect className="network-fiber-map-plc-panel" x={bodyX + 10} y={bodyY + 11} width={bodyWidth - 20} height={bodyHeight - 22} rx="8" />
         <text className="network-fiber-map-plc-ratio-label" x={bodyX + 17} y={bodyY + 22}>{display.ratioLabel}</text>
-        {ports.map((port) => (
-          <g key={port.id}>
-            <rect className={`network-fiber-map-plc-port ${highlightedPortNumber === port.id ? 'mapped' : ''}`} x={port.x} y={port.y} width={portWidth} height={portHeight} rx="2" />
-          </g>
-        ))}
+        {ports.map((port) => {
+          const isMapped = highlightedPortNumber === port.id;
+          const isOccupied = occupiedPortNumbers.has(port.id);
+          const occupancy = portOccupancyByNumber.get(port.id);
+          const portLabel = occupancy?.customerName ? `Port ${port.id} assigned to ${occupancy.customerName}` : `Port ${port.id} ${isOccupied ? 'assigned' : 'available'}`;
+          return (
+            <g key={port.id}>
+              <title>{portLabel}</title>
+              <rect className={['network-fiber-map-plc-port', isOccupied ? 'occupied' : '', isMapped ? 'mapped' : ''].filter(Boolean).join(' ')} x={port.x} y={port.y} width={portWidth} height={portHeight} rx="2" />
+            </g>
+          );
+        })}
       </svg>
     );
   }
@@ -6408,9 +6459,12 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
 
   function openFiberMappingLayoutModal(node, options = {}) {
     if (!node?.key || !['nap', 'junction'].includes(node.type)) return;
+    const incomingEdgeId = options.incomingEdgeId
+      || fiberMappingCanvas.edges.find((edge) => edge.toKey === node.key && edge.type !== 'olt-pon')?.id
+      || '';
     setFiberMappingLayoutContainerKey(node.key);
     setFiberLayoutReturnPonId(options.returnPonId || '');
-    setFiberLayoutIncomingEdgeId(options.incomingEdgeId || '');
+    setFiberLayoutIncomingEdgeId(incomingEdgeId);
     expandFiberMappingContainer(node.key);
     setFiberMappingSelectedNodeKeys([node.key]);
     setFiberMappingSelectedEdgeId('');
@@ -7049,16 +7103,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
   }
 
   function containerSplitterAssignments(mapping, containerKey) {
-    const assignments = mapping.containerSplitterAssignments?.[containerKey];
-    if (Array.isArray(assignments) && assignments.length) return assignments;
-    const splitterIds = containerKey.startsWith('nap:')
-      ? mapping.containerSplitters?.[containerKey] || mapping.napSplitters?.[containerKey.split(':', 2)[1]] || []
-      : mapping.containerSplitters?.[containerKey] || [];
-    return splitterIds.map((splitterId, index) => ({
-      assignmentId: `${splitterId}-${index + 1}`,
-      splitterId,
-      ratio: ''
-    }));
+    return fiberMappingAssignmentsForContainer(mapping, containerKey);
   }
 
   function assignSplitterToFiberContainer(containerKey, value, options = {}) {
@@ -8668,51 +8713,77 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     );
   }
 
+  function serviceabilityPlcAssignmentsForNap(nap) {
+    return (nap?.topology?.splitterAssignments || []).filter((assignment) => (
+      normalizeSplitterType(assignment.splitterType || assignment.splitter?.splitterType) === 'PLC'
+      && plcSplitterDisplayFor(assignment)
+    ));
+  }
+
+  function serviceabilityMappingMatchesSplitter(mapping, nap, assignment) {
+    if (!mapping?.portNumber || !sameServiceabilityId(mapping.napId, nap?.sourceId)) return false;
+    if (mapping.assignmentId) return sameServiceabilityId(mapping.assignmentId, assignment.assignmentId);
+    if (mapping.splitterId) return sameServiceabilityId(mapping.splitterId, assignment.splitterId);
+    const assignments = serviceabilityPlcAssignmentsForNap(nap);
+    return assignments.length === 1 || nap?.topology?.primarySplitter?.assignmentId === assignment.assignmentId;
+  }
+
+  function serviceabilityPortOccupancyForNap(nap, assignment) {
+    const display = plcSplitterDisplayFor(assignment);
+    const outputPorts = Number(display?.outputPorts || assignment.outputPorts || 0);
+    const occupancy = new Map();
+    serviceabilityAllCustomerRows.forEach((row) => {
+      const mapping = row.customerMapping || serviceabilityCustomerMapping(row.customer);
+      if (!serviceabilityMappingMatchesSplitter(mapping, nap, assignment)) return;
+      const portNumber = Number(mapping.portNumber || 0);
+      if (!Number.isFinite(portNumber) || portNumber < 1 || (outputPorts && portNumber > outputPorts)) return;
+      occupancy.set(portNumber, {
+        customerId: row.customer?.id || row.id || '',
+        customerName: customerDisplayName(row.customer)
+      });
+    });
+    return occupancy;
+  }
+
   function shouldHighlightServiceabilityPort(nap, assignment) {
     if (!nap?.customerMapped || !nap.mappedPortNumber) return false;
-    if (nap.mappedSplitterAssignmentId) return sameServiceabilityId(nap.mappedSplitterAssignmentId, assignment.assignmentId);
-    if (nap.mappedSplitterId) return sameServiceabilityId(nap.mappedSplitterId, assignment.splitterId);
-    const assignments = nap.topology?.splitterAssignments || [];
-    return assignments.length === 1 || nap.topology?.primarySplitter?.assignmentId === assignment.assignmentId;
+    return serviceabilityMappingMatchesSplitter({
+      napId: nap.sourceId,
+      splitterId: nap.mappedSplitterId,
+      assignmentId: nap.mappedSplitterAssignmentId,
+      portNumber: nap.mappedPortNumber
+    }, nap, assignment);
   }
 
   function renderServiceabilitySplitterAssignment(assignment, nap) {
     const splitter = assignment.splitter || {};
     const splitterType = normalizeSplitterType(splitter.splitterType);
+    if (splitterType !== 'PLC') return null;
     const makerModel = [splitter.manufacturer || splitter.brand, splitter.model || splitter.name].filter(Boolean).join(' / ') || 'Configured splitter';
     const display = plcSplitterDisplayFor(assignment);
+    if (!display) return null;
     const highlightedPortNumber = shouldHighlightServiceabilityPort(nap, assignment) ? Number(nap.mappedPortNumber || 0) : 0;
-    const outputPorts = assignment.outputPorts || display?.outputPorts || Number(splitter.outputPorts || splitter.portCapacity || 0);
+    const outputPorts = assignment.outputPorts || display.outputPorts || Number(splitter.outputPorts || splitter.portCapacity || 0);
+    const occupancy = serviceabilityPortOccupancyForNap(nap, assignment);
+    const occupiedPortNumbers = Array.from(occupancy.keys());
+    const highlightedOccupancy = highlightedPortNumber ? occupancy.get(highlightedPortNumber) : null;
     const mappedLoss = highlightedPortNumber
       ? assignment.portLosses?.find((row) => Number(row.portNumber) === highlightedPortNumber)?.insertionLossDb
       : '';
-    if (display) {
-      return (
-        <div className="network-serviceability-splitter-card plc" key={assignment.assignmentId}>
-          <div className="network-serviceability-splitter-card-header">
-            <span className={`badge bg-${splitterType === 'LCP' ? 'purple' : 'blue'}-lt text-${splitterType === 'LCP' ? 'purple' : 'blue'}`}>{splitterType}</span>
-            <strong>{makerModel}</strong>
-          </div>
-          <div className="network-serviceability-splitter-equipment">
-            {renderPlcSplitterSvg(display, { highlightedPortNumber })}
-          </div>
-          <div className="network-serviceability-splitter-meta">
-            <span>{display.ratioLabel}</span>
-            <span>{outputPorts} output ports</span>
-            {highlightedPortNumber ? <span className="mapped">Mapped port {highlightedPortNumber}{mappedLoss ? ` / ${mappedLoss} dB` : ''}</span> : <span>Technician port mapping pending</span>}
-          </div>
-        </div>
-      );
-    }
     return (
-      <div className="network-serviceability-splitter-card compact" key={assignment.assignmentId}>
+      <div className="network-serviceability-splitter-card plc" key={assignment.assignmentId}>
         <div className="network-serviceability-splitter-card-header">
-          <span className={`badge bg-${splitterType === 'FBT' ? 'green' : 'secondary'}-lt text-${splitterType === 'FBT' ? 'green' : 'secondary'}`}>{splitterType}</span>
+          <span className="badge bg-blue-lt text-blue">PLC</span>
           <strong>{makerModel}</strong>
         </div>
+        <div className="network-serviceability-splitter-equipment">
+          {renderPlcSplitterSvg(display, { highlightedPortNumber, occupiedPortNumbers, portOccupancyByNumber: occupancy })}
+        </div>
         <div className="network-serviceability-splitter-meta">
-          <span>{splitterType === 'FBT' ? formatFbtRatio(assignment.ratio || splitter.splitRatio) : formatSplitterRatio(assignment.ratio || splitter.splitRatio)}</span>
-          <span>{outputPorts || '-'} output ports</span>
+          <span>{display.ratioLabel}</span>
+          <span>{outputPorts} customer ports</span>
+          <span className={occupancy.size ? 'occupied' : ''}>{occupancy.size}/{outputPorts} assigned</span>
+          {highlightedPortNumber ? <span className="mapped">Mapped port {highlightedPortNumber}{highlightedOccupancy?.customerName ? ` / ${highlightedOccupancy.customerName}` : ''}{mappedLoss ? ` / ${mappedLoss} dB` : ''}</span> : <span className="placeholder">Technician portal placeholder</span>}
         </div>
       </div>
     );
@@ -8740,6 +8811,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     }, {});
     const serviceabilityStatuses = ['MAPPED', 'SERVICEABLE', 'NO_PORTS', 'NEEDS_COORDINATES', 'NO_NAP'];
     const selectedLocationLabel = serviceabilityLocationLabel(selectedCustomer);
+    const detailNapPlcAssignments = serviceabilityPlcAssignmentsForNap(detailNap);
 
     const mapSurface = (
       <div
@@ -8941,15 +9013,15 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
             </div>
             <div className="network-serviceability-splitter-section">
               <div className="network-serviceability-splitter-section-header">
-                <small>Topology Splitters</small>
-                <strong>{detailNap.topology?.splitterAssignments?.length || 0}</strong>
+                <small>PLC Splitters</small>
+                <strong>{detailNapPlcAssignments.length}</strong>
               </div>
-              {detailNap.topology?.splitterAssignments?.length ? (
+              {detailNapPlcAssignments.length ? (
                 <div className="network-serviceability-splitter-list">
-                  {detailNap.topology.splitterAssignments.map((assignment) => renderServiceabilitySplitterAssignment(assignment, detailNap))}
+                  {detailNapPlcAssignments.map((assignment) => renderServiceabilitySplitterAssignment(assignment, detailNap))}
                 </div>
               ) : (
-                <div className="network-serviceability-splitter-empty">No splitter assigned to this NAP in Network Topology.</div>
+                <div className="network-serviceability-splitter-empty">No PLC splitter assigned to this NAP in Network Topology.</div>
               )}
             </div>
             <small className="network-map-legend-source">{serviceabilityMap.tileAttribution}</small>

@@ -1,58 +1,110 @@
-import React from 'react'
-import './techPortal.css'
+import React, { useEffect, useState } from 'react';
+import {
+  IconAlertTriangle,
+  IconCalendarEvent,
+  IconCircleCheck,
+  IconRefresh,
+  IconTicket,
+  IconTool,
+  IconUserCheck,
+} from '@tabler/icons-react';
+import './techPortal.css';
 
-const features = [
-  {
-    title: 'Dashboard',
-    body: 'Assigned work, urgent tickets, route summary, and quick field status actions.',
-  },
-  {
-    title: 'Ticketing',
-    body: 'Technician queue, ticket detail, status updates, notes, checklists, and evidence capture.',
-  },
-  {
-    title: 'Logs',
-    body: 'Technician-scoped activity history for ticket actions, notes, uploads, and provisioning requests.',
-  },
-  {
-    title: 'System Settings',
-    body: 'Portal-safe profile, session, notification, device, and future offline sync preferences.',
-  },
-]
+const API = '/api';
 
-export default function TechPortalPage() {
+function token() {
+  return localStorage.getItem('threejmain_token');
+}
+
+async function request(path, options = {}) {
+  const res = await fetch(`${API}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token() ? { Authorization: `Bearer ${token()}` } : {}),
+      ...(options.headers || {}),
+    },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || 'Request failed');
+  return data;
+}
+
+function label(value) {
+  return String(value || '').replaceAll('_', ' ').replaceAll('-', ' ').toLowerCase().replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function KpiTile({ icon: Icon, label: title, value, tone }) {
+  return (
+    <article className={`techportal-kpi techportal-kpi-${tone}`}>
+      <div className="techportal-kpi-icon"><Icon size={20} /></div>
+      <div>
+        <div className="techportal-kpi-value">{value ?? 0}</div>
+        <div className="techportal-kpi-label">{title}</div>
+      </div>
+    </article>
+  );
+}
+
+export default function TechPortalPage({ currentUser, onNavigatePage = () => {} }) {
+  const [dashboard, setDashboard] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  async function loadDashboard() {
+    setLoading(true);
+    try {
+      const dashboardData = await request('/techportal/dashboard');
+      setDashboard(dashboardData);
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadDashboard();
+  }, []);
+
+  const metrics = dashboard?.metrics || {};
+  const technician = dashboard?.technician || {};
+  const displayName = technician.name || currentUser?.full_name || currentUser?.username || 'Technician';
+  const sourceLabel = dashboard?.source === 'sample' ? 'Sample Work' : 'Ticketing';
+
   return (
     <main className="techportal-page">
-      <section className="techportal-header">
+      <section className="techportal-hero">
         <div>
-          <p className="techportal-kicker">Planned technician portal</p>
-          <h1>Tech Portal</h1>
-          <p>
-            Technician-only workspace for assigned field work, ticket execution, evidence capture,
-            activity history, and portal-safe settings.
-          </p>
+          <div className="techportal-kicker">Tech Portal Dashboard</div>
+          <h1>{displayName}</h1>
+          <div className="techportal-subline">
+            <span><IconUserCheck size={17} />{label(technician.role || currentUser?.role || 'technician')}</span>
+            <span><IconCircleCheck size={17} />{technician.status || 'Available'}</span>
+            <span><IconTicket size={17} />{sourceLabel}</span>
+          </div>
         </div>
-        <span className="techportal-route">/techportal</span>
+        <div className="techportal-hero-actions">
+          <button className="btn btn-outline-primary" type="button" onClick={loadDashboard} disabled={loading}>
+            <IconRefresh size={18} className="me-2" />Refresh
+          </button>
+          <button className="btn btn-primary" type="button" onClick={() => onNavigatePage('Tech Portal Ticketing')}>
+            <IconTicket size={18} className="me-2" />Ticketing
+          </button>
+        </div>
       </section>
 
-      <section className="techportal-grid" aria-label="Tech Portal feature folders">
-        {features.map((feature) => (
-          <article className="techportal-card" key={feature.title}>
-            <h2>{feature.title}</h2>
-            <p>{feature.body}</p>
-          </article>
-        ))}
-      </section>
+      {error && <div className="alert alert-danger">{error}</div>}
 
-      <section className="techportal-panel">
-        <h2>Primary Flow</h2>
-        <ol>
-          <li>Technician signs in and sees assigned tickets.</li>
-          <li>Technician opens a ticket and updates work status.</li>
-          <li>Technician records checklist, notes, photos, readings, and materials used.</li>
-          <li>Ticketing, Logs, Service, Inventory, and Network Settings receive the relevant updates.</li>
-        </ol>
+      <section className="techportal-kpis techportal-kpis-dashboard" aria-label="Technician KPI dashboard">
+        <KpiTile icon={IconTicket} label="Assigned" value={metrics.assigned} tone="blue" />
+        <KpiTile icon={IconAlertTriangle} label="Urgent" value={metrics.urgent} tone="red" />
+        <KpiTile icon={IconCalendarEvent} label="Due Today" value={metrics.dueToday} tone="orange" />
+        <KpiTile icon={IconAlertTriangle} label="Overdue" value={metrics.overdue} tone="red" />
+        <KpiTile icon={IconTool} label="In Progress" value={metrics.inProgress} tone="green" />
+        <KpiTile icon={IconCircleCheck} label="Completed Today" value={metrics.completedToday} tone="blue" />
       </section>
     </main>
-  )
+  );
 }

@@ -1,7 +1,7 @@
 {
   "slug": "techportal-ticketing",
   "name": "Tech Portal Ticketing",
-  "status": "planned-shell",
+  "status": "functional-ticketing-workflow",
   "owner": "techportal",
   "description": "Technician ticket queue, ticket execution, field checklist, notes, evidence, and completion flow.",
   "parent_module": "techportal",

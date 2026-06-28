@@ -2,24 +2,24 @@
 
 ## Purpose
 
-Dashboard is the technician landing workspace inside Tech Portal. It should show assigned work, urgent jobs, today routing context, technician status, and quick links into ticket execution.
+Dashboard is the technician landing workspace inside Tech Portal. It is intentionally KPI-only; ticket queues, ticket details, and ticket actions belong in Tech Portal Ticketing.
 
 ## Current Status
 
-- Status: `planned-shell`
+- Status: `functional-dashboard`
 - Parent feature: `features/techportal`
 - Planned route: `/techportal`
-- API scope: future `/api/techportal/dashboard`
-- Current implementation: documentation-only feature folder.
+- API scope: `/api/techportal/dashboard`
+- Current implementation: functional KPI-only React dashboard under `features/techportal/web/TechPortalPage.jsx`, protected FastAPI dashboard endpoint under `features/techportal/api/techportal/router.py`, and app-shell route `/techportal`.
 
 ## Planned Scope
 
-- Assigned tickets for the signed-in technician.
-- Urgent, overdue, and due-today work counters.
-- Installation, repair, relocation, reconnection, and equipment replacement queues.
-- Technician availability/status shortcuts.
-- Route or map summary using shared System Settings map provider configuration later.
-- Recent notifications, reminders, and safety prompts.
+- Assigned count.
+- Urgent count.
+- Due-today count.
+- Overdue count.
+- In-progress count.
+- Completed-today count.
 
 ## Dependencies
 
@@ -32,5 +32,11 @@ Dashboard is the technician landing workspace inside Tech Portal. It should show
 ## Boundaries
 
 - Dashboard should not own ticket records or Service Account records.
-- Dashboard actions should route to ticket/work-session flows rather than editing admin data directly.
-- Technician visibility must be scoped to assigned work or approved team queues.
+- Dashboard should not render ticket lists, ticket details, or field-action workflows.
+- Ticket work belongs on `/techportal/ticketing`.
+
+## Test Account
+
+- System Settings -> Access seeds a built-in `technician` role and active test user `tech`.
+- Temporary test password: `tech12345`.
+- The shared login form is intentionally prefilled with this account for quick testing; remove this before production use.

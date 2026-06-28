@@ -1,9 +1,9 @@
 {
   "slug": "techportal-dashboard",
   "name": "Tech Portal Dashboard",
-  "status": "planned-shell",
+  "status": "functional-dashboard",
   "owner": "techportal",
-  "description": "Technician landing dashboard for assigned work, urgent jobs, route context, and quick field status actions.",
+  "description": "Technician KPI dashboard for assigned, urgent, due, overdue, in-progress, and completed-today work counts.",
   "parent_module": "techportal",
   "route": "/techportal",
   "api_prefix": "/api/techportal/dashboard",

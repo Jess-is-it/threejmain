@@ -1,13 +1,21 @@
 {
   "slug": "techportal",
   "name": "Tech Portal",
-  "status": "planned-shell",
+  "status": "functional-dashboard-ticketing",
   "owner": "threejmain",
   "description": "Technician-only field portal for assigned work, ticket execution, activity logs, and portal-safe technician settings.",
   "app_shell_route": "/techportal",
+  "app_shell_routes": [
+    "/techportal",
+    "/techportal/ticketing"
+  ],
   "web_url": "http://192.168.50.70:8280/techportal",
   "api_prefix": "/api/techportal",
   "frontend_entry": "features/techportal/web/TechPortalPage.jsx",
+  "frontend_entries": [
+    "features/techportal/web/TechPortalPage.jsx",
+    "features/techportal/web/TechPortalTicketingPage.jsx"
+  ],
   "api_entry": "features/techportal/api/techportal/router.py",
   "feature_folders": [
     {
