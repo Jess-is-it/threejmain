@@ -406,6 +406,7 @@ def sync_hotspot_subscribers(rows: list[dict[str, Any]], actor: str, action: str
     payload = {
         "source_system": "3J Main",
         "synced_by": actor,
+        "sync_mode": "FULL" if action == "SYNC_ALL" else "PARTIAL",
         "subscribers": rows,
     }
     result = signed_hotspot_request("POST", "/api/integrations/monthly-subscribers/upsert", payload)

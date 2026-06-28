@@ -37,7 +37,7 @@ Current Phase 1 UI is intentionally table-only:
 - The `PPPoE & ONUs` view has inner tabs for `PPPoE without ONUs` and `PPPoE with matched ONUs`.
 - PPPoE-to-ONU matching is conservative but now accounts for observed device behavior: captured ONUs are first deduplicated by physical OLT/PON/ONU identity, exact PPPoE caller ID/MAC to ONU MAC evidence is matched first, same-OUI low-byte proximity matches use a maximum tail delta of 8 with mutual-best one-to-one assignment, and metadata fallback is used only when ONU identifiers appear in PPPoE text fields.
 - The PPPoE/ONU mapping API also attaches one temporary sample dummy customer profile to the first matched PPPoE/ONU pair so the intended customer-profile binding shape can be reviewed without changing Customer Profiling data.
-- `Hotspot Access` is a separate Account Admin view for syncing monthly subscriber eligibility to the Pisowifi captive portal. It derives subscriber rows from visible Customer Profiles plus active Service Accounts, supports primary/alternate/secondary mobile contacts, and signs outbound sync calls to Pisowifi.
+- `Hotspot Access` is a separate Account Admin view for syncing monthly subscriber eligibility to the Pisowifi captive portal. It derives subscriber rows from visible Customer Profiles plus active Service Accounts, supports primary/alternate/secondary mobile contacts, and signs outbound sync calls to Pisowifi. Sync All sends `sync_mode: FULL` so Pisowifi disables subscribers/contacts missing from the exported list; single-row/contact saves send `sync_mode: PARTIAL`.
 - Service Account and Installation Order columns are hidden from the current `All` tab.
 - Network configuration forms, save buttons, MikroTik refresh buttons, PPPoE binding controls, and review-only controls are hidden for this step.
 
@@ -127,6 +127,7 @@ Passwords are not returned by the API. Phase 1 only records whether a password c
 - `module.json` uses the Customer Network label for future app-shell metadata consumers.
 - App-shell hardcoded module metadata may still show Account Admin until Integration Codex updates shared navigation.
 - Hotspot Access request signing uses `X-3J-Integration-Key`, `X-3J-Timestamp`, `X-3J-Signature`, and `X-3J-Idempotency-Key`. The signature is HMAC-SHA256 over `<timestamp>.<raw body>`.
+- The signed payload includes `sync_mode`. Use `FULL` only for complete Account Admin exports; use `PARTIAL` for one-subscriber/contact saves so Pisowifi does not disable unrelated monthly access.
 
 ## Known Gaps
 

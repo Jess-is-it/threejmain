@@ -376,6 +376,7 @@ Cross-module work is allowed only after locking every affected module folder and
 - The Account Admin source-side UI is `Account Admin -> Hotspot Access`. It stores the Pisowifi API base URL, API key, and API secret in `ACCOUNT_ADMIN_HOTSPOT_STATE_PATH`. Docker deployments should keep this under the API data volume, currently `/app/data/account_admin_hotspot.json`, so settings survive rebuilds.
 - Hotspot Access operators can edit the allowed login contact numbers per monthly subscriber. Each enabled contact number is one allowed captive portal device after SMS verification.
 - Outbound requests are signed with `X-3J-Integration-Key`, `X-3J-Timestamp`, `X-3J-Signature`, and `X-3J-Idempotency-Key`. The signature is HMAC-SHA256 over `<timestamp>.<raw request body>` using the shared API secret.
+- Sync All sends `sync_mode: FULL` and is authoritative: contacts/subscribers missing from the exported Account Admin list are disabled in Pisowifi and any linked monthly captive-portal authorization is revoked there. Single-subscriber/contact saves send `sync_mode: PARTIAL` and must not remove unrelated subscribers.
 - Do not expose the shared secret in frontend responses, logs, screenshots, or commits.
 
 ## Safety Notes
