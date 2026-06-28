@@ -37,6 +37,7 @@ Current Phase 1 UI is intentionally table-only:
 - The `PPPoE & ONUs` view has inner tabs for `PPPoE without ONUs` and `PPPoE with matched ONUs`.
 - PPPoE-to-ONU matching is conservative but now accounts for observed device behavior: captured ONUs are first deduplicated by physical OLT/PON/ONU identity, exact PPPoE caller ID/MAC to ONU MAC evidence is matched first, same-OUI low-byte proximity matches use a maximum tail delta of 8 with mutual-best one-to-one assignment, and metadata fallback is used only when ONU identifiers appear in PPPoE text fields.
 - The PPPoE/ONU mapping API also attaches one temporary sample dummy customer profile to the first matched PPPoE/ONU pair so the intended customer-profile binding shape can be reviewed without changing Customer Profiling data.
+- `Hotspot Access` is a separate Account Admin view for syncing monthly subscriber eligibility to the Pisowifi captive portal. It derives subscriber rows from visible Customer Profiles plus active Service Accounts, supports primary/alternate/secondary mobile contacts, and signs outbound sync calls to Pisowifi.
 - Service Account and Installation Order columns are hidden from the current `All` tab.
 - Network configuration forms, save buttons, MikroTik refresh buttons, PPPoE binding controls, and review-only controls are hidden for this step.
 
@@ -56,6 +57,12 @@ Routes:
 - `GET /api/account-admin/customer-accounts`
 - `GET /api/account-admin/customer-accounts/{customer_id}`
 - `GET /api/account-admin/pppoe-onu-mapping`
+- `GET /api/account-admin/hotspot-access`
+- `PATCH /api/account-admin/hotspot-access/settings`
+- `POST /api/account-admin/hotspot-access/test`
+- `PATCH /api/account-admin/hotspot-access/subscribers/{customer_id}/contacts`
+- `POST /api/account-admin/hotspot-access/sync`
+- `POST /api/account-admin/hotspot-access/subscribers/{customer_id}/sync`
 
 Legacy system-login `/api/account-admin/accounts` routes return `410 Gone`.
 
@@ -72,6 +79,9 @@ The page shows:
 - Collapsible filters for Customer Status and PPPoE Status.
 - In-table tabs for All, Customer w/ Tickets, and PPPoE & ONUs with count badges.
 - A temporary PPPoE/ONU mapping table with inner matched/unmatched tabs, PPPoE username, router, status, caller ID/MAC, active IP, matched ONU details, and match reason.
+- A top-level view switch between Customer Accounts and Hotspot Access.
+- Hotspot Access settings for Pisowifi API base URL, API key, API secret, and enable/disable state.
+- Hotspot Access subscriber table showing active monthly subscribers, Service Account/plan, synced contact numbers, and Sync actions.
 
 ## Local Data Model
 
@@ -108,12 +118,14 @@ Passwords are not returned by the API. Phase 1 only records whether a password c
 - `ticketing`: customer ticket assignments and latest ticket summaries.
 - `network-settings`: MikroTik PPPoE discovery and captured OLT ONU inventory source.
 - `system-settings`: system-login Access controls remain there.
+- `3JCentralPisowifi`: receives signed monthly subscriber syncs and performs captive portal login/device authorization.
 
 ## Integration Notes
 
 - The module remains routed as `/account-admin` and `/api/account-admin` until an integration pass renames shared navigation/routes.
 - `module.json` uses the Customer Network label for future app-shell metadata consumers.
 - App-shell hardcoded module metadata may still show Account Admin until Integration Codex updates shared navigation.
+- Hotspot Access request signing uses `X-3J-Integration-Key`, `X-3J-Timestamp`, `X-3J-Signature`, and `X-3J-Idempotency-Key`. The signature is HMAC-SHA256 over `<timestamp>.<raw body>`.
 
 ## Known Gaps
 
@@ -125,3 +137,4 @@ Passwords are not returned by the API. Phase 1 only records whether a password c
 - Network configuration editing, PPPoE binding, live PPPoE create/update/disable, WiFi/CPE writes, and router profile changes are future steps.
 - PPPoE creation is not implemented yet. The next step should allow create only from an eligible `INSTALLATION` ticket, resolve the customer's System Settings `locationId`/address to a MikroTik router through Network Settings location bindings, then call the live RouterOS provisioning adapter.
 - Durable PostgreSQL tables and audit-grade sync history are future work.
+- Hotspot Access settings/contact overrides currently persist to the configured JSON state file. Move this to a durable module database table if 3J Main later standardizes module persistence beyond Customer Profiling.

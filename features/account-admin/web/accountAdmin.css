@@ -1,3 +1,30 @@
+.account-admin-module-view-tabs {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.account-admin-module-view-tab {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid var(--admin-border);
+  border-radius: 0.45rem;
+  color: #475569;
+  display: inline-flex;
+  font-weight: 700;
+  gap: 0.45rem;
+  min-height: 2.35rem;
+  padding: 0.45rem 0.8rem;
+}
+
+.account-admin-module-view-tab.active {
+  border-color: #206bc4;
+  box-shadow: inset 0 0 0 1px #206bc4;
+  color: #1e293b;
+}
+
 .account-admin-table-card > .card-header {
   align-items: center;
   gap: 0.75rem;
@@ -179,6 +206,23 @@
   gap: 0.3rem;
 }
 
+.account-admin-hotspot-search {
+  min-width: min(18rem, 100%);
+}
+
+.account-admin-hotspot-status {
+  min-width: 9rem;
+  width: auto;
+}
+
+.account-admin-contact-stack {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  max-width: 28rem;
+}
+
 @media (max-width: 768px) {
   .account-admin-table-card > .card-header {
     align-items: flex-start;
@@ -201,5 +245,10 @@
 
   .account-admin-mapping-sample {
     grid-template-columns: 1fr;
+  }
+
+  .account-admin-hotspot-search,
+  .account-admin-hotspot-status {
+    width: 100%;
   }
 }

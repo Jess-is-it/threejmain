@@ -1,5 +1,13 @@
+import hmac
+import json
+import os
+import re
 from datetime import datetime, timezone
+from hashlib import sha256
+from pathlib import Path
 from typing import Any, Callable
+from urllib import error as urlerror
+from urllib import request as urlrequest
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -25,6 +33,7 @@ _current_admin: Callable[[str | None], dict[str, Any]] | None = None
 _audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None] | None = None
 
 customer_network_records: dict[str, dict[str, Any]] = {}
+hotspot_access_state: dict[str, Any] | None = None
 pppoe_discovery_cache: dict[str, Any] = {
     "capturedAt": "",
     "accounts": [],
@@ -69,6 +78,7 @@ PROVISIONING_ACTIONS = [
 ]
 IP_MODES = ["DYNAMIC", "STATIC", "CGNAT", "PUBLIC_STATIC", "BRIDGED"]
 MAC_PROXIMITY_MATCH_MAX_DELTA = 8
+HOTSPOT_ACCESS_STATE_PATH = Path(os.getenv("ACCOUNT_ADMIN_HOTSPOT_STATE_PATH", "/tmp/threejmain_account_admin_hotspot.json"))
 
 
 class NetworkConfigPayload(BaseModel):
@@ -105,6 +115,23 @@ class ProvisionedPayload(BaseModel):
     note: str | None = None
 
 
+class HotspotIntegrationSettingsPayload(BaseModel):
+    enabled: bool | None = None
+    pisowifiApiBaseUrl: str | None = None
+    apiKey: str | None = None
+    apiSecret: str | None = None
+
+
+class HotspotContactPayload(BaseModel):
+    contactNumber: str
+    label: str | None = None
+    enabled: bool = True
+
+
+class HotspotSubscriberContactsPayload(BaseModel):
+    contacts: list[HotspotContactPayload] = []
+
+
 def configure_account_admin(
     current_admin: Callable[[str | None], dict[str, Any]],
     audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None],
@@ -130,6 +157,265 @@ def clean_text(value: Any) -> str:
 
 def normalize_upper(value: Any) -> str:
     return clean_text(value).upper()
+
+
+def load_hotspot_access_state() -> dict[str, Any]:
+    global hotspot_access_state
+    if hotspot_access_state is not None:
+        return hotspot_access_state
+    default_state = {
+        "settings": {
+            "enabled": False,
+            "pisowifiApiBaseUrl": os.getenv("PISOWIFI_API_BASE_URL", "").strip(),
+            "apiKey": os.getenv("PISOWIFI_MONTHLY_API_KEY", "threejmain-monthly").strip(),
+            "apiSecret": os.getenv("PISOWIFI_MONTHLY_API_SECRET", "").strip(),
+        },
+        "contactOverrides": {},
+        "syncLogs": [],
+    }
+    try:
+        if HOTSPOT_ACCESS_STATE_PATH.exists():
+            loaded = json.loads(HOTSPOT_ACCESS_STATE_PATH.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                default_state["settings"].update(loaded.get("settings") or {})
+                default_state["contactOverrides"].update(loaded.get("contactOverrides") or {})
+                default_state["syncLogs"] = list(loaded.get("syncLogs") or [])[:100]
+    except Exception:
+        default_state["syncLogs"].insert(
+            0,
+            {
+                "createdAt": now_iso(),
+                "status": "FAILED",
+                "action": "LOAD_STATE",
+                "message": f"Could not load Hotspot Access state from {HOTSPOT_ACCESS_STATE_PATH}.",
+            },
+        )
+    hotspot_access_state = default_state
+    return hotspot_access_state
+
+
+def save_hotspot_access_state() -> None:
+    state = load_hotspot_access_state()
+    HOTSPOT_ACCESS_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    HOTSPOT_ACCESS_STATE_PATH.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def public_hotspot_settings() -> dict[str, Any]:
+    settings = dict(load_hotspot_access_state().get("settings") or {})
+    return {
+        **settings,
+        "apiSecretSet": bool(settings.get("apiSecret")),
+        "apiSecret": "",
+        "statePath": str(HOTSPOT_ACCESS_STATE_PATH),
+    }
+
+
+def hotspot_sync_log(action: str, status: str, message: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
+    state = load_hotspot_access_state()
+    row = {
+        "id": str(uuid4()),
+        "createdAt": now_iso(),
+        "action": action,
+        "status": status,
+        "message": message,
+        "details": details or {},
+    }
+    state.setdefault("syncLogs", []).insert(0, row)
+    state["syncLogs"] = state["syncLogs"][:100]
+    try:
+        save_hotspot_access_state()
+    except Exception:
+        pass
+    return row
+
+
+def normalize_ph_mobile(value: Any) -> str:
+    digits = re.sub(r"\D", "", clean_text(value))
+    if digits.startswith("00"):
+        digits = digits[2:]
+    if digits.startswith("63") and len(digits) >= 12 and digits[2] == "9":
+        digits = f"0{digits[2:12]}"
+    elif digits.startswith("9") and len(digits) >= 10:
+        digits = f"0{digits[:10]}"
+    if not re.fullmatch(r"09\d{9}", digits or ""):
+        return ""
+    return f"+63{digits[1:]}"
+
+
+def contact_display_from_normalized(value: str) -> str:
+    normalized = normalize_ph_mobile(value)
+    if not normalized:
+        return clean_text(value)
+    return f"0{normalized[3:]}"
+
+
+def customer_default_hotspot_contacts(customer: dict[str, Any]) -> list[dict[str, Any]]:
+    contacts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add_contact(number: Any, label: str) -> None:
+        normalized = normalize_ph_mobile(number)
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        contacts.append(
+            {
+                "contactNumber": contact_display_from_normalized(normalized),
+                "normalizedContact": normalized,
+                "label": label,
+                "enabled": True,
+            }
+        )
+
+    add_contact(customer.get("contactNumber"), "Primary")
+    add_contact(customer.get("alternateMobileNumber"), "Alternate")
+    for item in customer.get("secondaryContacts") or []:
+        label = clean_text(item.get("name") or item.get("relationship")) or "Secondary"
+        add_contact(item.get("contactNumber"), label)
+    return contacts
+
+
+def hotspot_contacts_for_customer(customer: dict[str, Any]) -> list[dict[str, Any]]:
+    state = load_hotspot_access_state()
+    overrides = state.get("contactOverrides", {}).get(customer["id"])
+    if overrides is None:
+        return customer_default_hotspot_contacts(customer)
+    contacts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in overrides or []:
+        normalized = normalize_ph_mobile(item.get("contactNumber") or item.get("normalizedContact"))
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        contacts.append(
+            {
+                "contactNumber": contact_display_from_normalized(normalized),
+                "normalizedContact": normalized,
+                "label": clean_text(item.get("label")) or "Contact",
+                "enabled": bool(item.get("enabled", True)),
+            }
+        )
+    return contacts
+
+
+def customer_has_active_service(service: dict[str, Any]) -> bool:
+    return any(normalize_upper(account.get("status")) == "ACTIVE" for account in service.get("serviceAccounts") or [])
+
+
+def hotspot_status_for_customer(customer: dict[str, Any], service: dict[str, Any], contacts: list[dict[str, Any]]) -> str:
+    if normalize_upper(customer.get("status")) in {"SUSPENDED", "INACTIVE"}:
+        return "SUSPENDED"
+    if not customer_has_active_service(service):
+        return "INACTIVE"
+    if not any(contact.get("enabled") for contact in contacts):
+        return "INACTIVE"
+    return "ACTIVE"
+
+
+def hotspot_subscriber_payload(customer: dict[str, Any]) -> dict[str, Any]:
+    service = service_bundle(customer["id"])
+    contacts = hotspot_contacts_for_customer(customer)
+    primary_service = service.get("serviceAccount") or {}
+    status = hotspot_status_for_customer(customer, service, contacts)
+    return {
+        "external_subscriber_id": customer["id"],
+        "account_number": customer.get("accountNumber") or customer["id"],
+        "service_account_number": primary_service.get("accountNumber") or primary_service.get("serviceNumber") or primary_service.get("id") or "",
+        "customer_name": customer_display_name(customer),
+        "plan_name": primary_service.get("planName") or primary_service.get("servicePlan") or primary_service.get("packageName") or primary_service.get("profile") or "",
+        "status": status,
+        "contacts": [
+            {
+                "contact_number": contact["contactNumber"],
+                "normalized_contact": contact["normalizedContact"],
+                "label": contact.get("label") or "",
+                "enabled": bool(contact.get("enabled")),
+            }
+            for contact in contacts
+        ],
+        "source": {
+            "system": "3J Main",
+            "module": "Account Admin",
+            "customer_status": customer.get("status") or "",
+            "location": {
+                "barangay": customer.get("barangay") or "",
+                "city": customer.get("city") or "",
+                "province": customer.get("province") or "",
+            },
+            "service_accounts": service.get("serviceAccounts") or [],
+        },
+    }
+
+
+def build_hotspot_subscriber_rows() -> list[dict[str, Any]]:
+    seed_customer_data()
+    return [hotspot_subscriber_payload(customer_summary(customer)) for customer in visible_customers()]
+
+
+def hotspot_access_metrics(rows: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "subscribers": len(rows),
+        "active": sum(1 for row in rows if row.get("status") == "ACTIVE"),
+        "contacts": sum(len(row.get("contacts") or []) for row in rows),
+        "enabledContacts": sum(1 for row in rows for contact in row.get("contacts") or [] if contact.get("enabled")),
+        "withoutContacts": sum(1 for row in rows if not any(contact.get("enabled") for contact in row.get("contacts") or [])),
+    }
+
+
+def signed_hotspot_request(method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    settings = load_hotspot_access_state().get("settings") or {}
+    base_url = clean_text(settings.get("pisowifiApiBaseUrl")).rstrip("/")
+    api_key = clean_text(settings.get("apiKey"))
+    api_secret = clean_text(settings.get("apiSecret"))
+    if not base_url:
+        raise HTTPException(status_code=400, detail="Pisowifi API base URL is required.")
+    if not api_key or not api_secret:
+        raise HTTPException(status_code=400, detail="Pisowifi API key and secret are required.")
+    method = method.upper()
+    body = b"" if method == "GET" else json.dumps(payload or {}, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    timestamp = str(int(datetime.now(timezone.utc).timestamp()))
+    signature = hmac.new(api_secret.encode("utf-8"), timestamp.encode("utf-8") + b"." + body, sha256).hexdigest()
+    request = urlrequest.Request(
+        f"{base_url}{path}",
+        data=body if method != "GET" else None,
+        method=method,
+        headers={
+            "Content-Type": "application/json",
+            "X-3J-Integration-Key": api_key,
+            "X-3J-Timestamp": timestamp,
+            "X-3J-Signature": signature,
+            "X-3J-Idempotency-Key": str(uuid4()),
+        },
+    )
+    try:
+        with urlrequest.urlopen(request, timeout=20) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw or "{}")
+    except urlerror.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            data = json.loads(raw or "{}")
+        except json.JSONDecodeError:
+            data = {"detail": raw}
+        raise HTTPException(status_code=502, detail=data.get("detail") or f"Pisowifi rejected request with HTTP {exc.code}.") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Pisowifi API is unreachable: {exc}") from exc
+
+
+def sync_hotspot_subscribers(rows: list[dict[str, Any]], actor: str, action: str = "SYNC_ALL") -> dict[str, Any]:
+    payload = {
+        "source_system": "3J Main",
+        "synced_by": actor,
+        "subscribers": rows,
+    }
+    result = signed_hotspot_request("POST", "/api/integrations/monthly-subscribers/upsert", payload)
+    hotspot_sync_log(
+        action,
+        "SUCCESS",
+        f"Hotspot subscriber sync completed: {result.get('subscriber_count', len(rows))} subscriber(s).",
+        {"result": result},
+    )
+    return result
 
 
 def add_audit(action: str, target_type: str, target_id: str, details: dict[str, Any] | None, actor: str) -> None:
@@ -1178,6 +1464,134 @@ def account_admin_overview(admin=Depends(require_admin)):
         },
         "phase": "Phase 1: Customer Accounts table, customer/service visibility, search, filters, and lifecycle tabs.",
     }
+
+
+@router.get("/hotspot-access")
+def hotspot_access_overview(
+    search: str = "",
+    status: str = "",
+    admin=Depends(require_admin),
+):
+    rows = build_hotspot_subscriber_rows()
+    needle = search.strip().lower()
+    normalized_status = normalize_upper(status)
+    if normalized_status:
+        rows = [row for row in rows if normalize_upper(row.get("status")) == normalized_status]
+    if needle:
+        rows = [
+            row
+            for row in rows
+            if needle in " ".join(
+                [
+                    row.get("customer_name", ""),
+                    row.get("account_number", ""),
+                    row.get("service_account_number", ""),
+                    row.get("plan_name", ""),
+                    " ".join(contact.get("contact_number", "") for contact in row.get("contacts") or []),
+                    " ".join(contact.get("label", "") for contact in row.get("contacts") or []),
+                ]
+            ).lower()
+        ]
+    all_rows = build_hotspot_subscriber_rows()
+    return {
+        "settings": public_hotspot_settings(),
+        "metrics": hotspot_access_metrics(all_rows),
+        "data": sorted(rows, key=lambda row: row.get("customer_name", "")),
+        "logs": load_hotspot_access_state().get("syncLogs", [])[:20],
+        "guide": [
+            "Monthly subscriber WiFi access is sourced from 3J Main customer/service records.",
+            "Only active service accounts with enabled mobile contacts sync as ACTIVE subscribers.",
+            "Each contact number can bind to one captive portal device after SMS verification.",
+        ],
+    }
+
+
+@router.patch("/hotspot-access/settings")
+def update_hotspot_access_settings(payload: HotspotIntegrationSettingsPayload, admin=Depends(require_admin)):
+    state = load_hotspot_access_state()
+    settings = state.setdefault("settings", {})
+    if payload.enabled is not None:
+        settings["enabled"] = bool(payload.enabled)
+    if payload.pisowifiApiBaseUrl is not None:
+        settings["pisowifiApiBaseUrl"] = clean_text(payload.pisowifiApiBaseUrl).rstrip("/")
+    if payload.apiKey is not None:
+        settings["apiKey"] = clean_text(payload.apiKey)
+    if payload.apiSecret is not None and clean_text(payload.apiSecret):
+        settings["apiSecret"] = clean_text(payload.apiSecret)
+    save_hotspot_access_state()
+    add_audit("hotspot_access_settings_updated", "HotspotAccess", "settings", {"enabled": settings.get("enabled")}, admin["username"])
+    return {"settings": public_hotspot_settings(), "message": "Hotspot Access settings saved."}
+
+
+@router.post("/hotspot-access/test")
+def test_hotspot_access_connection(admin=Depends(require_admin)):
+    result = signed_hotspot_request("GET", "/api/integrations/monthly-subscribers/health")
+    hotspot_sync_log("TEST_CONNECTION", "SUCCESS", "Pisowifi monthly subscriber endpoint is reachable.", {"result": result})
+    add_audit("hotspot_access_tested", "HotspotAccess", "settings", {"result": result}, admin["username"])
+    return {"status": "SUCCESS", "message": "Pisowifi monthly subscriber endpoint is reachable.", "result": result}
+
+
+@router.patch("/hotspot-access/subscribers/{customer_id}/contacts")
+def update_hotspot_subscriber_contacts(customer_id: str, payload: HotspotSubscriberContactsPayload, admin=Depends(require_admin)):
+    customers = ensure_customer_network_records()
+    customer = next((item for item in customers if item.get("id") == customer_id), None)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer was not found.")
+    normalized_contacts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for contact in payload.contacts:
+        normalized = normalize_ph_mobile(contact.contactNumber)
+        if not normalized:
+            raise HTTPException(status_code=400, detail=f"{contact.contactNumber} is not a valid PH mobile number.")
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        normalized_contacts.append(
+            {
+                "contactNumber": contact_display_from_normalized(normalized),
+                "normalizedContact": normalized,
+                "label": clean_text(contact.label) or "Contact",
+                "enabled": bool(contact.enabled),
+            }
+        )
+    state = load_hotspot_access_state()
+    state.setdefault("contactOverrides", {})[customer_id] = normalized_contacts
+    save_hotspot_access_state()
+    row = hotspot_subscriber_payload(customer)
+    add_audit("hotspot_access_contacts_updated", "HotspotAccessSubscriber", customer_id, {"contacts": len(normalized_contacts)}, admin["username"])
+    return {"status": "SUCCESS", "message": "Subscriber contacts updated.", "subscriber": row}
+
+
+@router.post("/hotspot-access/sync")
+def sync_hotspot_access(admin=Depends(require_admin)):
+    settings = load_hotspot_access_state().get("settings") or {}
+    if not settings.get("enabled"):
+        raise HTTPException(status_code=400, detail="Enable Hotspot Access before syncing subscribers.")
+    rows = build_hotspot_subscriber_rows()
+    try:
+        result = sync_hotspot_subscribers(rows, admin["username"], "SYNC_ALL")
+    except HTTPException as exc:
+        hotspot_sync_log("SYNC_ALL", "FAILED", str(exc.detail), {"subscriber_count": len(rows)})
+        raise
+    add_audit("hotspot_access_synced", "HotspotAccess", "all", {"subscribers": len(rows), "result": result}, admin["username"])
+    return {"status": "SUCCESS", "message": "Monthly subscriber sync completed.", "result": result}
+
+
+@router.post("/hotspot-access/subscribers/{customer_id}/sync")
+def sync_hotspot_access_subscriber(customer_id: str, admin=Depends(require_admin)):
+    settings = load_hotspot_access_state().get("settings") or {}
+    if not settings.get("enabled"):
+        raise HTTPException(status_code=400, detail="Enable Hotspot Access before syncing subscribers.")
+    rows = [row for row in build_hotspot_subscriber_rows() if row.get("external_subscriber_id") == customer_id]
+    if not rows:
+        raise HTTPException(status_code=404, detail="Customer was not found.")
+    try:
+        result = sync_hotspot_subscribers(rows, admin["username"], "SYNC_SUBSCRIBER")
+    except HTTPException as exc:
+        hotspot_sync_log("SYNC_SUBSCRIBER", "FAILED", str(exc.detail), {"customer_id": customer_id})
+        raise
+    add_audit("hotspot_access_subscriber_synced", "HotspotAccessSubscriber", customer_id, {"result": result}, admin["username"])
+    return {"status": "SUCCESS", "message": "Monthly subscriber synced.", "result": result}
 
 
 @router.get("/customer-accounts")

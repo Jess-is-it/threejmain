@@ -1,9 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  IconDeviceFloppy,
   IconFilter,
   IconRefresh,
   IconSearch,
+  IconSend,
+  IconSettings,
+  IconShieldLock,
   IconUsers,
+  IconWifi,
   IconX
 } from '@tabler/icons-react';
 import './accountAdmin.css';
@@ -86,9 +91,16 @@ function Card({ title, icon: Icon, children, actions, className = '' }) {
 }
 
 export default function AccountAdminPage() {
+  const [moduleView, setModuleView] = useState('CUSTOMERS');
   const [rows, setRows] = useState([]);
   const [mappingRows, setMappingRows] = useState([]);
   const [mappingMeta, setMappingMeta] = useState(null);
+  const [hotspot, setHotspot] = useState({ settings: {}, metrics: {}, data: [], logs: [], guide: [] });
+  const [hotspotSettings, setHotspotSettings] = useState({ enabled: false, pisowifiApiBaseUrl: '', apiKey: '', apiSecret: '' });
+  const [hotspotFilters, setHotspotFilters] = useState({ search: '', status: '' });
+  const [hotspotLoading, setHotspotLoading] = useState(false);
+  const [hotspotBusy, setHotspotBusy] = useState('');
+  const [hotspotMessage, setHotspotMessage] = useState(null);
   const [tabs, setTabs] = useState(defaultTabs);
   const [filters, setFilters] = useState(blankFilters);
   const [mappingView, setMappingView] = useState(MAPPING_WITHOUT_ONUS);
@@ -99,6 +111,16 @@ export default function AccountAdminPage() {
   const searchDebounceRef = useRef(null);
 
   const hasActiveFilters = ['customerStatus', 'pppoeStatus'].some((key) => Boolean(filters[key]));
+
+  function applyHotspotData(data) {
+    setHotspot(data || { settings: {}, metrics: {}, data: [], logs: [], guide: [] });
+    setHotspotSettings({
+      enabled: Boolean(data?.settings?.enabled),
+      pisowifiApiBaseUrl: data?.settings?.pisowifiApiBaseUrl || '',
+      apiKey: data?.settings?.apiKey || '',
+      apiSecret: '',
+    });
+  }
 
   async function load(nextFilters = latestFiltersRef.current, options = {}) {
     setLoading(true);
@@ -136,6 +158,82 @@ export default function AccountAdminPage() {
     return () => window.clearTimeout(searchDebounceRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (moduleView === 'HOTSPOT') loadHotspot();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [moduleView]);
+
+  async function loadHotspot(nextFilters = hotspotFilters) {
+    setHotspotLoading(true);
+    setHotspotMessage(null);
+    const params = new URLSearchParams();
+    if (nextFilters.search) params.set('search', nextFilters.search);
+    if (nextFilters.status) params.set('status', nextFilters.status);
+    try {
+      const data = await request(`/account-admin/hotspot-access?${params.toString()}`);
+      applyHotspotData(data);
+    } catch (err) {
+      setHotspotMessage({ tone: 'danger', text: err.message });
+    } finally {
+      setHotspotLoading(false);
+    }
+  }
+
+  function updateHotspotFilters(next) {
+    const merged = { ...hotspotFilters, ...next };
+    setHotspotFilters(merged);
+    loadHotspot(merged);
+  }
+
+  async function saveHotspotSettings() {
+    setHotspotBusy('settings');
+    setHotspotMessage(null);
+    try {
+      const data = await request('/account-admin/hotspot-access/settings', {
+        method: 'PATCH',
+        body: JSON.stringify(hotspotSettings)
+      });
+      setHotspotMessage({ tone: 'success', text: data.message || 'Hotspot Access settings saved.' });
+      loadHotspot();
+    } catch (err) {
+      setHotspotMessage({ tone: 'danger', text: err.message });
+    } finally {
+      setHotspotBusy('');
+    }
+  }
+
+  async function testHotspotConnection() {
+    setHotspotBusy('test');
+    setHotspotMessage(null);
+    try {
+      const data = await request('/account-admin/hotspot-access/test', { method: 'POST', body: JSON.stringify({}) });
+      setHotspotMessage({ tone: 'success', text: data.message || 'Pisowifi endpoint is reachable.' });
+      loadHotspot();
+    } catch (err) {
+      setHotspotMessage({ tone: 'danger', text: err.message });
+    } finally {
+      setHotspotBusy('');
+    }
+  }
+
+  async function syncHotspot(customerId = '') {
+    const busyKey = customerId ? `sync-${customerId}` : 'sync-all';
+    setHotspotBusy(busyKey);
+    setHotspotMessage(null);
+    try {
+      const path = customerId
+        ? `/account-admin/hotspot-access/subscribers/${encodeURIComponent(customerId)}/sync`
+        : '/account-admin/hotspot-access/sync';
+      const data = await request(path, { method: 'POST', body: JSON.stringify({}) });
+      setHotspotMessage({ tone: 'success', text: data.message || 'Monthly subscribers synced.' });
+      loadHotspot();
+    } catch (err) {
+      setHotspotMessage({ tone: 'danger', text: err.message });
+    } finally {
+      setHotspotBusy('');
+    }
+  }
 
   function updateFilters(next) {
     const merged = { ...latestFiltersRef.current, ...next };
@@ -179,9 +277,177 @@ export default function AccountAdminPage() {
   const mappingViewLabel = mappingView === MAPPING_MATCHED_ONUS ? 'PPPoE with matched ONUs' : 'PPPoE without ONUs';
   const tableTitle = isPppoeOnuMappingTab ? `${mappingViewLabel} (${visibleMappingRows.length})` : `Customer Accounts (${rows.length})`;
 
+  function renderHotspotAccess() {
+    const metrics = hotspot.metrics || {};
+    const subscriberRows = hotspot.data || [];
+    return (
+      <div className="row row-cards">
+        {hotspotMessage && (
+          <div className="col-12">
+            <div className={`alert alert-${hotspotMessage.tone || 'info'}`}>{hotspotMessage.text}</div>
+          </div>
+        )}
+        <div className="col-lg-4">
+          <Card title="Hotspot Access Settings" icon={IconSettings}>
+            <div className="mb-3">
+              <label className="form-check form-switch">
+                <input className="form-check-input" type="checkbox" checked={hotspotSettings.enabled} onChange={(event) => setHotspotSettings({ ...hotspotSettings, enabled: event.target.checked })} />
+                <span className="form-check-label">Enable monthly subscriber sync</span>
+              </label>
+            </div>
+            <div className="mb-3">
+              <label className="form-label">Pisowifi API Base URL</label>
+              <input className="form-control" placeholder="https://net.3jhotspot.com" value={hotspotSettings.pisowifiApiBaseUrl} onChange={(event) => setHotspotSettings({ ...hotspotSettings, pisowifiApiBaseUrl: event.target.value })} />
+            </div>
+            <div className="mb-3">
+              <label className="form-label">API Key</label>
+              <input className="form-control" value={hotspotSettings.apiKey} onChange={(event) => setHotspotSettings({ ...hotspotSettings, apiKey: event.target.value })} />
+            </div>
+            <div className="mb-3">
+              <label className="form-label">API Secret</label>
+              <input className="form-control" type="password" placeholder={hotspot.settings?.apiSecretSet ? 'Saved. Leave blank to keep current secret.' : 'Required before sync'} value={hotspotSettings.apiSecret} onChange={(event) => setHotspotSettings({ ...hotspotSettings, apiSecret: event.target.value })} />
+            </div>
+            <div className="d-flex flex-wrap gap-2">
+              <button className="btn btn-primary" type="button" disabled={!!hotspotBusy} onClick={saveHotspotSettings}>
+                <IconDeviceFloppy size={18} className="me-2" />{hotspotBusy === 'settings' ? 'Saving...' : 'Save Settings'}
+              </button>
+              <button className="btn" type="button" disabled={!!hotspotBusy} onClick={testHotspotConnection}>
+                <IconShieldLock size={18} className="me-2" />{hotspotBusy === 'test' ? 'Testing...' : 'Test'}
+              </button>
+            </div>
+            <div className="text-muted small mt-3">
+              Requests are signed with HMAC headers. Configure the same key and secret in Pisowifi Monthly Subscribers settings.
+            </div>
+          </Card>
+        </div>
+        <div className="col-lg-8">
+          <div className="row row-cards">
+            <div className="col-sm-6 col-xl-3">
+              <div className="card"><div className="card-body"><div className="text-muted small">Subscribers</div><div className="h2 mb-0">{metrics.subscribers || 0}</div></div></div>
+            </div>
+            <div className="col-sm-6 col-xl-3">
+              <div className="card"><div className="card-body"><div className="text-muted small">Active</div><div className="h2 mb-0">{metrics.active || 0}</div></div></div>
+            </div>
+            <div className="col-sm-6 col-xl-3">
+              <div className="card"><div className="card-body"><div className="text-muted small">Enabled contacts</div><div className="h2 mb-0">{metrics.enabledContacts || 0}</div></div></div>
+            </div>
+            <div className="col-sm-6 col-xl-3">
+              <div className="card"><div className="card-body"><div className="text-muted small">No contact</div><div className="h2 mb-0">{metrics.withoutContacts || 0}</div></div></div>
+            </div>
+            <div className="col-12">
+              <Card
+                title={`Monthly Subscribers (${subscriberRows.length})`}
+                icon={IconWifi}
+                actions={(
+                  <div className="d-flex flex-wrap gap-2">
+                    <div className="input-icon account-admin-hotspot-search">
+                      <span className="input-icon-addon"><IconSearch size={16} /></span>
+                      <input className="form-control form-control-sm" placeholder="Search subscriber or contact" value={hotspotFilters.search} onChange={(event) => updateHotspotFilters({ search: event.target.value })} />
+                    </div>
+                    <select className="form-select form-select-sm account-admin-hotspot-status" value={hotspotFilters.status} onChange={(event) => updateHotspotFilters({ status: event.target.value })}>
+                      <option value="">All</option>
+                      <option value="ACTIVE">Active</option>
+                      <option value="INACTIVE">Inactive</option>
+                      <option value="SUSPENDED">Suspended</option>
+                    </select>
+                    <button className="btn btn-primary btn-sm" type="button" disabled={!!hotspotBusy || hotspotLoading} onClick={() => syncHotspot()}>
+                      <IconSend size={17} className="me-2" />{hotspotBusy === 'sync-all' ? 'Syncing...' : 'Sync All'}
+                    </button>
+                  </div>
+                )}
+              >
+                <div className="table-responsive">
+                  <table className="table table-vcenter card-table account-admin-table">
+                    <thead>
+                      <tr>
+                        <th>Subscriber</th>
+                        <th>Service</th>
+                        <th>Contacts</th>
+                        <th>Status</th>
+                        <th className="w-1">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {hotspotLoading && (
+                        <tr><td colSpan="5" className="text-muted">Loading monthly subscribers...</td></tr>
+                      )}
+                      {!hotspotLoading && subscriberRows.length === 0 && (
+                        <tr><td colSpan="5"><div className="empty">No monthly subscribers match the current filters.</div></td></tr>
+                      )}
+                      {!hotspotLoading && subscriberRows.map((row) => (
+                        <tr key={row.external_subscriber_id}>
+                          <td>
+                            <div className="fw-bold">{row.customer_name}</div>
+                            <div className="text-muted small">{row.account_number || row.external_subscriber_id}</div>
+                          </td>
+                          <td>
+                            <div>{row.plan_name || '-'}</div>
+                            <div className="text-muted small">{row.service_account_number || '-'}</div>
+                          </td>
+                          <td>
+                            <div className="account-admin-contact-stack">
+                              {(row.contacts || []).map((contact) => (
+                                <span key={contact.normalized_contact || contact.contact_number} className={`badge ${contact.enabled ? 'bg-green-lt text-green' : 'bg-secondary-lt text-secondary'}`}>
+                                  {contact.contact_number} {contact.label ? `· ${contact.label}` : ''}
+                                </span>
+                              ))}
+                              {!(row.contacts || []).length && <span className="text-muted small">No valid mobile contacts</span>}
+                            </div>
+                          </td>
+                          <td><StatusBadge value={row.status} /></td>
+                          <td>
+                            <button className="btn btn-outline-primary btn-sm" type="button" disabled={!!hotspotBusy} onClick={() => syncHotspot(row.external_subscriber_id)}>
+                              {hotspotBusy === `sync-${row.external_subscriber_id}` ? 'Syncing...' : 'Sync'}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            </div>
+            <div className="col-12">
+              <Card title="Recent Sync Logs" icon={IconRefresh}>
+                <div className="list-group list-group-flush">
+                  {(hotspot.logs || []).slice(0, 6).map((log) => (
+                    <div className="list-group-item px-0" key={log.id || log.createdAt}>
+                      <div className="d-flex justify-content-between gap-2">
+                        <div>
+                          <div className="fw-semibold">{log.action || 'SYNC'}</div>
+                          <div className="text-muted small">{log.message || '-'}</div>
+                        </div>
+                        <div className="text-end">
+                          <StatusBadge value={log.status || 'SUCCESS'} />
+                          <div className="text-muted small mt-1">{log.createdAt || '-'}</div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {!(hotspot.logs || []).length && <div className="text-muted">No sync logs yet.</div>}
+                </div>
+              </Card>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="account-admin-module">
-      {error && <div className="alert alert-danger">{error}</div>}
+      <div className="account-admin-module-view-tabs" role="tablist" aria-label="Account Admin views">
+        <button className={`account-admin-module-view-tab ${moduleView === 'CUSTOMERS' ? 'active' : ''}`} type="button" onClick={() => setModuleView('CUSTOMERS')} role="tab" aria-selected={moduleView === 'CUSTOMERS'}>
+          <IconUsers size={17} /> Customer Accounts
+        </button>
+        <button className={`account-admin-module-view-tab ${moduleView === 'HOTSPOT' ? 'active' : ''}`} type="button" onClick={() => setModuleView('HOTSPOT')} role="tab" aria-selected={moduleView === 'HOTSPOT'}>
+          <IconWifi size={17} /> Hotspot Access
+        </button>
+      </div>
+
+      {moduleView === 'HOTSPOT' ? renderHotspotAccess() : (
+      <>
+        {error && <div className="alert alert-danger">{error}</div>}
 
       <div className="row row-cards">
         <div className="col-12">
@@ -453,6 +719,8 @@ export default function AccountAdminPage() {
           </Card>
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 }
