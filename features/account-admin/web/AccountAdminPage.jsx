@@ -189,21 +189,6 @@ function IptvAccessCell({ summary }) {
   );
 }
 
-function ActionRequiredCell({ row }) {
-  const actions = row.accessSummary?.actionRequired || [];
-  if (!actions.length) {
-    return <span className="text-muted small">No action</span>;
-  }
-  return (
-    <div className="account-admin-action-list">
-      {actions.slice(0, 2).map((action) => (
-        <span className={`badge bg-${action.tone || 'warning'}-lt text-${action.tone || 'warning'}`} key={action.code || action.label}>{action.label}</span>
-      ))}
-      {actions.length > 2 && <span className="badge bg-secondary-lt text-secondary">+{actions.length - 2}</span>}
-    </div>
-  );
-}
-
 function Card({ title, icon: Icon, children, actions, className = '' }) {
   return (
     <div className={`card ${className}`.trim()}>
@@ -527,6 +512,12 @@ export default function AccountAdminPage() {
   function openCustomerDetails(row) {
     setSelectedCustomerId(row.customerId);
     setDetailTab('INTERNET');
+  }
+
+  function handleCustomerRowKeyDown(event, row) {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    openCustomerDetails(row);
   }
 
   function closeCustomerDetails() {
@@ -1393,8 +1384,15 @@ export default function AccountAdminPage() {
 	                        <td colSpan="6"><div className="empty">No customer accounts match the current filters.</div></td>
 	                      </tr>
 	                    )}
-	                    {rows.map((row) => (
-	                      <tr key={row.customerId} className={selectedCustomerId === row.customerId ? 'table-active' : ''}>
+		                    {rows.map((row) => (
+		                      <tr
+		                        key={row.customerId}
+		                        className={`account-admin-clickable-row ${selectedCustomerId === row.customerId ? 'table-active' : ''}`}
+		                        onClick={() => openCustomerDetails(row)}
+		                        onKeyDown={(event) => handleCustomerRowKeyDown(event, row)}
+		                        tabIndex={0}
+		                        aria-label={`View ${row.customer.name}`}
+		                      >
 	                        <td>
 	                          <div className="fw-bold">{row.customer.name}</div>
 	                          <div className="text-muted small">{row.customer.accountNumber || row.customer.contactNumber || '-'}</div>
@@ -1411,20 +1409,22 @@ export default function AccountAdminPage() {
 	                            {row.ticketCount || 0}
 	                          </span>
 	                        </td>
-	                        <td className="account-admin-actions-column">
-	                          <div className="account-admin-row-actions">
-	                            <ActionRequiredCell row={row} />
-	                            <button
-	                              type="button"
-	                              className="btn btn-icon btn-sm btn-outline-primary"
-	                              title={`View ${row.customer.name}`}
-	                              aria-label={`View ${row.customer.name}`}
-	                              onClick={() => openCustomerDetails(row)}
-	                            >
-	                              <IconEye size={16} />
-	                            </button>
-	                          </div>
-	                        </td>
+		                        <td className="account-admin-actions-column">
+		                          <div className="account-admin-row-actions">
+		                            <button
+		                              type="button"
+		                              className="badge account-admin-action-badge bg-blue-lt text-blue border-0"
+		                              title={`View ${row.customer.name}`}
+		                              aria-label={`View ${row.customer.name}`}
+		                              onClick={(event) => {
+		                                event.stopPropagation();
+		                                openCustomerDetails(row);
+		                              }}
+		                            >
+		                              <IconEye size={21} />
+		                            </button>
+		                          </div>
+		                        </td>
 	                      </tr>
 	                    ))}
 	                  </tbody>

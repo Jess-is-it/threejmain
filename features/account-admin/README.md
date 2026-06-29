@@ -22,7 +22,7 @@ The module is not for system-login users, roles, or permissions. System-login ac
 - Customer Accounts filters include Access, Customer Status, Internet Access, Hotspot Access, IPTV Access, and PPPoE Status.
 - Customer Accounts keeps existing rows visible during background refreshes, ignores stale overlapping responses, and skips hidden PPPoE/ONU mapping metrics for faster table loads.
 - The Customer Accounts table shows Customer, Internet Access, Hotspot Access, IPTV Access, Tickets, and Action columns.
-- The Action column includes a View icon. View opens a 50/50 inline detail panel with customer details and Internet Access, Hotspot, and IPTV tabs.
+- The Action column uses Customer Profiling-style icon buttons only. Clicking the row or the View icon opens a 50/50 inline detail panel with customer details and Internet Access, Hotspot, and IPTV tabs.
 - The temporary PPPoE-to-ONU mapping API remains available for provisioning review, but it is no longer exposed as a Customer Accounts tab.
 - Show ticket count plus latest assigned ticket Category, Status, Priority, and action hints when a customer has Ticketing records. `INSTALLATION` currently exposes the intended `Create PPPoE Account` action gate.
 - Show Internet Access summary with PPPoE account/status, router name, assigned IP, and Service Account plan when available.

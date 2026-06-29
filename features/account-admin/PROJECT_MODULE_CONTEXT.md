@@ -83,7 +83,8 @@ The page shows:
 - In-table tabs for Active and Inactive customer accounts with count badges.
 - Customer Accounts columns for Customer, Internet Access, Hotspot Access, IPTV Access, Tickets, and Action.
 - The Customer Accounts table keeps existing rows visible during background refreshes and ignores stale overlapping responses to avoid row flicker while filters/search load.
-- Selecting the row View icon opens an inline customer account detail panel. On desktop the Customer Accounts table and detail panel use a 50% / 50% split; on mobile the panel stacks below the table.
+- Clicking a Customer Accounts row or the row View icon opens an inline customer account detail panel. On desktop the Customer Accounts table and detail panel use a 50% / 50% split; on mobile the panel stacks below the table.
+- The Action column uses Customer Profiling-style icon action buttons only, not action hint tags.
 - The detail panel shows customer details and three access tabs: Internet Access, Hotspot, and IPTV.
 - A top-level view switch between Customer Accounts, Internet Access, Hotspot Access, and IPTV Access. Internet/IPTV currently reuse the Customer Accounts table with the matching Access filter applied.
 - Hotspot Access settings for Pisowifi API base URL, API key, API secret, and enable/disable state.

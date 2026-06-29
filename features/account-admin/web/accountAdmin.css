@@ -305,9 +305,21 @@
   box-shadow: inset 0.22rem 0 #206bc4;
 }
 
+.account-admin-clickable-row {
+  cursor: pointer;
+}
+
+.account-admin-clickable-row:hover {
+  background: #f8fafc;
+}
+
+.account-admin-clickable-row:focus-visible {
+  outline: 2px solid rgba(32, 107, 196, 0.45);
+  outline-offset: -2px;
+}
+
 .account-admin-customer-badges,
-.account-admin-access-detail-list,
-.account-admin-action-list {
+.account-admin-access-detail-list {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
@@ -360,21 +372,41 @@
   overflow-wrap: anywhere;
 }
 
-.account-admin-health-cell {
-  display: grid;
-  gap: 0.35rem;
-  min-width: 11rem;
-}
-
 .account-admin-actions-column {
-  min-width: 12rem;
+  min-width: 4.75rem;
+  width: 4.75rem;
 }
 
 .account-admin-row-actions {
   align-items: center;
-  display: flex;
-  gap: 0.5rem;
-  justify-content: space-between;
+  display: inline-flex;
+  gap: 0.25rem;
+  justify-content: center;
+}
+
+.account-admin-action-badge {
+  align-items: center;
+  border-radius: 0.5rem;
+  box-shadow: none;
+  display: inline-flex;
+  font-size: 1.05rem;
+  font-weight: 700;
+  height: 40px;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
+  width: 40px;
+}
+
+.account-admin-action-badge svg {
+  height: 21px;
+  width: 21px;
+}
+
+.account-admin-action-badge:hover,
+.account-admin-action-badge:focus-visible {
+  box-shadow: inset 0 0 0 1px currentColor;
+  text-decoration: none;
 }
 
 .account-admin-refreshing {
@@ -384,20 +416,6 @@
   font-size: 0.8rem;
   margin: -0.45rem 0 0.75rem;
   min-height: 1.25rem;
-}
-
-.account-admin-ticket-stack {
-  display: grid;
-  gap: 0.3rem;
-  margin-top: 0.35rem;
-}
-
-.account-admin-ticket-meta,
-.account-admin-ticket-actions {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3rem;
 }
 
 .account-admin-hotspot-search {
