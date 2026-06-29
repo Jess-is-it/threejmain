@@ -79,6 +79,9 @@ PROVISIONING_ACTIONS = [
 IP_MODES = ["DYNAMIC", "STATIC", "CGNAT", "PUBLIC_STATIC", "BRIDGED"]
 MAC_PROXIMITY_MATCH_MAX_DELTA = 8
 HOTSPOT_ACCESS_STATE_PATH = Path(os.getenv("ACCOUNT_ADMIN_HOTSPOT_STATE_PATH", "/tmp/threejmain_account_admin_hotspot.json"))
+INTERNET_SERVICE_TYPES = {"FIBER_INTERNET", "WIRELESS_INTERNET", "DEDICATED_INTERNET"}
+IPTV_SERVICE_TYPES = {"IPTV", "CABLE_TV", "TV"}
+IPTV_KEYWORDS = ("IPTV", "STB", "SET TOP", "SET-TOP", "TV BOX", "CABLE TV")
 
 
 class NetworkConfigPayload(BaseModel):
@@ -584,6 +587,270 @@ def ticket_bundle(customer_id: str) -> dict[str, Any]:
         "ticketCount": len(rows),
         "openTicketCount": len(open_rows),
         "latestTicket": rows[0] if rows else None,
+    }
+
+
+def text_blob(value: Any) -> str:
+    if isinstance(value, dict):
+        return " ".join(text_blob(item) for item in value.values())
+    if isinstance(value, list):
+        return " ".join(text_blob(item) for item in value)
+    return clean_text(value)
+
+
+def contains_keyword(value: Any, keywords: tuple[str, ...]) -> bool:
+    haystack = normalize_upper(text_blob(value))
+    return any(keyword in haystack for keyword in keywords)
+
+
+def catalog_for_service(item: dict[str, Any]) -> dict[str, Any]:
+    catalog = item.get("catalog")
+    return catalog if isinstance(catalog, dict) else {}
+
+
+def service_type_for(item: dict[str, Any]) -> str:
+    return normalize_upper(catalog_for_service(item).get("serviceType") or item.get("serviceType"))
+
+
+def service_plan_name(item: dict[str, Any] | None) -> str:
+    if not item:
+        return ""
+    catalog = catalog_for_service(item)
+    return clean_text(
+        item.get("catalogName")
+        or catalog.get("name")
+        or item.get("planName")
+        or item.get("servicePlan")
+        or item.get("packageName")
+        or item.get("profile")
+    )
+
+
+def service_account_number(item: dict[str, Any] | None) -> str:
+    if not item:
+        return ""
+    return clean_text(item.get("serviceAccountNumber") or item.get("accountNumber") or item.get("serviceNumber") or item.get("id"))
+
+
+def is_iptv_service(item: dict[str, Any]) -> bool:
+    service_type = service_type_for(item)
+    return service_type in IPTV_SERVICE_TYPES or contains_keyword(item, IPTV_KEYWORDS)
+
+
+def is_internet_service_account(account: dict[str, Any]) -> bool:
+    service_type = service_type_for(account)
+    if service_type in INTERNET_SERVICE_TYPES:
+        return True
+    if is_iptv_service(account):
+        return False
+    if "INTERNET" in normalize_upper(text_blob(account)):
+        return True
+    return not service_type
+
+
+def is_internet_order(order: dict[str, Any]) -> bool:
+    service_type = service_type_for(order)
+    if service_type in INTERNET_SERVICE_TYPES:
+        return True
+    if is_iptv_service(order):
+        return False
+    order_type = normalize_upper(order.get("orderType"))
+    if order_type == "NEW_INSTALLATION":
+        return True
+    return "INTERNET" in normalize_upper(text_blob(order))
+
+
+def active_service_account(accounts: list[dict[str, Any]]) -> dict[str, Any] | None:
+    return next((account for account in accounts if normalize_upper(account.get("status")) == "ACTIVE"), None) or (accounts[0] if accounts else None)
+
+
+def access_action(code: str, label: str, tone: str = "warning") -> dict[str, str]:
+    return {"code": code, "label": label, "tone": tone}
+
+
+def internet_access_summary(record: dict[str, Any], service: dict[str, Any], pppoe_status: str) -> dict[str, Any]:
+    internet_accounts = [account for account in service.get("serviceAccounts") or [] if is_internet_service_account(account)]
+    internet_orders = [order for order in service.get("serviceOrders") or [] if is_internet_order(order)]
+    primary_account = active_service_account(internet_accounts)
+    bound = record.get("pppoeBinding") or {}
+    bound_username = clean_text(bound.get("username") or record.get("desiredPppoeUsername"))
+    router_name = clean_text(bound.get("routerName") or record.get("routerName"))
+    ip_address = clean_text(bound.get("activeAddress") or bound.get("remoteAddress") or record.get("staticIp"))
+    subscribed = bool(primary_account or internet_orders)
+    has_binding = bool(bound)
+    status = "NO_SERVICE"
+    if subscribed and not primary_account and internet_orders:
+        status = "PENDING_SERVICE"
+    if primary_account:
+        if not has_binding:
+            status = "NEEDS_SETUP"
+        elif pppoe_status == "ONLINE":
+            status = "ACTIVE"
+        elif pppoe_status == "DISABLED":
+            status = "DISABLED"
+        elif pppoe_status == "OFFLINE":
+            status = "OFFLINE"
+        else:
+            status = "PROVISIONED"
+    return {
+        "type": "INTERNET",
+        "label": "Internet Access",
+        "status": status,
+        "subscribed": subscribed,
+        "hasAccess": has_binding and status not in {"DISABLED"},
+        "needsAction": status in {"NEEDS_SETUP", "OFFLINE", "DISABLED", "PENDING_SERVICE"},
+        "primary": bound_username or ("Pending PPPoE" if subscribed else "No internet service"),
+        "secondary": " / ".join(part for part in [router_name, ip_address] if part),
+        "planName": service_plan_name(primary_account),
+        "serviceAccountNumber": service_account_number(primary_account),
+        "pppoeStatus": pppoe_status,
+        "routerName": router_name,
+        "ipAddress": ip_address,
+        "details": [
+            detail
+            for detail in [
+                service_plan_name(primary_account),
+                service_account_number(primary_account),
+                pppoe_status if has_binding else "",
+            ]
+            if detail
+        ],
+    }
+
+
+def hotspot_access_summary(customer: dict[str, Any], service: dict[str, Any]) -> dict[str, Any]:
+    contacts = hotspot_contacts_for_customer(customer)
+    enabled_contacts = [contact for contact in contacts if contact.get("enabled")]
+    base_status = hotspot_status_for_customer(customer, service, contacts)
+    settings = load_hotspot_access_state().get("settings") or {}
+    integration_enabled = bool(settings.get("enabled"))
+    if base_status == "SUSPENDED":
+        status = "SUSPENDED"
+    elif not customer_has_active_service(service):
+        status = "NO_SERVICE"
+    elif not enabled_contacts:
+        status = "NO_CONTACT"
+    elif integration_enabled:
+        status = "ACTIVE"
+    else:
+        status = "READY_TO_SYNC"
+    return {
+        "type": "HOTSPOT",
+        "label": "Hotspot Access",
+        "status": status,
+        "eligible": base_status == "ACTIVE",
+        "hasAccess": status == "ACTIVE",
+        "needsAction": status in {"READY_TO_SYNC", "NO_CONTACT"},
+        "primary": f"{len(enabled_contacts)}/{len(contacts)} contacts enabled" if contacts else "No mobile contacts",
+        "secondary": "Pisowifi sync enabled" if integration_enabled else "Pisowifi sync disabled",
+        "contactCount": len(contacts),
+        "enabledContactCount": len(enabled_contacts),
+        "integrationEnabled": integration_enabled,
+        "details": [
+            f"{len(enabled_contacts)} enabled",
+            f"{len(contacts)} total contacts",
+            "sync enabled" if integration_enabled else "sync disabled",
+        ],
+    }
+
+
+def iptv_device_identifier(account: dict[str, Any] | None) -> str:
+    if not account:
+        return ""
+    equipment = account.get("equipmentInfo") if isinstance(account.get("equipmentInfo"), dict) else {}
+    network = account.get("networkInfo") if isinstance(account.get("networkInfo"), dict) else {}
+    for source in (equipment, network, account):
+        for field in ("iptvAccount", "iptvUsername", "stbMac", "stbSerial", "setTopBoxSerial", "deviceId", "macAddress", "serialNumber"):
+            value = clean_text(source.get(field))
+            if value:
+                return value
+    return ""
+
+
+def iptv_access_summary(service: dict[str, Any]) -> dict[str, Any]:
+    iptv_accounts = [account for account in service.get("serviceAccounts") or [] if is_iptv_service(account)]
+    iptv_orders = [order for order in service.get("serviceOrders") or [] if is_iptv_service(order)]
+    active_account = active_service_account([account for account in iptv_accounts if normalize_upper(account.get("status")) == "ACTIVE"])
+    primary_account = active_account or active_service_account(iptv_accounts)
+    device_id = iptv_device_identifier(primary_account)
+    subscribed = bool(iptv_accounts or iptv_orders)
+    if not subscribed:
+        status = "NOT_SUBSCRIBED"
+    elif active_account and device_id:
+        status = "ACTIVE"
+    elif active_account:
+        status = "NEEDS_SETUP"
+    elif any(order_status(order) not in {"COMPLETED", "CANCELLED", "REJECTED"} for order in iptv_orders):
+        status = "PENDING"
+    else:
+        status = "SUBSCRIBED"
+    return {
+        "type": "IPTV",
+        "label": "IPTV Access",
+        "status": status,
+        "subscribed": subscribed,
+        "hasAccess": status == "ACTIVE",
+        "needsAction": status == "NEEDS_SETUP",
+        "primary": service_plan_name(primary_account) or ("IPTV subscription pending" if subscribed else "No IPTV subscription"),
+        "secondary": device_id or ("No IPTV device bound" if subscribed else "Future service"),
+        "planName": service_plan_name(primary_account),
+        "serviceAccountNumber": service_account_number(primary_account),
+        "deviceId": device_id,
+        "details": [
+            detail
+            for detail in [
+                service_plan_name(primary_account),
+                service_account_number(primary_account),
+                device_id,
+            ]
+            if detail
+        ],
+    }
+
+
+def customer_access_summary(
+    customer: dict[str, Any],
+    record: dict[str, Any],
+    service: dict[str, Any],
+    pppoe_status: str,
+    review_flags: list[str],
+) -> dict[str, Any]:
+    internet = internet_access_summary(record, service, pppoe_status)
+    hotspot = hotspot_access_summary(customer, service)
+    iptv = iptv_access_summary(service)
+    actions: list[dict[str, str]] = []
+    if internet["status"] == "NEEDS_SETUP":
+        actions.append(access_action("CREATE_PPPOE_ACCOUNT", "Create PPPoE Account", "green"))
+    elif internet["status"] in {"OFFLINE", "DISABLED"}:
+        actions.append(access_action("REVIEW_PPPOE", "Review PPPoE"))
+    elif internet["status"] == "PENDING_SERVICE":
+        actions.append(access_action("COMPLETE_SERVICE", "Complete Service Order"))
+    if hotspot["status"] == "NO_CONTACT":
+        actions.append(access_action("ADD_HOTSPOT_CONTACT", "Add Hotspot Contact"))
+    elif hotspot["status"] == "READY_TO_SYNC":
+        actions.append(access_action("SYNC_HOTSPOT", "Sync Hotspot", "blue"))
+    if iptv["status"] == "NEEDS_SETUP":
+        actions.append(access_action("SETUP_IPTV", "Set Up IPTV"))
+    if review_flags:
+        actions.append(access_action("REVIEW_ACCOUNT", "Review Account", "red"))
+    has_any_access = any(summary.get("hasAccess") for summary in (internet, hotspot, iptv))
+    has_subscription = bool(internet.get("subscribed") or hotspot.get("eligible") or iptv.get("subscribed"))
+    if actions:
+        overall_status = "NEEDS_ACTION"
+    elif has_any_access:
+        overall_status = "ACTIVE"
+    elif has_subscription:
+        overall_status = "PENDING_PROVISIONING"
+    else:
+        overall_status = "NO_ACCESS"
+    return {
+        "overallStatus": overall_status,
+        "hasAnyAccess": has_any_access,
+        "needsAction": bool(actions),
+        "actionRequired": actions,
+        "internetAccess": internet,
+        "hotspotAccess": hotspot,
+        "iptvAccess": iptv,
     }
 
 
@@ -1231,6 +1498,7 @@ def customer_network_row(
     bound = record.get("pppoeBinding") or {}
     live_account = discovered_lookup.get(pppoe_binding_key(bound), {})
     pppoe_status = clean_text(live_account.get("status") or bound.get("status")) or "UNBOUND"
+    access_summary = customer_access_summary(customer, record, service, pppoe_status, flags)
     return {
         "id": record["id"],
         "customerId": customer["id"],
@@ -1258,6 +1526,7 @@ def customer_network_row(
         "activationReadiness": "READY" if lifecycle == "FOR_ACTIVATION" else "WAITING",
         "lifecycleStatus": lifecycle,
         "provisioningStatus": record.get("provisioningStatus", "NOT_REQUESTED"),
+        "accessSummary": access_summary,
         "pppoeStatus": pppoe_status,
         "onlineStatus": "ONLINE" if pppoe_status == "ONLINE" else "OFFLINE" if pppoe_status in {"OFFLINE", "DISABLED"} else "UNASSIGNED",
         "desiredPppoeUsername": record.get("desiredPppoeUsername", ""),
@@ -1280,7 +1549,7 @@ def customer_network_row(
         "vlanId": record.get("vlanId", ""),
         "notes": record.get("notes", ""),
         "reviewFlags": flags,
-        "needsReview": bool(flags) or lifecycle in {"NEEDS_REVIEW", "SYNC_ERROR"},
+        "needsReview": bool(flags) or bool(access_summary.get("needsAction")) or lifecycle in {"NEEDS_REVIEW", "SYNC_ERROR"},
         "provisioningRequests": record.get("provisioningRequests", []),
         "createdAt": record.get("createdAt", ""),
         "updatedAt": record.get("updatedAt", ""),
@@ -1301,16 +1570,38 @@ def filtered_customer_network_rows(
     pppoe_status: str = "",
     customer_status: str = "",
     service_status: str = "",
+    access_filter: str = "",
+    internet_status: str = "",
+    hotspot_status: str = "",
+    iptv_status: str = "",
     review_only: bool = False,
 ) -> list[dict[str, Any]]:
     normalized_lifecycle = normalize_upper(lifecycle)
     normalized_pppoe = normalize_upper(pppoe_status)
     normalized_customer_status = normalize_upper(customer_status)
     normalized_service_status = normalize_upper(service_status)
+    normalized_access_filter = normalize_upper(access_filter)
+    normalized_internet_status = normalize_upper(internet_status)
+    normalized_hotspot_status = normalize_upper(hotspot_status)
+    normalized_iptv_status = normalize_upper(iptv_status)
     needle = search.strip().lower()
     result = rows
-    if normalized_lifecycle == "WITH_TICKETS":
+    if normalized_lifecycle == "ACCOUNT_ACTIVE":
+        result = [row for row in result if normalize_upper(row.get("customer", {}).get("status")) == "ACTIVE"]
+    elif normalized_lifecycle == "ACCOUNT_INACTIVE":
+        result = [row for row in result if normalize_upper(row.get("customer", {}).get("status")) != "ACTIVE"]
+    elif normalized_lifecycle == "WITH_TICKETS":
         result = [row for row in result if int(row.get("ticketCount") or 0) > 0]
+    elif normalized_lifecycle == "NEEDS_ACTION":
+        result = [row for row in result if row.get("accessSummary", {}).get("needsAction") or row.get("needsReview")]
+    elif normalized_lifecycle == "WITH_INTERNET":
+        result = [row for row in result if row.get("accessSummary", {}).get("internetAccess", {}).get("hasAccess")]
+    elif normalized_lifecycle == "WITH_HOTSPOT":
+        result = [row for row in result if row.get("accessSummary", {}).get("hotspotAccess", {}).get("hasAccess")]
+    elif normalized_lifecycle == "WITH_IPTV":
+        result = [row for row in result if row.get("accessSummary", {}).get("iptvAccess", {}).get("subscribed")]
+    elif normalized_lifecycle == "NO_ACCESS":
+        result = [row for row in result if not row.get("accessSummary", {}).get("hasAnyAccess")]
     elif normalized_lifecycle:
         result = [row for row in result if row["lifecycleStatus"] == normalized_lifecycle]
     if normalized_pppoe:
@@ -1322,6 +1613,22 @@ def filtered_customer_network_rows(
             result = [row for row in result if not row.get("serviceAccount")]
         else:
             result = [row for row in result if normalize_upper(row.get("serviceAccount", {}).get("status")) == normalized_service_status]
+    if normalized_access_filter == "NEEDS_ACTION":
+        result = [row for row in result if row.get("accessSummary", {}).get("needsAction") or row.get("needsReview")]
+    elif normalized_access_filter == "WITH_INTERNET":
+        result = [row for row in result if row.get("accessSummary", {}).get("internetAccess", {}).get("hasAccess")]
+    elif normalized_access_filter == "WITH_HOTSPOT":
+        result = [row for row in result if row.get("accessSummary", {}).get("hotspotAccess", {}).get("hasAccess")]
+    elif normalized_access_filter == "WITH_IPTV":
+        result = [row for row in result if row.get("accessSummary", {}).get("iptvAccess", {}).get("subscribed")]
+    elif normalized_access_filter == "NO_ACCESS":
+        result = [row for row in result if not row.get("accessSummary", {}).get("hasAnyAccess")]
+    if normalized_internet_status:
+        result = [row for row in result if normalize_upper(row.get("accessSummary", {}).get("internetAccess", {}).get("status")) == normalized_internet_status]
+    if normalized_hotspot_status:
+        result = [row for row in result if normalize_upper(row.get("accessSummary", {}).get("hotspotAccess", {}).get("status")) == normalized_hotspot_status]
+    if normalized_iptv_status:
+        result = [row for row in result if normalize_upper(row.get("accessSummary", {}).get("iptvAccess", {}).get("status")) == normalized_iptv_status]
     if review_only:
         result = [row for row in result if row["needsReview"]]
     if needle:
@@ -1340,6 +1647,15 @@ def filtered_customer_network_rows(
                     row.get("routerName", ""),
                     row.get("cpeIdentifier", ""),
                     row.get("onuId", ""),
+                    row.get("accessSummary", {}).get("overallStatus", ""),
+                    row.get("accessSummary", {}).get("internetAccess", {}).get("status", ""),
+                    row.get("accessSummary", {}).get("internetAccess", {}).get("primary", ""),
+                    row.get("accessSummary", {}).get("internetAccess", {}).get("secondary", ""),
+                    row.get("accessSummary", {}).get("hotspotAccess", {}).get("status", ""),
+                    row.get("accessSummary", {}).get("hotspotAccess", {}).get("primary", ""),
+                    row.get("accessSummary", {}).get("iptvAccess", {}).get("status", ""),
+                    row.get("accessSummary", {}).get("iptvAccess", {}).get("primary", ""),
+                    " ".join(action.get("label", "") for action in row.get("accessSummary", {}).get("actionRequired", [])),
                     (row.get("latestTicket") or {}).get("ticketNumber", ""),
                     (row.get("latestTicket") or {}).get("subject", ""),
                     (row.get("latestTicket") or {}).get("category", ""),
@@ -1352,13 +1668,20 @@ def filtered_customer_network_rows(
     return sorted(result, key=lambda row: row["customer"].get("name", ""))
 
 
-def account_admin_metrics(admin: dict[str, Any] | None = None) -> dict[str, int]:
-    rows = build_customer_network_rows(admin=admin)
+def account_admin_metrics(admin: dict[str, Any] | None = None, rows: list[dict[str, Any]] | None = None) -> dict[str, int]:
+    rows = rows if rows is not None else build_customer_network_rows(admin=admin)
     mapping = pppoe_onu_mapping_snapshot(admin=admin) if admin else {"unmatchedCount": 0, "matchedCount": 0, "onuCount": 0, "pppoeCount": 0}
     return {
         "customer_accounts": len(rows),
         "customer_networks": len(rows),
         "with_tickets": sum(1 for row in rows if int(row.get("ticketCount") or 0) > 0),
+        "needs_action": sum(1 for row in rows if row.get("accessSummary", {}).get("needsAction") or row.get("needsReview")),
+        "with_internet": sum(1 for row in rows if row.get("accessSummary", {}).get("internetAccess", {}).get("hasAccess")),
+        "with_hotspot": sum(1 for row in rows if row.get("accessSummary", {}).get("hotspotAccess", {}).get("hasAccess")),
+        "with_iptv": sum(1 for row in rows if row.get("accessSummary", {}).get("iptvAccess", {}).get("subscribed")),
+        "no_access": sum(1 for row in rows if not row.get("accessSummary", {}).get("hasAnyAccess")),
+        "active_customer_accounts": sum(1 for row in rows if normalize_upper(row.get("customer", {}).get("status")) == "ACTIVE"),
+        "inactive_customer_accounts": sum(1 for row in rows if normalize_upper(row.get("customer", {}).get("status")) != "ACTIVE"),
         "pppoe_accounts": int(mapping.get("pppoeCount") or 0),
         "pppoe_without_onu": int(mapping.get("unmatchedCount") or 0),
         "pppoe_onu_matched": int(mapping.get("matchedCount") or 0),
@@ -1621,31 +1944,38 @@ def sync_hotspot_access_subscriber(customer_id: str, admin=Depends(require_admin
 def list_customer_accounts(
     search: str = "",
     lifecycle: str = "",
+    accessFilter: str = "",
     pppoeStatus: str = "",
     customerStatus: str = "",
     serviceStatus: str = "",
+    internetStatus: str = "",
+    hotspotStatus: str = "",
+    iptvStatus: str = "",
     reviewOnly: bool = Query(default=False),
     refreshPppoe: bool = Query(default=False),
     admin=Depends(require_admin),
 ):
     rows = build_customer_network_rows(admin=admin, refresh_pppoe=refreshPppoe)
-    metrics = account_admin_metrics(admin=admin)
+    metrics = account_admin_metrics(admin=admin, rows=rows)
     return {
         "data": filtered_customer_network_rows(
             rows,
             search=search,
             lifecycle=lifecycle,
+            access_filter=accessFilter,
             pppoe_status=pppoeStatus,
             customer_status=customerStatus,
             service_status=serviceStatus,
+            internet_status=internetStatus,
+            hotspot_status=hotspotStatus,
+            iptv_status=iptvStatus,
             review_only=reviewOnly,
         ),
         "total": len(rows),
         "metrics": metrics,
         "tabs": [
-            {"label": "All", "value": "", "count": metrics["customer_accounts"], "tone": "blue"},
-            {"label": "Customer w/ Tickets", "value": "WITH_TICKETS", "count": metrics["with_tickets"], "tone": "orange"},
-            {"label": "PPPoE & ONUs", "value": "PPPOE_ONU_MAPPING", "count": metrics["pppoe_accounts"], "tone": "green"},
+            {"label": "Active", "value": "ACCOUNT_ACTIVE", "count": metrics["active_customer_accounts"], "tone": "green"},
+            {"label": "Inactive", "value": "ACCOUNT_INACTIVE", "count": metrics["inactive_customer_accounts"], "tone": "secondary"},
         ],
         "pppoeDiscovery": {
             "capturedAt": pppoe_discovery_cache.get("capturedAt", ""),

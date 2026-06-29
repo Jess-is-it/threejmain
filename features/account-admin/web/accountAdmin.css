@@ -177,7 +177,7 @@
 }
 
 .account-admin-table {
-  min-width: 920px;
+  min-width: 1320px;
 }
 
 .account-admin-mapping-table {
@@ -190,6 +190,40 @@
 
 .account-admin-table td {
   vertical-align: middle;
+}
+
+.account-admin-customer-badges,
+.account-admin-access-detail-list,
+.account-admin-action-list {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.35rem;
+}
+
+.account-admin-access-cell {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 10rem;
+}
+
+.account-admin-access-heading {
+  align-items: center;
+  display: flex;
+  min-height: 1.35rem;
+}
+
+.account-admin-access-primary {
+  line-height: 1.25;
+  max-width: 14rem;
+  overflow-wrap: anywhere;
+}
+
+.account-admin-health-cell {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 11rem;
 }
 
 .account-admin-ticket-stack {

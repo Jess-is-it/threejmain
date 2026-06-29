@@ -1,12 +1,21 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  IconActivity,
+  IconDashboard,
+  IconDatabase,
   IconDeviceFloppy,
   IconEdit,
   IconFilter,
+  IconHelp,
+  IconHistory,
+  IconInfoCircle,
+  IconKey,
+  IconLock,
   IconPlus,
   IconRefresh,
   IconSearch,
   IconSend,
+  IconServer,
   IconSettings,
   IconShieldLock,
   IconTrash,
@@ -20,9 +29,13 @@ const API = '/api';
 
 const blankFilters = {
   search: '',
-  lifecycle: '',
+  lifecycle: 'ACCOUNT_ACTIVE',
+  accessFilter: '',
   customerStatus: '',
-  pppoeStatus: ''
+  pppoeStatus: '',
+  internetStatus: '',
+  hotspotStatus: '',
+  iptvStatus: ''
 };
 
 const PPPOE_ONU_MAPPING_TAB = 'PPPOE_ONU_MAPPING';
@@ -30,13 +43,24 @@ const MAPPING_WITHOUT_ONUS = 'WITHOUT_ONUS';
 const MAPPING_MATCHED_ONUS = 'MATCHED_ONUS';
 
 const defaultTabs = [
-  { label: 'All', value: '', count: 0, tone: 'blue' },
-  { label: 'Customer w/ Tickets', value: 'WITH_TICKETS', count: 0, tone: 'orange' },
-  { label: 'PPPoE & ONUs', value: PPPOE_ONU_MAPPING_TAB, count: 0, tone: 'green' }
+  { label: 'Active', value: 'ACCOUNT_ACTIVE', count: 0, tone: 'green' },
+  { label: 'Inactive', value: 'ACCOUNT_INACTIVE', count: 0, tone: 'secondary' }
+];
+
+const accessFilters = [
+  { label: 'All Access', value: '' },
+  { label: 'Needs Action', value: 'NEEDS_ACTION' },
+  { label: 'With Internet', value: 'WITH_INTERNET' },
+  { label: 'With Hotspot', value: 'WITH_HOTSPOT' },
+  { label: 'With IPTV', value: 'WITH_IPTV' },
+  { label: 'No Access', value: 'NO_ACCESS' }
 ];
 
 const customerStatuses = ['ACTIVE', 'PENDING', 'SUSPENDED', 'INACTIVE'];
 const pppoeStatuses = ['UNBOUND', 'ONLINE', 'OFFLINE', 'DISABLED'];
+const internetAccessStatuses = ['ACTIVE', 'PROVISIONED', 'OFFLINE', 'DISABLED', 'NEEDS_SETUP', 'PENDING_SERVICE', 'NO_SERVICE'];
+const hotspotAccessStatuses = ['ACTIVE', 'READY_TO_SYNC', 'NO_CONTACT', 'NO_SERVICE', 'SUSPENDED'];
+const iptvAccessStatuses = ['ACTIVE', 'NEEDS_SETUP', 'PENDING', 'SUBSCRIBED', 'NOT_SUBSCRIBED'];
 
 function token() {
   return localStorage.getItem('threejmain_token');
@@ -67,13 +91,19 @@ function titleize(value) {
 function badgeTone(value) {
   const status = String(value || '').toUpperCase();
   if (['ACTIVE', 'ONLINE', 'PROVISIONED', 'READY', 'MATCHED', 'MATCHED_EXACT', 'MATCHED_PROXIMITY', 'MATCHED_METADATA', 'SAMPLE_MATCH'].includes(status)) return 'success';
-  if (['FOR_ACTIVATION', 'FOR_INSTALLATION', 'INSTALLATION', 'PENDING_PROVISIONING', 'PENDING', 'PENDING_ACTIVATION'].includes(status)) return 'warning';
-  if (['SUSPENDED', 'DISCONNECTED', 'DISABLED', 'SYNC_ERROR', 'NEEDS_REVIEW', 'UNMATCHED_ONU'].includes(status)) return 'danger';
+  if (['FOR_ACTIVATION', 'FOR_INSTALLATION', 'INSTALLATION', 'PENDING_PROVISIONING', 'PENDING', 'PENDING_ACTIVATION', 'NEEDS_ACTION', 'NEEDS_SETUP', 'READY_TO_SYNC', 'PENDING_SERVICE', 'NO_CONTACT', 'SUBSCRIBED'].includes(status)) return 'warning';
+  if (['SUSPENDED', 'DISCONNECTED', 'DISABLED', 'SYNC_ERROR', 'NEEDS_REVIEW', 'UNMATCHED_ONU', 'OFFLINE'].includes(status)) return 'danger';
   return 'secondary';
 }
 
 function StatusBadge({ value }) {
   return <span className={`badge bg-${badgeTone(value)}-lt text-${badgeTone(value)}`}>{titleize(value)}</span>;
+}
+
+function defaultAccessFilterForModuleView(view) {
+  if (view === 'INTERNET') return 'WITH_INTERNET';
+  if (view === 'IPTV') return 'WITH_IPTV';
+  return '';
 }
 
 function hotspotSyncResult(log) {
@@ -100,6 +130,46 @@ function HotspotSyncResultChips({ log }) {
       {chips.map((chip) => (
         <span key={`${chip.label}-${chip.tone}`} className={`badge bg-${chip.tone}-lt text-${chip.tone}`}>{chip.label}</span>
       ))}
+    </div>
+  );
+}
+
+function AccessSummaryCell({ summary }) {
+  const details = (summary?.details || []).filter(Boolean);
+  return (
+    <div className="account-admin-access-cell">
+      <div className="account-admin-access-heading">
+        <StatusBadge value={summary?.status || 'NO_SERVICE'} />
+      </div>
+      <div className="fw-semibold account-admin-access-primary">{summary?.primary || '-'}</div>
+      {summary?.secondary && <div className="text-muted small">{summary.secondary}</div>}
+      {details.length > 0 && (
+        <div className="account-admin-access-detail-list">
+          {details.slice(0, 3).map((detail) => (
+            <span className="badge bg-secondary-lt text-secondary" key={detail}>{detail}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AccountHealthCell({ row }) {
+  const summary = row.accessSummary || {};
+  const actions = summary.actionRequired || [];
+  const flags = row.reviewFlags || [];
+  return (
+    <div className="account-admin-health-cell">
+      <StatusBadge value={summary.overallStatus || row.lifecycleStatus || 'NO_ACCESS'} />
+      {actions.length > 0 && (
+        <div className="account-admin-action-list">
+          {actions.slice(0, 3).map((action) => (
+            <span className={`badge bg-${action.tone || 'warning'}-lt text-${action.tone || 'warning'}`} key={action.code || action.label}>{action.label}</span>
+          ))}
+          {actions.length > 3 && <span className="badge bg-secondary-lt text-secondary">+{actions.length - 3}</span>}
+        </div>
+      )}
+      {flags.length > 0 && <div className="text-muted small">{flags[0]}</div>}
     </div>
   );
 }
@@ -133,6 +203,9 @@ export default function AccountAdminPage() {
   const [hotspotBusy, setHotspotBusy] = useState('');
   const [hotspotMessage, setHotspotMessage] = useState(null);
   const [hotspotContactModal, setHotspotContactModal] = useState(null);
+  const [hotspotPageTab, setHotspotPageTab] = useState('Overview');
+  const [hotspotOverviewTab, setHotspotOverviewTab] = useState('Subscribers');
+  const [hotspotGuideOpen, setHotspotGuideOpen] = useState(false);
   const [tabs, setTabs] = useState(defaultTabs);
   const [filters, setFilters] = useState(blankFilters);
   const [mappingView, setMappingView] = useState(MAPPING_WITHOUT_ONUS);
@@ -142,7 +215,7 @@ export default function AccountAdminPage() {
   const latestFiltersRef = useRef(blankFilters);
   const searchDebounceRef = useRef(null);
 
-  const hasActiveFilters = ['customerStatus', 'pppoeStatus'].some((key) => Boolean(filters[key]));
+  const hasActiveFilters = ['accessFilter', 'customerStatus', 'internetStatus', 'hotspotStatus', 'iptvStatus', 'pppoeStatus'].some((key) => Boolean(filters[key]));
 
   function applyHotspotData(data) {
     setHotspot(data || { settings: {}, metrics: {}, data: [], logs: [], guide: [] });
@@ -216,6 +289,19 @@ export default function AccountAdminPage() {
     const merged = { ...hotspotFilters, ...next };
     setHotspotFilters(merged);
     loadHotspot(merged);
+  }
+
+  function changeModuleView(nextView) {
+    setModuleView(nextView);
+    if (nextView === 'HOTSPOT') return;
+    const merged = {
+      ...latestFiltersRef.current,
+      lifecycle: latestFiltersRef.current.lifecycle || 'ACCOUNT_ACTIVE',
+      accessFilter: defaultAccessFilterForModuleView(nextView)
+    };
+    latestFiltersRef.current = merged;
+    setFilters(merged);
+    load(merged);
   }
 
   async function saveHotspotSettings() {
@@ -381,7 +467,14 @@ export default function AccountAdminPage() {
 
   function handleFilterButtonClick() {
     if (areFiltersOpen && hasActiveFilters) {
-      updateFilters({ customerStatus: '', pppoeStatus: '' });
+      updateFilters({
+        accessFilter: '',
+        customerStatus: '',
+        internetStatus: '',
+        hotspotStatus: '',
+        iptvStatus: '',
+        pppoeStatus: ''
+      });
       return;
     }
     setFiltersOpen((value) => !value);
@@ -392,11 +485,152 @@ export default function AccountAdminPage() {
   const matchedMappingRows = mappingRows.filter((row) => row.matched);
   const visibleMappingRows = mappingView === MAPPING_MATCHED_ONUS ? matchedMappingRows : unmatchedMappingRows;
   const mappingViewLabel = mappingView === MAPPING_MATCHED_ONUS ? 'PPPoE with matched ONUs' : 'PPPoE without ONUs';
-  const tableTitle = isPppoeOnuMappingTab ? `${mappingViewLabel} (${visibleMappingRows.length})` : `Customer Accounts (${rows.length})`;
+  const customerTableTitle = moduleView === 'INTERNET' ? 'Internet Access' : moduleView === 'IPTV' ? 'IPTV Access' : 'Customer Accounts';
+  const tableTitle = isPppoeOnuMappingTab ? `${mappingViewLabel} (${visibleMappingRows.length})` : `${customerTableTitle} (${rows.length})`;
+  const moduleViewTabs = [
+    { value: 'CUSTOMERS', label: 'Customer Accounts', icon: IconUsers },
+    { value: 'INTERNET', label: 'Internet Access', icon: IconServer },
+    { value: 'HOTSPOT', label: 'Hotspot Access', icon: IconWifi },
+    { value: 'IPTV', label: 'IPTV Access', icon: IconActivity }
+  ];
 
   function renderHotspotAccess() {
     const metrics = hotspot.metrics || {};
     const subscriberRows = hotspot.data || [];
+    const logs = hotspot.logs || [];
+    const apiBaseUrl = String(hotspotSettings.pisowifiApiBaseUrl || 'https://net.3jhotspot.com').replace(/\/+$/, '');
+    const pageTabs = [
+      { key: 'Overview', icon: IconDashboard },
+      { key: 'Settings', icon: IconSettings },
+    ];
+    const overviewTabs = [
+      { key: 'Subscribers', label: 'Monthly Subscribers', count: subscriberRows.length, icon: IconUsers, tone: 'blue' },
+      { key: 'Logs', label: 'Sync Logs', count: logs.length, icon: IconHistory, tone: 'secondary' },
+    ];
+    const metricCards = [
+      { label: 'Subscribers', value: metrics.subscribers || 0, icon: IconUsers, tone: 'blue' },
+      { label: 'Active', value: metrics.active || 0, icon: IconWifi, tone: 'green' },
+      { label: 'Enabled Contacts', value: metrics.enabledContacts || 0, icon: IconShieldLock, tone: 'cyan' },
+      { label: 'No Contact', value: metrics.withoutContacts || 0, icon: IconActivity, tone: 'orange' },
+    ];
+    function renderMetricCard(item) {
+      const Icon = item.icon;
+      return (
+        <div className="col-sm-6 col-xl-3" key={item.label}>
+          <div className="card">
+            <div className="card-body">
+              <div className="d-flex align-items-center justify-content-between gap-2">
+                <div>
+                  <div className="text-muted small">{item.label}</div>
+                  <div className="h2 mb-0">{item.value}</div>
+                </div>
+                <span className={`badge bg-${item.tone}-lt text-${item.tone}`}><Icon size={20} /></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    function renderSubscriberTable() {
+      return (
+        <>
+          <div className="alert alert-info mb-3">
+            Full Sync is authoritative. Customers or contact numbers missing from this 3J Main export are disabled in Pisowifi.
+          </div>
+          <div className="d-flex flex-wrap gap-2 mb-3">
+            <div className="input-icon account-admin-hotspot-search flex-fill">
+              <span className="input-icon-addon"><IconSearch size={16} /></span>
+              <input className="form-control form-control-sm" placeholder="Search subscriber or contact" value={hotspotFilters.search} onChange={(event) => updateHotspotFilters({ search: event.target.value })} />
+            </div>
+            <select className="form-select form-select-sm account-admin-hotspot-status" value={hotspotFilters.status} onChange={(event) => updateHotspotFilters({ status: event.target.value })}>
+              <option value="">All</option>
+              <option value="ACTIVE">Active</option>
+              <option value="INACTIVE">Inactive</option>
+              <option value="SUSPENDED">Suspended</option>
+            </select>
+            <button className="btn btn-primary btn-sm" type="button" disabled={!!hotspotBusy || hotspotLoading} onClick={() => syncHotspot()}>
+              <IconSend size={17} className="me-2" />{hotspotBusy === 'sync-all' ? 'Syncing...' : 'Full Sync'}
+            </button>
+          </div>
+          <div className="table-responsive">
+            <table className="table table-vcenter card-table account-admin-table">
+              <thead>
+                <tr>
+                  <th>Subscriber</th>
+                  <th>Service</th>
+                  <th>Contacts</th>
+                  <th>Status</th>
+                  <th className="w-1">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {hotspotLoading && (
+                  <tr><td colSpan="5" className="text-muted">Loading monthly subscribers...</td></tr>
+                )}
+                {!hotspotLoading && subscriberRows.length === 0 && (
+                  <tr><td colSpan="5"><div className="empty">No monthly subscribers match the current filters.</div></td></tr>
+                )}
+                {!hotspotLoading && subscriberRows.map((row) => (
+                  <tr key={row.external_subscriber_id}>
+                    <td>
+                      <div className="fw-bold">{row.customer_name}</div>
+                      <div className="text-muted small">{row.account_number || row.external_subscriber_id}</div>
+                    </td>
+                    <td>
+                      <div>{row.plan_name || '-'}</div>
+                      <div className="text-muted small">{row.service_account_number || '-'}</div>
+                    </td>
+                    <td>
+                      <div className="account-admin-contact-stack">
+                        {(row.contacts || []).map((contact) => (
+                          <span key={contact.normalized_contact || contact.contact_number} className={`badge ${contact.enabled ? 'bg-green-lt text-green' : 'bg-secondary-lt text-secondary'}`}>
+                            {contact.contact_number} {contact.label ? `· ${contact.label}` : ''}
+                          </span>
+                        ))}
+                        {!(row.contacts || []).length && <span className="text-muted small">No valid mobile contacts</span>}
+                      </div>
+                    </td>
+                    <td><StatusBadge value={row.status} /></td>
+                    <td>
+                      <div className="btn-list flex-nowrap">
+                        <button className="btn btn-icon btn-outline-secondary btn-sm" type="button" disabled={!!hotspotBusy} onClick={() => openHotspotContactModal(row)} title="Edit allowed contact numbers">
+                          <IconEdit size={16} />
+                        </button>
+                        <button className="btn btn-outline-primary btn-sm" type="button" disabled={!!hotspotBusy} onClick={() => syncHotspot(row.external_subscriber_id)}>
+                          {hotspotBusy === `sync-${row.external_subscriber_id}` ? 'Syncing...' : 'Sync'}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      );
+    }
+    function renderSyncLogs() {
+      return (
+        <div className="list-group list-group-flush">
+          {logs.map((log) => (
+            <div className="list-group-item px-0" key={log.id || log.createdAt}>
+              <div className="d-flex justify-content-between gap-2">
+                <div>
+                  <div className="fw-semibold">{log.action || 'SYNC'}</div>
+                  <div className="text-muted small">{log.message || '-'}</div>
+                  <HotspotSyncResultChips log={log} />
+                </div>
+                <div className="text-end">
+                  <StatusBadge value={log.status || 'SUCCESS'} />
+                  <div className="text-muted small mt-1">{log.createdAt || '-'}</div>
+                </div>
+              </div>
+            </div>
+          ))}
+          {!logs.length && <div className="text-muted">No sync logs yet.</div>}
+        </div>
+      );
+    }
     return (
       <div className="row row-cards">
         {hotspotMessage && (
@@ -404,158 +638,161 @@ export default function AccountAdminPage() {
             <div className={`alert alert-${hotspotMessage.tone || 'info'}`}>{hotspotMessage.text}</div>
           </div>
         )}
-        <div className="col-lg-4">
-          <Card title="Hotspot Access Settings" icon={IconSettings}>
-            <div className="mb-3">
-              <label className="form-check form-switch">
-                <input className="form-check-input" type="checkbox" checked={hotspotSettings.enabled} onChange={(event) => setHotspotSettings({ ...hotspotSettings, enabled: event.target.checked })} />
-                <span className="form-check-label">Enable monthly subscriber sync</span>
-              </label>
-            </div>
-            <div className="mb-3">
-              <label className="form-label">Pisowifi API Base URL</label>
-              <input className="form-control" placeholder="https://net.3jhotspot.com" value={hotspotSettings.pisowifiApiBaseUrl} onChange={(event) => setHotspotSettings({ ...hotspotSettings, pisowifiApiBaseUrl: event.target.value })} />
-            </div>
-            <div className="mb-3">
-              <label className="form-label">API Key</label>
-              <input className="form-control" value={hotspotSettings.apiKey} onChange={(event) => setHotspotSettings({ ...hotspotSettings, apiKey: event.target.value })} />
-            </div>
-            <div className="mb-3">
-              <label className="form-label">API Secret</label>
-              <input className="form-control" type="password" placeholder={hotspot.settings?.apiSecretSet ? 'Saved. Leave blank to keep current secret.' : 'Required before sync'} value={hotspotSettings.apiSecret} onChange={(event) => setHotspotSettings({ ...hotspotSettings, apiSecret: event.target.value })} />
+        <div className="col-12">
+          <div className="d-flex flex-wrap align-items-center justify-content-between gap-3">
+            <div>
+              <h2 className="page-title mb-1">Hotspot Access</h2>
+              <div className="text-muted">Export monthly subscriber eligibility from 3J Main to the Pisowifi captive portal.</div>
             </div>
             <div className="d-flex flex-wrap gap-2">
-              <button className="btn btn-primary" type="button" disabled={!!hotspotBusy} onClick={saveHotspotSettings}>
-                <IconDeviceFloppy size={18} className="me-2" />{hotspotBusy === 'settings' ? 'Saving...' : 'Save Settings'}
+              <button className="btn btn-outline-primary" type="button" disabled={!!hotspotBusy || hotspotLoading} onClick={() => loadHotspot()}>
+                <IconRefresh size={18} className="me-2" />Refresh
               </button>
-              <button className="btn" type="button" disabled={!!hotspotBusy} onClick={testHotspotConnection}>
-                <IconShieldLock size={18} className="me-2" />{hotspotBusy === 'test' ? 'Testing...' : 'Test'}
+              <button className="btn" type="button" onClick={() => setHotspotGuideOpen(true)}>
+                <IconHelp size={18} className="me-2" />API Guide
               </button>
-            </div>
-            <div className="text-muted small mt-3">
-              Requests are signed with HMAC headers. Configure the same key and secret in Pisowifi Monthly Subscribers settings.
-            </div>
-          </Card>
-        </div>
-        <div className="col-lg-8">
-          <div className="row row-cards">
-            <div className="col-sm-6 col-xl-3">
-              <div className="card"><div className="card-body"><div className="text-muted small">Subscribers</div><div className="h2 mb-0">{metrics.subscribers || 0}</div></div></div>
-            </div>
-            <div className="col-sm-6 col-xl-3">
-              <div className="card"><div className="card-body"><div className="text-muted small">Active</div><div className="h2 mb-0">{metrics.active || 0}</div></div></div>
-            </div>
-            <div className="col-sm-6 col-xl-3">
-              <div className="card"><div className="card-body"><div className="text-muted small">Enabled contacts</div><div className="h2 mb-0">{metrics.enabledContacts || 0}</div></div></div>
-            </div>
-            <div className="col-sm-6 col-xl-3">
-              <div className="card"><div className="card-body"><div className="text-muted small">No contact</div><div className="h2 mb-0">{metrics.withoutContacts || 0}</div></div></div>
-            </div>
-            <div className="col-12">
-              <Card
-                title={`Monthly Subscribers (${subscriberRows.length})`}
-                icon={IconWifi}
-                actions={(
-                  <div className="d-flex flex-wrap gap-2">
-                    <div className="input-icon account-admin-hotspot-search">
-                      <span className="input-icon-addon"><IconSearch size={16} /></span>
-                      <input className="form-control form-control-sm" placeholder="Search subscriber or contact" value={hotspotFilters.search} onChange={(event) => updateHotspotFilters({ search: event.target.value })} />
-                    </div>
-                    <select className="form-select form-select-sm account-admin-hotspot-status" value={hotspotFilters.status} onChange={(event) => updateHotspotFilters({ status: event.target.value })}>
-                      <option value="">All</option>
-                      <option value="ACTIVE">Active</option>
-                      <option value="INACTIVE">Inactive</option>
-                      <option value="SUSPENDED">Suspended</option>
-                    </select>
-                    <button className="btn btn-primary btn-sm" type="button" disabled={!!hotspotBusy || hotspotLoading} onClick={() => syncHotspot()}>
-                      <IconSend size={17} className="me-2" />{hotspotBusy === 'sync-all' ? 'Syncing...' : 'Full Sync'}
-                    </button>
-                  </div>
-                )}
-              >
-                <div className="alert alert-info mb-3">
-                  Full Sync is authoritative. Customers or contact numbers missing from this 3J Main export are disabled in Pisowifi.
-                </div>
-                <div className="table-responsive">
-                  <table className="table table-vcenter card-table account-admin-table">
-                    <thead>
-                      <tr>
-                        <th>Subscriber</th>
-                        <th>Service</th>
-                        <th>Contacts</th>
-                        <th>Status</th>
-                        <th className="w-1">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {hotspotLoading && (
-                        <tr><td colSpan="5" className="text-muted">Loading monthly subscribers...</td></tr>
-                      )}
-                      {!hotspotLoading && subscriberRows.length === 0 && (
-                        <tr><td colSpan="5"><div className="empty">No monthly subscribers match the current filters.</div></td></tr>
-                      )}
-                      {!hotspotLoading && subscriberRows.map((row) => (
-                        <tr key={row.external_subscriber_id}>
-                          <td>
-                            <div className="fw-bold">{row.customer_name}</div>
-                            <div className="text-muted small">{row.account_number || row.external_subscriber_id}</div>
-                          </td>
-                          <td>
-                            <div>{row.plan_name || '-'}</div>
-                            <div className="text-muted small">{row.service_account_number || '-'}</div>
-                          </td>
-                          <td>
-                            <div className="account-admin-contact-stack">
-                              {(row.contacts || []).map((contact) => (
-                                <span key={contact.normalized_contact || contact.contact_number} className={`badge ${contact.enabled ? 'bg-green-lt text-green' : 'bg-secondary-lt text-secondary'}`}>
-                                  {contact.contact_number} {contact.label ? `· ${contact.label}` : ''}
-                                </span>
-                              ))}
-                              {!(row.contacts || []).length && <span className="text-muted small">No valid mobile contacts</span>}
-                            </div>
-                          </td>
-                          <td><StatusBadge value={row.status} /></td>
-                          <td>
-                            <div className="btn-list flex-nowrap">
-                              <button className="btn btn-icon btn-outline-secondary btn-sm" type="button" disabled={!!hotspotBusy} onClick={() => openHotspotContactModal(row)} title="Edit allowed contact numbers">
-                                <IconEdit size={16} />
-                              </button>
-                              <button className="btn btn-outline-primary btn-sm" type="button" disabled={!!hotspotBusy} onClick={() => syncHotspot(row.external_subscriber_id)}>
-                                {hotspotBusy === `sync-${row.external_subscriber_id}` ? 'Syncing...' : 'Sync'}
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </Card>
-            </div>
-            <div className="col-12">
-              <Card title="Recent Sync Logs" icon={IconRefresh}>
-                <div className="list-group list-group-flush">
-                  {(hotspot.logs || []).slice(0, 6).map((log) => (
-                    <div className="list-group-item px-0" key={log.id || log.createdAt}>
-                      <div className="d-flex justify-content-between gap-2">
-                        <div>
-                          <div className="fw-semibold">{log.action || 'SYNC'}</div>
-                          <div className="text-muted small">{log.message || '-'}</div>
-                          <HotspotSyncResultChips log={log} />
-                        </div>
-                        <div className="text-end">
-                          <StatusBadge value={log.status || 'SUCCESS'} />
-                          <div className="text-muted small mt-1">{log.createdAt || '-'}</div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                  {!(hotspot.logs || []).length && <div className="text-muted">No sync logs yet.</div>}
-                </div>
-              </Card>
             </div>
           </div>
         </div>
+
+        <div className="col-12">
+          <ul className="nav nav-tabs">
+            {pageTabs.map((item) => {
+              const Icon = item.icon;
+              return (
+                <li className="nav-item" key={item.key}>
+                  <button className={`nav-link ${hotspotPageTab === item.key ? 'active' : ''}`} type="button" onClick={() => setHotspotPageTab(item.key)}>
+                    <Icon size={17} className="me-1" />{item.key}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+
+        {hotspotPageTab === 'Overview' && (
+          <>
+            {metricCards.map(renderMetricCard)}
+            <div className="col-12">
+              <Card title="Hotspot Access Operations" icon={IconWifi}>
+                <ul className="nav nav-tabs mb-3" role="tablist">
+                  {overviewTabs.map((item) => {
+                    const Icon = item.icon;
+                    return (
+                      <li className="nav-item" role="presentation" key={item.key}>
+                        <button className={`nav-link ${hotspotOverviewTab === item.key ? 'active' : ''}`} type="button" role="tab" aria-selected={hotspotOverviewTab === item.key} onClick={() => setHotspotOverviewTab(item.key)}>
+                          <Icon size={16} className="me-1" />{item.label}
+                          <span className={`badge bg-${item.tone}-lt ms-2`}>{item.count}</span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+                {hotspotOverviewTab === 'Subscribers' && renderSubscriberTable()}
+                {hotspotOverviewTab === 'Logs' && renderSyncLogs()}
+              </Card>
+            </div>
+          </>
+        )}
+
+        {hotspotPageTab === 'Settings' && (
+          <>
+            <div className="col-lg-8">
+              <Card title="API Management" icon={IconSettings}>
+                <div className="row g-3">
+                  <div className="col-md-6">
+                    <div className="border rounded p-3 h-100">
+                      <div className="d-flex align-items-start justify-content-between gap-3">
+                        <div>
+                          <div className="fw-semibold d-flex align-items-center gap-2"><IconShieldLock size={18} />Integration Status</div>
+                          <div className="text-muted small mt-1">Controls whether 3J Main can push subscriber eligibility into Pisowifi.</div>
+                        </div>
+                        <label className="form-check form-switch m-0">
+                          <input className="form-check-input" type="checkbox" checked={hotspotSettings.enabled} onChange={(event) => setHotspotSettings({ ...hotspotSettings, enabled: event.target.checked })} />
+                        </label>
+                      </div>
+                      <div className="mt-3">
+                        <span className={`badge ${hotspotSettings.enabled ? 'bg-green-lt text-green' : 'bg-red-lt text-red'}`}>{hotspotSettings.enabled ? 'Enabled' : 'Disabled'}</span>
+                        <span className={`badge ms-2 ${hotspot.settings?.apiSecretSet ? 'bg-green-lt text-green' : 'bg-yellow-lt text-yellow'}`}>{hotspot.settings?.apiSecretSet ? 'Secret saved' : 'Secret required'}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="col-md-6">
+                    <div className="border rounded p-3 h-100">
+                      <div className="fw-semibold d-flex align-items-center gap-2"><IconServer size={18} />Pisowifi API Target</div>
+                      <div className="mt-3">
+                        <label className="form-label">Pisowifi API Base URL</label>
+                        <input className="form-control" placeholder="https://net.3jhotspot.com" value={hotspotSettings.pisowifiApiBaseUrl} onChange={(event) => setHotspotSettings({ ...hotspotSettings, pisowifiApiBaseUrl: event.target.value })} />
+                      </div>
+                      <div className="text-muted small mt-2">Use the public or internal API base that can reach Pisowifi from this 3J Main server.</div>
+                    </div>
+                  </div>
+                  <div className="col-md-6">
+                    <div className="border rounded p-3 h-100">
+                      <div className="fw-semibold d-flex align-items-center gap-2 mb-3"><IconKey size={18} />Credentials</div>
+                      <div className="mb-3">
+                        <label className="form-label">API Key</label>
+                        <input className="form-control" value={hotspotSettings.apiKey} onChange={(event) => setHotspotSettings({ ...hotspotSettings, apiKey: event.target.value })} />
+                      </div>
+                      <div>
+                        <label className="form-label">API Secret</label>
+                        <input className="form-control" type="password" placeholder={hotspot.settings?.apiSecretSet ? 'Saved. Leave blank to keep current secret.' : 'Required before sync'} value={hotspotSettings.apiSecret} onChange={(event) => setHotspotSettings({ ...hotspotSettings, apiSecret: event.target.value })} />
+                        <div className="form-hint">Must match Pisowifi Monthly Subscribers API Management settings.</div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="col-md-6">
+                    <div className="border rounded p-3 h-100">
+                      <div className="fw-semibold d-flex align-items-center gap-2 mb-3"><IconDatabase size={18} />Endpoint Preview</div>
+                      <div className="d-grid gap-2 small">
+                        <div><span className="badge bg-blue-lt text-blue me-2">GET</span><code>{apiBaseUrl}/api/integrations/monthly-subscribers/health</code></div>
+                        <div><span className="badge bg-green-lt text-green me-2">POST</span><code>{apiBaseUrl}/api/integrations/monthly-subscribers/upsert</code></div>
+                      </div>
+                      <button className="btn btn-sm mt-3" type="button" onClick={() => setHotspotGuideOpen(true)}>
+                        <IconInfoCircle size={16} className="me-1" />Read API documentation
+                      </button>
+                    </div>
+                  </div>
+                  <div className="col-12">
+                    <div className="alert alert-warning mb-0">
+                      <div className="fw-semibold mb-1">FULL sync is authoritative</div>
+                      <div>Only use Full Sync when this page contains the complete monthly subscriber export. Pisowifi will disable missing subscribers or missing contact numbers.</div>
+                    </div>
+                  </div>
+                  <div className="col-12 d-flex flex-wrap gap-2">
+                    <button className="btn btn-primary" type="button" disabled={!!hotspotBusy} onClick={saveHotspotSettings}>
+                      <IconDeviceFloppy size={18} className="me-2" />{hotspotBusy === 'settings' ? 'Saving...' : 'Save API Settings'}
+                    </button>
+                    <button className="btn" type="button" disabled={!!hotspotBusy} onClick={testHotspotConnection}>
+                      <IconShieldLock size={18} className="me-2" />{hotspotBusy === 'test' ? 'Testing...' : 'Test Connection'}
+                    </button>
+                  </div>
+                </div>
+              </Card>
+            </div>
+            <div className="col-12">
+              <Card title="API Flow" icon={IconActivity}>
+                <div className="row g-3">
+                  {[
+                    ['1', 'Build subscriber export', '3J Main derives eligible customers from active service accounts and enabled contact numbers.'],
+                    ['2', 'Sign the request', 'The API key, timestamp, raw JSON body, and shared secret produce the HMAC signature.'],
+                    ['3', 'Sync into Pisowifi', 'Pisowifi validates the signature and stores subscriber/contact eligibility.'],
+                    ['4', 'Authorize customer login', 'Customers verify by SMS OTP in the captive portal and Pisowifi authorizes the device in Omada.'],
+                  ].map(([step, title, detail]) => (
+                    <div className="col-md-6 col-xl-3" key={step}>
+                      <div className="border rounded p-3 h-100">
+                        <span className="badge bg-blue-lt text-blue mb-2">{step}</span>
+                        <div className="fw-semibold">{title}</div>
+                        <div className="text-muted small mt-1">{detail}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            </div>
+          </>
+        )}
+
         {hotspotContactModal && (
           <div className="modal modal-blur d-block account-admin-modal-backdrop" tabIndex="-1" role="dialog" aria-modal="true">
             <div className="modal-dialog modal-lg modal-dialog-centered" role="document">
@@ -624,6 +861,89 @@ export default function AccountAdminPage() {
             </div>
           </div>
         )}
+        {hotspotGuideOpen && (
+          <div className="modal modal-blur d-block account-admin-modal-backdrop" tabIndex="-1" role="dialog" aria-modal="true">
+            <div className="modal-dialog modal-xl modal-dialog-centered" role="document">
+              <div className="modal-content">
+                <div className="modal-header">
+                  <div>
+                    <h5 className="modal-title">Hotspot Access API Guide</h5>
+                    <div className="text-muted small">How 3J Main signs and sends monthly subscriber data to Pisowifi.</div>
+                  </div>
+                  <button type="button" className="btn-close" aria-label="Close" onClick={() => setHotspotGuideOpen(false)} />
+                </div>
+                <div className="modal-body">
+                  <div className="row g-3">
+                    <div className="col-md-6">
+                      <div className="border rounded p-3 h-100">
+                        <div className="fw-semibold d-flex align-items-center gap-2 mb-2"><IconLock size={18} />Signed Headers</div>
+                        <div className="d-grid gap-2 small">
+                          <code>X-3J-Integration-Key: {hotspotSettings.apiKey || 'configured-api-key'}</code>
+                          <code>X-3J-Timestamp: unix timestamp seconds</code>
+                          <code>X-3J-Signature: HMAC-SHA256(timestamp + "." + raw JSON body)</code>
+                          <code>X-3J-Idempotency-Key: unique request id</code>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="col-md-6">
+                      <div className="border rounded p-3 h-100">
+                        <div className="fw-semibold d-flex align-items-center gap-2 mb-2"><IconDatabase size={18} />Sync Modes</div>
+                        <div className="d-grid gap-2">
+                          <div><span className="badge bg-blue-lt text-blue me-2">FULL</span>Complete authoritative export. Missing subscribers or contacts are disabled in Pisowifi.</div>
+                          <div><span className="badge bg-secondary-lt text-secondary me-2">PARTIAL</span>Single subscriber/contact update. Unrelated customers are preserved.</div>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="col-12">
+                      <div className="border rounded p-3">
+                        <div className="fw-semibold d-flex align-items-center gap-2 mb-2"><IconSend size={18} />Payload Example</div>
+                        <pre className="mb-0"><code>{`POST ${apiBaseUrl}/api/integrations/monthly-subscribers/upsert
+{
+  "source_system": "3J Main",
+  "synced_by": "admin",
+  "sync_mode": "FULL",
+  "subscribers": [
+    {
+      "external_subscriber_id": "customer-id",
+      "account_number": "68392741",
+      "service_account_number": "SA-001",
+      "customer_name": "Customer Name",
+      "plan_name": "Monthly Plan",
+      "status": "ACTIVE",
+      "contacts": [
+        {
+          "contact_number": "09000000000",
+          "normalized_contact": "+639000000000",
+          "label": "Primary",
+          "enabled": true
+        }
+      ]
+    }
+  ]
+}`}</code></pre>
+                      </div>
+                    </div>
+                    <div className="col-md-6">
+                      <div className="alert alert-warning mb-0">
+                        <div className="fw-semibold">Credential rotation</div>
+                        <div>Update Pisowifi and 3J Main with the same new secret. Sync requests fail while the two systems have different secrets.</div>
+                      </div>
+                    </div>
+                    <div className="col-md-6">
+                      <div className="alert alert-info mb-0">
+                        <div className="fw-semibold">Contact rule</div>
+                        <div>Each enabled contact number represents one allowed captive portal device after SMS verification.</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div className="modal-footer">
+                  <button className="btn btn-primary" type="button" onClick={() => setHotspotGuideOpen(false)}>Close</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -631,12 +951,21 @@ export default function AccountAdminPage() {
   return (
     <div className="account-admin-module">
       <div className="account-admin-module-view-tabs" role="tablist" aria-label="Account Admin views">
-        <button className={`account-admin-module-view-tab ${moduleView === 'CUSTOMERS' ? 'active' : ''}`} type="button" onClick={() => setModuleView('CUSTOMERS')} role="tab" aria-selected={moduleView === 'CUSTOMERS'}>
-          <IconUsers size={17} /> Customer Accounts
-        </button>
-        <button className={`account-admin-module-view-tab ${moduleView === 'HOTSPOT' ? 'active' : ''}`} type="button" onClick={() => setModuleView('HOTSPOT')} role="tab" aria-selected={moduleView === 'HOTSPOT'}>
-          <IconWifi size={17} /> Hotspot Access
-        </button>
+        {moduleViewTabs.map((item) => {
+          const Icon = item.icon;
+          return (
+            <button
+              className={`account-admin-module-view-tab ${moduleView === item.value ? 'active' : ''}`}
+              key={item.value}
+              type="button"
+              onClick={() => changeModuleView(item.value)}
+              role="tab"
+              aria-selected={moduleView === item.value}
+            >
+              <Icon size={17} /> {item.label}
+            </button>
+          );
+        })}
       </div>
 
       {moduleView === 'HOTSPOT' ? renderHotspotAccess() : (
@@ -658,7 +987,7 @@ export default function AccountAdminPage() {
                     <input
                       id="customer-account-search"
                       className="form-control form-control-sm"
-                      placeholder="Search customer, account, PPPoE, router, ONU, ticket"
+                      placeholder="Search customer, account, access, PPPoE, hotspot, IPTV, ticket"
                       value={filters.search}
                       onChange={(event) => handleSearchChange(event.target.value)}
                       onKeyDown={(event) => {
@@ -689,25 +1018,52 @@ export default function AccountAdminPage() {
             )}
           >
             {areFiltersOpen && (
-              <div className="account-admin-table-filters">
-                <div className="row g-2 align-items-end">
-                  <div className="col-md-3">
-                    {!isPppoeOnuMappingTab && (
-                      <>
-                        <label className="form-label">Customer Status</label>
-                        <select className="form-select" value={filters.customerStatus} onChange={(event) => updateFilters({ customerStatus: event.target.value })}>
-                          <option value="">All</option>
-                          {customerStatuses.map((item) => <option key={item} value={item}>{titleize(item)}</option>)}
-                        </select>
-                      </>
-                    )}
-                  </div>
-                  <div className="col-md-3">
-                    <label className="form-label">PPPoE Status</label>
-                    <select className="form-select" value={filters.pppoeStatus} onChange={(event) => updateFilters({ pppoeStatus: event.target.value })}>
-                      <option value="">All</option>
-                      {pppoeStatuses.map((item) => <option key={item} value={item}>{titleize(item)}</option>)}
-                    </select>
+	              <div className="account-admin-table-filters">
+	                <div className="row g-2 align-items-end">
+	                  {!isPppoeOnuMappingTab && (
+	                    <>
+	                      <div className="col-md-2">
+	                        <label className="form-label">Access</label>
+	                        <select className="form-select" value={filters.accessFilter} onChange={(event) => updateFilters({ accessFilter: event.target.value })}>
+	                          {accessFilters.map((item) => <option key={item.label} value={item.value}>{item.label}</option>)}
+	                        </select>
+	                      </div>
+	                      <div className="col-md-2">
+	                        <label className="form-label">Customer Status</label>
+	                        <select className="form-select" value={filters.customerStatus} onChange={(event) => updateFilters({ customerStatus: event.target.value })}>
+	                          <option value="">All</option>
+	                          {customerStatuses.map((item) => <option key={item} value={item}>{titleize(item)}</option>)}
+	                        </select>
+	                      </div>
+	                      <div className="col-md-2">
+	                        <label className="form-label">Internet</label>
+	                        <select className="form-select" value={filters.internetStatus} onChange={(event) => updateFilters({ internetStatus: event.target.value })}>
+	                          <option value="">All</option>
+	                          {internetAccessStatuses.map((item) => <option key={item} value={item}>{titleize(item)}</option>)}
+	                        </select>
+	                      </div>
+	                      <div className="col-md-2">
+	                        <label className="form-label">Hotspot</label>
+	                        <select className="form-select" value={filters.hotspotStatus} onChange={(event) => updateFilters({ hotspotStatus: event.target.value })}>
+	                          <option value="">All</option>
+	                          {hotspotAccessStatuses.map((item) => <option key={item} value={item}>{titleize(item)}</option>)}
+	                        </select>
+	                      </div>
+	                      <div className="col-md-2">
+	                        <label className="form-label">IPTV</label>
+	                        <select className="form-select" value={filters.iptvStatus} onChange={(event) => updateFilters({ iptvStatus: event.target.value })}>
+	                          <option value="">All</option>
+	                          {iptvAccessStatuses.map((item) => <option key={item} value={item}>{titleize(item)}</option>)}
+	                        </select>
+	                      </div>
+	                    </>
+	                  )}
+	                  <div className="col-md-2">
+	                    <label className="form-label">PPPoE Status</label>
+	                    <select className="form-select" value={filters.pppoeStatus} onChange={(event) => updateFilters({ pppoeStatus: event.target.value })}>
+	                      <option value="">All</option>
+	                      {pppoeStatuses.map((item) => <option key={item} value={item}>{titleize(item)}</option>)}
+	                    </select>
                   </div>
                   <div className="col-md-auto">
                     <button className="btn" type="button" onClick={() => load(filters, { refresh: true })}>
@@ -845,21 +1201,22 @@ export default function AccountAdminPage() {
                   <thead>
                     <tr>
                       <th>Customer</th>
-                      <th>Customer Status</th>
-                      <th>PPPoE Account</th>
-                      <th>Router</th>
-                      <th>Tickets</th>
+                      <th>Internet Access</th>
+                      <th>Hotspot Access</th>
+                      <th>IPTV Access</th>
+                      <th>Tickets / Action</th>
+                      <th>Account Health</th>
                     </tr>
                   </thead>
                   <tbody>
                     {loading && (
                       <tr>
-                        <td colSpan="5" className="text-muted">Loading customer accounts...</td>
+                        <td colSpan="6" className="text-muted">Loading customer accounts...</td>
                       </tr>
                     )}
                     {!loading && rows.length === 0 && (
                       <tr>
-                        <td colSpan="5"><div className="empty">No customer accounts match the current filters.</div></td>
+                        <td colSpan="6"><div className="empty">No customer accounts match the current filters.</div></td>
                       </tr>
                     )}
                     {!loading && rows.map((row) => (
@@ -867,16 +1224,14 @@ export default function AccountAdminPage() {
                         <td>
                           <div className="fw-bold">{row.customer.name}</div>
                           <div className="text-muted small">{row.customer.accountNumber || row.customer.contactNumber || '-'}</div>
+                          <div className="account-admin-customer-badges">
+                            <StatusBadge value={row.customer.status} />
+                            <StatusBadge value={row.lifecycleStatus} />
+                          </div>
                         </td>
-                        <td><StatusBadge value={row.customer.status} /></td>
-                        <td>
-                          <div>{row.pppoeBinding?.username || row.desiredPppoeUsername || '-'}</div>
-                          <div className="mt-1"><StatusBadge value={row.pppoeStatus} /></div>
-                        </td>
-                        <td>
-                          <div>{row.pppoeBinding?.routerName || row.routerName || '-'}</div>
-                          <div className="text-muted small">{row.pppoeBinding?.activeAddress || row.pppoeBinding?.remoteAddress || row.staticIp || '-'}</div>
-                        </td>
+                        <td><AccessSummaryCell summary={row.accessSummary?.internetAccess} /></td>
+                        <td><AccessSummaryCell summary={row.accessSummary?.hotspotAccess} /></td>
+                        <td><AccessSummaryCell summary={row.accessSummary?.iptvAccess} /></td>
                         <td>
                           <div className="d-flex align-items-center gap-2">
                             <span className={`badge bg-${row.openTicketCount ? 'orange' : 'secondary'}-lt text-${row.openTicketCount ? 'orange' : 'secondary'}`}>
@@ -904,6 +1259,7 @@ export default function AccountAdminPage() {
                             <div className="text-muted small">No assigned ticket</div>
                           )}
                         </td>
+                        <td><AccountHealthCell row={row} /></td>
                       </tr>
                     ))}
                   </tbody>
