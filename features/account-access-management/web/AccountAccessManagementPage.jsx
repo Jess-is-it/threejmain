@@ -574,7 +574,6 @@ export default function AccountAccessManagementPage({ initialView = 'CUSTOMERS' 
   const tableTitle = isPppoeOnuMappingTab ? `PPPoE & ONUs - ${mappingViewLabel} (${visibleMappingRows.length})` : `${customerTableTitle} (${rows.length})`;
   const moduleViewTabs = [
     { value: 'CUSTOMERS', label: 'Customer Accounts', icon: IconUsers },
-    { value: 'PPPOE_ONU_MAPPING', label: 'PPPoE & ONUs', icon: IconKey },
     { value: 'INTERNET', label: 'Internet Access', icon: IconServer },
     { value: 'HOTSPOT', label: 'Hotspot Access', icon: IconWifi },
     { value: 'IPTV', label: 'IPTV Access', icon: IconActivity }
@@ -1146,23 +1145,25 @@ export default function AccountAccessManagementPage({ initialView = 'CUSTOMERS' 
 
   return (
     <div className="account-access-management-module">
-      <div className="account-access-management-module-view-tabs" role="tablist" aria-label="Account Access Management views">
-        {moduleViewTabs.map((item) => {
-          const Icon = item.icon;
-          return (
-            <button
-              className={`account-access-management-module-view-tab ${moduleView === item.value ? 'active' : ''}`}
-              key={item.value}
-              type="button"
-              onClick={() => changeModuleView(item.value)}
-              role="tab"
-              aria-selected={moduleView === item.value}
-            >
-              <Icon size={17} /> {item.label}
-            </button>
-          );
-        })}
-      </div>
+      {!isPppoeOnuMappingTab && (
+        <div className="account-access-management-module-view-tabs" role="tablist" aria-label="Account Access Management customer account views">
+          {moduleViewTabs.map((item) => {
+            const Icon = item.icon;
+            return (
+              <button
+                className={`account-access-management-module-view-tab ${moduleView === item.value ? 'active' : ''}`}
+                key={item.value}
+                type="button"
+                onClick={() => changeModuleView(item.value)}
+                role="tab"
+                aria-selected={moduleView === item.value}
+              >
+                <Icon size={17} /> {item.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {moduleView === 'HOTSPOT' ? renderHotspotAccess() : (
       <>

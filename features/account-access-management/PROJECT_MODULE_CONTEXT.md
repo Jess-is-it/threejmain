@@ -37,7 +37,7 @@ Current Phase 1 UI is intentionally table-first:
 - Internet Access summarizes PPPoE username/status, router, assigned IP, Service Account plan, and action state.
 - Hotspot Access summary is derived from active Service Accounts, enabled customer mobile contacts, and Pisowifi sync settings.
 - IPTV Access is a future-ready summary contract. It detects IPTV-like Service Account/Order data when present, but no IPTV provisioning controls or live integration are implemented yet.
-- `PPPoE & ONUs` is a separate Account Access Management sub-nav view. It reads MikroTik PPPoE accounts and OLT ONUs from Network Settings and keeps the mapping review outside the Customer Accounts Active/Inactive tabs.
+- `PPPoE & ONUs` is a separate Account Access Management side-nav view. It reads MikroTik PPPoE accounts and OLT ONUs from Network Settings and keeps the mapping review outside Customer Accounts and outside the Customer Accounts Active/Inactive tabs.
 - PPPoE-to-ONU matching is conservative but now accounts for observed device behavior: captured ONUs are first deduplicated by physical OLT/PON/ONU identity, exact PPPoE caller ID/MAC to ONU MAC evidence is matched first, same-OUI low-byte proximity matches use a maximum tail delta of 8 with mutual-best one-to-one assignment, and metadata fallback is used only when ONU identifiers appear in PPPoE text fields.
 - The PPPoE/ONU mapping API also attaches one temporary sample dummy customer profile to the first matched PPPoE/ONU pair so the intended customer-profile binding shape can be reviewed without changing Customer Profiling data.
 - `Hotspot Access` is a separate Account Access Management view for syncing monthly subscriber eligibility to the Pisowifi captive portal. It derives subscriber rows from visible Customer Profiles plus active Service Accounts, supports primary/alternate/secondary mobile contacts, and signs outbound sync calls to Pisowifi. Sync All sends `sync_mode: FULL` so Pisowifi disables subscribers/contacts missing from the exported list; single-row/contact saves send `sync_mode: PARTIAL`.
@@ -86,7 +86,7 @@ The page shows:
 - Clicking a Customer Accounts row or the row View icon opens an inline customer account detail panel. On desktop the Customer Accounts table and detail panel use a 50% / 50% split; on mobile the panel stacks below the table.
 - The Action column uses Customer Profiling-style icon action buttons only, not action hint tags.
 - The detail panel shows customer details and three access tabs: Internet Access, Hotspot, and IPTV.
-- App-shell sidebar sub-nav and the in-page view switch expose Customer Accounts, PPPoE & ONUs, Internet Access, Hotspot Access, and IPTV Access. Internet/IPTV currently reuse the Customer Accounts table with the matching Access filter applied.
+- App-shell sidebar sub-nav exposes only Customer Accounts and PPPoE & ONUs. The Customer Accounts in-page view switch exposes Customer Accounts, Internet Access, Hotspot Access, and IPTV Access; PPPoE & ONUs is intentionally not shown inside Customer Accounts.
 - Hotspot Access settings for Pisowifi API base URL, API key, API secret, and enable/disable state.
 - Hotspot Access subscriber table showing active monthly subscribers, Service Account/plan, synced contact numbers, contact edit actions, and Sync actions.
 - Contact edit modal supports multiple allowed contact numbers per subscriber. One enabled contact number equals one captive portal device after Pisowifi SMS verification.
@@ -136,7 +136,7 @@ Passwords are not returned by the API. Phase 1 only records whether a password c
 
 ## Integration Notes
 
-- App-shell navigation now exposes Account Access Management as a parent sidebar item with Customer Accounts, PPPoE & ONUs, Internet Access, Hotspot Access, and IPTV Access sub-nav items.
+- App-shell navigation exposes Account Access Management as a parent sidebar item with only Customer Accounts and PPPoE & ONUs sub-nav items.
 - The primary app route is `/account-access-management/customer-accounts`; `/account-access-management` opens the same Customer Accounts view and old `/account-admin` bookmarks fall back to Customer Accounts.
 - The primary API prefix is `/api/account-access-management`.
 - Hotspot Access request signing uses `X-3J-Integration-Key`, `X-3J-Timestamp`, `X-3J-Signature`, and `X-3J-Idempotency-Key`. The signature is HMAC-SHA256 over `<timestamp>.<raw body>`.

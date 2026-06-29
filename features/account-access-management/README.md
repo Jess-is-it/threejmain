@@ -23,14 +23,14 @@ The module is not for system-login users, roles, or permissions. System-login ac
 - Customer Accounts keeps existing rows visible during background refreshes, ignores stale overlapping responses, and skips hidden PPPoE/ONU mapping metrics for faster table loads.
 - The Customer Accounts table shows Customer, Internet Access, Hotspot Access, IPTV Access, Tickets, and Action columns.
 - The Action column uses Customer Profiling-style icon buttons only. Clicking the row or the View icon opens a 50/50 inline detail panel with customer details and Internet Access, Hotspot, and IPTV tabs.
-- The PPPoE & ONUs sub-nav exposes the temporary PPPoE-to-ONU mapping review table outside the Customer Accounts status tabs.
+- The PPPoE & ONUs side-nav item exposes the temporary PPPoE-to-ONU mapping review table as a separate view, outside Customer Accounts and outside the Customer Accounts in-page tabs.
 - Show ticket count plus latest assigned ticket Category, Status, Priority, and action hints when a customer has Ticketing records. `INSTALLATION` currently exposes the intended `Create PPPoE Account` action gate.
 - Show Internet Access summary with PPPoE account/status, router name, assigned IP, and Service Account plan when available.
 - Show Hotspot Access summary from active service-account eligibility, enabled mobile contacts, and Pisowifi sync settings.
 - Show IPTV Access as a future-ready summary status when IPTV-like Service Account/Order data exists; no live IPTV provisioning is implemented yet.
 - Expose a temporary PPPoE-to-ONU mapping snapshot with one sample dummy customer profile attached to a matched PPPoE/ONU pair for review.
 - Keep `Hotspot Access` as a separate operations view for Pisowifi API settings, contact overrides, Full/Partial sync, and sync logs.
-- Account Access Management sub-nav views are `Customer Accounts`, `PPPoE & ONUs`, `Internet Access`, `Hotspot Access`, and `IPTV Access`. Internet/IPTV currently reuse the Customer Accounts summary table with the matching Access filter applied.
+- Account Access Management side-nav views are limited to `Customer Accounts` and `PPPoE & ONUs`. Inside Customer Accounts, the in-page view switch includes `Customer Accounts`, `Internet Access`, `Hotspot Access`, and `IPTV Access`; PPPoE & ONUs is not shown there because it is a separate reconciliation view.
 
 Network configuration forms, save actions, MikroTik refresh actions, PPPoE binding, WiFi/CPE editing, and provisioning requests are intentionally hidden from the page for this step.
 Service Account and Installation Order columns are intentionally hidden from the Customer Accounts table for this step.

@@ -73,10 +73,7 @@ const moduleNav = [
     tone: 'purple',
     children: [
       { page: 'Customer Accounts', slug: 'account-access-management/customer-accounts', icon: IconUsers, tone: 'purple' },
-      { page: 'PPPoE & ONUs', slug: 'account-access-management/pppoe-onus', icon: IconRouter, tone: 'cyan' },
-      { page: 'Internet Access', slug: 'account-access-management/internet-access', icon: IconWifi, tone: 'blue' },
-      { page: 'Hotspot Access', slug: 'account-access-management/hotspot-access', icon: IconWifi, tone: 'green' },
-      { page: 'IPTV Access', slug: 'account-access-management/iptv-access', icon: IconActivity, tone: 'indigo' }
+      { page: 'PPPoE & ONUs', slug: 'account-access-management/pppoe-onus', icon: IconRouter, tone: 'cyan' }
     ]
   },
   { page: 'Customer Service Management', slug: 'customer-service-management', icon: IconTool, tone: 'cyan' },
@@ -149,10 +146,7 @@ const technicianNav = [
 const accountAccessManagementPages = {
   'Account Access Management': 'CUSTOMERS',
   'Customer Accounts': 'CUSTOMERS',
-  'PPPoE & ONUs': 'PPPOE_ONU_MAPPING',
-  'Internet Access': 'INTERNET',
-  'Hotspot Access': 'HOTSPOT',
-  'IPTV Access': 'IPTV'
+  'PPPoE & ONUs': 'PPPOE_ONU_MAPPING'
 };
 
 const TECHNICIAN_ALLOWED_PAGES = new Set(['Tech Portal', 'Tech Portal Ticketing', 'View Profile', 'Change Password']);
