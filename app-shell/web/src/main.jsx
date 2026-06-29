@@ -39,7 +39,7 @@ import {
   IconWifi,
   IconX
 } from '@tabler/icons-react';
-import AccountAdminPage from '../../../features/account-admin/web/AccountAdminPage.jsx';
+import AccountAccessManagementPage from '../../../features/account-access-management/web/AccountAccessManagementPage.jsx';
 import BillingPage from '../../../features/billing/web/BillingPage.jsx';
 import CustomerProfilingPage from '../../../features/customer-profiling/web/CustomerProfilingPage.jsx';
 import CustomerServiceManagementPage from '../../../features/customer-service-management/web/CustomerServiceManagementPage.jsx';
@@ -66,7 +66,19 @@ const moduleNav = [
   { page: 'Billing', slug: 'billing', icon: IconCash, tone: 'green' },
   { page: 'Point of Sale', slug: 'point-of-sale', icon: IconBuildingStore, tone: 'yellow' },
   { page: 'Inventory', slug: 'inventory', icon: IconBox, tone: 'orange' },
-  { page: 'Account Admin', slug: 'account-admin', icon: IconUserCog, tone: 'purple' },
+  {
+    page: 'Account Access Management',
+    slug: 'account-access-management',
+    icon: IconUserCog,
+    tone: 'purple',
+    children: [
+      { page: 'Customer Accounts', slug: 'account-access-management/customer-accounts', icon: IconUsers, tone: 'purple' },
+      { page: 'PPPoE & ONUs', slug: 'account-access-management/pppoe-onus', icon: IconRouter, tone: 'cyan' },
+      { page: 'Internet Access', slug: 'account-access-management/internet-access', icon: IconWifi, tone: 'blue' },
+      { page: 'Hotspot Access', slug: 'account-access-management/hotspot-access', icon: IconWifi, tone: 'green' },
+      { page: 'IPTV Access', slug: 'account-access-management/iptv-access', icon: IconActivity, tone: 'indigo' }
+    ]
+  },
   { page: 'Customer Service Management', slug: 'customer-service-management', icon: IconTool, tone: 'cyan' },
   { page: 'Ticketing', slug: 'ticketing', icon: IconTicket, tone: 'red' },
   {
@@ -133,6 +145,15 @@ const technicianNav = [
   { page: 'Tech Portal', label: 'Dashboard', slug: 'techportal', icon: IconDashboard, tone: 'teal' },
   { page: 'Tech Portal Ticketing', label: 'Ticketing', slug: 'techportal/ticketing', icon: IconTicket, tone: 'red' }
 ];
+
+const accountAccessManagementPages = {
+  'Account Access Management': 'CUSTOMERS',
+  'Customer Accounts': 'CUSTOMERS',
+  'PPPoE & ONUs': 'PPPOE_ONU_MAPPING',
+  'Internet Access': 'INTERNET',
+  'Hotspot Access': 'HOTSPOT',
+  'IPTV Access': 'IPTV'
+};
 
 const TECHNICIAN_ALLOWED_PAGES = new Set(['Tech Portal', 'Tech Portal Ticketing', 'View Profile', 'Change Password']);
 const LOGIN_VARIANTS = {
@@ -248,6 +269,7 @@ function pageFromPath(pathname) {
   const slug = String(pathname || '').replace(/^\/+|\/+$/g, '') || 'dashboard';
   const item = navItems().find((navItem) => navItem.slug && navItem.slug === slug);
   if (item) return item.page;
+  if (slug === 'account-admin') return 'Customer Accounts';
   if (slug === 'network-settings/devices') return 'MikroTik API';
   if (slug === 'network-settings/fbts') return 'Splitters';
   if (slug === 'profile') return 'View Profile';
@@ -923,6 +945,8 @@ function App() {
     setAuthed(false);
   };
 
+  const accountAccessManagementInitialView = accountAccessManagementPages[activePage];
+
   return (
     <div className={`page ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       <Sidebar page={activePage} setPage={navigate} me={me} logout={logout} branding={branding} versionInfo={versionInfo} collapsed={sidebarCollapsed} navItems={activeNavItems} />
@@ -938,7 +962,7 @@ function App() {
             {!technicianUser && activePage === 'Billing' && <BillingPage refreshShell={refresh} />}
             {!technicianUser && activePage === 'Point of Sale' && <PointOfSalePage refreshShell={refresh} />}
             {!technicianUser && activePage === 'Inventory' && <InventoryPage refreshShell={refresh} />}
-            {!technicianUser && activePage === 'Account Admin' && <AccountAdminPage refreshShell={refresh} />}
+            {!technicianUser && accountAccessManagementInitialView && <AccountAccessManagementPage initialView={accountAccessManagementInitialView} refreshShell={refresh} />}
             {!technicianUser && activePage === 'Customer Service Management' && <CustomerServiceManagementPage refreshShell={refresh} />}
             {!technicianUser && activePage === 'Ticketing' && <TicketingPage refreshShell={refresh} />}
             {!technicianUser && activePage === 'Service Catalog' && <ServicePage initialSection="catalog" refreshShell={refresh} />}
@@ -965,7 +989,7 @@ function App() {
               'Billing',
               'Point of Sale',
               'Inventory',
-              'Account Admin',
+              'Account Access Management',
               'Customer Service Management',
               'Ticketing',
               'Service',

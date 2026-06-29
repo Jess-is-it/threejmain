@@ -1,4 +1,4 @@
-.account-admin-module-view-tabs {
+.account-access-management-module-view-tabs {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
@@ -6,7 +6,7 @@
   margin-bottom: 1rem;
 }
 
-.account-admin-module-view-tab {
+.account-access-management-module-view-tab {
   align-items: center;
   background: #ffffff;
   border: 1px solid var(--admin-border);
@@ -19,28 +19,28 @@
   padding: 0.45rem 0.8rem;
 }
 
-.account-admin-module-view-tab.active {
+.account-access-management-module-view-tab.active {
   border-color: #206bc4;
   box-shadow: inset 0 0 0 1px #206bc4;
   color: #1e293b;
 }
 
-.account-admin-customer-workspace {
+.account-access-management-customer-workspace {
   align-items: start;
   display: grid;
   gap: 1rem;
   grid-template-columns: minmax(0, 1fr);
 }
 
-.account-admin-customer-workspace.has-detail-panel {
+.account-access-management-customer-workspace.has-detail-panel {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 
-.account-admin-customer-main {
+.account-access-management-customer-main {
   min-width: 0;
 }
 
-.account-admin-detail-panel {
+.account-access-management-detail-panel {
   background: #ffffff;
   border: 1px solid var(--admin-border);
   border-radius: 0.5rem;
@@ -51,7 +51,7 @@
   top: 1rem;
 }
 
-.account-admin-detail-panel-header {
+.account-access-management-detail-panel-header {
   align-items: flex-start;
   border-bottom: 1px solid var(--admin-border);
   display: flex;
@@ -60,36 +60,36 @@
   padding: 1rem 1.25rem;
 }
 
-.account-admin-detail-heading {
+.account-access-management-detail-heading {
   display: grid;
   gap: 0.35rem;
   min-width: 0;
 }
 
-.account-admin-detail-heading h3 {
+.account-access-management-detail-heading h3 {
   font-size: 1rem;
   line-height: 1.35;
   margin: 0;
   overflow-wrap: anywhere;
 }
 
-.account-admin-detail-badges,
-.account-admin-detail-access-heading {
+.account-access-management-detail-badges,
+.account-access-management-detail-access-heading {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
 }
 
-.account-admin-detail-panel-body {
+.account-access-management-detail-panel-body {
   background: #f8fafc;
   display: grid;
   gap: 1rem;
   padding: 1.25rem;
 }
 
-.account-admin-detail-section,
-.account-admin-detail-access-card {
+.account-access-management-detail-section,
+.account-access-management-detail-access-card {
   background: #ffffff;
   border: 1px solid var(--admin-border);
   border-radius: 0.5rem;
@@ -98,44 +98,44 @@
   padding: 0.9rem;
 }
 
-.account-admin-detail-section h4 {
+.account-access-management-detail-section h4 {
   color: #1e293b;
   font-size: 0.86rem;
   margin: 0;
 }
 
-.account-admin-detail-info-list {
+.account-access-management-detail-info-list {
   display: grid;
   gap: 0.55rem;
 }
 
-.account-admin-detail-info-row {
+.account-access-management-detail-info-row {
   display: grid;
   gap: 0.25rem;
   min-width: 0;
 }
 
-.account-admin-detail-info-row span {
+.account-access-management-detail-info-row span {
   color: #64748b;
   font-size: 0.76rem;
 }
 
-.account-admin-detail-info-row strong {
+.account-access-management-detail-info-row strong {
   color: #1e293b;
   font-size: 0.86rem;
   overflow-wrap: anywhere;
 }
 
-.account-admin-detail-tabs {
+.account-access-management-detail-tabs {
   margin-bottom: 0;
 }
 
-.account-admin-table-card > .card-header {
+.account-access-management-table-card > .card-header {
   align-items: center;
   gap: 0.75rem;
 }
 
-.account-admin-table-card > .card-header .card-title {
+.account-access-management-table-card > .card-header .card-title {
   align-items: center;
   display: inline-flex;
   line-height: 1.2;
@@ -144,7 +144,7 @@
   white-space: nowrap;
 }
 
-.account-admin-table-card > .card-header .card-actions {
+.account-access-management-table-card > .card-header .card-actions {
   align-items: center;
   display: flex;
   flex: 1 1 auto;
@@ -152,7 +152,7 @@
   min-width: 0;
 }
 
-.account-admin-header-actions {
+.account-access-management-header-actions {
   align-items: center;
   gap: 0.5rem;
   justify-content: flex-end;
@@ -160,22 +160,22 @@
   width: 100%;
 }
 
-.account-admin-header-search {
+.account-access-management-header-search {
   flex: 1 1 18rem;
   max-width: 28rem;
   min-width: min(18rem, 100%);
 }
 
-.account-admin-header-search-input {
+.account-access-management-header-search-input {
   position: relative;
   width: 100%;
 }
 
-.account-admin-header-search-input .form-control {
+.account-access-management-header-search-input .form-control {
   padding-right: 2rem;
 }
 
-.account-admin-header-icon-button {
+.account-access-management-header-icon-button {
   align-items: center;
   display: inline-flex;
   flex: 0 0 auto;
@@ -187,7 +187,7 @@
   width: 1.875rem;
 }
 
-.account-admin-search-clear {
+.account-access-management-search-clear {
   align-items: center;
   background: transparent;
   border: 0;
@@ -204,19 +204,19 @@
   width: 1.35rem;
 }
 
-.account-admin-search-clear:hover,
-.account-admin-search-clear:focus-visible {
+.account-access-management-search-clear:hover,
+.account-access-management-search-clear:focus-visible {
   background: #f1f5f9;
   color: #1e293b;
 }
 
-.account-admin-table-filters {
+.account-access-management-table-filters {
   border-bottom: 1px solid var(--admin-border);
   margin-bottom: 1rem;
   padding: 0 0 1rem;
 }
 
-.account-admin-status-tabs {
+.account-access-management-status-tabs {
   border-bottom: 1px solid var(--admin-border);
   display: flex;
   flex-wrap: wrap;
@@ -224,7 +224,7 @@
   margin-bottom: 1rem;
 }
 
-.account-admin-status-tab {
+.account-access-management-status-tab {
   align-items: center;
   background: transparent;
   border: 0;
@@ -237,12 +237,12 @@
   padding: 0 0.25rem 0.65rem;
 }
 
-.account-admin-status-tab.active {
+.account-access-management-status-tab.active {
   border-bottom-color: #206bc4;
   color: #1e293b;
 }
 
-.account-admin-mapping-sample {
+.account-access-management-mapping-sample {
   align-items: center;
   background: #f8fafc;
   border: 1px solid var(--admin-border);
@@ -254,7 +254,7 @@
   padding: 0.85rem 1rem;
 }
 
-.account-admin-mapping-tabs {
+.account-access-management-mapping-tabs {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
@@ -262,7 +262,7 @@
   margin-bottom: 1rem;
 }
 
-.account-admin-mapping-tab {
+.account-access-management-mapping-tab {
   align-items: center;
   background: #ffffff;
   border: 1px solid var(--admin-border);
@@ -275,51 +275,51 @@
   padding: 0.35rem 0.7rem;
 }
 
-.account-admin-mapping-tab.active {
+.account-access-management-mapping-tab.active {
   border-color: #206bc4;
   color: #1e293b;
   box-shadow: inset 0 0 0 1px #206bc4;
 }
 
-.account-admin-table {
+.account-access-management-table {
   min-width: 980px;
 }
 
-.account-admin-customer-workspace.has-detail-panel .account-admin-table:not(.account-admin-mapping-table) {
+.account-access-management-customer-workspace.has-detail-panel .account-access-management-table:not(.account-access-management-mapping-table) {
   min-width: 780px;
 }
 
-.account-admin-mapping-table {
+.account-access-management-mapping-table {
   min-width: 1180px;
 }
 
-.account-admin-table th {
+.account-access-management-table th {
   white-space: nowrap;
 }
 
-.account-admin-table td {
+.account-access-management-table td {
   vertical-align: middle;
 }
 
-.account-admin-table tr.table-active {
+.account-access-management-table tr.table-active {
   box-shadow: inset 0.22rem 0 #206bc4;
 }
 
-.account-admin-clickable-row {
+.account-access-management-clickable-row {
   cursor: pointer;
 }
 
-.account-admin-clickable-row:hover {
+.account-access-management-clickable-row:hover {
   background: #f8fafc;
 }
 
-.account-admin-clickable-row:focus-visible {
+.account-access-management-clickable-row:focus-visible {
   outline: 2px solid rgba(32, 107, 196, 0.45);
   outline-offset: -2px;
 }
 
-.account-admin-customer-badges,
-.account-admin-access-detail-list {
+.account-access-management-customer-badges,
+.account-access-management-access-detail-list {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
@@ -327,20 +327,20 @@
   margin-top: 0.35rem;
 }
 
-.account-admin-access-cell {
+.account-access-management-access-cell {
   display: grid;
   gap: 0.25rem;
   min-width: 10rem;
 }
 
-.account-admin-compact-access-cell {
+.account-access-management-compact-access-cell {
   align-items: center;
   display: flex;
   gap: 0.55rem;
   min-width: 7.5rem;
 }
 
-.account-admin-check-indicator {
+.account-access-management-check-indicator {
   align-items: center;
   background: #f1f5f9;
   border: 1px solid #cbd5e1;
@@ -354,37 +354,37 @@
   width: 1.75rem;
 }
 
-.account-admin-check-indicator.active {
+.account-access-management-check-indicator.active {
   background: #e8f7ee;
   border-color: #2fb344;
   color: #2fb344;
 }
 
-.account-admin-access-heading {
+.account-access-management-access-heading {
   align-items: center;
   display: flex;
   min-height: 1.35rem;
 }
 
-.account-admin-access-primary {
+.account-access-management-access-primary {
   line-height: 1.25;
   max-width: 14rem;
   overflow-wrap: anywhere;
 }
 
-.account-admin-actions-column {
+.account-access-management-actions-column {
   min-width: 4.75rem;
   width: 4.75rem;
 }
 
-.account-admin-row-actions {
+.account-access-management-row-actions {
   align-items: center;
   display: inline-flex;
   gap: 0.25rem;
   justify-content: center;
 }
 
-.account-admin-action-badge {
+.account-access-management-action-badge {
   align-items: center;
   border-radius: 0.5rem;
   box-shadow: none;
@@ -398,18 +398,18 @@
   width: 40px;
 }
 
-.account-admin-action-badge svg {
+.account-access-management-action-badge svg {
   height: 21px;
   width: 21px;
 }
 
-.account-admin-action-badge:hover,
-.account-admin-action-badge:focus-visible {
+.account-access-management-action-badge:hover,
+.account-access-management-action-badge:focus-visible {
   box-shadow: inset 0 0 0 1px currentColor;
   text-decoration: none;
 }
 
-.account-admin-refreshing {
+.account-access-management-refreshing {
   align-items: center;
   color: #64748b;
   display: inline-flex;
@@ -418,16 +418,16 @@
   min-height: 1.25rem;
 }
 
-.account-admin-hotspot-search {
+.account-access-management-hotspot-search {
   min-width: min(18rem, 100%);
 }
 
-.account-admin-hotspot-status {
+.account-access-management-hotspot-status {
   min-width: 9rem;
   width: auto;
 }
 
-.account-admin-contact-stack {
+.account-access-management-contact-stack {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
@@ -435,16 +435,16 @@
   max-width: 28rem;
 }
 
-.account-admin-modal-backdrop {
+.account-access-management-modal-backdrop {
   background: rgba(15, 23, 42, 0.46);
 }
 
-.account-admin-hotspot-contact-list {
+.account-access-management-hotspot-contact-list {
   display: grid;
   gap: 0.75rem;
 }
 
-.account-admin-hotspot-contact-row {
+.account-access-management-hotspot-contact-row {
   align-items: end;
   background: #f8fafc;
   border: 1px solid var(--admin-border);
@@ -455,7 +455,7 @@
   padding: 0.85rem;
 }
 
-.account-admin-hotspot-contact-switch {
+.account-access-management-hotspot-contact-switch {
   align-items: center;
   display: flex;
   gap: 0.45rem;
@@ -464,47 +464,47 @@
 }
 
 @media (max-width: 768px) {
-  .account-admin-customer-workspace.has-detail-panel {
+  .account-access-management-customer-workspace.has-detail-panel {
     grid-template-columns: 1fr;
   }
 
-  .account-admin-detail-panel {
+  .account-access-management-detail-panel {
     position: static;
   }
 
-  .account-admin-table-card > .card-header {
+  .account-access-management-table-card > .card-header {
     align-items: flex-start;
   }
 
-  .account-admin-table-card > .card-header .card-actions {
+  .account-access-management-table-card > .card-header .card-actions {
     width: 100%;
   }
 
-  .account-admin-header-actions {
+  .account-access-management-header-actions {
     align-items: stretch;
     flex-wrap: wrap;
     justify-content: flex-start;
   }
 
-  .account-admin-header-search {
+  .account-access-management-header-search {
     flex: 1 1 100%;
     max-width: none;
   }
 
-  .account-admin-mapping-sample {
+  .account-access-management-mapping-sample {
     grid-template-columns: 1fr;
   }
 
-  .account-admin-hotspot-search,
-  .account-admin-hotspot-status {
+  .account-access-management-hotspot-search,
+  .account-access-management-hotspot-status {
     width: 100%;
   }
 
-  .account-admin-hotspot-contact-row {
+  .account-access-management-hotspot-contact-row {
     grid-template-columns: 1fr;
   }
 
-  .account-admin-hotspot-contact-switch {
+  .account-access-management-hotspot-contact-switch {
     justify-content: flex-start;
   }
 }

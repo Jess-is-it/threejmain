@@ -20,7 +20,7 @@ MODULE_API_PATHS = [
     ("billing", "api"),
     ("point-of-sale", "api"),
     ("inventory", "api"),
-    ("account-admin", "api"),
+    ("account-access-management", "api"),
     ("customer-service-management", "api"),
     ("ticketing", "api"),
     ("service", "api"),
@@ -41,7 +41,7 @@ for parent in Path(__file__).resolve().parents:
             if local_module_api_root.exists():
                 sys.path.insert(0, str(local_module_api_root))
 
-from account_admin import account_admin_metrics, configure_account_admin, router as account_admin_router, seed_account_admin_data
+from account_access_management import account_access_management_metrics, configure_account_access_management, router as account_access_management_router, seed_account_access_management_data
 from billing import billing_metrics, configure_billing, router as billing_router, seed_billing_data
 from customer_profiling import configure_customer_profiling, customer_metrics, router as customer_profiling_router, seed_customer_data
 from customer_profiling.router import find_customer, list_customers
@@ -165,12 +165,12 @@ modules = [
         "metrics": {"items": 0, "low_stock": 0, "assigned_assets": 0},
     },
     {
-        "slug": "account-admin",
-        "name": "Account Admin",
-        "folder": "features/account-admin",
+        "slug": "account-access-management",
+        "name": "Account Access Management",
+        "folder": "features/account-access-management",
         "status": "functional-shell",
-        "description": "Admin account CRUD, active/inactive lifecycle, account security, and future audit controls.",
-        "metrics": {"admins": 1, "roles": 1, "locked_accounts": 0},
+        "description": "Customer account access summaries, PPPoE/ONU reconciliation, Hotspot Access sync, and future IPTV access management.",
+        "metrics": {"customer_accounts": 0, "active_customer_accounts": 0, "inactive_customer_accounts": 0},
     },
     {
         "slug": "customer-service-management",
@@ -355,7 +355,7 @@ def seed_module_data() -> None:
     seed_billing_data()
     seed_point_of_sale_data()
     seed_inventory_data()
-    seed_account_admin_data()
+    seed_account_access_management_data()
     seed_customer_service_data()
     seed_ticketing_data()
     seed_service_data()
@@ -369,7 +369,7 @@ def sync_module_metrics() -> None:
         "billing": billing_metrics,
         "point-of-sale": point_of_sale_metrics,
         "inventory": inventory_metrics,
-        "account-admin": account_admin_metrics,
+        "account-access-management": account_access_management_metrics,
         "customer-service-management": customer_service_metrics,
         "ticketing": ticketing_metrics,
         "service": service_metrics,
@@ -527,7 +527,7 @@ configure_customer_profiling(current_admin, add_audit)
 configure_billing(current_admin, add_audit, resolve_customer_for_modules, search_customers_for_modules, seed_customer_data)
 configure_point_of_sale(current_admin, add_audit, resolve_customer_for_modules, search_customers_for_modules, seed_customer_data)
 configure_inventory(current_admin, add_audit)
-configure_account_admin(current_admin, add_audit)
+configure_account_access_management(current_admin, add_audit)
 configure_customer_service_management(current_admin, add_audit, resolve_customer_for_modules, search_customers_for_modules, seed_customer_data)
 configure_ticketing(current_admin, add_audit, resolve_customer_for_modules, search_customers_for_modules, seed_customer_data)
 configure_service(
@@ -555,7 +555,7 @@ app.include_router(customer_profiling_router)
 app.include_router(billing_router)
 app.include_router(point_of_sale_router)
 app.include_router(inventory_router)
-app.include_router(account_admin_router)
+app.include_router(account_access_management_router)
 app.include_router(customer_service_router)
 app.include_router(ticketing_router)
 app.include_router(service_router)

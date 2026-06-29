@@ -1,17 +1,17 @@
-# Customer Network Module Context
+# Account Access Management Module Context
 
-This is the module-local source of truth for the Customer Network implementation. Keep ordinary module progress here instead of editing the root `Project_Context.md`.
+This is the module-local source of truth for the Account Access Management implementation. Keep ordinary module progress here instead of editing the root `Project_Context.md`.
 
 ## Module Folder
 
-The implementation still uses the existing module folder for compatibility:
+The implementation is owned by the renamed module folder:
 
 ```text
-account-admin/
-  api/account_admin/__init__.py
-  api/account_admin/router.py
-  web/AccountAdminPage.jsx
-  web/accountAdmin.css
+account-access-management/
+  api/account_access_management/__init__.py
+  api/account_access_management/router.py
+  web/AccountAccessManagementPage.jsx
+  web/accountAccessManagement.css
   README.md
   module.json
   PROJECT_MODULE_CONTEXT.md
@@ -19,28 +19,28 @@ account-admin/
 
 ## Current Scope
 
-Operator-facing name: Customer Network.
+Operator-facing name: Account Access Management.
 
-Customer Network manages customer-level network service configuration. It ties together Customer Profiling records, Service module accounts/orders, and Network Settings MikroTik PPPoE discovery.
+Account Access Management manages customer-level network service configuration. It ties together Customer Profiling records, Service module accounts/orders, and Network Settings MikroTik PPPoE discovery.
 
 Current Phase 1 UI is intentionally table-first:
 
 - One Customer Account row is created for every visible Customer Profile.
 - The Customer Accounts table is the master access summary for each customer after a Customer Profile exists.
-- Customer Accounts now summarizes Internet/PPPoE access, Hotspot Access eligibility/sync readiness, future IPTV Access state, latest Ticketing action, and overall account health.
+- Customer Accounts now summarizes Internet/PPPoE access, Hotspot Access eligibility/sync readiness, future IPTV Access state, and customer ticket counts.
 - Search, filter toggle, and tabs follow the Customer Profiling table pattern.
 - Customer Accounts tabs are limited to `Active` and `Inactive`, with badge counts.
 - Account groupings such as `Needs Action`, `With Internet`, `With Hotspot`, `With IPTV`, and `No Access` are Access filter options instead of tabs.
 - Customer Accounts filters include Access, Customer Status, Internet Access, Hotspot Access, IPTV Access, and PPPoE Status.
 - Ticket count and latest ticket details are read from the Ticketing module.
-- Latest ticket Category, Status, Priority, and ticket-driven Account Admin action hints are shown in the Customer Accounts table. `INSTALLATION` tickets currently expose the intended `Create PPPoE Account` action hint for the next provisioning step.
+- Latest ticket Category, Status, Priority, and ticket-driven Account Access Management action hints are shown in the Customer Accounts table. `INSTALLATION` tickets currently expose the intended `Create PPPoE Account` action hint for the next provisioning step.
 - Internet Access summarizes PPPoE username/status, router, assigned IP, Service Account plan, and action state.
 - Hotspot Access summary is derived from active Service Accounts, enabled customer mobile contacts, and Pisowifi sync settings.
 - IPTV Access is a future-ready summary contract. It detects IPTV-like Service Account/Order data when present, but no IPTV provisioning controls or live integration are implemented yet.
-- The temporary PPPoE/ONU mapping API still reads MikroTik PPPoE accounts and OLT ONUs from Network Settings, but it is no longer shown as a Customer Accounts tab.
+- `PPPoE & ONUs` is a separate Account Access Management sub-nav view. It reads MikroTik PPPoE accounts and OLT ONUs from Network Settings and keeps the mapping review outside the Customer Accounts Active/Inactive tabs.
 - PPPoE-to-ONU matching is conservative but now accounts for observed device behavior: captured ONUs are first deduplicated by physical OLT/PON/ONU identity, exact PPPoE caller ID/MAC to ONU MAC evidence is matched first, same-OUI low-byte proximity matches use a maximum tail delta of 8 with mutual-best one-to-one assignment, and metadata fallback is used only when ONU identifiers appear in PPPoE text fields.
 - The PPPoE/ONU mapping API also attaches one temporary sample dummy customer profile to the first matched PPPoE/ONU pair so the intended customer-profile binding shape can be reviewed without changing Customer Profiling data.
-- `Hotspot Access` is a separate Account Admin view for syncing monthly subscriber eligibility to the Pisowifi captive portal. It derives subscriber rows from visible Customer Profiles plus active Service Accounts, supports primary/alternate/secondary mobile contacts, and signs outbound sync calls to Pisowifi. Sync All sends `sync_mode: FULL` so Pisowifi disables subscribers/contacts missing from the exported list; single-row/contact saves send `sync_mode: PARTIAL`.
+- `Hotspot Access` is a separate Account Access Management view for syncing monthly subscriber eligibility to the Pisowifi captive portal. It derives subscriber rows from visible Customer Profiles plus active Service Accounts, supports primary/alternate/secondary mobile contacts, and signs outbound sync calls to Pisowifi. Sync All sends `sync_mode: FULL` so Pisowifi disables subscribers/contacts missing from the exported list; single-row/contact saves send `sync_mode: PARTIAL`.
 - Service Account and Installation Order columns are hidden from the current Customer Accounts table.
 - Network configuration forms, save buttons, MikroTik refresh buttons, PPPoE binding controls, and review-only controls are hidden for this step.
 
@@ -48,32 +48,32 @@ System-login users, roles, permissions, auth settings, and password reset contro
 
 ## API
 
-FastAPI package: `features/account-admin/api/account_admin`
+FastAPI package: `features/account-access-management/api/account_access_management`
 
-API prefix: `/api/account-admin`
+API prefix: `/api/account-access-management`
 
 Routes:
 
-- `GET /api/account-admin/health`
-- `GET /api/account-admin/meta`
-- `GET /api/account-admin/overview`
-- `GET /api/account-admin/customer-accounts`
-- `GET /api/account-admin/customer-accounts/{customer_id}`
-- `GET /api/account-admin/pppoe-onu-mapping`
-- `GET /api/account-admin/hotspot-access`
-- `PATCH /api/account-admin/hotspot-access/settings`
-- `POST /api/account-admin/hotspot-access/test`
-- `PATCH /api/account-admin/hotspot-access/subscribers/{customer_id}/contacts`
-- `POST /api/account-admin/hotspot-access/sync`
-- `POST /api/account-admin/hotspot-access/subscribers/{customer_id}/sync`
+- `GET /api/account-access-management/health`
+- `GET /api/account-access-management/meta`
+- `GET /api/account-access-management/overview`
+- `GET /api/account-access-management/customer-accounts`
+- `GET /api/account-access-management/customer-accounts/{customer_id}`
+- `GET /api/account-access-management/pppoe-onu-mapping`
+- `GET /api/account-access-management/hotspot-access`
+- `PATCH /api/account-access-management/hotspot-access/settings`
+- `POST /api/account-access-management/hotspot-access/test`
+- `PATCH /api/account-access-management/hotspot-access/subscribers/{customer_id}/contacts`
+- `POST /api/account-access-management/hotspot-access/sync`
+- `POST /api/account-access-management/hotspot-access/subscribers/{customer_id}/sync`
 
-Legacy system-login `/api/account-admin/accounts` routes return `410 Gone`.
+Legacy system-login `/api/account-access-management/accounts` routes return `410 Gone`.
 
 ## Frontend
 
-Frontend entry: `features/account-admin/web/AccountAdminPage.jsx`
+Frontend entry: `features/account-access-management/web/AccountAccessManagementPage.jsx`
 
-Styles: `features/account-admin/web/accountAdmin.css`
+Styles: `features/account-access-management/web/accountAccessManagement.css`
 
 The page shows:
 
@@ -86,7 +86,7 @@ The page shows:
 - Clicking a Customer Accounts row or the row View icon opens an inline customer account detail panel. On desktop the Customer Accounts table and detail panel use a 50% / 50% split; on mobile the panel stacks below the table.
 - The Action column uses Customer Profiling-style icon action buttons only, not action hint tags.
 - The detail panel shows customer details and three access tabs: Internet Access, Hotspot, and IPTV.
-- A top-level view switch between Customer Accounts, Internet Access, Hotspot Access, and IPTV Access. Internet/IPTV currently reuse the Customer Accounts table with the matching Access filter applied.
+- App-shell sidebar sub-nav and the in-page view switch expose Customer Accounts, PPPoE & ONUs, Internet Access, Hotspot Access, and IPTV Access. Internet/IPTV currently reuse the Customer Accounts table with the matching Access filter applied.
 - Hotspot Access settings for Pisowifi API base URL, API key, API secret, and enable/disable state.
 - Hotspot Access subscriber table showing active monthly subscribers, Service Account/plan, synced contact numbers, contact edit actions, and Sync actions.
 - Contact edit modal supports multiple allowed contact numbers per subscriber. One enabled contact number equals one captive portal device after Pisowifi SMS verification.
@@ -136,11 +136,11 @@ Passwords are not returned by the API. Phase 1 only records whether a password c
 
 ## Integration Notes
 
-- The module remains routed as `/account-admin` and `/api/account-admin` until an integration pass renames shared navigation/routes.
-- `module.json` uses the Customer Network label for future app-shell metadata consumers.
-- App-shell hardcoded module metadata may still show Account Admin until Integration Codex updates shared navigation.
+- App-shell navigation now exposes Account Access Management as a parent sidebar item with Customer Accounts, PPPoE & ONUs, Internet Access, Hotspot Access, and IPTV Access sub-nav items.
+- The primary app route is `/account-access-management/customer-accounts`; `/account-access-management` opens the same Customer Accounts view and old `/account-admin` bookmarks fall back to Customer Accounts.
+- The primary API prefix is `/api/account-access-management`.
 - Hotspot Access request signing uses `X-3J-Integration-Key`, `X-3J-Timestamp`, `X-3J-Signature`, and `X-3J-Idempotency-Key`. The signature is HMAC-SHA256 over `<timestamp>.<raw body>`.
-- The signed payload includes `sync_mode`. Use `FULL` only for complete Account Admin exports; use `PARTIAL` for one-subscriber/contact saves so Pisowifi does not disable unrelated monthly access.
+- The signed payload includes `sync_mode`. Use `FULL` only for complete Account Access Management exports; use `PARTIAL` for one-subscriber/contact saves so Pisowifi does not disable unrelated monthly access.
 
 ## Known Gaps
 
@@ -152,5 +152,5 @@ Passwords are not returned by the API. Phase 1 only records whether a password c
 - Network configuration editing, PPPoE binding, live PPPoE create/update/disable, WiFi/CPE writes, and router profile changes are future steps.
 - PPPoE creation is not implemented yet. The next step should allow create only from an eligible `INSTALLATION` ticket, resolve the customer's System Settings `locationId`/address to a MikroTik router through Network Settings location bindings, then call the live RouterOS provisioning adapter.
 - Durable PostgreSQL tables and audit-grade sync history are future work.
-- Hotspot Access settings/contact overrides currently persist to the configured JSON state file. Docker deployments should set `ACCOUNT_ADMIN_HOTSPOT_STATE_PATH=/app/data/account_admin_hotspot.json` so the file is stored in the API data volume. Move this to a durable module database table if 3J Main later standardizes module persistence beyond Customer Profiling.
+- Hotspot Access settings/contact overrides currently persist to the configured JSON state file. Docker deployments should set `ACCOUNT_ACCESS_MANAGEMENT_HOTSPOT_STATE_PATH=/app/data/account_access_management_hotspot.json` so the file is stored in the API data volume. The old `ACCOUNT_ADMIN_HOTSPOT_STATE_PATH` is still accepted as a fallback. Move this to a durable module database table if 3J Main later standardizes module persistence beyond Customer Profiling.
 - IPTV Access is currently summary-only and depends on future Service/IPTV data contracts before provisioning, device binding, or live IPTV account sync can be added.

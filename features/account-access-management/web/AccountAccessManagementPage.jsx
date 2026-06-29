@@ -25,7 +25,7 @@ import {
   IconWifi,
   IconX
 } from '@tabler/icons-react';
-import './accountAdmin.css';
+import './accountAccessManagement.css';
 
 const API = '/api';
 
@@ -63,6 +63,7 @@ const pppoeStatuses = ['UNBOUND', 'ONLINE', 'OFFLINE', 'DISABLED'];
 const internetAccessStatuses = ['ACTIVE', 'PROVISIONED', 'OFFLINE', 'DISABLED', 'NEEDS_SETUP', 'PENDING_SERVICE', 'NO_SERVICE'];
 const hotspotAccessStatuses = ['ACTIVE', 'READY_TO_SYNC', 'NO_CONTACT', 'NO_SERVICE', 'SUSPENDED'];
 const iptvAccessStatuses = ['ACTIVE', 'NEEDS_SETUP', 'PENDING', 'SUBSCRIBED', 'NOT_SUBSCRIBED'];
+const moduleViews = new Set(['CUSTOMERS', 'PPPOE_ONU_MAPPING', 'INTERNET', 'HOTSPOT', 'IPTV']);
 
 function token() {
   return localStorage.getItem('threejmain_token');
@@ -108,6 +109,30 @@ function defaultAccessFilterForModuleView(view) {
   return '';
 }
 
+function normalizedModuleView(view) {
+  return moduleViews.has(view) ? view : 'CUSTOMERS';
+}
+
+function filtersForModuleView(view, current = blankFilters) {
+  const nextView = normalizedModuleView(view);
+  if (nextView === 'PPPOE_ONU_MAPPING') {
+    return {
+      ...current,
+      lifecycle: PPPOE_ONU_MAPPING_TAB,
+      accessFilter: '',
+      customerStatus: '',
+      internetStatus: '',
+      hotspotStatus: '',
+      iptvStatus: ''
+    };
+  }
+  return {
+    ...current,
+    lifecycle: current.lifecycle === PPPOE_ONU_MAPPING_TAB ? 'ACCOUNT_ACTIVE' : (current.lifecycle || 'ACCOUNT_ACTIVE'),
+    accessFilter: defaultAccessFilterForModuleView(nextView)
+  };
+}
+
 function hotspotSyncResult(log) {
   return log?.details?.result || log?.details || {};
 }
@@ -139,14 +164,14 @@ function HotspotSyncResultChips({ log }) {
 function AccessSummaryCell({ summary }) {
   const details = (summary?.details || []).filter(Boolean);
   return (
-    <div className="account-admin-access-cell">
-      <div className="account-admin-access-heading">
+    <div className="account-access-management-access-cell">
+      <div className="account-access-management-access-heading">
         <StatusBadge value={summary?.status || 'NO_SERVICE'} />
       </div>
-      <div className="fw-semibold account-admin-access-primary">{summary?.primary || '-'}</div>
+      <div className="fw-semibold account-access-management-access-primary">{summary?.primary || '-'}</div>
       {summary?.secondary && <div className="text-muted small">{summary.secondary}</div>}
       {details.length > 0 && (
-        <div className="account-admin-access-detail-list">
+        <div className="account-access-management-access-detail-list">
           {details.slice(0, 3).map((detail) => (
             <span className="badge bg-secondary-lt text-secondary" key={detail}>{detail}</span>
           ))}
@@ -158,7 +183,7 @@ function AccessSummaryCell({ summary }) {
 
 function CheckIndicator({ active, label }) {
   return (
-    <span className={`account-admin-check-indicator ${active ? 'active' : ''}`} title={`${label}: ${active ? 'Active' : 'Inactive'}`} aria-label={`${label}: ${active ? 'Active' : 'Inactive'}`}>
+    <span className={`account-access-management-check-indicator ${active ? 'active' : ''}`} title={`${label}: ${active ? 'Active' : 'Inactive'}`} aria-label={`${label}: ${active ? 'Active' : 'Inactive'}`}>
       {active ? <IconCircleCheck size={17} /> : <span aria-hidden="true">-</span>}
     </span>
   );
@@ -169,7 +194,7 @@ function HotspotAccessCell({ summary }) {
   const enabled = Number(summary?.enabledContactCount || 0);
   const total = Number(summary?.contactCount || 0);
   return (
-    <div className="account-admin-compact-access-cell">
+    <div className="account-access-management-compact-access-cell">
       <CheckIndicator active={active} label="Hotspot Access" />
       <div>
         <div className="fw-semibold">{active ? 'Active' : 'Inactive'}</div>
@@ -182,7 +207,7 @@ function HotspotAccessCell({ summary }) {
 function IptvAccessCell({ summary }) {
   const active = summary?.status === 'ACTIVE' || Boolean(summary?.hasAccess);
   return (
-    <div className="account-admin-compact-access-cell">
+    <div className="account-access-management-compact-access-cell">
       <CheckIndicator active={active} label="IPTV Access" />
       <div className="fw-semibold">{active ? 'Active' : 'Inactive'}</div>
     </div>
@@ -206,8 +231,10 @@ function Card({ title, icon: Icon, children, actions, className = '' }) {
   );
 }
 
-export default function AccountAdminPage() {
-  const [moduleView, setModuleView] = useState('CUSTOMERS');
+export default function AccountAccessManagementPage({ initialView = 'CUSTOMERS' } = {}) {
+  const initialModuleView = normalizedModuleView(initialView);
+  const initialFilters = filtersForModuleView(initialModuleView);
+  const [moduleView, setModuleView] = useState(initialModuleView);
   const [rows, setRows] = useState([]);
   const [mappingRows, setMappingRows] = useState([]);
   const [mappingMeta, setMappingMeta] = useState(null);
@@ -222,14 +249,14 @@ export default function AccountAdminPage() {
   const [hotspotOverviewTab, setHotspotOverviewTab] = useState('Subscribers');
   const [hotspotGuideOpen, setHotspotGuideOpen] = useState(false);
   const [tabs, setTabs] = useState(defaultTabs);
-  const [filters, setFilters] = useState(blankFilters);
+  const [filters, setFilters] = useState(initialFilters);
   const [selectedCustomerId, setSelectedCustomerId] = useState('');
   const [detailTab, setDetailTab] = useState('INTERNET');
   const [mappingView, setMappingView] = useState(MAPPING_WITHOUT_ONUS);
   const [areFiltersOpen, setFiltersOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const latestFiltersRef = useRef(blankFilters);
+  const latestFiltersRef = useRef(initialFilters);
   const latestRowsRef = useRef([]);
   const loadRequestRef = useRef(0);
   const searchDebounceRef = useRef(null);
@@ -257,7 +284,22 @@ export default function AccountAdminPage() {
     });
     if (options.refresh) params.set('refreshPppoe', 'true');
     try {
-      const data = await request(`/account-admin/customer-accounts?${params.toString()}`);
+      if (nextFilters.lifecycle === PPPOE_ONU_MAPPING_TAB) {
+        const mappingParams = new URLSearchParams();
+        if (nextFilters.search) mappingParams.set('search', nextFilters.search);
+        if (nextFilters.pppoeStatus) mappingParams.set('status', nextFilters.pppoeStatus);
+        if (options.refresh) mappingParams.set('refresh', 'true');
+        const mapping = await request(`/account-access-management/pppoe-onu-mapping?${mappingParams.toString()}`);
+        if (requestId !== loadRequestRef.current) return;
+        latestRowsRef.current = [];
+        setRows([]);
+        setSelectedCustomerId('');
+        setTabs(defaultTabs);
+        setMappingRows(mapping.mappings || []);
+        setMappingMeta(mapping);
+        return;
+      }
+      const data = await request(`/account-access-management/customer-accounts?${params.toString()}`);
       if (requestId !== loadRequestRef.current) return;
       const nextRows = data.data || [];
       latestRowsRef.current = nextRows;
@@ -266,19 +308,8 @@ export default function AccountAdminPage() {
       setSelectedCustomerId((current) => (
         current && !nextRows.some((row) => row.customerId === current) ? '' : current
       ));
-      if (nextFilters.lifecycle === PPPOE_ONU_MAPPING_TAB) {
-        const mappingParams = new URLSearchParams();
-        if (nextFilters.search) mappingParams.set('search', nextFilters.search);
-        if (nextFilters.pppoeStatus) mappingParams.set('status', nextFilters.pppoeStatus);
-        if (options.refresh) mappingParams.set('refresh', 'true');
-        const mapping = await request(`/account-admin/pppoe-onu-mapping?${mappingParams.toString()}`);
-        if (requestId !== loadRequestRef.current) return;
-        setMappingRows(mapping.mappings || []);
-        setMappingMeta(mapping);
-      } else {
-        setMappingRows([]);
-        setMappingMeta(null);
-      }
+      setMappingRows([]);
+      setMappingMeta(null);
     } catch (err) {
       if (requestId !== loadRequestRef.current) return;
       setError(err.message);
@@ -288,10 +319,16 @@ export default function AccountAdminPage() {
   }
 
   useEffect(() => {
-    load();
+    if (moduleView !== 'HOTSPOT') load();
     return () => window.clearTimeout(searchDebounceRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const nextView = normalizedModuleView(initialView);
+    if (nextView !== moduleView) changeModuleView(nextView);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialView]);
 
   useEffect(() => {
     if (moduleView === 'HOTSPOT') loadHotspot();
@@ -305,7 +342,7 @@ export default function AccountAdminPage() {
     if (nextFilters.search) params.set('search', nextFilters.search);
     if (nextFilters.status) params.set('status', nextFilters.status);
     try {
-      const data = await request(`/account-admin/hotspot-access?${params.toString()}`);
+      const data = await request(`/account-access-management/hotspot-access?${params.toString()}`);
       applyHotspotData(data);
     } catch (err) {
       setHotspotMessage({ tone: 'danger', text: err.message });
@@ -321,13 +358,11 @@ export default function AccountAdminPage() {
   }
 
   function changeModuleView(nextView) {
-    setModuleView(nextView);
-    if (nextView === 'HOTSPOT') return;
-    const merged = {
-      ...latestFiltersRef.current,
-      lifecycle: latestFiltersRef.current.lifecycle || 'ACCOUNT_ACTIVE',
-      accessFilter: defaultAccessFilterForModuleView(nextView)
-    };
+    const normalizedView = normalizedModuleView(nextView);
+    setModuleView(normalizedView);
+    setSelectedCustomerId('');
+    if (normalizedView === 'HOTSPOT') return;
+    const merged = filtersForModuleView(normalizedView, latestFiltersRef.current);
     latestFiltersRef.current = merged;
     setFilters(merged);
     load(merged);
@@ -337,7 +372,7 @@ export default function AccountAdminPage() {
     setHotspotBusy('settings');
     setHotspotMessage(null);
     try {
-      const data = await request('/account-admin/hotspot-access/settings', {
+      const data = await request('/account-access-management/hotspot-access/settings', {
         method: 'PATCH',
         body: JSON.stringify(hotspotSettings)
       });
@@ -354,7 +389,7 @@ export default function AccountAdminPage() {
     setHotspotBusy('test');
     setHotspotMessage(null);
     try {
-      const data = await request('/account-admin/hotspot-access/test', { method: 'POST', body: JSON.stringify({}) });
+      const data = await request('/account-access-management/hotspot-access/test', { method: 'POST', body: JSON.stringify({}) });
       setHotspotMessage({ tone: 'success', text: data.message || 'Pisowifi endpoint is reachable.' });
       loadHotspot();
     } catch (err) {
@@ -370,8 +405,8 @@ export default function AccountAdminPage() {
     setHotspotMessage(null);
     try {
       const path = customerId
-        ? `/account-admin/hotspot-access/subscribers/${encodeURIComponent(customerId)}/sync`
-        : '/account-admin/hotspot-access/sync';
+        ? `/account-access-management/hotspot-access/subscribers/${encodeURIComponent(customerId)}/sync`
+        : '/account-access-management/hotspot-access/sync';
       const data = await request(path, { method: 'POST', body: JSON.stringify({}) });
       setHotspotMessage({ tone: 'success', text: data.message || 'Monthly subscribers synced.' });
       loadHotspot();
@@ -447,12 +482,12 @@ export default function AccountAdminPage() {
     setHotspotBusy('contacts');
     setHotspotContactModal((current) => current ? { ...current, message: null } : current);
     try {
-      await request(`/account-admin/hotspot-access/subscribers/${encodeURIComponent(row.external_subscriber_id)}/contacts`, {
+      await request(`/account-access-management/hotspot-access/subscribers/${encodeURIComponent(row.external_subscriber_id)}/contacts`, {
         method: 'PATCH',
         body: JSON.stringify({ contacts })
       });
       if (syncAfterSave) {
-        await request(`/account-admin/hotspot-access/subscribers/${encodeURIComponent(row.external_subscriber_id)}/sync`, {
+        await request(`/account-access-management/hotspot-access/subscribers/${encodeURIComponent(row.external_subscriber_id)}/sync`, {
           method: 'POST',
           body: JSON.stringify({})
         });
@@ -524,7 +559,7 @@ export default function AccountAdminPage() {
     setSelectedCustomerId('');
   }
 
-  const isPppoeOnuMappingTab = filters.lifecycle === PPPOE_ONU_MAPPING_TAB;
+  const isPppoeOnuMappingTab = moduleView === 'PPPOE_ONU_MAPPING' || filters.lifecycle === PPPOE_ONU_MAPPING_TAB;
   const selectedRow = selectedCustomerId ? rows.find((row) => row.customerId === selectedCustomerId) : null;
   const detailTabs = [
     { label: 'Internet Access', value: 'INTERNET' },
@@ -536,9 +571,10 @@ export default function AccountAdminPage() {
   const visibleMappingRows = mappingView === MAPPING_MATCHED_ONUS ? matchedMappingRows : unmatchedMappingRows;
   const mappingViewLabel = mappingView === MAPPING_MATCHED_ONUS ? 'PPPoE with matched ONUs' : 'PPPoE without ONUs';
   const customerTableTitle = moduleView === 'INTERNET' ? 'Internet Access' : moduleView === 'IPTV' ? 'IPTV Access' : 'Customer Accounts';
-  const tableTitle = isPppoeOnuMappingTab ? `${mappingViewLabel} (${visibleMappingRows.length})` : `${customerTableTitle} (${rows.length})`;
+  const tableTitle = isPppoeOnuMappingTab ? `PPPoE & ONUs - ${mappingViewLabel} (${visibleMappingRows.length})` : `${customerTableTitle} (${rows.length})`;
   const moduleViewTabs = [
     { value: 'CUSTOMERS', label: 'Customer Accounts', icon: IconUsers },
+    { value: 'PPPOE_ONU_MAPPING', label: 'PPPoE & ONUs', icon: IconKey },
     { value: 'INTERNET', label: 'Internet Access', icon: IconServer },
     { value: 'HOTSPOT', label: 'Hotspot Access', icon: IconWifi },
     { value: 'IPTV', label: 'IPTV Access', icon: IconActivity }
@@ -546,7 +582,7 @@ export default function AccountAdminPage() {
 
   function renderDetailInfoRow(label, value) {
     return (
-      <div className="account-admin-detail-info-row" key={label}>
+      <div className="account-access-management-detail-info-row" key={label}>
         <span>{label}</span>
         <strong>{String(value || '').trim() || '-'}</strong>
       </div>
@@ -556,15 +592,15 @@ export default function AccountAdminPage() {
   function renderAccessDetail(summary) {
     const details = (summary?.details || []).filter(Boolean);
     return (
-      <div className="account-admin-detail-access-card">
-        <div className="account-admin-detail-access-heading">
+      <div className="account-access-management-detail-access-card">
+        <div className="account-access-management-detail-access-heading">
           <StatusBadge value={summary?.status || 'NO_SERVICE'} />
           <CheckIndicator active={summary?.status === 'ACTIVE' || Boolean(summary?.hasAccess)} label={summary?.label || 'Access'} />
         </div>
         <div className="h4 mb-1">{summary?.primary || '-'}</div>
         {summary?.secondary && <div className="text-muted">{summary.secondary}</div>}
         {details.length > 0 && (
-          <div className="account-admin-access-detail-list">
+          <div className="account-access-management-access-detail-list">
             {details.map((detail) => <span className="badge bg-secondary-lt text-secondary" key={detail}>{detail}</span>)}
           </div>
         )}
@@ -587,11 +623,11 @@ export default function AccountAdminPage() {
       ['Tickets', `${selectedRow.ticketCount || 0} total / ${selectedRow.openTicketCount || 0} open`],
     ];
     return (
-      <aside className="account-admin-detail-panel" aria-label="Selected customer account details">
-        <div className="account-admin-detail-panel-header">
-          <div className="account-admin-detail-heading">
+      <aside className="account-access-management-detail-panel" aria-label="Selected customer account details">
+        <div className="account-access-management-detail-panel-header">
+          <div className="account-access-management-detail-heading">
             <h3>{customer.name || 'Customer'}</h3>
-            <div className="account-admin-detail-badges">
+            <div className="account-access-management-detail-badges">
               <StatusBadge value={customer.status || 'UNKNOWN'} />
               <StatusBadge value={selectedRow.lifecycleStatus || 'UNKNOWN'} />
             </div>
@@ -600,19 +636,19 @@ export default function AccountAdminPage() {
             <IconX size={18} />
           </button>
         </div>
-        <div className="account-admin-detail-panel-body">
-          <section className="account-admin-detail-section">
+        <div className="account-access-management-detail-panel-body">
+          <section className="account-access-management-detail-section">
             <h4>Customer Details</h4>
-            <div className="account-admin-detail-info-list">
+            <div className="account-access-management-detail-info-list">
               {detailRows.map(([label, value]) => renderDetailInfoRow(label, value))}
             </div>
           </section>
-          <div className="account-admin-status-tabs account-admin-detail-tabs" role="tablist" aria-label="Customer access details">
+          <div className="account-access-management-status-tabs account-access-management-detail-tabs" role="tablist" aria-label="Customer access details">
             {detailTabs.map((tab) => (
               <button
                 type="button"
                 key={tab.value}
-                className={`account-admin-status-tab account-admin-detail-tab ${detailTab === tab.value ? 'active' : ''}`}
+                className={`account-access-management-status-tab account-access-management-detail-tab ${detailTab === tab.value ? 'active' : ''}`}
                 onClick={() => setDetailTab(tab.value)}
                 role="tab"
                 aria-selected={detailTab === tab.value}
@@ -622,10 +658,10 @@ export default function AccountAdminPage() {
             ))}
           </div>
           {detailTab === 'INTERNET' && (
-            <section className="account-admin-detail-section">
+            <section className="account-access-management-detail-section">
               <h4>Internet Access</h4>
               {renderAccessDetail(internet)}
-              <div className="account-admin-detail-info-list">
+              <div className="account-access-management-detail-info-list">
                 {renderDetailInfoRow('PPPoE Status', internet.pppoeStatus || selectedRow.pppoeStatus)}
                 {renderDetailInfoRow('Router', internet.routerName || selectedRow.routerName)}
                 {renderDetailInfoRow('IP Address', internet.ipAddress || selectedRow.staticIp)}
@@ -634,17 +670,17 @@ export default function AccountAdminPage() {
             </section>
           )}
           {detailTab === 'HOTSPOT' && (
-            <section className="account-admin-detail-section">
+            <section className="account-access-management-detail-section">
               <h4>Hotspot Access</h4>
               {renderAccessDetail(hotspotSummary)}
-              <div className="account-admin-detail-info-list">
+              <div className="account-access-management-detail-info-list">
                 {renderDetailInfoRow('Allowed Contacts', `${hotspotSummary.enabledContactCount || 0}/${hotspotSummary.contactCount || 0}`)}
                 {renderDetailInfoRow('Pisowifi Sync', hotspotSummary.integrationEnabled ? 'Enabled' : 'Disabled')}
               </div>
             </section>
           )}
           {detailTab === 'IPTV' && (
-            <section className="account-admin-detail-section">
+            <section className="account-access-management-detail-section">
               <h4>IPTV Access</h4>
               {renderAccessDetail(iptv)}
             </section>
@@ -698,11 +734,11 @@ export default function AccountAdminPage() {
             Full Sync is authoritative. Customers or contact numbers missing from this 3J Main export are disabled in Pisowifi.
           </div>
           <div className="d-flex flex-wrap gap-2 mb-3">
-            <div className="input-icon account-admin-hotspot-search flex-fill">
+            <div className="input-icon account-access-management-hotspot-search flex-fill">
               <span className="input-icon-addon"><IconSearch size={16} /></span>
               <input className="form-control form-control-sm" placeholder="Search subscriber or contact" value={hotspotFilters.search} onChange={(event) => updateHotspotFilters({ search: event.target.value })} />
             </div>
-            <select className="form-select form-select-sm account-admin-hotspot-status" value={hotspotFilters.status} onChange={(event) => updateHotspotFilters({ status: event.target.value })}>
+            <select className="form-select form-select-sm account-access-management-hotspot-status" value={hotspotFilters.status} onChange={(event) => updateHotspotFilters({ status: event.target.value })}>
               <option value="">All</option>
               <option value="ACTIVE">Active</option>
               <option value="INACTIVE">Inactive</option>
@@ -713,7 +749,7 @@ export default function AccountAdminPage() {
             </button>
           </div>
           <div className="table-responsive">
-            <table className="table table-vcenter card-table account-admin-table">
+            <table className="table table-vcenter card-table account-access-management-table">
               <thead>
                 <tr>
                   <th>Subscriber</th>
@@ -741,7 +777,7 @@ export default function AccountAdminPage() {
                       <div className="text-muted small">{row.service_account_number || '-'}</div>
                     </td>
                     <td>
-                      <div className="account-admin-contact-stack">
+                      <div className="account-access-management-contact-stack">
                         {(row.contacts || []).map((contact) => (
                           <span key={contact.normalized_contact || contact.contact_number} className={`badge ${contact.enabled ? 'bg-green-lt text-green' : 'bg-secondary-lt text-secondary'}`}>
                             {contact.contact_number} {contact.label ? `· ${contact.label}` : ''}
@@ -954,7 +990,7 @@ export default function AccountAdminPage() {
         )}
 
         {hotspotContactModal && (
-          <div className="modal modal-blur d-block account-admin-modal-backdrop" tabIndex="-1" role="dialog" aria-modal="true">
+          <div className="modal modal-blur d-block account-access-management-modal-backdrop" tabIndex="-1" role="dialog" aria-modal="true">
             <div className="modal-dialog modal-lg modal-dialog-centered" role="document">
               <div className="modal-content">
                 <div className="modal-header">
@@ -973,9 +1009,9 @@ export default function AccountAdminPage() {
                   <div className="alert alert-info">
                     One contact number can bind to one captive portal device. Add one contact per monthly device that should get free subscriber access.
                   </div>
-                  <div className="account-admin-hotspot-contact-list">
+                  <div className="account-access-management-hotspot-contact-list">
                     {hotspotContactModal.contacts.map((contact, index) => (
-                      <div className="account-admin-hotspot-contact-row" key={`${index}-${contact.contactNumber}`}>
+                      <div className="account-access-management-hotspot-contact-row" key={`${index}-${contact.contactNumber}`}>
                         <div>
                           <label className="form-label">Contact number</label>
                           <input
@@ -994,7 +1030,7 @@ export default function AccountAdminPage() {
                             onChange={(event) => updateHotspotContact(index, { label: event.target.value })}
                           />
                         </div>
-                        <label className="form-check form-switch account-admin-hotspot-contact-switch">
+                        <label className="form-check form-switch account-access-management-hotspot-contact-switch">
                           <input className="form-check-input" type="checkbox" checked={contact.enabled !== false} onChange={(event) => updateHotspotContact(index, { enabled: event.target.checked })} />
                           <span className="form-check-label">Enabled</span>
                         </label>
@@ -1022,7 +1058,7 @@ export default function AccountAdminPage() {
           </div>
         )}
         {hotspotGuideOpen && (
-          <div className="modal modal-blur d-block account-admin-modal-backdrop" tabIndex="-1" role="dialog" aria-modal="true">
+          <div className="modal modal-blur d-block account-access-management-modal-backdrop" tabIndex="-1" role="dialog" aria-modal="true">
             <div className="modal-dialog modal-xl modal-dialog-centered" role="document">
               <div className="modal-content">
                 <div className="modal-header">
@@ -1109,13 +1145,13 @@ export default function AccountAdminPage() {
   }
 
   return (
-    <div className="account-admin-module">
-      <div className="account-admin-module-view-tabs" role="tablist" aria-label="Account Admin views">
+    <div className="account-access-management-module">
+      <div className="account-access-management-module-view-tabs" role="tablist" aria-label="Account Access Management views">
         {moduleViewTabs.map((item) => {
           const Icon = item.icon;
           return (
             <button
-              className={`account-admin-module-view-tab ${moduleView === item.value ? 'active' : ''}`}
+              className={`account-access-management-module-view-tab ${moduleView === item.value ? 'active' : ''}`}
               key={item.value}
               type="button"
               onClick={() => changeModuleView(item.value)}
@@ -1132,24 +1168,24 @@ export default function AccountAdminPage() {
       <>
         {error && <div className="alert alert-danger">{error}</div>}
 
-      <div className={`account-admin-customer-workspace ${selectedRow ? 'has-detail-panel' : ''}`}>
-        <div className="account-admin-customer-main">
+      <div className={`account-access-management-customer-workspace ${selectedRow ? 'has-detail-panel' : ''}`}>
+        <div className="account-access-management-customer-main">
           <div className="row row-cards">
             <div className="col-12">
               <Card
-            className="account-admin-table-card"
+            className="account-access-management-table-card"
             title={tableTitle}
-            icon={IconUsers}
+            icon={isPppoeOnuMappingTab ? IconKey : IconUsers}
             actions={(
-              <div className="btn-list account-admin-header-actions">
-                <div className="account-admin-header-search">
-                  <label className="visually-hidden" htmlFor="customer-account-search">Search customer accounts</label>
-                  <div className="input-icon account-admin-header-search-input">
+              <div className="btn-list account-access-management-header-actions">
+                <div className="account-access-management-header-search">
+                  <label className="visually-hidden" htmlFor="customer-account-search">{isPppoeOnuMappingTab ? 'Search PPPoE and ONU mappings' : 'Search customer accounts'}</label>
+                  <div className="input-icon account-access-management-header-search-input">
                     <span className="input-icon-addon"><IconSearch size={16} /></span>
                     <input
                       id="customer-account-search"
                       className="form-control form-control-sm"
-                      placeholder="Search customer, account, access, PPPoE, hotspot, IPTV, ticket"
+                      placeholder={isPppoeOnuMappingTab ? 'Search PPPoE, router, caller ID, ONU' : 'Search customer, account, access, PPPoE, hotspot, IPTV, ticket'}
                       value={filters.search}
                       onChange={(event) => handleSearchChange(event.target.value)}
                       onKeyDown={(event) => {
@@ -1160,14 +1196,14 @@ export default function AccountAdminPage() {
                       }}
                     />
                     {filters.search && (
-                      <button type="button" className="account-admin-search-clear" title="Clear search" aria-label="Clear search" onClick={clearSearch}>
+                      <button type="button" className="account-access-management-search-clear" title="Clear search" aria-label="Clear search" onClick={clearSearch}>
                         <IconX size={14} />
                       </button>
                     )}
                   </div>
                 </div>
                 <button
-                  className={`btn btn-outline-secondary btn-sm account-admin-header-icon-button ${areFiltersOpen ? 'active' : ''}`}
+                  className={`btn btn-outline-secondary btn-sm account-access-management-header-icon-button ${areFiltersOpen ? 'active' : ''}`}
                   title={areFiltersOpen ? (hasActiveFilters ? 'Clear Filters' : 'Close Filter') : 'Filter'}
                   aria-label={areFiltersOpen ? (hasActiveFilters ? 'Clear Filters' : 'Close Filter') : 'Filter'}
                   onClick={handleFilterButtonClick}
@@ -1180,7 +1216,7 @@ export default function AccountAdminPage() {
             )}
               >
             {areFiltersOpen && (
-	              <div className="account-admin-table-filters">
+	              <div className="account-access-management-table-filters">
 	                <div className="row g-2 align-items-end">
 	                  {!isPppoeOnuMappingTab && (
 	                    <>
@@ -1237,30 +1273,32 @@ export default function AccountAdminPage() {
               </div>
             )}
 
-            <div className="account-admin-status-tabs" role="tablist" aria-label="Customer account status filter">
-              {tabs.map((item) => (
-                <button
-                  type="button"
-                  key={item.label}
-                  className={`account-admin-status-tab ${filters.lifecycle === item.value ? 'active' : ''}`}
-                  onClick={() => updateFilters({ lifecycle: item.value })}
-                  role="tab"
-                  aria-selected={filters.lifecycle === item.value}
-                >
-                  <span>{item.label}</span>
-                  <span className={`badge bg-${item.tone}-lt text-${item.tone}`}>{item.count}</span>
-                </button>
-	              ))}
-	            </div>
+            {!isPppoeOnuMappingTab && (
+              <div className="account-access-management-status-tabs" role="tablist" aria-label="Customer account status filter">
+                {tabs.map((item) => (
+                  <button
+                    type="button"
+                    key={item.label}
+                    className={`account-access-management-status-tab ${filters.lifecycle === item.value ? 'active' : ''}`}
+                    onClick={() => updateFilters({ lifecycle: item.value })}
+                    role="tab"
+                    aria-selected={filters.lifecycle === item.value}
+                  >
+                    <span>{item.label}</span>
+                    <span className={`badge bg-${item.tone}-lt text-${item.tone}`}>{item.count}</span>
+                  </button>
+                ))}
+              </div>
+            )}
 	            {loading && rows.length > 0 && (
-	              <div className="account-admin-refreshing" role="status" aria-live="polite">Updating customer accounts...</div>
+	              <div className="account-access-management-refreshing" role="status" aria-live="polite">Updating customer accounts...</div>
 	            )}
 
 	            {isPppoeOnuMappingTab && (
-              <div className="account-admin-mapping-tabs" role="tablist" aria-label="PPPoE ONU match filter">
+              <div className="account-access-management-mapping-tabs" role="tablist" aria-label="PPPoE ONU match filter">
                 <button
                   type="button"
-                  className={`account-admin-mapping-tab ${mappingView === MAPPING_WITHOUT_ONUS ? 'active' : ''}`}
+                  className={`account-access-management-mapping-tab ${mappingView === MAPPING_WITHOUT_ONUS ? 'active' : ''}`}
                   onClick={() => setMappingView(MAPPING_WITHOUT_ONUS)}
                   role="tab"
                   aria-selected={mappingView === MAPPING_WITHOUT_ONUS}
@@ -1270,7 +1308,7 @@ export default function AccountAdminPage() {
                 </button>
                 <button
                   type="button"
-                  className={`account-admin-mapping-tab ${mappingView === MAPPING_MATCHED_ONUS ? 'active' : ''}`}
+                  className={`account-access-management-mapping-tab ${mappingView === MAPPING_MATCHED_ONUS ? 'active' : ''}`}
                   onClick={() => setMappingView(MAPPING_MATCHED_ONUS)}
                   role="tab"
                   aria-selected={mappingView === MAPPING_MATCHED_ONUS}
@@ -1282,7 +1320,7 @@ export default function AccountAdminPage() {
             )}
 
             {isPppoeOnuMappingTab && mappingView === MAPPING_MATCHED_ONUS && mappingMeta?.sampleMatch?.customer && (
-              <div className="account-admin-mapping-sample">
+              <div className="account-access-management-mapping-sample">
                 <div>
                   <div className="text-muted small">Sample matched customer</div>
                   <div className="fw-bold">{mappingMeta.sampleMatch.customer.name}</div>
@@ -1300,7 +1338,7 @@ export default function AccountAdminPage() {
 
             <div className="table-responsive">
               {isPppoeOnuMappingTab ? (
-                <table className="table table-vcenter card-table account-admin-table account-admin-mapping-table">
+                <table className="table table-vcenter card-table account-access-management-table account-access-management-mapping-table">
                   <thead>
                     <tr>
                       <th>PPPoE Account</th>
@@ -1362,7 +1400,7 @@ export default function AccountAdminPage() {
                   </tbody>
                 </table>
               ) : (
-                <table className="table table-vcenter card-table account-admin-table">
+                <table className="table table-vcenter card-table account-access-management-table">
 	                  <thead>
 	                    <tr>
 	                      <th>Customer</th>
@@ -1387,7 +1425,7 @@ export default function AccountAdminPage() {
 		                    {rows.map((row) => (
 		                      <tr
 		                        key={row.customerId}
-		                        className={`account-admin-clickable-row ${selectedCustomerId === row.customerId ? 'table-active' : ''}`}
+		                        className={`account-access-management-clickable-row ${selectedCustomerId === row.customerId ? 'table-active' : ''}`}
 		                        onClick={() => openCustomerDetails(row)}
 		                        onKeyDown={(event) => handleCustomerRowKeyDown(event, row)}
 		                        tabIndex={0}
@@ -1396,7 +1434,7 @@ export default function AccountAdminPage() {
 	                        <td>
 	                          <div className="fw-bold">{row.customer.name}</div>
 	                          <div className="text-muted small">{row.customer.accountNumber || row.customer.contactNumber || '-'}</div>
-                          <div className="account-admin-customer-badges">
+                          <div className="account-access-management-customer-badges">
                             <StatusBadge value={row.customer.status} />
                             <StatusBadge value={row.lifecycleStatus} />
 	                          </div>
@@ -1409,11 +1447,11 @@ export default function AccountAdminPage() {
 	                            {row.ticketCount || 0}
 	                          </span>
 	                        </td>
-		                        <td className="account-admin-actions-column">
-		                          <div className="account-admin-row-actions">
+		                        <td className="account-access-management-actions-column">
+		                          <div className="account-access-management-row-actions">
 		                            <button
 		                              type="button"
-		                              className="badge account-admin-action-badge bg-blue-lt text-blue border-0"
+		                              className="badge account-access-management-action-badge bg-blue-lt text-blue border-0"
 		                              title={`View ${row.customer.name}`}
 		                              aria-label={`View ${row.customer.name}`}
 		                              onClick={(event) => {

@@ -1,13 +1,13 @@
 {
-  "slug": "account-admin",
-  "name": "Customer Network",
+  "slug": "account-access-management",
+  "name": "Account Access Management",
   "status": "phase-1-table-only",
   "owner": "threejmain",
   "description": "Customer Accounts table with customer-level network service visibility and temporary PPPoE-to-ONU reconciliation.",
-  "app_shell_route": "/account-admin",
-  "api_prefix": "/api/account-admin",
-  "frontend_entry": "features/account-admin/web/AccountAdminPage.jsx",
-  "api_entry": "features/account-admin/api/account_admin/router.py",
+  "app_shell_route": "/account-access-management/customer-accounts",
+  "api_prefix": "/api/account-access-management",
+  "frontend_entry": "features/account-access-management/web/AccountAccessManagementPage.jsx",
+  "api_entry": "features/account-access-management/api/account_access_management/router.py",
   "features": [
     "customer_accounts_table",
     "customer_profile_sync",
@@ -17,7 +17,8 @@
     "all_and_with_tickets_tabs",
     "pppoe_status_visibility",
     "pppoe_onu_mapping_snapshot",
-    "pppoe_onu_mapping_tab"
+    "pppoe_onu_mapping_subnav",
+    "account_access_management_sidebar_subnav"
   ],
   "deferred_features": [
     "dedicated_activation_service_order_contract",

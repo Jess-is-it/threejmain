@@ -27,7 +27,7 @@ from service.router import (
 from ticketing.router import seed_ticketing_data, visible_tickets
 
 
-router = APIRouter(prefix="/api/account-admin", tags=["account-admin"])
+router = APIRouter(prefix="/api/account-access-management", tags=["account-access-management"])
 
 _current_admin: Callable[[str | None], dict[str, Any]] | None = None
 _audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None] | None = None
@@ -78,7 +78,10 @@ PROVISIONING_ACTIONS = [
 ]
 IP_MODES = ["DYNAMIC", "STATIC", "CGNAT", "PUBLIC_STATIC", "BRIDGED"]
 MAC_PROXIMITY_MATCH_MAX_DELTA = 8
-HOTSPOT_ACCESS_STATE_PATH = Path(os.getenv("ACCOUNT_ADMIN_HOTSPOT_STATE_PATH", "/tmp/threejmain_account_admin_hotspot.json"))
+HOTSPOT_ACCESS_STATE_PATH = Path(
+    os.getenv("ACCOUNT_ACCESS_MANAGEMENT_HOTSPOT_STATE_PATH")
+    or os.getenv("ACCOUNT_ADMIN_HOTSPOT_STATE_PATH", "/tmp/threejmain_account_access_management_hotspot.json")
+)
 INTERNET_SERVICE_TYPES = {"FIBER_INTERNET", "WIRELESS_INTERNET", "DEDICATED_INTERNET"}
 IPTV_SERVICE_TYPES = {"IPTV", "CABLE_TV", "TV"}
 IPTV_KEYWORDS = ("IPTV", "STB", "SET TOP", "SET-TOP", "TV BOX", "CABLE TV")
@@ -135,7 +138,7 @@ class HotspotSubscriberContactsPayload(BaseModel):
     contacts: list[HotspotContactPayload] = []
 
 
-def configure_account_admin(
+def configure_account_access_management(
     current_admin: Callable[[str | None], dict[str, Any]],
     audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None],
 ) -> None:
@@ -146,7 +149,7 @@ def configure_account_admin(
 
 def require_admin(authorization: str | None = Header(default=None)):
     if _current_admin is None:
-        raise HTTPException(status_code=500, detail="Customer Network module is not configured")
+        raise HTTPException(status_code=500, detail="Account Access Management module is not configured")
     return _current_admin(authorization)
 
 
@@ -338,7 +341,7 @@ def hotspot_subscriber_payload(customer: dict[str, Any]) -> dict[str, Any]:
         ],
         "source": {
             "system": "3J Main",
-            "module": "Account Admin",
+            "module": "Account Access Management",
             "customer_status": customer.get("status") or "",
             "location": {
                 "barangay": customer.get("barangay") or "",
@@ -449,7 +452,7 @@ def add_audit(action: str, target_type: str, target_id: str, details: dict[str, 
         _audit_logger(action, target_type, target_id, details, actor)
 
 
-def seed_account_admin_data() -> None:
+def seed_account_access_management_data() -> None:
     ensure_customer_network_records()
 
 
@@ -546,7 +549,7 @@ def service_bundle(customer_id: str) -> dict[str, Any]:
     }
 
 
-def account_admin_ticket_actions(ticket: dict[str, Any]) -> list[dict[str, str]]:
+def account_access_management_ticket_actions(ticket: dict[str, Any]) -> list[dict[str, str]]:
     category = normalize_upper(ticket.get("category"))
     if category == "INSTALLATION":
         return [
@@ -573,7 +576,7 @@ def ticket_summary(ticket: dict[str, Any]) -> dict[str, Any]:
         "serviceOrderNumber": ticket.get("serviceOrderNumber", ""),
         "openedAt": ticket.get("openedAt", ""),
         "updatedAt": ticket.get("updatedAt", ""),
-        "accountAdminActions": account_admin_ticket_actions(ticket),
+        "accountAccessManagementActions": account_access_management_ticket_actions(ticket),
     }
 
 
@@ -1076,7 +1079,7 @@ def sample_mapping_customer(account: dict[str, Any], onu: dict[str, Any] | None)
         "customerType": "RESIDENTIAL",
         "contactNumber": "09000000000",
         "address": "Temporary mapping profile",
-        "source": "account-admin-temporary-sample",
+        "source": "account-access-management-temporary-sample",
         "temporary": True,
         "matchedPppoeUsername": username,
         "matchedOnuName": clean_text((onu or {}).get("name")),
@@ -1683,7 +1686,7 @@ def filtered_customer_network_rows(
     return sorted(result, key=lambda row: row["customer"].get("name", ""))
 
 
-def account_admin_metrics(admin: dict[str, Any] | None = None, rows: list[dict[str, Any]] | None = None, include_mapping: bool = False) -> dict[str, int]:
+def account_access_management_metrics(admin: dict[str, Any] | None = None, rows: list[dict[str, Any]] | None = None, include_mapping: bool = False) -> dict[str, int]:
     rows = rows if rows is not None else build_customer_network_rows(admin=admin)
     mapping = pppoe_onu_mapping_snapshot(admin=admin) if include_mapping and admin else {"unmatchedCount": 0, "matchedCount": 0, "onuCount": 0, "pppoeCount": 0}
     return {
@@ -1726,7 +1729,7 @@ def apply_network_config(record: dict[str, Any], payload: NetworkConfigPayload) 
     if "lifecycleStatus" in data and data["lifecycleStatus"] is not None:
         status = normalize_upper(data["lifecycleStatus"])
         if status not in LIFECYCLE_STATUSES:
-            raise HTTPException(status_code=400, detail="Invalid Customer Network status")
+            raise HTTPException(status_code=400, detail="Invalid Account Access Management status")
         record["lifecycleStatus"] = status
     string_fields = [
         "desiredPppoeUsername",
@@ -1783,17 +1786,17 @@ def row_for_customer(customer_id: str, admin: dict[str, Any] | None = None) -> d
 
 
 @router.get("/health")
-def account_admin_health() -> dict[str, str]:
-    return {"status": "ok", "module": "customer-network"}
+def account_access_management_health() -> dict[str, str]:
+    return {"status": "ok", "module": "account-access-management"}
 
 
 @router.get("/meta")
-def account_admin_meta(admin=Depends(require_admin)):
+def account_access_management_meta(admin=Depends(require_admin)):
     return {
-        "scope": "customer-network",
-        "name": "Customer Network",
-        "route": "/account-admin",
-        "apiPrefix": "/api/account-admin",
+        "scope": "account-access-management",
+        "name": "Account Access Management",
+        "route": "/account-access-management",
+        "apiPrefix": "/api/account-access-management",
         "lifecycleStatuses": LIFECYCLE_STATUSES,
         "provisioningActions": PROVISIONING_ACTIONS,
         "ipModes": IP_MODES,
@@ -1804,9 +1807,9 @@ def account_admin_meta(admin=Depends(require_admin)):
 
 
 @router.get("/overview")
-def account_admin_overview(admin=Depends(require_admin)):
+def account_access_management_overview(admin=Depends(require_admin)):
     rows = build_customer_network_rows(admin=admin)
-    metrics = account_admin_metrics(admin=admin, rows=rows, include_mapping=True)
+    metrics = account_access_management_metrics(admin=admin, rows=rows, include_mapping=True)
     snapshot = pppoe_snapshot()
     return {
         "metrics": {
@@ -1971,7 +1974,7 @@ def list_customer_accounts(
     admin=Depends(require_admin),
 ):
     rows = build_customer_network_rows(admin=admin, refresh_pppoe=refreshPppoe)
-    metrics = account_admin_metrics(rows=rows)
+    metrics = account_access_management_metrics(rows=rows)
     return {
         "data": filtered_customer_network_rows(
             rows,
@@ -2167,7 +2170,7 @@ def reconcile_customer_network(refreshPppoe: bool = Query(default=True), admin=D
     return {
         "status": "ok",
         "total": len(rows),
-        "metrics": account_admin_metrics(admin=admin, rows=rows, include_mapping=True),
+        "metrics": account_access_management_metrics(admin=admin, rows=rows, include_mapping=True),
         "pppoeDiscovery": {
             "capturedAt": pppoe_discovery_cache.get("capturedAt", ""),
             "deviceErrors": pppoe_discovery_cache.get("deviceErrors", []),

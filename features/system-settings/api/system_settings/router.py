@@ -713,16 +713,16 @@ ACCESS_PERMISSION_SEEDS = [
     {"code": "network-settings.edit", "label": "Network Settings Edit", "description": "Create and update network settings.", "category": "Network Settings"},
     {"code": "logs.view", "label": "Logs View", "description": "View audit and system logs.", "category": "Logs"},
     {
-        "code": "account-admin.customer.view",
-        "label": "Customer Account Admin View",
-        "description": "View customer account administration when the module is implemented.",
-        "category": "Customer Account Admin",
+        "code": "account-access-management.customer.view",
+        "label": "Account Access Management View",
+        "description": "View customer account access summaries and provisioning review.",
+        "category": "Account Access Management",
     },
     {
-        "code": "account-admin.customer.edit",
-        "label": "Customer Account Admin Edit",
-        "description": "Edit customer account administration when the module is implemented.",
-        "category": "Customer Account Admin",
+        "code": "account-access-management.customer.edit",
+        "label": "Account Access Management Edit",
+        "description": "Edit customer account access administration when implemented.",
+        "category": "Account Access Management",
     },
     {
         "code": "techportal.dashboard.view",
@@ -768,7 +768,7 @@ ACCESS_PERMISSION_DEPENDENCIES = {
     "ticketing.edit": ["ticketing.view"],
     "customer-service-management.edit": ["customer-service-management.view"],
     "network-settings.edit": ["network-settings.view"],
-    "account-admin.customer.edit": ["account-admin.customer.view"],
+    "account-access-management.customer.edit": ["account-access-management.customer.view"],
     "techportal.ticketing.update": ["techportal.ticketing.view", "techportal.dashboard.view"],
 }
 

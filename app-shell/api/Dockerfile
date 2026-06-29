@@ -13,7 +13,7 @@ COPY features/customer-profiling/api/customer_profiling ./customer_profiling
 COPY features/billing/api/billing ./billing
 COPY features/point-of-sale/api/point_of_sale ./point_of_sale
 COPY features/inventory/api/inventory ./inventory
-COPY features/account-admin/api/account_admin ./account_admin
+COPY features/account-access-management/api/account_access_management ./account_access_management
 COPY features/customer-service-management/api/customer_service_management ./customer_service_management
 COPY features/ticketing/api/ticketing ./ticketing
 COPY features/service/api/service ./service
