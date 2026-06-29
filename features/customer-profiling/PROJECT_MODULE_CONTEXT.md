@@ -35,7 +35,7 @@ Customer Profiling manages customer records, account identity, service addresses
 - Customer coordinate capture and detail preview maps use System Settings -> Maps provider settings through `features/system-settings/web/mapProviders.js`. The capture modal has a compact provider selector, honors the selected provider's max zoom, and creates provider sessions when a session-based provider such as Google Map Tiles is selected. Google Maps open-link and Street View remain external helpers.
 - Customer table action badges include Check Serviceability, which navigates to `/network-settings/serviceability-check?customerId=<customer id>` so Network Settings opens the selected customer in its serviceability split view.
 - Secondary contacts
-- Bulk upload CSV modal with template download, preview validation, duplicate checks, and guarded import
+- Bulk upload CSV modal with template download, preview validation, duplicate checks, row-level barangay selection, and guarded import. The bulk template/import flow excludes account number, customer type, business name, status, and recommender fields; account number/status are system-managed and business/referral details can be set after upload.
 - `/api/customer-profiling/readiness` reports whether Customer Profiling is using PostgreSQL storage and lists remaining production-hardening stages.
 
 ## Integration Notes

@@ -185,16 +185,10 @@ BARANGAYS_BY_PROVINCE_CITY = {
     ],
 }
 BULK_UPLOAD_HEADERS = [
-    "accountNumber",
     "firstName",
     "middleName",
     "lastName",
-    "businessName",
     "birthDate",
-    "recommendedByCustomer",
-    "recommendedByCustomerId",
-    "recommendedByCustomerAccountNumber",
-    "recommendedByCustomerName",
     "contactNumber",
     "alternateMobileNumber",
     "facebookAccountName",
@@ -211,8 +205,6 @@ BULK_UPLOAD_HEADERS = [
     "latitude",
     "longitude",
     "gender",
-    "customerType",
-    "status",
 ]
 REQUIRED_BULK_UPLOAD_HEADERS = [
     "firstName",
@@ -951,16 +943,10 @@ def customer_bulk_upload_template(admin=Depends(require_admin)):
         "filename": "customer-bulk-upload-template.csv",
         "headers": BULK_UPLOAD_HEADERS,
         "sample": {
-            "accountNumber": "",
             "firstName": "JUAN",
             "middleName": "D",
             "lastName": "DELA CRUZ",
-            "businessName": "",
             "birthDate": "2002-05-18",
-            "recommendedByCustomer": "",
-            "recommendedByCustomerId": "",
-            "recommendedByCustomerAccountNumber": "",
-            "recommendedByCustomerName": "",
             "contactNumber": "09171234567",
             "alternateMobileNumber": "09180000001",
             "facebookAccountName": "JUAN DELA CRUZ",
@@ -977,14 +963,12 @@ def customer_bulk_upload_template(admin=Depends(require_admin)):
             "latitude": "",
             "longitude": "",
             "gender": "MALE",
-            "customerType": "RESIDENTIAL",
-            "status": "ACTIVE",
         },
         "allowedValues": {
-            "customerType": CUSTOMER_TYPES,
             "gender": CUSTOMER_GENDERS,
             "province": PROVINCES,
-            "status": CUSTOMER_STATUSES,
+            "barangay": sorted({barangay for barangays in BARANGAYS_BY_PROVINCE_CITY.values() for barangay in barangays}),
+            "barangaysByProvinceCity": BARANGAYS_BY_PROVINCE_CITY,
         },
     }
 

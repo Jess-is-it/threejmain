@@ -96,8 +96,21 @@ function uniqueValues(values) {
   return Array.from(new Set(values.map(normalizeUpper).filter(Boolean))).sort();
 }
 
-function keyValue(value) {
-  return String(value || '').trim().toUpperCase();
+const BULK_UPLOAD_SYSTEM_FIELDS = new Set([
+  'accountnumber',
+  'businessname',
+  'customertype',
+  'status',
+  'recommendedbycustomer',
+  'recommendedbycustomerid',
+  'recommendedbycustomeraccountnumber',
+  'recommendedbycustomername'
+]);
+
+function sanitizeBulkUploadData(data) {
+  return Object.fromEntries(
+    Object.entries(data || {}).filter(([key]) => !BULK_UPLOAD_SYSTEM_FIELDS.has(String(key || '').trim().toLowerCase()))
+  );
 }
 
 function customerDuplicateKey(data) {
@@ -117,6 +130,37 @@ function customerDuplicateKey(data) {
 
 function rowNumbers(rows) {
   return rows.map((row) => row.rowNumber).join(', ');
+}
+
+function validateBulkUploadRows(rows, requiredHeaders, existingCustomers = []) {
+  const existingCustomerKeys = new Set(existingCustomers.map(customerDuplicateKey).filter(Boolean));
+  const preparedRows = rows.map((row) => {
+    const data = sanitizeBulkUploadData(row.data);
+    const rowErrors = requiredHeaders
+      .filter((header) => !String(data[header] || '').trim())
+      .map((header) => `${header} is required`);
+    return { ...row, data, errors: rowErrors };
+  });
+  const customerKeyRows = new Map();
+
+  preparedRows.forEach((row) => {
+    const duplicateKey = customerDuplicateKey(row.data);
+    if (duplicateKey) customerKeyRows.set(duplicateKey, [...(customerKeyRows.get(duplicateKey) || []), row]);
+  });
+
+  preparedRows.forEach((row) => {
+    const duplicateKey = customerDuplicateKey(row.data);
+    const duplicateCustomerRows = customerKeyRows.get(duplicateKey) || [];
+
+    if (duplicateKey && existingCustomerKeys.has(duplicateKey)) {
+      row.errors.push('Customer already exists with the same name and service address');
+    }
+    if (duplicateCustomerRows.length > 1) {
+      row.errors.push(`Duplicate customer identity/address in CSV rows ${rowNumbers(duplicateCustomerRows)}`);
+    }
+  });
+
+  return preparedRows;
 }
 
 function parseCsv(text) {
@@ -173,54 +217,15 @@ function parseCustomerCsv(text, requiredHeaders, existingCustomers = []) {
       if (header) data[header] = String(cells[cellIndex] || '').trim();
     });
     const hasData = Object.values(data).some((item) => String(item || '').trim());
-    const rowErrors = requiredHeaders
-      .filter((header) => !String(data[header] || '').trim())
-      .map((header) => `${header} is required`);
     return {
       rowNumber: index + 2,
       hasData,
-      data: {
-        status: 'ACTIVE',
-        customerType: 'RESIDENTIAL',
-        ...data
-      },
-      errors: rowErrors
+      data,
+      errors: []
     };
   }).filter((item) => item.hasData);
 
-  const existingAccounts = new Set(existingCustomers.map((customer) => keyValue(customer.accountNumber)).filter(Boolean));
-  const existingCustomerKeys = new Set(existingCustomers.map(customerDuplicateKey).filter(Boolean));
-  const accountRows = new Map();
-  const customerKeyRows = new Map();
-
-  parsedRows.forEach((row) => {
-    const accountNumber = keyValue(row.data.accountNumber);
-    const duplicateKey = customerDuplicateKey(row.data);
-    if (accountNumber) accountRows.set(accountNumber, [...(accountRows.get(accountNumber) || []), row]);
-    if (duplicateKey) customerKeyRows.set(duplicateKey, [...(customerKeyRows.get(duplicateKey) || []), row]);
-  });
-
-  parsedRows.forEach((row) => {
-    const accountNumber = keyValue(row.data.accountNumber);
-    const duplicateKey = customerDuplicateKey(row.data);
-    const duplicateAccountRows = accountRows.get(accountNumber) || [];
-    const duplicateCustomerRows = customerKeyRows.get(duplicateKey) || [];
-
-    if (accountNumber && existingAccounts.has(accountNumber)) {
-      row.errors.push(`Account number ${row.data.accountNumber} already exists`);
-    }
-    if (duplicateKey && existingCustomerKeys.has(duplicateKey)) {
-      row.errors.push('Customer already exists with the same name and service address');
-    }
-    if (duplicateAccountRows.length > 1) {
-      row.errors.push(`Duplicate account number in CSV rows ${rowNumbers(duplicateAccountRows)}`);
-    }
-    if (duplicateCustomerRows.length > 1) {
-      row.errors.push(`Duplicate customer identity/address in CSV rows ${rowNumbers(duplicateCustomerRows)}`);
-    }
-  });
-
-  return { headers, rows: parsedRows, fileErrors };
+  return { headers, rows: validateBulkUploadRows(parsedRows, requiredHeaders, existingCustomers), fileErrors };
 }
 
 function locationLabel(location) {
@@ -591,6 +596,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const [bulkUploadRows, setBulkUploadRows] = useState([]);
   const [bulkUploadFileErrors, setBulkUploadFileErrors] = useState([]);
   const [bulkUploadResult, setBulkUploadResult] = useState(null);
+  const [bulkUploadExistingCustomers, setBulkUploadExistingCustomers] = useState([]);
   const [isBulkUploading, setBulkUploading] = useState(false);
   const [isDetailsPanelOpen, setDetailsPanelOpen] = useState(false);
   const [customerDetailTab, setCustomerDetailTab] = useState('basic');
@@ -647,6 +653,17 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const barangays = filters.province && filters.city ? uniqueValues([...(meta.barangaysByProvinceCity?.[barangayKey] || []), ...savedBarangays]) : uniqueValues([...(meta.barangays || []), ...savedBarangays]);
   const formBarangays = form.province && form.city ? uniqueValues([...(meta.barangaysByProvinceCity?.[formBarangayKey] || []), ...formSavedBarangays]) : uniqueValues([...(meta.barangays || []), ...formSavedBarangays]);
   const requiredBulkUploadHeaders = meta.requiredBulkUploadHeaders || ['firstName', 'lastName', 'contactNumber'];
+  const bulkUploadBarangayOptionsFor = (row) => {
+    const province = normalizeUpper(row?.data?.province);
+    const city = normalizeUpper(row?.data?.city);
+    const barangayKeyForRow = `${province}::${city}`;
+    const savedRowBarangays = uniqueValues(locations
+      .filter((location) => (!province || normalizeUpper(location.province) === province)
+        && (!city || normalizeUpper(location.municipality) === city))
+      .map((location) => normalizeUpper(location.barangay)));
+    const metaBarangays = province && city ? (meta.barangaysByProvinceCity?.[barangayKeyForRow] || []) : (meta.barangays || []);
+    return uniqueValues([...metaBarangays, ...savedRowBarangays, row?.data?.barangay]);
+  };
   const validBulkUploadRows = bulkUploadRows.filter((row) => !row.errors.length);
   const invalidBulkUploadRows = bulkUploadRows.filter((row) => row.errors.length);
   const hasActiveTableFilters = ['search', 'customerType', 'status', 'province', 'city', 'barangay'].some((key) => Boolean(filters[key]));
@@ -1050,6 +1067,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     setBulkUploadRows([]);
     setBulkUploadFileErrors([]);
     setBulkUploadResult(null);
+    setBulkUploadExistingCustomers([]);
     setMessage('');
     setError('');
   }
@@ -1060,6 +1078,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     setBulkUploadRows([]);
     setBulkUploadFileErrors([]);
     setBulkUploadResult(null);
+    setBulkUploadExistingCustomers([]);
   }
 
   function closeDetailsPanel() {
@@ -1457,6 +1476,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     setBulkUploadResult(null);
     setBulkUploadRows([]);
     setBulkUploadFileErrors([]);
+    setBulkUploadExistingCustomers([]);
     setBulkUploadFileName(file?.name || '');
     if (!file) return;
 
@@ -1465,6 +1485,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
         file.text(),
         loadBulkUploadDuplicateCustomers()
       ]);
+      setBulkUploadExistingCustomers(existingCustomers);
       const parsed = parseCustomerCsv(csvText, requiredBulkUploadHeaders, existingCustomers);
       setBulkUploadRows(parsed.rows);
       setBulkUploadFileErrors(parsed.fileErrors);
@@ -1476,6 +1497,19 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     } finally {
       event.target.value = '';
     }
+  }
+
+  function updateBulkUploadRowData(rowNumber, patch) {
+    setBulkUploadRows((currentRows) => validateBulkUploadRows(
+      currentRows.map((row) => (
+        row.rowNumber === rowNumber
+          ? { ...row, data: { ...row.data, ...patch } }
+          : row
+      )),
+      requiredBulkUploadHeaders,
+      bulkUploadExistingCustomers
+    ));
+    setBulkUploadResult(null);
   }
 
   async function importBulkUploadRows() {
@@ -2383,7 +2417,25 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                             {!!row.errors.length && <div className="text-danger small">{row.errors.join(', ')}</div>}
                           </td>
                           <td>{row.data.contactNumber || '-'}</td>
-                          <td>{[row.data.landmark || row.data.locationName, row.data.barangay, row.data.city].filter(Boolean).join(', ') || '-'}</td>
+                          <td>
+                            {(() => {
+                              const barangayOptionsForRow = bulkUploadBarangayOptionsFor(row);
+                              return (
+                                <div className="bulk-upload-location-cell">
+                                  <div className="text-muted small">{[row.data.landmark || row.data.locationName, row.data.city].filter(Boolean).join(', ') || 'No saved location'}</div>
+                                  <select
+                                    className="form-select form-select-sm"
+                                    value={row.data.barangay || ''}
+                                    onChange={(event) => updateBulkUploadRowData(row.rowNumber, { barangay: normalizeUpper(event.target.value) })}
+                                    aria-label={`Barangay for CSV row ${row.rowNumber}`}
+                                  >
+                                    <option value="">Select barangay</option>
+                                    {barangayOptionsForRow.map((item) => <option key={item} value={item}>{item}</option>)}
+                                  </select>
+                                </div>
+                              );
+                            })()}
+                          </td>
                           <td><span className={`badge ${row.errors.length ? 'bg-red-lt text-red' : 'bg-green-lt text-green'}`}>{row.errors.length ? 'Invalid' : 'Ready'}</span></td>
                         </tr>
                       ))}

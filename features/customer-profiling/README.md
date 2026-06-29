@@ -35,7 +35,7 @@ Restored workflows from the previous standalone Customer Profiling module:
 - Customer coordinate capture and detail map preview consume System Settings -> Maps provider settings, including Google Map Tiles session providers when configured, with Google Maps open-link and Street View retained as external helpers
 - Customer table actions include Check Serviceability, which opens Network Settings -> Serviceability Check filtered to the selected customer
 - Secondary contact fields
-- Bulk upload CSV modal with template download, client-side preview validation, duplicate checks, and guarded import
+- Bulk upload CSV modal with template download, client-side preview validation, duplicate checks, row-level barangay selection, and guarded import. Bulk upload excludes system-managed/account setup fields such as account number, customer type, business name, status, and recommender fields; those are generated or edited inside the system after import.
 
 Current shell API route prefix:
 

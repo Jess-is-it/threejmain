@@ -276,6 +276,12 @@
   margin-bottom: 0;
 }
 
+.bulk-upload-location-cell {
+  display: grid;
+  min-width: 13rem;
+  gap: 0.35rem;
+}
+
 .customer-table-filters {
   padding: 0 0 1rem;
   margin-bottom: 1rem;
