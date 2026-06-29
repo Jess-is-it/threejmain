@@ -81,7 +81,10 @@ The page shows:
 - Header search copied from Customer Profiling behavior: debounced typing, Enter submit, and clear button.
 - Collapsible filters for Access, Customer Status, Internet Access, Hotspot Access, IPTV Access, and PPPoE Status.
 - In-table tabs for Active and Inactive customer accounts with count badges.
-- Customer Accounts columns for Customer, Internet Access, Hotspot Access, IPTV Access, Tickets / Action, and Account Health.
+- Customer Accounts columns for Customer, Internet Access, Hotspot Access, IPTV Access, Tickets, and Action.
+- The Customer Accounts table keeps existing rows visible during background refreshes and ignores stale overlapping responses to avoid row flicker while filters/search load.
+- Selecting the row View icon opens an inline customer account detail panel. On desktop the Customer Accounts table and detail panel use a 50% / 50% split; on mobile the panel stacks below the table.
+- The detail panel shows customer details and three access tabs: Internet Access, Hotspot, and IPTV.
 - A top-level view switch between Customer Accounts, Internet Access, Hotspot Access, and IPTV Access. Internet/IPTV currently reuse the Customer Accounts table with the matching Access filter applied.
 - Hotspot Access settings for Pisowifi API base URL, API key, API secret, and enable/disable state.
 - Hotspot Access subscriber table showing active monthly subscribers, Service Account/plan, synced contact numbers, contact edit actions, and Sync actions.

@@ -577,8 +577,9 @@ def ticket_summary(ticket: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def ticket_bundle(customer_id: str) -> dict[str, Any]:
-    seed_ticketing_data()
+def ticket_bundle(customer_id: str, seed: bool = True) -> dict[str, Any]:
+    if seed:
+        seed_ticketing_data()
     rows = [ticket_summary(ticket) for ticket in visible_tickets() if ticket.get("customerId") == customer_id]
     rows = sorted(rows, key=lambda item: clean_text(item.get("updatedAt") or item.get("openedAt")), reverse=True)
     open_rows = [ticket for ticket in rows if ticket.get("status") not in {"RESOLVED", "CLOSED"}]
@@ -718,11 +719,11 @@ def internet_access_summary(record: dict[str, Any], service: dict[str, Any], ppp
     }
 
 
-def hotspot_access_summary(customer: dict[str, Any], service: dict[str, Any]) -> dict[str, Any]:
+def hotspot_access_summary(customer: dict[str, Any], service: dict[str, Any], settings: dict[str, Any] | None = None) -> dict[str, Any]:
     contacts = hotspot_contacts_for_customer(customer)
     enabled_contacts = [contact for contact in contacts if contact.get("enabled")]
     base_status = hotspot_status_for_customer(customer, service, contacts)
-    settings = load_hotspot_access_state().get("settings") or {}
+    settings = settings if settings is not None else load_hotspot_access_state().get("settings") or {}
     integration_enabled = bool(settings.get("enabled"))
     if base_status == "SUSPENDED":
         status = "SUSPENDED"
@@ -814,9 +815,10 @@ def customer_access_summary(
     service: dict[str, Any],
     pppoe_status: str,
     review_flags: list[str],
+    hotspot_settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     internet = internet_access_summary(record, service, pppoe_status)
-    hotspot = hotspot_access_summary(customer, service)
+    hotspot = hotspot_access_summary(customer, service, hotspot_settings)
     iptv = iptv_access_summary(service)
     actions: list[dict[str, str]] = []
     if internet["status"] == "NEEDS_SETUP":
@@ -1486,10 +1488,12 @@ def customer_network_row(
     customer: dict[str, Any],
     snapshot: dict[str, Any],
     duplicate_bindings: dict[str, list[dict[str, Any]]],
+    hotspot_settings: dict[str, Any] | None = None,
+    seed_tickets: bool = True,
 ) -> dict[str, Any]:
     record = normalize_record(customer_network_records[customer["id"]], customer)
     service = service_bundle(customer["id"])
-    tickets = ticket_bundle(customer["id"])
+    tickets = ticket_bundle(customer["id"], seed=seed_tickets)
     discovered_lookup = pppoe_account_lookup(snapshot)
     bound_keys = set(binding_map())
     suggestion = suggest_pppoe(customer, snapshot.get("accounts", []), bound_keys) if not record.get("pppoeBinding") else None
@@ -1498,7 +1502,7 @@ def customer_network_row(
     bound = record.get("pppoeBinding") or {}
     live_account = discovered_lookup.get(pppoe_binding_key(bound), {})
     pppoe_status = clean_text(live_account.get("status") or bound.get("status")) or "UNBOUND"
-    access_summary = customer_access_summary(customer, record, service, pppoe_status, flags)
+    access_summary = customer_access_summary(customer, record, service, pppoe_status, flags, hotspot_settings=hotspot_settings)
     return {
         "id": record["id"],
         "customerId": customer["id"],
@@ -1560,7 +1564,18 @@ def build_customer_network_rows(admin: dict[str, Any] | None = None, refresh_ppp
     customers = ensure_customer_network_records()
     snapshot = pppoe_snapshot(admin=admin, refresh=refresh_pppoe)
     duplicates = binding_map()
-    return [customer_network_row(customer, snapshot, duplicates) for customer in customers]
+    hotspot_settings = load_hotspot_access_state().get("settings") or {}
+    seed_ticketing_data()
+    return [
+        customer_network_row(
+            customer,
+            snapshot,
+            duplicates,
+            hotspot_settings=hotspot_settings,
+            seed_tickets=False,
+        )
+        for customer in customers
+    ]
 
 
 def filtered_customer_network_rows(
@@ -1668,9 +1683,9 @@ def filtered_customer_network_rows(
     return sorted(result, key=lambda row: row["customer"].get("name", ""))
 
 
-def account_admin_metrics(admin: dict[str, Any] | None = None, rows: list[dict[str, Any]] | None = None) -> dict[str, int]:
+def account_admin_metrics(admin: dict[str, Any] | None = None, rows: list[dict[str, Any]] | None = None, include_mapping: bool = False) -> dict[str, int]:
     rows = rows if rows is not None else build_customer_network_rows(admin=admin)
-    mapping = pppoe_onu_mapping_snapshot(admin=admin) if admin else {"unmatchedCount": 0, "matchedCount": 0, "onuCount": 0, "pppoeCount": 0}
+    mapping = pppoe_onu_mapping_snapshot(admin=admin) if include_mapping and admin else {"unmatchedCount": 0, "matchedCount": 0, "onuCount": 0, "pppoeCount": 0}
     return {
         "customer_accounts": len(rows),
         "customer_networks": len(rows),
@@ -1791,7 +1806,7 @@ def account_admin_meta(admin=Depends(require_admin)):
 @router.get("/overview")
 def account_admin_overview(admin=Depends(require_admin)):
     rows = build_customer_network_rows(admin=admin)
-    metrics = account_admin_metrics(admin=admin)
+    metrics = account_admin_metrics(admin=admin, rows=rows, include_mapping=True)
     snapshot = pppoe_snapshot()
     return {
         "metrics": {
@@ -1956,7 +1971,7 @@ def list_customer_accounts(
     admin=Depends(require_admin),
 ):
     rows = build_customer_network_rows(admin=admin, refresh_pppoe=refreshPppoe)
-    metrics = account_admin_metrics(admin=admin, rows=rows)
+    metrics = account_admin_metrics(rows=rows)
     return {
         "data": filtered_customer_network_rows(
             rows,
@@ -2152,7 +2167,7 @@ def reconcile_customer_network(refreshPppoe: bool = Query(default=True), admin=D
     return {
         "status": "ok",
         "total": len(rows),
-        "metrics": account_admin_metrics(admin=admin),
+        "metrics": account_admin_metrics(admin=admin, rows=rows, include_mapping=True),
         "pppoeDiscovery": {
             "capturedAt": pppoe_discovery_cache.get("capturedAt", ""),
             "deviceErrors": pppoe_discovery_cache.get("deviceErrors", []),

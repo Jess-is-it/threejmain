@@ -25,6 +25,111 @@
   color: #1e293b;
 }
 
+.account-admin-customer-workspace {
+  align-items: start;
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.account-admin-customer-workspace.has-detail-panel {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.account-admin-customer-main {
+  min-width: 0;
+}
+
+.account-admin-detail-panel {
+  background: #ffffff;
+  border: 1px solid var(--admin-border);
+  border-radius: 0.5rem;
+  box-shadow: 0 16px 48px rgba(15, 23, 42, 0.12);
+  min-width: 0;
+  overflow: hidden;
+  position: sticky;
+  top: 1rem;
+}
+
+.account-admin-detail-panel-header {
+  align-items: flex-start;
+  border-bottom: 1px solid var(--admin-border);
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+}
+
+.account-admin-detail-heading {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.account-admin-detail-heading h3 {
+  font-size: 1rem;
+  line-height: 1.35;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.account-admin-detail-badges,
+.account-admin-detail-access-heading {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.account-admin-detail-panel-body {
+  background: #f8fafc;
+  display: grid;
+  gap: 1rem;
+  padding: 1.25rem;
+}
+
+.account-admin-detail-section,
+.account-admin-detail-access-card {
+  background: #ffffff;
+  border: 1px solid var(--admin-border);
+  border-radius: 0.5rem;
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.9rem;
+}
+
+.account-admin-detail-section h4 {
+  color: #1e293b;
+  font-size: 0.86rem;
+  margin: 0;
+}
+
+.account-admin-detail-info-list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.account-admin-detail-info-row {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.account-admin-detail-info-row span {
+  color: #64748b;
+  font-size: 0.76rem;
+}
+
+.account-admin-detail-info-row strong {
+  color: #1e293b;
+  font-size: 0.86rem;
+  overflow-wrap: anywhere;
+}
+
+.account-admin-detail-tabs {
+  margin-bottom: 0;
+}
+
 .account-admin-table-card > .card-header {
   align-items: center;
   gap: 0.75rem;
@@ -177,7 +282,11 @@
 }
 
 .account-admin-table {
-  min-width: 1320px;
+  min-width: 980px;
+}
+
+.account-admin-customer-workspace.has-detail-panel .account-admin-table:not(.account-admin-mapping-table) {
+  min-width: 780px;
 }
 
 .account-admin-mapping-table {
@@ -190,6 +299,10 @@
 
 .account-admin-table td {
   vertical-align: middle;
+}
+
+.account-admin-table tr.table-active {
+  box-shadow: inset 0.22rem 0 #206bc4;
 }
 
 .account-admin-customer-badges,
@@ -208,6 +321,33 @@
   min-width: 10rem;
 }
 
+.account-admin-compact-access-cell {
+  align-items: center;
+  display: flex;
+  gap: 0.55rem;
+  min-width: 7.5rem;
+}
+
+.account-admin-check-indicator {
+  align-items: center;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  color: #64748b;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-weight: 700;
+  height: 1.75rem;
+  justify-content: center;
+  width: 1.75rem;
+}
+
+.account-admin-check-indicator.active {
+  background: #e8f7ee;
+  border-color: #2fb344;
+  color: #2fb344;
+}
+
 .account-admin-access-heading {
   align-items: center;
   display: flex;
@@ -224,6 +364,26 @@
   display: grid;
   gap: 0.35rem;
   min-width: 11rem;
+}
+
+.account-admin-actions-column {
+  min-width: 12rem;
+}
+
+.account-admin-row-actions {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  justify-content: space-between;
+}
+
+.account-admin-refreshing {
+  align-items: center;
+  color: #64748b;
+  display: inline-flex;
+  font-size: 0.8rem;
+  margin: -0.45rem 0 0.75rem;
+  min-height: 1.25rem;
 }
 
 .account-admin-ticket-stack {
@@ -286,6 +446,14 @@
 }
 
 @media (max-width: 768px) {
+  .account-admin-customer-workspace.has-detail-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .account-admin-detail-panel {
+    position: static;
+  }
+
   .account-admin-table-card > .card-header {
     align-items: flex-start;
   }

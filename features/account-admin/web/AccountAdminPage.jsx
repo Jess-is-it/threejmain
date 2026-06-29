@@ -1,10 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   IconActivity,
+  IconCircleCheck,
   IconDashboard,
   IconDatabase,
   IconDeviceFloppy,
   IconEdit,
+  IconEye,
   IconFilter,
   IconHelp,
   IconHistory,
@@ -154,22 +156,50 @@ function AccessSummaryCell({ summary }) {
   );
 }
 
-function AccountHealthCell({ row }) {
-  const summary = row.accessSummary || {};
-  const actions = summary.actionRequired || [];
-  const flags = row.reviewFlags || [];
+function CheckIndicator({ active, label }) {
   return (
-    <div className="account-admin-health-cell">
-      <StatusBadge value={summary.overallStatus || row.lifecycleStatus || 'NO_ACCESS'} />
-      {actions.length > 0 && (
-        <div className="account-admin-action-list">
-          {actions.slice(0, 3).map((action) => (
-            <span className={`badge bg-${action.tone || 'warning'}-lt text-${action.tone || 'warning'}`} key={action.code || action.label}>{action.label}</span>
-          ))}
-          {actions.length > 3 && <span className="badge bg-secondary-lt text-secondary">+{actions.length - 3}</span>}
-        </div>
-      )}
-      {flags.length > 0 && <div className="text-muted small">{flags[0]}</div>}
+    <span className={`account-admin-check-indicator ${active ? 'active' : ''}`} title={`${label}: ${active ? 'Active' : 'Inactive'}`} aria-label={`${label}: ${active ? 'Active' : 'Inactive'}`}>
+      {active ? <IconCircleCheck size={17} /> : <span aria-hidden="true">-</span>}
+    </span>
+  );
+}
+
+function HotspotAccessCell({ summary }) {
+  const active = summary?.status === 'ACTIVE' || Boolean(summary?.hasAccess);
+  const enabled = Number(summary?.enabledContactCount || 0);
+  const total = Number(summary?.contactCount || 0);
+  return (
+    <div className="account-admin-compact-access-cell">
+      <CheckIndicator active={active} label="Hotspot Access" />
+      <div>
+        <div className="fw-semibold">{active ? 'Active' : 'Inactive'}</div>
+        <div className="text-muted small">{enabled}/{total} contacts allowed</div>
+      </div>
+    </div>
+  );
+}
+
+function IptvAccessCell({ summary }) {
+  const active = summary?.status === 'ACTIVE' || Boolean(summary?.hasAccess);
+  return (
+    <div className="account-admin-compact-access-cell">
+      <CheckIndicator active={active} label="IPTV Access" />
+      <div className="fw-semibold">{active ? 'Active' : 'Inactive'}</div>
+    </div>
+  );
+}
+
+function ActionRequiredCell({ row }) {
+  const actions = row.accessSummary?.actionRequired || [];
+  if (!actions.length) {
+    return <span className="text-muted small">No action</span>;
+  }
+  return (
+    <div className="account-admin-action-list">
+      {actions.slice(0, 2).map((action) => (
+        <span className={`badge bg-${action.tone || 'warning'}-lt text-${action.tone || 'warning'}`} key={action.code || action.label}>{action.label}</span>
+      ))}
+      {actions.length > 2 && <span className="badge bg-secondary-lt text-secondary">+{actions.length - 2}</span>}
     </div>
   );
 }
@@ -208,11 +238,15 @@ export default function AccountAdminPage() {
   const [hotspotGuideOpen, setHotspotGuideOpen] = useState(false);
   const [tabs, setTabs] = useState(defaultTabs);
   const [filters, setFilters] = useState(blankFilters);
+  const [selectedCustomerId, setSelectedCustomerId] = useState('');
+  const [detailTab, setDetailTab] = useState('INTERNET');
   const [mappingView, setMappingView] = useState(MAPPING_WITHOUT_ONUS);
   const [areFiltersOpen, setFiltersOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const latestFiltersRef = useRef(blankFilters);
+  const latestRowsRef = useRef([]);
+  const loadRequestRef = useRef(0);
   const searchDebounceRef = useRef(null);
 
   const hasActiveFilters = ['accessFilter', 'customerStatus', 'internetStatus', 'hotspotStatus', 'iptvStatus', 'pppoeStatus'].some((key) => Boolean(filters[key]));
@@ -228,6 +262,8 @@ export default function AccountAdminPage() {
   }
 
   async function load(nextFilters = latestFiltersRef.current, options = {}) {
+    const requestId = loadRequestRef.current + 1;
+    loadRequestRef.current = requestId;
     setLoading(true);
     setError('');
     const params = new URLSearchParams();
@@ -237,14 +273,21 @@ export default function AccountAdminPage() {
     if (options.refresh) params.set('refreshPppoe', 'true');
     try {
       const data = await request(`/account-admin/customer-accounts?${params.toString()}`);
-      setRows(data.data || []);
+      if (requestId !== loadRequestRef.current) return;
+      const nextRows = data.data || [];
+      latestRowsRef.current = nextRows;
+      setRows(nextRows);
       setTabs(data.tabs || defaultTabs);
+      setSelectedCustomerId((current) => (
+        current && !nextRows.some((row) => row.customerId === current) ? '' : current
+      ));
       if (nextFilters.lifecycle === PPPOE_ONU_MAPPING_TAB) {
         const mappingParams = new URLSearchParams();
         if (nextFilters.search) mappingParams.set('search', nextFilters.search);
         if (nextFilters.pppoeStatus) mappingParams.set('status', nextFilters.pppoeStatus);
         if (options.refresh) mappingParams.set('refresh', 'true');
         const mapping = await request(`/account-admin/pppoe-onu-mapping?${mappingParams.toString()}`);
+        if (requestId !== loadRequestRef.current) return;
         setMappingRows(mapping.mappings || []);
         setMappingMeta(mapping);
       } else {
@@ -252,9 +295,10 @@ export default function AccountAdminPage() {
         setMappingMeta(null);
       }
     } catch (err) {
+      if (requestId !== loadRequestRef.current) return;
       setError(err.message);
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestRef.current) setLoading(false);
     }
   }
 
@@ -480,7 +524,22 @@ export default function AccountAdminPage() {
     setFiltersOpen((value) => !value);
   }
 
+  function openCustomerDetails(row) {
+    setSelectedCustomerId(row.customerId);
+    setDetailTab('INTERNET');
+  }
+
+  function closeCustomerDetails() {
+    setSelectedCustomerId('');
+  }
+
   const isPppoeOnuMappingTab = filters.lifecycle === PPPOE_ONU_MAPPING_TAB;
+  const selectedRow = selectedCustomerId ? rows.find((row) => row.customerId === selectedCustomerId) : null;
+  const detailTabs = [
+    { label: 'Internet Access', value: 'INTERNET' },
+    { label: 'Hotspot', value: 'HOTSPOT' },
+    { label: 'IPTV', value: 'IPTV' }
+  ];
   const unmatchedMappingRows = mappingRows.filter((row) => !row.matched);
   const matchedMappingRows = mappingRows.filter((row) => row.matched);
   const visibleMappingRows = mappingView === MAPPING_MATCHED_ONUS ? matchedMappingRows : unmatchedMappingRows;
@@ -493,6 +552,116 @@ export default function AccountAdminPage() {
     { value: 'HOTSPOT', label: 'Hotspot Access', icon: IconWifi },
     { value: 'IPTV', label: 'IPTV Access', icon: IconActivity }
   ];
+
+  function renderDetailInfoRow(label, value) {
+    return (
+      <div className="account-admin-detail-info-row" key={label}>
+        <span>{label}</span>
+        <strong>{String(value || '').trim() || '-'}</strong>
+      </div>
+    );
+  }
+
+  function renderAccessDetail(summary) {
+    const details = (summary?.details || []).filter(Boolean);
+    return (
+      <div className="account-admin-detail-access-card">
+        <div className="account-admin-detail-access-heading">
+          <StatusBadge value={summary?.status || 'NO_SERVICE'} />
+          <CheckIndicator active={summary?.status === 'ACTIVE' || Boolean(summary?.hasAccess)} label={summary?.label || 'Access'} />
+        </div>
+        <div className="h4 mb-1">{summary?.primary || '-'}</div>
+        {summary?.secondary && <div className="text-muted">{summary.secondary}</div>}
+        {details.length > 0 && (
+          <div className="account-admin-access-detail-list">
+            {details.map((detail) => <span className="badge bg-secondary-lt text-secondary" key={detail}>{detail}</span>)}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function renderCustomerDetailsPanel() {
+    if (!selectedRow) return null;
+    const customer = selectedRow.customer || {};
+    const internet = selectedRow.accessSummary?.internetAccess || {};
+    const hotspotSummary = selectedRow.accessSummary?.hotspotAccess || {};
+    const iptv = selectedRow.accessSummary?.iptvAccess || {};
+    const detailRows = [
+      ['Account No.', customer.accountNumber],
+      ['Contact', customer.contactNumber],
+      ['Type', customer.customerType],
+      ['Location', customer.locationName || [customer.barangay, customer.city, customer.province].filter(Boolean).join(', ')],
+      ['Address', customer.address],
+      ['Tickets', `${selectedRow.ticketCount || 0} total / ${selectedRow.openTicketCount || 0} open`],
+    ];
+    return (
+      <aside className="account-admin-detail-panel" aria-label="Selected customer account details">
+        <div className="account-admin-detail-panel-header">
+          <div className="account-admin-detail-heading">
+            <h3>{customer.name || 'Customer'}</h3>
+            <div className="account-admin-detail-badges">
+              <StatusBadge value={customer.status || 'UNKNOWN'} />
+              <StatusBadge value={selectedRow.lifecycleStatus || 'UNKNOWN'} />
+            </div>
+          </div>
+          <button type="button" className="btn btn-icon btn-sm" title="Close" onClick={closeCustomerDetails}>
+            <IconX size={18} />
+          </button>
+        </div>
+        <div className="account-admin-detail-panel-body">
+          <section className="account-admin-detail-section">
+            <h4>Customer Details</h4>
+            <div className="account-admin-detail-info-list">
+              {detailRows.map(([label, value]) => renderDetailInfoRow(label, value))}
+            </div>
+          </section>
+          <div className="account-admin-status-tabs account-admin-detail-tabs" role="tablist" aria-label="Customer access details">
+            {detailTabs.map((tab) => (
+              <button
+                type="button"
+                key={tab.value}
+                className={`account-admin-status-tab account-admin-detail-tab ${detailTab === tab.value ? 'active' : ''}`}
+                onClick={() => setDetailTab(tab.value)}
+                role="tab"
+                aria-selected={detailTab === tab.value}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          {detailTab === 'INTERNET' && (
+            <section className="account-admin-detail-section">
+              <h4>Internet Access</h4>
+              {renderAccessDetail(internet)}
+              <div className="account-admin-detail-info-list">
+                {renderDetailInfoRow('PPPoE Status', internet.pppoeStatus || selectedRow.pppoeStatus)}
+                {renderDetailInfoRow('Router', internet.routerName || selectedRow.routerName)}
+                {renderDetailInfoRow('IP Address', internet.ipAddress || selectedRow.staticIp)}
+                {renderDetailInfoRow('Service Account', internet.serviceAccountNumber)}
+              </div>
+            </section>
+          )}
+          {detailTab === 'HOTSPOT' && (
+            <section className="account-admin-detail-section">
+              <h4>Hotspot Access</h4>
+              {renderAccessDetail(hotspotSummary)}
+              <div className="account-admin-detail-info-list">
+                {renderDetailInfoRow('Allowed Contacts', `${hotspotSummary.enabledContactCount || 0}/${hotspotSummary.contactCount || 0}`)}
+                {renderDetailInfoRow('Pisowifi Sync', hotspotSummary.integrationEnabled ? 'Enabled' : 'Disabled')}
+              </div>
+            </section>
+          )}
+          {detailTab === 'IPTV' && (
+            <section className="account-admin-detail-section">
+              <h4>IPTV Access</h4>
+              {renderAccessDetail(iptv)}
+            </section>
+          )}
+        </div>
+      </aside>
+    );
+  }
 
   function renderHotspotAccess() {
     const metrics = hotspot.metrics || {};
@@ -972,9 +1141,11 @@ export default function AccountAdminPage() {
       <>
         {error && <div className="alert alert-danger">{error}</div>}
 
-      <div className="row row-cards">
-        <div className="col-12">
-          <Card
+      <div className={`account-admin-customer-workspace ${selectedRow ? 'has-detail-panel' : ''}`}>
+        <div className="account-admin-customer-main">
+          <div className="row row-cards">
+            <div className="col-12">
+              <Card
             className="account-admin-table-card"
             title={tableTitle}
             icon={IconUsers}
@@ -1016,7 +1187,7 @@ export default function AccountAdminPage() {
                 </button>
               </div>
             )}
-          >
+              >
             {areFiltersOpen && (
 	              <div className="account-admin-table-filters">
 	                <div className="row g-2 align-items-end">
@@ -1088,10 +1259,13 @@ export default function AccountAdminPage() {
                   <span>{item.label}</span>
                   <span className={`badge bg-${item.tone}-lt text-${item.tone}`}>{item.count}</span>
                 </button>
-              ))}
-            </div>
+	              ))}
+	            </div>
+	            {loading && rows.length > 0 && (
+	              <div className="account-admin-refreshing" role="status" aria-live="polite">Updating customer accounts...</div>
+	            )}
 
-            {isPppoeOnuMappingTab && (
+	            {isPppoeOnuMappingTab && (
               <div className="account-admin-mapping-tabs" role="tablist" aria-label="PPPoE ONU match filter">
                 <button
                   type="button"
@@ -1198,76 +1372,70 @@ export default function AccountAdminPage() {
                 </table>
               ) : (
                 <table className="table table-vcenter card-table account-admin-table">
-                  <thead>
-                    <tr>
-                      <th>Customer</th>
-                      <th>Internet Access</th>
-                      <th>Hotspot Access</th>
-                      <th>IPTV Access</th>
-                      <th>Tickets / Action</th>
-                      <th>Account Health</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {loading && (
+	                  <thead>
+	                    <tr>
+	                      <th>Customer</th>
+	                      <th>Internet Access</th>
+	                      <th>Hotspot Access</th>
+	                      <th>IPTV Access</th>
+	                      <th>Tickets</th>
+	                      <th>Action</th>
+	                    </tr>
+	                  </thead>
+	                  <tbody>
+	                    {loading && rows.length === 0 && (
+	                      <tr>
+	                        <td colSpan="6" className="text-muted">Loading customer accounts...</td>
+	                      </tr>
+	                    )}
+	                    {!loading && rows.length === 0 && (
                       <tr>
-                        <td colSpan="6" className="text-muted">Loading customer accounts...</td>
-                      </tr>
-                    )}
-                    {!loading && rows.length === 0 && (
-                      <tr>
-                        <td colSpan="6"><div className="empty">No customer accounts match the current filters.</div></td>
-                      </tr>
-                    )}
-                    {!loading && rows.map((row) => (
-                      <tr key={row.customerId}>
-                        <td>
-                          <div className="fw-bold">{row.customer.name}</div>
-                          <div className="text-muted small">{row.customer.accountNumber || row.customer.contactNumber || '-'}</div>
+	                        <td colSpan="6"><div className="empty">No customer accounts match the current filters.</div></td>
+	                      </tr>
+	                    )}
+	                    {rows.map((row) => (
+	                      <tr key={row.customerId} className={selectedCustomerId === row.customerId ? 'table-active' : ''}>
+	                        <td>
+	                          <div className="fw-bold">{row.customer.name}</div>
+	                          <div className="text-muted small">{row.customer.accountNumber || row.customer.contactNumber || '-'}</div>
                           <div className="account-admin-customer-badges">
                             <StatusBadge value={row.customer.status} />
                             <StatusBadge value={row.lifecycleStatus} />
-                          </div>
-                        </td>
-                        <td><AccessSummaryCell summary={row.accessSummary?.internetAccess} /></td>
-                        <td><AccessSummaryCell summary={row.accessSummary?.hotspotAccess} /></td>
-                        <td><AccessSummaryCell summary={row.accessSummary?.iptvAccess} /></td>
-                        <td>
-                          <div className="d-flex align-items-center gap-2">
-                            <span className={`badge bg-${row.openTicketCount ? 'orange' : 'secondary'}-lt text-${row.openTicketCount ? 'orange' : 'secondary'}`}>
-                              {row.ticketCount || 0}
-                            </span>
-                            <span>{row.latestTicket?.ticketNumber || '-'}</span>
-                          </div>
-                          {row.latestTicket ? (
-                            <div className="account-admin-ticket-stack">
-                              <div className="account-admin-ticket-meta">
-                                <StatusBadge value={row.latestTicket.category || 'GENERAL'} />
-                                <StatusBadge value={row.latestTicket.status || 'OPEN'} />
-                                <StatusBadge value={row.latestTicket.priority || 'NORMAL'} />
-                              </div>
-                              <div className="text-muted small">{row.latestTicket.subject || 'No ticket subject'}</div>
-                              {(row.latestTicket.accountAdminActions || []).length > 0 && (
-                                <div className="account-admin-ticket-actions">
-                                  {(row.latestTicket.accountAdminActions || []).map((action) => (
-                                    <span className="badge bg-green-lt text-green" key={action.code}>{action.label}</span>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          ) : (
-                            <div className="text-muted small">No assigned ticket</div>
-                          )}
-                        </td>
-                        <td><AccountHealthCell row={row} /></td>
-                      </tr>
-                    ))}
-                  </tbody>
+	                          </div>
+	                        </td>
+	                        <td><AccessSummaryCell summary={row.accessSummary?.internetAccess} /></td>
+	                        <td><HotspotAccessCell summary={row.accessSummary?.hotspotAccess} /></td>
+	                        <td><IptvAccessCell summary={row.accessSummary?.iptvAccess} /></td>
+	                        <td>
+	                          <span className={`badge bg-${row.openTicketCount ? 'orange' : 'secondary'}-lt text-${row.openTicketCount ? 'orange' : 'secondary'}`}>
+	                            {row.ticketCount || 0}
+	                          </span>
+	                        </td>
+	                        <td className="account-admin-actions-column">
+	                          <div className="account-admin-row-actions">
+	                            <ActionRequiredCell row={row} />
+	                            <button
+	                              type="button"
+	                              className="btn btn-icon btn-sm btn-outline-primary"
+	                              title={`View ${row.customer.name}`}
+	                              aria-label={`View ${row.customer.name}`}
+	                              onClick={() => openCustomerDetails(row)}
+	                            >
+	                              <IconEye size={16} />
+	                            </button>
+	                          </div>
+	                        </td>
+	                      </tr>
+	                    ))}
+	                  </tbody>
                 </table>
               )}
             </div>
-          </Card>
+              </Card>
+            </div>
+          </div>
         </div>
+        {selectedRow && renderCustomerDetailsPanel()}
       </div>
       </>
       )}
