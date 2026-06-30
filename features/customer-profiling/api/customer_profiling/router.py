@@ -210,6 +210,7 @@ REQUIRED_BULK_UPLOAD_HEADERS = [
     "firstName",
     "lastName",
     "contactNumber",
+    "barangay",
 ]
 
 CUSTOMER_STORAGE_MODE = os.getenv("CUSTOMER_PROFILING_STORAGE") or ("postgres" if os.getenv("DATABASE_URL") else "memory")

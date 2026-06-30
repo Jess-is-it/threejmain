@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   IconActivity,
   IconAddressBook,
+  IconAlertTriangle,
   IconCalendarEvent,
   IconCheck,
   IconChevronLeft,
@@ -48,6 +49,7 @@ import './customerProfiling.css';
 
 const API = '/api';
 const CUSTOMER_DRAFT_STORAGE_KEY = 'threejmain_customer_profile_drafts';
+const CUSTOMER_DRAFT_TYPE_BULK_UPLOAD = 'bulkUpload';
 const CUSTOMER_TABLE_COLUMN_STORAGE_PREFIX = 'threejmain_customer_profile_table_columns';
 const DEFAULT_CAPTURE_COORDINATES = { latitude: 17.559311, longitude: 121.684928 };
 const COORDINATE_CAPTURE_ZOOM = 15;
@@ -96,6 +98,10 @@ function uniqueValues(values) {
   return Array.from(new Set(values.map(normalizeUpper).filter(Boolean))).sort();
 }
 
+function keyValue(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
 const BULK_UPLOAD_SYSTEM_FIELDS = new Set([
   'accountnumber',
   'businessname',
@@ -130,6 +136,117 @@ function customerDuplicateKey(data) {
 
 function rowNumbers(rows) {
   return rows.map((row) => row.rowNumber).join(', ');
+}
+
+function bulkUploadRowName(row) {
+  return [row?.data?.firstName, row?.data?.middleName, row?.data?.lastName].filter(Boolean).join(' ') || 'Unnamed customer';
+}
+
+function bulkUploadLocationLabel(row) {
+  const barangay = String(row?.data?.barangay || '').trim();
+  const city = String(row?.data?.city || '').trim();
+  if (barangay && city) return `${barangay}, ${city}`;
+  if (barangay) return barangay;
+  if (city) return city;
+  return 'No barangay / city';
+}
+
+function bulkUploadRowSearchText(row) {
+  return [
+    row.rowNumber,
+    bulkUploadRowName(row),
+    row.data?.contactNumber,
+    row.data?.facebookAccountName,
+    row.data?.email,
+    row.data?.locationName,
+    row.data?.landmark,
+    row.data?.province,
+    row.data?.city,
+    row.data?.barangay,
+    bulkUploadLocationLabel(row),
+    ...(row.errors || [])
+  ].map((item) => String(item || '').toLowerCase()).join(' ');
+}
+
+function sortBulkUploadRows(rows, sortBy) {
+  const sorters = {
+    row: (row) => Number(row.rowNumber) || 0,
+    name: (row) => bulkUploadRowName(row).toLowerCase(),
+    contact: (row) => String(row.data?.contactNumber || '').toLowerCase(),
+    location: (row) => bulkUploadLocationLabel(row).toLowerCase(),
+    status: (row) => (row.errors?.length ? 0 : 1),
+  };
+  const sorter = sorters[sortBy] || sorters.location;
+  return [...rows].sort((left, right) => {
+    const leftValue = sorter(left);
+    const rightValue = sorter(right);
+    if (leftValue < rightValue) return -1;
+    if (leftValue > rightValue) return 1;
+    return (Number(left.rowNumber) || 0) - (Number(right.rowNumber) || 0);
+  });
+}
+
+function groupBulkUploadRowsByLocation(rows) {
+  const groups = new Map();
+  rows.forEach((row) => {
+    const location = bulkUploadLocationLabel(row);
+    groups.set(location, [...(groups.get(location) || []), row]);
+  });
+  return Array.from(groups.entries()).map(([location, rowsForLocation]) => ({
+    location,
+    rows: rowsForLocation,
+    count: rowsForLocation.length,
+    needsFixCount: rowsForLocation.filter((row) => row.errors.length).length,
+  }));
+}
+
+function bulkUploadDuplicateGroups(rows) {
+  const groups = new Map();
+  rows.forEach((row) => {
+    const duplicateKey = customerDuplicateKey(row.data || {});
+    if (!duplicateKey) return;
+    groups.set(duplicateKey, [...(groups.get(duplicateKey) || []), row]);
+  });
+  return Array.from(groups.values())
+    .filter((rowsForKey) => rowsForKey.length > 1)
+    .map((rowsForKey) => [...rowsForKey].sort((left, right) => (Number(left.rowNumber) || 0) - (Number(right.rowNumber) || 0)));
+}
+
+const BULK_UPLOAD_DUPLICATE_FIELDS = new Set([
+  'firstName',
+  'lastName',
+  'landmark',
+  'addressLine1',
+  'province',
+  'city',
+  'barangay',
+  'latitude',
+  'longitude'
+]);
+
+function bulkUploadFieldNeedsFix(row, field) {
+  const errors = row?.errors || [];
+  if (errors.includes(`${field} is required`)) return true;
+  const hasDuplicateError = errors.some((error) => (
+    error.includes('Duplicate customer identity/address') || error.includes('Customer already exists with the same name and service address')
+  ));
+  return hasDuplicateError && BULK_UPLOAD_DUPLICATE_FIELDS.has(field);
+}
+
+function bulkUploadRowInlineDetailItems(row) {
+  const data = row?.data || {};
+  return [
+    { label: 'Name', value: bulkUploadRowName(row), fields: ['firstName', 'middleName', 'lastName'], primary: true },
+    { label: 'Contact Number', value: data.contactNumber, fields: ['contactNumber'] },
+    { label: 'Location', value: bulkUploadLocationLabel(row), fields: ['barangay', 'city'] },
+    { label: 'Birth Date', value: data.birthDate, fields: ['birthDate'] },
+    { label: 'Alternate Mobile', value: data.alternateMobileNumber, fields: ['alternateMobileNumber'] },
+    { label: 'Facebook Name', value: data.facebookAccountName, fields: ['facebookAccountName'] },
+    { label: 'Email', value: data.email, fields: ['email'] },
+    { label: 'Landmark', value: data.landmark, fields: ['landmark'] },
+    { label: 'Address Line 1', value: data.addressLine1, fields: ['addressLine1'] },
+    { label: 'Gender', value: data.gender, fields: ['gender'] }
+  ].map((item) => ({ ...item, value: String(item.value || '').trim() })).filter((item) => item.value);
 }
 
 function validateBulkUploadRows(rows, requiredHeaders, existingCustomers = []) {
@@ -529,9 +646,29 @@ function customerStageCompleted(data, stageIndex) {
 }
 
 function draftTitle(draft) {
+  if (isBulkUploadDraft(draft)) {
+    return draft?.bulkUpload?.fileName || 'Bulk upload draft';
+  }
   const form = draft?.form || {};
   const name = [form.firstName, form.middleName, form.lastName].map((item) => String(item || '').trim()).filter(Boolean).join(' ');
   return name || form.accountNumber || form.contactNumber || 'Untitled customer draft';
+}
+
+function isBulkUploadDraft(draft) {
+  return draft?.type === CUSTOMER_DRAFT_TYPE_BULK_UPLOAD;
+}
+
+function draftSubtitle(draft) {
+  if (isBulkUploadDraft(draft)) {
+    const rows = Array.isArray(draft?.bulkUpload?.rows) ? draft.bulkUpload.rows : [];
+    const fileErrors = Array.isArray(draft?.bulkUpload?.fileErrors) ? draft.bulkUpload.fileErrors : [];
+    const needsFixing = rows.filter((row) => row.errors?.length).length;
+    const details = [`${rows.length} parsed row${rows.length === 1 ? '' : 's'}`];
+    if (needsFixing) details.push(`${needsFixing} need fixing`);
+    if (fileErrors.length) details.push(`${fileErrors.length} file issue${fileErrors.length === 1 ? '' : 's'}`);
+    return details.join(' / ');
+  }
+  return [draft?.form?.contactNumber, draft?.form?.barangay, draft?.form?.city].filter(Boolean).join(' / ') || 'No contact or address yet';
 }
 
 function readCustomerDrafts() {
@@ -597,6 +734,16 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const [bulkUploadFileErrors, setBulkUploadFileErrors] = useState([]);
   const [bulkUploadResult, setBulkUploadResult] = useState(null);
   const [bulkUploadExistingCustomers, setBulkUploadExistingCustomers] = useState([]);
+  const [bulkUploadModalStage, setBulkUploadModalStage] = useState(1);
+  const [isBulkUploadDragActive, setBulkUploadDragActive] = useState(false);
+  const [isBulkUploadReviewPageOpen, setBulkUploadReviewPageOpen] = useState(false);
+  const [isBulkUploadConfirmModalOpen, setBulkUploadConfirmModalOpen] = useState(false);
+  const [isBulkUploadCloseConfirmOpen, setBulkUploadCloseConfirmOpen] = useState(false);
+  const [isBulkUploadGuideOpen, setBulkUploadGuideOpen] = useState(false);
+  const [bulkUploadReviewSearch, setBulkUploadReviewSearch] = useState('');
+  const [bulkUploadReviewSort, setBulkUploadReviewSort] = useState('location');
+  const [bulkUploadLocationFilter, setBulkUploadLocationFilter] = useState('');
+  const [expandedBulkUploadRowNumbers, setExpandedBulkUploadRowNumbers] = useState([]);
   const [isBulkUploading, setBulkUploading] = useState(false);
   const [isDetailsPanelOpen, setDetailsPanelOpen] = useState(false);
   const [customerDetailTab, setCustomerDetailTab] = useState('basic');
@@ -604,6 +751,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const [formStage, setFormStage] = useState(0);
   const [customerDrafts, setCustomerDrafts] = useState([]);
   const [activeDraftId, setActiveDraftId] = useState('');
+  const [activeBulkUploadDraftId, setActiveBulkUploadDraftId] = useState('');
   const [isDraftPanelOpen, setDraftPanelOpen] = useState(false);
   const [selectedDraftIds, setSelectedDraftIds] = useState([]);
   const [coordinateCapture, setCoordinateCapture] = useState(null);
@@ -652,7 +800,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     .map((location) => normalizeUpper(location.barangay)));
   const barangays = filters.province && filters.city ? uniqueValues([...(meta.barangaysByProvinceCity?.[barangayKey] || []), ...savedBarangays]) : uniqueValues([...(meta.barangays || []), ...savedBarangays]);
   const formBarangays = form.province && form.city ? uniqueValues([...(meta.barangaysByProvinceCity?.[formBarangayKey] || []), ...formSavedBarangays]) : uniqueValues([...(meta.barangays || []), ...formSavedBarangays]);
-  const requiredBulkUploadHeaders = meta.requiredBulkUploadHeaders || ['firstName', 'lastName', 'contactNumber'];
+  const requiredBulkUploadHeaders = meta.requiredBulkUploadHeaders || ['firstName', 'lastName', 'contactNumber', 'barangay'];
   const bulkUploadBarangayOptionsFor = (row) => {
     const province = normalizeUpper(row?.data?.province);
     const city = normalizeUpper(row?.data?.city);
@@ -666,6 +814,25 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   };
   const validBulkUploadRows = bulkUploadRows.filter((row) => !row.errors.length);
   const invalidBulkUploadRows = bulkUploadRows.filter((row) => row.errors.length);
+  const hasBulkUploadDraft = Boolean(bulkUploadFileName || bulkUploadRows.length || bulkUploadFileErrors.length);
+  const bulkUploadLocationGroups = groupBulkUploadRowsByLocation(sortBulkUploadRows(bulkUploadRows, 'location'));
+  const bulkUploadCsvDuplicateGroups = bulkUploadDuplicateGroups(bulkUploadRows);
+  const bulkUploadDuplicateRowsToRemoveCount = bulkUploadCsvDuplicateGroups.reduce((sum, group) => sum + Math.max(group.length - 1, 0), 0);
+  const bulkUploadReviewSearchQuery = bulkUploadReviewSearch.trim().toLowerCase();
+  const filteredBulkUploadRows = sortBulkUploadRows(
+    bulkUploadRows.filter((row) => (
+      (!bulkUploadLocationFilter || bulkUploadLocationLabel(row) === bulkUploadLocationFilter)
+      && (!bulkUploadReviewSearchQuery || bulkUploadRowSearchText(row).includes(bulkUploadReviewSearchQuery))
+    )),
+    bulkUploadReviewSort
+  );
+  const groupedFilteredBulkUploadRows = groupBulkUploadRowsByLocation(filteredBulkUploadRows);
+  const bulkUploadKpis = [
+    ['Parsed Customers', bulkUploadRows.length, IconUsers, 'blue'],
+    ['Ready', validBulkUploadRows.length, IconCheck, 'green'],
+    ['Needs Fixing', invalidBulkUploadRows.length, IconX, 'red'],
+    ['Locations', bulkUploadLocationGroups.length, IconMapPin, 'azure']
+  ];
   const hasActiveTableFilters = ['search', 'customerType', 'status', 'province', 'city', 'barangay'].some((key) => Boolean(filters[key]));
   const lastFormStage = customerFormStages.length - 1;
   const hasFormDraftData = hasCustomerDraftData(form);
@@ -948,6 +1115,10 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     persistCustomerDrafts(nextDrafts);
     setSelectedDraftIds((current) => current.filter((id) => !idSet.has(id)));
     if (idSet.has(activeDraftId)) setActiveDraftId('');
+    if (idSet.has(activeBulkUploadDraftId)) {
+      setActiveBulkUploadDraftId('');
+      resetBulkUploadBatch();
+    }
   }
 
   function saveCurrentDraft({ silent = false } = {}) {
@@ -956,6 +1127,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     const existing = customerDrafts.find((draft) => draft.id === activeDraftId);
     const draft = {
       id: activeDraftId || `customer-draft-${Date.now()}`,
+      type: 'customer',
       createdAt: existing?.createdAt || now,
       updatedAt: now,
       stage: formStage,
@@ -967,6 +1139,29 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     setActiveDraftId(draft.id);
     if (!silent) setMessage(`Draft saved for ${draftTitle(draft)}.`);
     return true;
+  }
+
+  function saveBulkUploadDraft() {
+    if (!hasBulkUploadDraft) return null;
+    const now = new Date().toISOString();
+    const existing = customerDrafts.find((draft) => draft.id === activeBulkUploadDraftId);
+    const draft = {
+      id: activeBulkUploadDraftId || `bulk-upload-draft-${Date.now()}`,
+      type: CUSTOMER_DRAFT_TYPE_BULK_UPLOAD,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+      bulkUpload: {
+        fileName: bulkUploadFileName,
+        rows: bulkUploadRows,
+        fileErrors: bulkUploadFileErrors,
+        modalStage: bulkUploadModalStage
+      }
+    };
+    const nextDrafts = [draft, ...customerDrafts.filter((item) => item.id !== draft.id)]
+      .sort((left, right) => new Date(right.updatedAt) - new Date(left.updatedAt));
+    persistCustomerDrafts(nextDrafts);
+    setActiveBulkUploadDraftId(draft.id);
+    return draft;
   }
 
   function openDraftPanel() {
@@ -986,7 +1181,49 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     setReferralPickerOpen(false);
   }
 
-  function continueDraft(draft) {
+  async function continueBulkUploadDraft(draft) {
+    const saved = draft?.bulkUpload || {};
+    const savedRows = Array.isArray(saved.rows) ? saved.rows : [];
+    const savedFileErrors = Array.isArray(saved.fileErrors) ? saved.fileErrors : [];
+    const savedStageValue = Math.min(Math.max(Number(saved.modalStage) || 1, 1), 4);
+    const savedStage = savedStageValue === 2 ? 3 : savedStageValue;
+    const shouldOpenImportPage = savedStage > 1 && savedRows.length && !savedFileErrors.length;
+    setActiveBulkUploadDraftId(draft.id);
+    setBulkUploadFileName(saved.fileName || 'Bulk upload draft');
+    setBulkUploadRows(validateBulkUploadRows(savedRows, requiredBulkUploadHeaders, []));
+    setBulkUploadFileErrors(savedFileErrors);
+    setBulkUploadExistingCustomers([]);
+    setBulkUploadResult(null);
+    setBulkUploadDragActive(false);
+    setBulkUploadReviewPageOpen(false);
+    setBulkUploadConfirmModalOpen(false);
+    setBulkUploadCloseConfirmOpen(false);
+    setBulkUploadGuideOpen(false);
+    setBulkUploadReviewSearch('');
+    setBulkUploadReviewSort('location');
+    setBulkUploadLocationFilter('');
+    setExpandedBulkUploadRowNumbers([]);
+    setBulkUploadModalStage(shouldOpenImportPage ? savedStage : 1);
+    setDraftPanelOpen(false);
+    setBulkUploadModalOpen(!shouldOpenImportPage);
+    setBulkUploadReviewPageOpen(shouldOpenImportPage);
+    setMessage(`Continuing ${draftTitle(draft)}.`);
+    setError('');
+
+    try {
+      const existingCustomers = await loadBulkUploadDuplicateCustomers();
+      setBulkUploadExistingCustomers(existingCustomers);
+      setBulkUploadRows(validateBulkUploadRows(savedRows, requiredBulkUploadHeaders, existingCustomers));
+    } catch (err) {
+      setError(err.message || 'Unable to refresh duplicate checks for this bulk upload draft.');
+    }
+  }
+
+  async function continueDraft(draft) {
+    if (isBulkUploadDraft(draft)) {
+      await continueBulkUploadDraft(draft);
+      return;
+    }
     const draftForm = { ...blankCustomerForm, ...(draft.form || {}) };
     const draftLocation = locations.find((location) => location.id === draftForm.locationId);
     setEditingId('');
@@ -1008,6 +1245,25 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     setSelectedDraftIds((current) => (
       current.includes(draftId) ? current.filter((id) => id !== draftId) : [...current, draftId]
     ));
+  }
+
+  function deleteSelectedDrafts() {
+    if (!selectedDraftIds.length) return;
+    removeDrafts(selectedDraftIds);
+  }
+
+  function deleteAllDrafts() {
+    if (!customerDrafts.length) return;
+    const draftCount = customerDrafts.length;
+    if (!window.confirm(`Delete all ${draftCount} saved draft${draftCount === 1 ? '' : 's'}? This cannot be undone.`)) return;
+    removeDrafts(customerDrafts.map((draft) => draft.id));
+  }
+
+  function handleDraftCardKeyDown(event, draftId) {
+    if (event.target.closest?.('button')) return;
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    toggleDraftSelection(draftId);
   }
 
   function editCustomer(customer) {
@@ -1063,22 +1319,76 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
 
   function openBulkUploadModal() {
     setBulkUploadModalOpen(true);
-    setBulkUploadFileName('');
-    setBulkUploadRows([]);
-    setBulkUploadFileErrors([]);
-    setBulkUploadResult(null);
-    setBulkUploadExistingCustomers([]);
+    setBulkUploadDragActive(false);
+    setBulkUploadReviewPageOpen(false);
+    setBulkUploadConfirmModalOpen(false);
+    setBulkUploadCloseConfirmOpen(false);
+    setBulkUploadGuideOpen(false);
+    setBulkUploadReviewSearch('');
+    setBulkUploadReviewSort('location');
+    setBulkUploadLocationFilter('');
+    setExpandedBulkUploadRowNumbers([]);
+    if (hasBulkUploadDraft) {
+      setBulkUploadModalStage(1);
+    } else {
+      setBulkUploadModalStage(1);
+      setBulkUploadFileName('');
+      setBulkUploadRows([]);
+      setBulkUploadFileErrors([]);
+      setBulkUploadResult(null);
+      setBulkUploadExistingCustomers([]);
+    }
     setMessage('');
     setError('');
   }
 
-  function closeBulkUploadModal() {
+  function discardBulkUploadDraft() {
+    const draftIdToRemove = activeBulkUploadDraftId;
     setBulkUploadModalOpen(false);
-    setBulkUploadFileName('');
+    setBulkUploadReviewPageOpen(false);
+    setBulkUploadConfirmModalOpen(false);
+    setBulkUploadCloseConfirmOpen(false);
+    resetBulkUploadBatch();
+    if (draftIdToRemove) removeDrafts([draftIdToRemove]);
+  }
+
+  function saveBulkUploadDraftAndClose() {
+    const savedDraft = saveBulkUploadDraft();
+    setBulkUploadModalOpen(false);
+    setBulkUploadReviewPageOpen(false);
+    setBulkUploadConfirmModalOpen(false);
+    setBulkUploadCloseConfirmOpen(false);
+    setBulkUploadGuideOpen(false);
+    setBulkUploadDragActive(false);
+    if (savedDraft) setMessage('Bulk upload draft saved in Customer Drafts.');
+  }
+
+  function requestBulkUploadClose() {
+    if (hasBulkUploadDraft) {
+      setBulkUploadCloseConfirmOpen(true);
+      return;
+    }
+    discardBulkUploadDraft();
+  }
+
+  function resetBulkUploadBatch() {
+    setBulkUploadModalStage(1);
+    setBulkUploadDragActive(false);
+    setBulkUploadReviewPageOpen(false);
+    setBulkUploadConfirmModalOpen(false);
+    setBulkUploadCloseConfirmOpen(false);
+    setBulkUploadGuideOpen(false);
+    setBulkUploadReviewSearch('');
+    setBulkUploadReviewSort('location');
+    setBulkUploadLocationFilter('');
+    setExpandedBulkUploadRowNumbers([]);
     setBulkUploadRows([]);
     setBulkUploadFileErrors([]);
-    setBulkUploadResult(null);
+    setBulkUploadFileName('');
     setBulkUploadExistingCustomers([]);
+    setBulkUploadResult(null);
+    setActiveBulkUploadDraftId('');
+    setError('');
   }
 
   function closeDetailsPanel() {
@@ -1471,12 +1781,21 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     return rows;
   }
 
-  async function handleBulkUploadFile(event) {
-    const file = event.target.files?.[0];
+  async function processBulkUploadFile(file) {
     setBulkUploadResult(null);
     setBulkUploadRows([]);
     setBulkUploadFileErrors([]);
     setBulkUploadExistingCustomers([]);
+    setBulkUploadModalStage(1);
+    setBulkUploadDragActive(false);
+    setBulkUploadReviewPageOpen(false);
+    setBulkUploadConfirmModalOpen(false);
+    setBulkUploadCloseConfirmOpen(false);
+    setBulkUploadGuideOpen(false);
+    setBulkUploadReviewSearch('');
+    setBulkUploadReviewSort('location');
+    setBulkUploadLocationFilter('');
+    setExpandedBulkUploadRowNumbers([]);
     setBulkUploadFileName(file?.name || '');
     if (!file) return;
 
@@ -1494,9 +1813,33 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       }
     } catch (err) {
       setBulkUploadFileErrors([err.message || 'Unable to read the selected CSV file.']);
+    }
+  }
+
+  async function handleBulkUploadFile(event) {
+    const file = event.target.files?.[0];
+    try {
+      await processBulkUploadFile(file);
     } finally {
       event.target.value = '';
     }
+  }
+
+  function handleBulkUploadDragOver(event) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    setBulkUploadDragActive(true);
+  }
+
+  function handleBulkUploadDragLeave(event) {
+    if (event.currentTarget.contains(event.relatedTarget)) return;
+    setBulkUploadDragActive(false);
+  }
+
+  async function handleBulkUploadDrop(event) {
+    event.preventDefault();
+    const file = event.dataTransfer.files?.[0];
+    await processBulkUploadFile(file);
   }
 
   function updateBulkUploadRowData(rowNumber, patch) {
@@ -1512,9 +1855,119 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     setBulkUploadResult(null);
   }
 
+  function autoDeleteDuplicateBulkUploadRows() {
+    const duplicateGroups = bulkUploadDuplicateGroups(bulkUploadRows);
+    const duplicateRowNumbers = new Set(duplicateGroups.flatMap((group) => group.slice(1).map((row) => String(row.rowNumber))));
+    if (!duplicateRowNumbers.size) return;
+    setBulkUploadRows(validateBulkUploadRows(
+      bulkUploadRows.filter((row) => !duplicateRowNumbers.has(String(row.rowNumber))),
+      requiredBulkUploadHeaders,
+      bulkUploadExistingCustomers
+    ));
+    setBulkUploadResult(null);
+    setExpandedBulkUploadRowNumbers([]);
+    setMessage(`Removed ${duplicateRowNumbers.size} duplicate row${duplicateRowNumbers.size === 1 ? '' : 's'} and retained the first entry in each duplicate set.`);
+  }
+
+  function filterBulkUploadLocation(location) {
+    setBulkUploadLocationFilter(location);
+    setBulkUploadReviewSort('location');
+    setExpandedBulkUploadRowNumbers([]);
+  }
+
+  function clearBulkUploadLocationFilter() {
+    setBulkUploadLocationFilter('');
+    setBulkUploadReviewSort('location');
+  }
+
+  function toggleBulkUploadRowEditor(rowNumber) {
+    const key = String(rowNumber);
+    setExpandedBulkUploadRowNumbers((current) => (
+      current.includes(key) ? current.filter((item) => item !== key) : [...current, key]
+    ));
+  }
+
+  function openBulkUploadFixPage() {
+    setBulkUploadModalOpen(false);
+    setBulkUploadConfirmModalOpen(false);
+    setBulkUploadReviewPageOpen(true);
+    setBulkUploadModalStage(3);
+    setBulkUploadReviewSearch('');
+    setBulkUploadReviewSort('status');
+    setBulkUploadLocationFilter('');
+    setExpandedBulkUploadRowNumbers([]);
+    setBulkUploadResult(null);
+  }
+
+  function openBulkUploadConfirmModal() {
+    setBulkUploadModalOpen(false);
+    setBulkUploadModalStage(4);
+    setBulkUploadReviewPageOpen(true);
+    setBulkUploadConfirmModalOpen(false);
+    setBulkUploadReviewSearch('');
+    setBulkUploadReviewSort('location');
+    setBulkUploadLocationFilter('');
+    setExpandedBulkUploadRowNumbers([]);
+    setBulkUploadResult(null);
+  }
+
+  function returnToBulkUploadStart() {
+    setBulkUploadModalStage(1);
+    setBulkUploadConfirmModalOpen(false);
+    setBulkUploadReviewPageOpen(false);
+    setBulkUploadReviewSearch('');
+    setBulkUploadReviewSort('location');
+    setBulkUploadLocationFilter('');
+    setExpandedBulkUploadRowNumbers([]);
+    setBulkUploadResult(null);
+    setBulkUploadModalOpen(true);
+  }
+
+  function returnToBulkUploadSummary() {
+    returnToBulkUploadStart();
+  }
+
+  function proceedToBulkUploadSummary() {
+    if (!bulkUploadRows.length || bulkUploadFileErrors.length) return;
+    setBulkUploadModalStage(3);
+    setBulkUploadModalOpen(false);
+    setBulkUploadReviewPageOpen(true);
+    setBulkUploadConfirmModalOpen(false);
+    setBulkUploadReviewSearch('');
+    setBulkUploadReviewSort(invalidBulkUploadRows.length ? 'status' : 'location');
+    setBulkUploadLocationFilter('');
+    setExpandedBulkUploadRowNumbers([]);
+    setBulkUploadResult(null);
+  }
+
+  function proceedToBulkUploadReview() {
+    if (!bulkUploadRows.length || bulkUploadFileErrors.length) return;
+    setBulkUploadModalStage(3);
+    setBulkUploadReviewSearch('');
+    setBulkUploadReviewSort(invalidBulkUploadRows.length ? 'status' : 'location');
+    setBulkUploadLocationFilter('');
+    setExpandedBulkUploadRowNumbers([]);
+    setBulkUploadResult(null);
+  }
+
+  function returnToBulkUploadReview() {
+    setBulkUploadModalStage(3);
+    setBulkUploadConfirmModalOpen(false);
+    setBulkUploadReviewPageOpen(true);
+    setBulkUploadReviewSearch('');
+    setBulkUploadReviewSort(invalidBulkUploadRows.length ? 'status' : 'location');
+    setBulkUploadLocationFilter('');
+    setExpandedBulkUploadRowNumbers([]);
+    setBulkUploadResult(null);
+  }
+
+  function cancelBulkUploadReview() {
+    requestBulkUploadClose();
+  }
+
   async function importBulkUploadRows() {
     const rowsToImport = validBulkUploadRows;
-    if (!rowsToImport.length || bulkUploadFileErrors.length) return;
+    if (!rowsToImport.length || bulkUploadFileErrors.length || invalidBulkUploadRows.length) return;
 
     setBulkUploading(true);
     setBulkUploadResult(null);
@@ -1537,6 +1990,16 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       setMessage(`${created} customer${created === 1 ? '' : 's'} imported from ${bulkUploadFileName}.`);
       await load(filters);
       refreshShell();
+    }
+    if (created && !failures.length) {
+      const draftIdToRemove = activeBulkUploadDraftId;
+      setBulkUploadReviewPageOpen(false);
+      setBulkUploadConfirmModalOpen(false);
+      setBulkUploadRows([]);
+      setBulkUploadFileName('');
+      setBulkUploadExistingCustomers([]);
+      setActiveBulkUploadDraftId('');
+      if (draftIdToRemove) removeDrafts([draftIdToRemove]);
     }
   }
 
@@ -2120,6 +2583,625 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     );
   }
 
+  function bulkUploadCityOptionsFor(row) {
+    const province = normalizeUpper(row?.data?.province);
+    const savedRowCities = uniqueValues(locations
+      .filter((location) => !province || normalizeUpper(location.province) === province)
+      .map((location) => normalizeUpper(location.municipality)));
+    const metaCities = province ? (meta.citiesByProvince?.[province] || []) : (meta.cities || []);
+    return uniqueValues([...metaCities, ...savedRowCities, row?.data?.city]);
+  }
+
+  function renderBulkUploadStages(activeStage) {
+    const stages = [
+      { value: 1, label: 'Upload CSV' },
+      { value: 3, label: 'Review All Customers' },
+      { value: 4, label: 'Upload Customers' }
+    ];
+    const activeStepIndex = Math.max(stages.findIndex((stage) => stage.value === activeStage), 0);
+    return (
+      <div className="bulk-stage-tracker" aria-label={`Bulk upload stage ${activeStepIndex + 1} of ${stages.length}`}>
+        {stages.map((stage, index) => {
+          const step = index + 1;
+          return (
+            <div className={`bulk-stage-step ${index === activeStepIndex ? 'active' : ''} ${index < activeStepIndex ? 'complete' : ''}`} key={stage.value}>
+              <span>{step}</span>
+              <strong>{stage.label}</strong>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function renderBulkUploadGuideContent() {
+    const guideSections = [
+      {
+        title: 'Required fields',
+        icon: IconClipboardCheck,
+        tone: 'blue',
+        items: requiredBulkUploadHeaders.map((item) => ({ code: item }))
+      },
+      {
+        title: 'Duplicate rules',
+        icon: IconAlertTriangle,
+        tone: 'red',
+        items: [
+          'Rows with the same customer identity and service address are flagged.',
+          'Existing customer matches are blocked before upload.',
+          'Duplicate CSV entries can be auto-deleted while retaining the first entry.'
+        ]
+      },
+      {
+        title: 'Workflow',
+        icon: IconClipboardList,
+        tone: 'green',
+        items: [
+          'Upload a completed CSV template.',
+          'Assess the file in the bulk import page.',
+          'Review or fix parsed customers before upload.',
+          'Confirm ready customers and upload them.'
+        ]
+      },
+      {
+        title: 'Location rules',
+        icon: IconMapPin,
+        tone: 'azure',
+        items: [
+          'barangay is required for every uploaded customer.',
+          'Province and city help narrow the Barangay dropdown during review.',
+          'Coordinates are optional and should be decimal latitude/longitude when possible.'
+        ]
+      },
+      {
+        title: 'Review rules',
+        icon: IconSearch,
+        tone: 'yellow',
+        items: [
+          'Assess Import opens the review page with KPI and location summaries.',
+          'Customers cannot be uploaded until they are reviewed.',
+          'Rows needing fixes can be edited directly in Customer Profiling.'
+        ]
+      }
+    ];
+    return (
+      <div className="bulk-guide-grid">
+        {guideSections.map(({ title, icon: GuideIcon, tone, items }) => (
+          <section className="bulk-guide-card" key={title}>
+            <span className={`bulk-guide-card-icon bg-${tone}-lt text-${tone}`}><GuideIcon size={18} /></span>
+            <div>
+              <h4>{title}</h4>
+              <ul>
+                {items.map((item, index) => (
+                  <li key={`${title}-${index}`}>
+                    {typeof item === 'object' && item.code ? <code>{item.code}</code> : item}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </section>
+        ))}
+      </div>
+    );
+  }
+
+  function renderBulkUploadInlineGuide() {
+    return (
+      <div className={`bulk-inline-guide ${isBulkUploadGuideOpen ? 'expanded' : ''}`}>
+        <button
+          className="bulk-guide-toggle"
+          type="button"
+          aria-expanded={isBulkUploadGuideOpen}
+          onClick={() => setBulkUploadGuideOpen((value) => !value)}
+        >
+          <span><IconClipboardList size={18} />Bulk Guide</span>
+          {isBulkUploadGuideOpen ? <IconMinus size={16} /> : <IconPlus size={16} />}
+        </button>
+        {isBulkUploadGuideOpen && renderBulkUploadGuideContent()}
+      </div>
+    );
+  }
+
+  function renderBulkUploadKpis() {
+    return (
+      <div className="bulk-review-kpis">
+        {bulkUploadKpis.map(([label, value, Icon, tone]) => (
+          <div className="bulk-review-kpi" key={label}>
+            <span className={`badge bg-${tone}-lt text-${tone}`}><Icon size={20} /></span>
+            <strong>{value}</strong>
+            <span>{label}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  function renderBulkUploadLocationSummary({ enableNeedsFixFilter = false } = {}) {
+    const totalNeedsFixCount = bulkUploadRows.filter((row) => row.errors.length).length;
+    return (
+      <div className="bulk-location-summary">
+        <button
+          className={`bulk-location-chip can-filter ${!bulkUploadLocationFilter ? 'active' : ''}`}
+          type="button"
+          onClick={clearBulkUploadLocationFilter}
+        >
+          <span className="bulk-location-name">ALL</span>
+          <span className="bulk-location-count">
+            <strong>{bulkUploadRows.length}</strong>
+          </span>
+          {totalNeedsFixCount > 0 && (
+            <span className="bulk-location-count needs-fix">
+              <strong>{totalNeedsFixCount}</strong>
+              <span>needs fixing</span>
+            </span>
+          )}
+        </button>
+        {bulkUploadLocationGroups.map((group) => {
+          const canFilter = enableNeedsFixFilter;
+          const ChipTag = canFilter ? 'button' : 'div';
+          return (
+            <ChipTag
+              className={`bulk-location-chip ${canFilter ? 'can-filter' : ''} ${bulkUploadLocationFilter === group.location ? 'active' : ''}`}
+              key={group.location}
+              type={canFilter ? 'button' : undefined}
+              onClick={canFilter ? () => filterBulkUploadLocation(group.location) : undefined}
+            >
+              <span className="bulk-location-name">{group.location}</span>
+              <span className="bulk-location-count">
+                <strong>{group.count}</strong>
+              </span>
+              {group.needsFixCount > 0 && (
+                <span className="bulk-location-count needs-fix">
+                  <strong>{group.needsFixCount}</strong>
+                  <span>needs fixing</span>
+                </span>
+              )}
+            </ChipTag>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function renderBulkReviewControls() {
+    return (
+      <>
+        <div className="bulk-review-controls">
+          <div className="input-icon bulk-review-search">
+            <span className="input-icon-addon"><IconSearch size={16} /></span>
+            <input
+              className="form-control"
+              value={bulkUploadReviewSearch}
+              onChange={(event) => setBulkUploadReviewSearch(event.target.value)}
+              placeholder="Search name, contact, Facebook, email, location, or row"
+            />
+          </div>
+          <select className="form-select bulk-review-sort" value={bulkUploadReviewSort} onChange={(event) => setBulkUploadReviewSort(event.target.value)}>
+            <option value="location">Sort by location</option>
+            <option value="status">Sort by fix status</option>
+            <option value="name">Sort by name</option>
+            <option value="contact">Sort by contact</option>
+            <option value="row">Sort by CSV row</option>
+          </select>
+        </div>
+        {bulkUploadLocationFilter && (
+          <div className="bulk-active-filter">
+            <span><IconFilter size={15} /> Showing customers in <strong>{bulkUploadLocationFilter}</strong></span>
+            <button className="btn btn-sm btn-outline-secondary" type="button" onClick={clearBulkUploadLocationFilter}>Clear</button>
+          </div>
+        )}
+      </>
+    );
+  }
+
+  function renderBulkDuplicateAutoFix() {
+    if (!bulkUploadDuplicateRowsToRemoveCount) return null;
+    const duplicateSets = bulkUploadCsvDuplicateGroups.length;
+    return (
+      <div className="bulk-auto-fix-panel" role="alert">
+        <span className="bulk-auto-fix-icon"><IconAlertTriangle size={22} /></span>
+        <div>
+          <strong>{duplicateSets} duplicate set{duplicateSets === 1 ? '' : 's'} detected.</strong>
+          <p>Auto fix will retain the first CSV row in each duplicate set and delete {bulkUploadDuplicateRowsToRemoveCount} duplicate row{bulkUploadDuplicateRowsToRemoveCount === 1 ? '' : 's'}.</p>
+        </div>
+        <button className="btn btn-danger" type="button" onClick={autoDeleteDuplicateBulkUploadRows}>
+          <IconTrash size={18} className="me-2" />Auto Delete Duplicated Entries
+        </button>
+      </div>
+    );
+  }
+
+  function renderBulkRowEditor(row) {
+    const rowCities = bulkUploadCityOptionsFor(row);
+    const rowBarangays = bulkUploadBarangayOptionsFor(row);
+    const setRowValue = (field, value) => updateBulkUploadRowData(row.rowNumber, { [field]: value });
+    const fieldClass = (field) => `bulk-fix-field ${bulkUploadFieldNeedsFix(row, field) ? 'needs-fix' : ''}`;
+    const rowKey = String(row.rowNumber);
+    const isExpanded = expandedBulkUploadRowNumbers.includes(rowKey);
+    const rowFormId = `bulk-fix-form-${rowKey}`;
+    const detailItems = bulkUploadRowInlineDetailItems(row);
+    return (
+      <div className={`bulk-fix-card ${row.errors.length ? 'needs-fix' : 'ready'} ${isExpanded ? 'is-expanded' : 'is-collapsed'}`} key={row.rowNumber}>
+        <div className="bulk-fix-card-header">
+          <div className="bulk-fix-row-main">
+            <span className="bulk-fix-row-number">#{row.rowNumber}</span>
+            <div className="bulk-fix-details">
+              {detailItems.map((item) => {
+                const needsFix = item.fields.some((field) => bulkUploadFieldNeedsFix(row, field));
+                return (
+                  <span className={`bulk-fix-detail ${item.primary ? 'primary' : ''} ${needsFix ? 'needs-fix' : ''}`} key={item.label} title={`${item.label}: ${item.value}`}>
+                    {item.value}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+          <div className="bulk-fix-card-actions">
+            <span className={`badge ${row.errors.length ? 'bg-red-lt text-red' : 'bg-green-lt text-green'}`}>
+              {row.errors.length ? 'Needs fixing' : 'Ready'}
+            </span>
+            <button
+              className={`badge customer-action-badge border-0 bulk-fix-edit-action ${isExpanded ? 'bg-secondary-lt text-secondary' : 'bg-azure-lt text-azure'}`}
+              type="button"
+              title={isExpanded ? 'Collapse form' : 'Edit form'}
+              aria-label={`${isExpanded ? 'Collapse form for' : 'Edit form for'} row ${row.rowNumber}`}
+              aria-expanded={isExpanded}
+              aria-controls={rowFormId}
+              onClick={() => toggleBulkUploadRowEditor(row.rowNumber)}
+            >
+              {isExpanded ? <IconMinus size={21} /> : <IconEdit size={21} />}
+            </button>
+          </div>
+        </div>
+        {!!row.errors.length && (
+          <div className="bulk-fix-errors">
+            {row.errors.map((item) => <span key={item}>{item}</span>)}
+          </div>
+        )}
+        {isExpanded && (
+        <div id={rowFormId} className="bulk-fix-grid">
+          <label className={fieldClass('firstName')}>
+            <span>First Name</span>
+            <input className="form-control" value={row.data.firstName || ''} onChange={(event) => setRowValue('firstName', event.target.value)} />
+          </label>
+          <label className={fieldClass('middleName')}>
+            <span>Middle Name</span>
+            <input className="form-control" value={row.data.middleName || ''} onChange={(event) => setRowValue('middleName', event.target.value)} />
+          </label>
+          <label className={fieldClass('lastName')}>
+            <span>Last Name</span>
+            <input className="form-control" value={row.data.lastName || ''} onChange={(event) => setRowValue('lastName', event.target.value)} />
+          </label>
+          <label className={fieldClass('birthDate')}>
+            <span>Birth Date</span>
+            <input className="form-control" value={row.data.birthDate || ''} onChange={(event) => setRowValue('birthDate', event.target.value)} placeholder="YYYY-MM-DD" />
+          </label>
+          <label className={fieldClass('contactNumber')}>
+            <span>Contact Number</span>
+            <input className="form-control" value={row.data.contactNumber || ''} onChange={(event) => setRowValue('contactNumber', event.target.value)} />
+          </label>
+          <label className={fieldClass('alternateMobileNumber')}>
+            <span>Alternate Mobile</span>
+            <input className="form-control" value={row.data.alternateMobileNumber || ''} onChange={(event) => setRowValue('alternateMobileNumber', event.target.value)} />
+          </label>
+          <label className={fieldClass('facebookAccountName')}>
+            <span>Facebook Name</span>
+            <input className="form-control" value={row.data.facebookAccountName || ''} onChange={(event) => setRowValue('facebookAccountName', event.target.value)} />
+          </label>
+          <label className={fieldClass('email')}>
+            <span>Email</span>
+            <input className="form-control" value={row.data.email || ''} onChange={(event) => setRowValue('email', event.target.value)} />
+          </label>
+          <label className={fieldClass('locationName')}>
+            <span>Location Name</span>
+            <input className="form-control" value={row.data.locationName || ''} onChange={(event) => setRowValue('locationName', normalizeUpper(event.target.value))} />
+          </label>
+          <label className={fieldClass('landmark')}>
+            <span>Landmark</span>
+            <input className="form-control" value={row.data.landmark || ''} onChange={(event) => setRowValue('landmark', normalizeUpper(event.target.value))} />
+          </label>
+          <label className={fieldClass('province')}>
+            <span>Province</span>
+            <select className="form-select" value={row.data.province || ''} onChange={(event) => updateBulkUploadRowData(row.rowNumber, { province: normalizeUpper(event.target.value), city: '', barangay: '' })}>
+              <option value="">Select province</option>
+              {provinceOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+          </label>
+          <label className={fieldClass('city')}>
+            <span>City</span>
+            <select className="form-select" value={row.data.city || ''} onChange={(event) => updateBulkUploadRowData(row.rowNumber, { city: normalizeUpper(event.target.value), barangay: '' })}>
+              <option value="">Select city</option>
+              {rowCities.map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+          </label>
+          <label className={fieldClass('barangay')}>
+            <span>Barangay</span>
+            <select className="form-select" value={row.data.barangay || ''} onChange={(event) => setRowValue('barangay', normalizeUpper(event.target.value))}>
+              <option value="">Select barangay</option>
+              {rowBarangays.map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+          </label>
+          <label className={fieldClass('addressLine1')}>
+            <span>Address Line 1</span>
+            <input className="form-control" value={row.data.addressLine1 || ''} onChange={(event) => setRowValue('addressLine1', event.target.value)} />
+          </label>
+          <label className={fieldClass('latitude')}>
+            <span>Latitude</span>
+            <input className="form-control" value={row.data.latitude || ''} onChange={(event) => setRowValue('latitude', event.target.value)} />
+          </label>
+          <label className={fieldClass('longitude')}>
+            <span>Longitude</span>
+            <input className="form-control" value={row.data.longitude || ''} onChange={(event) => setRowValue('longitude', event.target.value)} />
+          </label>
+          <label className={fieldClass('gender')}>
+            <span>Gender</span>
+            <select className="form-select" value={row.data.gender || ''} onChange={(event) => setRowValue('gender', normalizeUpper(event.target.value))}>
+              <option value="">Select gender</option>
+              {(meta.customerGenders || []).map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+          </label>
+        </div>
+        )}
+      </div>
+    );
+  }
+
+  function renderBulkUploadFileSummary() {
+    return (
+      <div className="bulk-upload-file">
+        <div className="bulk-upload-file-main">
+          <IconFileSpreadsheet size={20} />
+          <div>
+            <div className="fw-semibold">{bulkUploadFileName}</div>
+            <div className="text-muted small">{bulkUploadRows.length} parsed row{bulkUploadRows.length === 1 ? '' : 's'}</div>
+          </div>
+        </div>
+        <button className="btn btn-icon btn-outline-primary mb-0 bulk-upload-file-replace" type="button" title="Change CSV template" aria-label="Change CSV template" onClick={returnToBulkUploadStart}>
+          <IconRefresh size={18} />
+        </button>
+      </div>
+    );
+  }
+
+  function renderBulkUploadSummaryStage() {
+    return (
+      <>
+        {renderBulkUploadFileSummary()}
+        {renderBulkUploadKpis()}
+        <div className="bulk-review-section compact">
+          <div className="bulk-review-section-header">
+            <div>
+              <h3>Customers By Location</h3>
+              <p>{bulkUploadLocationGroups.length} location group{bulkUploadLocationGroups.length === 1 ? '' : 's'} found in this CSV.</p>
+            </div>
+          </div>
+          {renderBulkUploadLocationSummary()}
+        </div>
+        <div className="customer-modal-footer customer-modal-footer-split bulk-page-footer">
+          <button className="btn btn-outline-secondary" type="button" onClick={returnToBulkUploadStart}>
+            <IconChevronLeft size={18} className="me-2" />Previous
+          </button>
+          <button className="btn btn-primary" type="button" onClick={proceedToBulkUploadReview}>
+            Review All Customers<IconChevronRight size={18} className="ms-2" />
+          </button>
+        </div>
+      </>
+    );
+  }
+
+  function renderBulkUploadReviewStage() {
+    return (
+      <>
+        {renderBulkUploadKpis()}
+        <div className="bulk-review-section">
+          <div className="bulk-review-section-header">
+            <div>
+              <h3>Customers By Location</h3>
+              <p>{bulkUploadLocationGroups.length} location group{bulkUploadLocationGroups.length === 1 ? '' : 's'} in this upload.</p>
+            </div>
+          </div>
+          {renderBulkUploadLocationSummary({ enableNeedsFixFilter: true })}
+        </div>
+        <div className="bulk-review-section">
+          <div className="bulk-review-section-header">
+            <div>
+              <h3>{invalidBulkUploadRows.length ? 'Fix Uploaded Customers' : 'Review Uploaded Customers'}</h3>
+              <p>{invalidBulkUploadRows.length ? 'Edit rows below until every customer is ready for import.' : 'All parsed customers are valid. Review the list, then continue to upload.'}</p>
+            </div>
+          </div>
+          {renderBulkDuplicateAutoFix()}
+          {renderBulkReviewControls()}
+          <div className="bulk-fix-list">
+            {filteredBulkUploadRows.map(renderBulkRowEditor)}
+            {!filteredBulkUploadRows.length && <div className="empty">No uploaded customers match the current search.</div>}
+          </div>
+        </div>
+        <div className="customer-modal-footer customer-modal-footer-split bulk-page-footer">
+          <button className="btn btn-outline-secondary" type="button" onClick={returnToBulkUploadSummary}>
+            <IconChevronLeft size={18} className="me-2" />Previous
+          </button>
+          <button className="btn btn-primary" type="button" disabled={!!invalidBulkUploadRows.length || !validBulkUploadRows.length} onClick={openBulkUploadConfirmModal}>
+            Upload Customers<IconChevronRight size={18} className="ms-2" />
+          </button>
+        </div>
+      </>
+    );
+  }
+
+  function renderBulkUploadUploadStage() {
+    return (
+      <>
+        {renderBulkUploadKpis()}
+        {!!invalidBulkUploadRows.length && (
+          <div className="alert alert-warning">
+            {invalidBulkUploadRows.length} customer{invalidBulkUploadRows.length === 1 ? '' : 's'} still need fixing before import.
+          </div>
+        )}
+        {renderBulkReviewControls()}
+        <div className="bulk-confirm-groups">
+          {groupedFilteredBulkUploadRows.map((group) => (
+            <div className="bulk-confirm-group" key={group.location}>
+              <div className="bulk-confirm-group-header">
+                <IconMapPin size={17} />
+                <strong>{group.location}</strong>
+                <span className="bulk-location-count">
+                  <strong>{group.count}</strong>
+                </span>
+                {group.needsFixCount > 0 && (
+                  <span className="bulk-location-count needs-fix">
+                    <strong>{group.needsFixCount}</strong>
+                    <span>needs fixing</span>
+                  </span>
+                )}
+              </div>
+              <div className="bulk-confirm-rows">
+                {group.rows.map((row) => (
+                  <div className={`bulk-confirm-row ${row.errors.length ? 'needs-fix' : ''}`} key={row.rowNumber}>
+                    <span className="bulk-confirm-row-main">
+                      <strong>{bulkUploadRowName(row)}</strong>
+                      <small>{[row.data.contactNumber, row.data.facebookAccountName, row.data.email].filter(Boolean).join(' / ') || 'No contact detail'}</small>
+                    </span>
+                    <span className={`badge ${row.errors.length ? 'bg-red-lt text-red' : 'bg-green-lt text-green'}`}>{row.errors.length ? 'Fix' : 'Ready'}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+          {!groupedFilteredBulkUploadRows.length && <div className="empty">No uploaded customers match the current search.</div>}
+        </div>
+        {bulkUploadResult && (
+          <div className={`alert ${bulkUploadResult.failed ? 'alert-warning' : 'alert-success'} mt-3 mb-0`}>
+            <div>{bulkUploadResult.created} imported, {bulkUploadResult.failed} failed.</div>
+            {bulkUploadResult.failures.map((failure) => <div key={failure.rowNumber}>Row {failure.rowNumber}: {failure.message}</div>)}
+          </div>
+        )}
+        <div className="customer-modal-footer customer-modal-footer-split bulk-page-footer">
+          <button className="btn btn-outline-secondary" type="button" onClick={returnToBulkUploadReview}>
+            <IconChevronLeft size={18} className="me-2" />Previous
+          </button>
+          {!!invalidBulkUploadRows.length ? (
+            <button className="btn btn-primary" type="button" onClick={openBulkUploadFixPage}>Fix Uploaded Customers</button>
+          ) : (
+            <button className="btn btn-primary" type="button" disabled={!validBulkUploadRows.length || isBulkUploading} onClick={importBulkUploadRows}>
+              <IconUpload size={18} className="me-2" />{isBulkUploading ? 'Uploading...' : `Upload ${validBulkUploadRows.length} Customer${validBulkUploadRows.length === 1 ? '' : 's'}`}
+            </button>
+          )}
+        </div>
+      </>
+    );
+  }
+
+  function renderBulkUploadReviewPage() {
+    const activeBulkUploadStage = bulkUploadModalStage === 2 ? 3 : bulkUploadModalStage;
+    const pageTitle = activeBulkUploadStage === 3 ? 'Review Uploaded Customers' : 'Upload Customers';
+    return (
+      <>
+        <div className="bulk-review-page">
+          <div className="bulk-review-page-header">
+            <div>
+              <div className="text-muted small">Bulk upload import</div>
+              <h2>{pageTitle}</h2>
+              <p>{bulkUploadFileName || 'Uploaded customer CSV'}</p>
+            </div>
+            <div className="btn-list">
+              <button className="btn btn-outline-secondary" type="button" onClick={saveBulkUploadDraftAndClose}>
+                <IconDeviceFloppy size={18} className="me-2" />Save as Draft
+              </button>
+              <button className="btn btn-outline-secondary" type="button" onClick={requestBulkUploadClose}>Cancel</button>
+            </div>
+          </div>
+          {message && <div className="alert alert-success">{message}</div>}
+          {error && <div className="alert alert-danger">{error}</div>}
+          {renderBulkUploadStages(activeBulkUploadStage)}
+          {activeBulkUploadStage === 3 && renderBulkUploadReviewStage()}
+          {activeBulkUploadStage === 4 && renderBulkUploadUploadStage()}
+        </div>
+        {isBulkUploadCloseConfirmOpen && renderBulkUploadCloseConfirmModal()}
+      </>
+    );
+  }
+
+  function renderBulkUploadCloseConfirmModal() {
+    return (
+      <div className="customer-modal-backdrop bulk-close-confirm-backdrop" role="presentation">
+        <div className="customer-modal bulk-close-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="bulk-close-confirm-title">
+          <div className="customer-modal-header">
+            <div>
+              <div className="text-muted small">Unsaved bulk upload</div>
+              <h3 id="bulk-close-confirm-title" className="customer-modal-title">Leave Bulk Upload?</h3>
+            </div>
+          </div>
+          <div className="customer-modal-body">
+            <div className="bulk-close-confirm-content">
+              <span className="bulk-close-confirm-icon"><IconAlertTriangle size={26} /></span>
+              <div>
+                <p className="mb-1 fw-semibold">This CSV upload has not been completed.</p>
+                <p className="text-muted mb-0">Discard it or save it in Customer Drafts to continue later.</p>
+              </div>
+            </div>
+          </div>
+          <div className="customer-modal-footer">
+            <button className="btn btn-outline-danger" type="button" onClick={discardBulkUploadDraft}>Discard</button>
+            <button className="btn btn-primary" type="button" onClick={saveBulkUploadDraftAndClose}>
+              <IconDeviceFloppy size={18} className="me-2" />Save as Draft
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderBulkUploadDropzone() {
+    return (
+      <div
+        className={`bulk-upload-dropzone ${isBulkUploadDragActive ? 'drag-active' : ''} ${bulkUploadFileName ? 'has-file' : ''}`}
+        onDragOver={handleBulkUploadDragOver}
+        onDragLeave={handleBulkUploadDragLeave}
+        onDrop={handleBulkUploadDrop}
+      >
+        <div className="bulk-upload-dropzone-content">
+          <div className="bulk-upload-dropzone-icon"><IconUpload size={30} /></div>
+          <div>
+            <h4>Upload customer CSV</h4>
+            <p>Drag and drop the completed CSV template here.</p>
+          </div>
+          <label className="btn bulk-upload-dropzone-choose">
+            Choose CSV File
+            <input className="visually-hidden" type="file" accept=".csv,text/csv" onChange={handleBulkUploadFile} />
+          </label>
+          <button className="btn bulk-upload-dropzone-template" type="button" onClick={downloadTemplate}>
+            Download CSV Template
+          </button>
+          {bulkUploadFileName && (
+            <div className="bulk-upload-dropzone-file">
+              <IconFileSpreadsheet size={18} />
+              <div>
+                <strong>{bulkUploadFileName}</strong>
+                <span>{bulkUploadRows.length} parsed row{bulkUploadRows.length === 1 ? '' : 's'}</span>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  function renderBulkUploadModalFooter() {
+    return (
+      <div className="customer-modal-footer customer-modal-footer-split">
+        <button className="btn btn-outline-secondary" type="button" onClick={cancelBulkUploadReview}>Cancel</button>
+        <button
+          className="btn btn-primary"
+          type="button"
+          disabled={!bulkUploadRows.length || !!bulkUploadFileErrors.length}
+          onClick={proceedToBulkUploadSummary}
+        >
+          <IconClipboardCheck size={18} className="me-2" />Assess Import
+        </button>
+      </div>
+    );
+  }
+
   const kpis = [
     ['Total Customers', overview?.totalCustomers, IconUsers, 'azure'],
     ['Active', overview?.activeCustomers, IconActivity, 'green'],
@@ -2127,6 +3209,10 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     ['Enrile Customers', overview?.enrileCustomers, IconMapPin, 'blue']
   ];
   const ActiveCustomerFormStageIcon = customerFormStageIcons[formStage] || IconClipboardCheck;
+
+  if (isBulkUploadReviewPageOpen) {
+    return renderBulkUploadReviewPage();
+  }
 
   return (
     <>
@@ -2360,110 +3446,28 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       </div>
     )}
     {isBulkUploadModalOpen && (
-      <div className="customer-modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeBulkUploadModal()}>
+      <div className="customer-modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && requestBulkUploadClose()}>
         <div className="customer-modal customer-bulk-upload-modal" role="dialog" aria-modal="true" aria-labelledby="customer-bulk-upload-title">
           <div className="customer-modal-header">
             <div>
-              <div className="text-muted small">Import customer records</div>
               <h3 id="customer-bulk-upload-title" className="customer-modal-title">Bulk Upload</h3>
             </div>
-            <button type="button" className="btn btn-icon btn-sm" title="Close" onClick={closeBulkUploadModal}><IconX size={18} /></button>
+            <button type="button" className="btn btn-icon btn-sm" title="Close" onClick={requestBulkUploadClose}><IconX size={18} /></button>
           </div>
           <div className="customer-modal-body">
-            <div className="btn-list mb-3">
-              <button className="btn btn-outline-primary" onClick={downloadTemplate}><IconFileSpreadsheet size={18} className="me-2" />Download CSV Template</button>
-              <label className="btn btn-primary mb-0">
-                <IconUpload size={18} className="me-2" />Choose CSV File
-                <input className="visually-hidden" type="file" accept=".csv,text/csv" onChange={handleBulkUploadFile} />
-              </label>
-            </div>
-            {bulkUploadFileName && (
-              <div className="bulk-upload-file">
-                <IconFileSpreadsheet size={18} />
-                <div>
-                  <div className="fw-semibold">{bulkUploadFileName}</div>
-                  <div className="text-muted small">{bulkUploadRows.length} parsed row{bulkUploadRows.length === 1 ? '' : 's'}</div>
-                </div>
-              </div>
-            )}
+            {renderBulkUploadInlineGuide()}
+            {renderBulkUploadDropzone()}
             {!!bulkUploadFileErrors.length && (
               <div className="alert alert-danger">
                 {bulkUploadFileErrors.map((item) => <div key={item}>{item}</div>)}
               </div>
             )}
-            {!!bulkUploadRows.length && !bulkUploadFileErrors.length && (
-              <>
-                <div className="bulk-upload-summary">
-                  <span className="badge bg-green-lt text-green">{validBulkUploadRows.length} valid</span>
-                  <span className="badge bg-red-lt text-red">{invalidBulkUploadRows.length} needs fix</span>
-                </div>
-                <div className="bulk-upload-preview table-responsive">
-                  <table className="table card-table table-vcenter">
-                    <thead>
-                      <tr>
-                        <th>Row</th>
-                        <th>Name</th>
-                        <th>Contact</th>
-                        <th>Location</th>
-                        <th>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {bulkUploadRows.slice(0, 8).map((row) => (
-                        <tr key={row.rowNumber}>
-                          <td>{row.rowNumber}</td>
-                          <td>
-                            <div className="fw-semibold">{[row.data.firstName, row.data.middleName, row.data.lastName].filter(Boolean).join(' ') || '-'}</div>
-                            {!!row.errors.length && <div className="text-danger small">{row.errors.join(', ')}</div>}
-                          </td>
-                          <td>{row.data.contactNumber || '-'}</td>
-                          <td>
-                            {(() => {
-                              const barangayOptionsForRow = bulkUploadBarangayOptionsFor(row);
-                              return (
-                                <div className="bulk-upload-location-cell">
-                                  <div className="text-muted small">{[row.data.landmark || row.data.locationName, row.data.city].filter(Boolean).join(', ') || 'No saved location'}</div>
-                                  <select
-                                    className="form-select form-select-sm"
-                                    value={row.data.barangay || ''}
-                                    onChange={(event) => updateBulkUploadRowData(row.rowNumber, { barangay: normalizeUpper(event.target.value) })}
-                                    aria-label={`Barangay for CSV row ${row.rowNumber}`}
-                                  >
-                                    <option value="">Select barangay</option>
-                                    {barangayOptionsForRow.map((item) => <option key={item} value={item}>{item}</option>)}
-                                  </select>
-                                </div>
-                              );
-                            })()}
-                          </td>
-                          <td><span className={`badge ${row.errors.length ? 'bg-red-lt text-red' : 'bg-green-lt text-green'}`}>{row.errors.length ? 'Invalid' : 'Ready'}</span></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {bulkUploadRows.length > 8 && <div className="text-muted small mt-2">Showing first 8 rows. All valid rows will be imported.</div>}
-                </div>
-                <div className="text-end mt-3">
-                  <button className="btn btn-primary" disabled={!validBulkUploadRows.length || !!invalidBulkUploadRows.length || isBulkUploading} onClick={importBulkUploadRows}>
-                    <IconUpload size={18} className="me-2" />{isBulkUploading ? 'Importing...' : `Import ${validBulkUploadRows.length} Customer${validBulkUploadRows.length === 1 ? '' : 's'}`}
-                  </button>
-                </div>
-              </>
-            )}
-            {bulkUploadResult && (
-              <div className={`alert ${bulkUploadResult.failed ? 'alert-warning' : 'alert-success'} mt-3 mb-0`}>
-                <div>{bulkUploadResult.created} imported, {bulkUploadResult.failed} failed.</div>
-                {bulkUploadResult.failures.map((failure) => <div key={failure.rowNumber}>Row {failure.rowNumber}: {failure.message}</div>)}
-              </div>
-            )}
-            <div className="small text-muted mb-2">Required headers</div>
-            <div className="bulk-header-list">
-              {requiredBulkUploadHeaders.map((item) => <span className="badge bg-blue-lt text-blue" key={item}>{item}</span>)}
-            </div>
           </div>
+          {renderBulkUploadModalFooter()}
         </div>
       </div>
     )}
+    {isBulkUploadCloseConfirmOpen && renderBulkUploadCloseConfirmModal()}
     {isFormModalOpen && (
       <div className="customer-modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeCustomerFormModal()}>
         <div className={`customer-modal customer-form-modal ${isEditingCustomer ? '' : 'customer-form-wizard-modal'}`} role="dialog" aria-modal="true" aria-labelledby="customer-form-title">
@@ -2678,66 +3682,75 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
             <button type="button" className="btn btn-icon btn-sm" title="Close" onClick={closeDraftPanel}><IconX size={18} /></button>
           </div>
           <div className="customer-detail-panel-body">
-            {!!selectedDraftIds.length && (
+            {!!customerDrafts.length && (
               <div className="customer-draft-toolbar">
-                <span>{selectedDraftIds.length} selected</span>
-                <button type="button" className="btn btn-danger btn-sm" onClick={() => removeDrafts(selectedDraftIds)}>
-                  <IconTrash size={16} className="me-1" />Delete Selected
-                </button>
+                <span>{selectedDraftIds.length ? `${selectedDraftIds.length} selected` : 'Select drafts to delete multiple'}</span>
+                <div className="btn-list">
+                  <button type="button" className="btn btn-danger btn-sm" disabled={!selectedDraftIds.length} onClick={deleteSelectedDrafts}>
+                    <IconTrash size={16} className="me-1" />Delete Selected
+                  </button>
+                  <button type="button" className="btn btn-outline-danger btn-sm" onClick={deleteAllDrafts}>
+                    <IconTrash size={16} className="me-1" />Delete All
+                  </button>
+                </div>
               </div>
             )}
             {!customerDrafts.length && <div className="empty">No customer drafts yet.</div>}
             <div className="customer-draft-list">
-              {customerDrafts.map((draft) => (
-                <div
-                  className="customer-draft-card"
-                  key={draft.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => continueDraft(draft)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault();
-                      continueDraft(draft);
-                    }
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={selectedDraftIds.includes(draft.id)}
-                    onChange={(event) => {
-                      event.stopPropagation();
-                      toggleDraftSelection(draft.id);
-                    }}
-                    onClick={(event) => event.stopPropagation()}
-                    aria-label={`Select ${draftTitle(draft)}`}
-                  />
-                  <span className="customer-draft-card-body">
-                    <strong>{draftTitle(draft)}</strong>
-                    <small>{[draft.form?.contactNumber, draft.form?.barangay, draft.form?.city].filter(Boolean).join(' / ') || 'No contact or address yet'}</small>
-                    <small>Updated {formatDraftDate(draft.updatedAt)}</small>
-                  </span>
-                  <span
+              {customerDrafts.map((draft) => {
+                const isSelectedDraft = selectedDraftIds.includes(draft.id);
+                const isBulkDraft = isBulkUploadDraft(draft);
+                return (
+                  <div
+                    className={`customer-draft-card ${isSelectedDraft ? 'is-selected' : ''} ${isBulkDraft ? 'is-bulk-upload' : ''}`}
+                    key={draft.id}
                     role="button"
                     tabIndex={0}
-                    className="btn btn-icon btn-sm text-danger"
-                    title="Delete draft"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      removeDrafts([draft.id]);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        removeDrafts([draft.id]);
-                      }
-                    }}
+                    aria-pressed={isSelectedDraft}
+                    onClick={() => toggleDraftSelection(draft.id)}
+                    onKeyDown={(event) => handleDraftCardKeyDown(event, draft.id)}
                   >
-                    <IconTrash size={16} />
-                  </span>
-                </div>
-              ))}
+                    <span className="customer-draft-check-icon" aria-hidden="true">
+                      {isSelectedDraft && <IconCheck size={15} />}
+                    </span>
+                    <span className="customer-draft-card-body">
+                      <span className="customer-draft-title-row">
+                        <strong>{draftTitle(draft)}</strong>
+                        {isBulkDraft && (
+                          <span className="customer-draft-type-badge">
+                            <IconFileSpreadsheet size={13} />Bulk Upload
+                          </span>
+                        )}
+                      </span>
+                      <small>{draftSubtitle(draft)}</small>
+                      <small>Updated {formatDraftDate(draft.updatedAt)}</small>
+                    </span>
+                    <span className="customer-draft-card-actions">
+                      <button
+                        type="button"
+                        className="btn btn-outline-primary btn-sm"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          continueDraft(draft);
+                        }}
+                      >
+                        Resume
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-icon btn-sm text-danger"
+                        title="Delete draft"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          removeDrafts([draft.id]);
+                        }}
+                      >
+                        <IconTrash size={16} />
+                      </button>
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </aside>
