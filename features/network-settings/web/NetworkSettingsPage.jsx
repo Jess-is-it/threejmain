@@ -5341,6 +5341,78 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     };
   }
 
+  function fiberPortTerminal(portNumber) {
+    return `port${portNumber}`;
+  }
+
+  function fiberPortNumberFromTerminal(terminal) {
+    const match = String(terminal || '').match(/^port(\d+)$/i);
+    return match ? Number(match[1]) : 0;
+  }
+
+  function fiberIsPortTerminal(terminal) {
+    return fiberPortNumberFromTerminal(terminal) > 0;
+  }
+
+  function fiberAssignmentOutputPortCount(assignment, splitterMap = splittersById) {
+    const splitter = assignment?.splitter || splitterMap.get(assignment?.splitterId) || {};
+    const splitterType = normalizeSplitterType(splitter.splitterType);
+    if (!['PLC', 'LCP'].includes(splitterType)) return 0;
+    const ratio = assignment?.ratio || splitter.splitRatio || (splitter.outputPorts ? `1:${splitter.outputPorts}` : '');
+    const outputPorts = splitterOutputPortsFromRatio(ratio, Number(splitter.outputPorts || splitter.portCapacity || 0));
+    return [4, 8, 16].includes(outputPorts) ? outputPorts : 0;
+  }
+
+  function fiberAssignmentOutputPortTerminals(assignment, splitterMap = splittersById) {
+    const outputPorts = fiberAssignmentOutputPortCount(assignment, splitterMap);
+    return outputPorts ? Array.from({ length: outputPorts }, (_, index) => fiberPortTerminal(index + 1)) : [];
+  }
+
+  function normalizeFiberAssignmentTerminal(assignment, terminal, splitterMap = splittersById) {
+    const terminals = fiberAssignmentOutputTerminals(assignment, splitterMap);
+    if (terminals.includes(terminal)) return terminal;
+    if (terminal === 'output' && terminals.includes('port1')) return 'port1';
+    return terminal;
+  }
+
+  function fiberTerminalLabel(terminal) {
+    const portNumber = fiberPortNumberFromTerminal(terminal);
+    if (portNumber) return `Port ${portNumber}`;
+    if (terminal === 'splitA') return 'Split A';
+    if (terminal === 'splitB') return 'Split B';
+    if (terminal === 'input') return 'Input';
+    return 'Output';
+  }
+
+  function fiberInternalPortVerticalOffset(terminal, outputPorts = 0) {
+    const portNumber = fiberPortNumberFromTerminal(terminal);
+    if (!portNumber || !outputPorts) return 0;
+    const portColumns = outputPorts === 16 ? 8 : outputPorts;
+    const rowCount = outputPorts === 16 ? 2 : 1;
+    const row = rowCount === 2 ? Math.floor((portNumber - 1) / portColumns) : 0;
+    const column = (portNumber - 1) % portColumns;
+    const columnCenter = (portColumns - 1) / 2;
+    const rowOffset = rowCount === 2 ? (row === 0 ? -28 : 28) : 0;
+    return rowOffset + ((column - columnCenter) * 6);
+  }
+
+  function fiberInternalEquipmentHalfWidth(assignment) {
+    const outputPorts = fiberAssignmentOutputPortCount(assignment);
+    if (outputPorts === 4) return 54;
+    if (outputPorts === 16) return 82;
+    if (outputPorts === 8) return 68;
+    return 0;
+  }
+
+  function fiberInternalOutputStartPoint(position, terminal, assignment = {}) {
+    const outputPorts = fiberAssignmentOutputPortCount(assignment);
+    if (!fiberIsPortTerminal(terminal) || !outputPorts) return position;
+    return {
+      x: position.x + fiberInternalEquipmentHalfWidth(assignment) - 12,
+      y: position.y + fiberInternalPortVerticalOffset(terminal, outputPorts)
+    };
+  }
+
   function renderPlcSplitterSvg(display, options = {}) {
     if (!display) return null;
     const highlightedPortNumber = Number(options.highlightedPortNumber || 0);
@@ -5451,7 +5523,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     const mapping = normalizeFiberMapping(fiberMapping);
     const storedPointPositions = [];
     assignments.forEach((assignment) => {
-      ['input', 'splitA', 'splitB', 'output'].forEach((terminal) => {
+      ['input', ...fiberAssignmentOutputTerminals(assignment)].forEach((terminal) => {
         const point = mapping.connectionPoints?.[fiberMapConnectionPointKey(containerKey, assignment.assignmentId, terminal)];
         if (Number.isFinite(Number(point?.positionX)) && Number.isFinite(Number(point?.positionY))) {
           storedPointPositions.push({ x: Number(point.positionX), y: Number(point.positionY) });
@@ -5495,14 +5567,17 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     };
   }
 
-  function fiberInternalOutputFallbackForTerminal(position, terminal, metrics = null) {
+  function fiberInternalOutputFallbackForTerminal(position, terminal, metrics = null, assignment = {}) {
+    const outputPorts = fiberAssignmentOutputPortCount(assignment);
     const raw = {
       x: position.x + FIBER_INTERNAL_CANVAS.branchLength,
-      y: terminal === 'splitA'
-        ? position.y + FIBER_INTERNAL_CANVAS.outputGap
-        : terminal === 'splitB'
-          ? position.y - FIBER_INTERNAL_CANVAS.outputGap
-          : position.y
+      y: fiberIsPortTerminal(terminal)
+        ? position.y + fiberInternalPortVerticalOffset(terminal, outputPorts)
+        : terminal === 'splitA'
+          ? position.y + FIBER_INTERNAL_CANVAS.outputGap
+          : terminal === 'splitB'
+            ? position.y - FIBER_INTERNAL_CANVAS.outputGap
+            : position.y
     };
     if (!metrics) return raw;
     return {
@@ -5559,25 +5634,19 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
         changed = true;
       }
 
-      const lastAssignment = assignments[assignments.length - 1];
-      const lastTerminal = fiberMappingOutTerminalForAssignment(lastAssignment, splitterMap);
-      const lastOutputKey = fiberMapConnectionPointKey(containerKey, lastAssignment.assignmentId, lastTerminal);
+      const validOutputKeys = new Set();
+      assignments.forEach((assignment) => {
+        fiberAssignmentOutputTerminals(assignment, splitterMap).forEach((terminal) => {
+          validOutputKeys.add(fiberMapConnectionPointKey(containerKey, assignment.assignmentId, terminal));
+        });
+      });
       const outputEntries = Object.entries(connectionPoints)
         .filter(([pointKey, point]) => pointKey.startsWith(`${containerKey}|`) && fiberMappingEndpointRole(point) === 'output');
-      if (outputEntries.length && (outputEntries.length > 1 || outputEntries[0][0] !== lastOutputKey)) {
-        outputEntries.forEach(([pointKey]) => {
+      const invalidOutputEntries = outputEntries.filter(([pointKey]) => !validOutputKeys.has(pointKey));
+      if (invalidOutputEntries.length) {
+        invalidOutputEntries.forEach(([pointKey]) => {
           if (clearEndpointRoleFromConnectionPoint(connectionPoints, pointKey)) changed = true;
         });
-        const position = fiberInternalSplitterPosition(lastAssignment, assignments.length - 1);
-        const fallback = fiberInternalOutputFallbackForTerminal(position, lastTerminal);
-        const point = connectionPointPositionOrFallback(connectionPoints[lastOutputKey], fallback);
-        connectionPoints[lastOutputKey] = {
-          ...(connectionPoints[lastOutputKey] || {}),
-          positionX: Math.round(point.x),
-          positionY: Math.round(point.y),
-          endpointRole: 'output'
-        };
-        changed = true;
       }
     });
     return changed ? { ...mapping, connectionPoints } : mapping;
@@ -7124,7 +7193,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     const anchorPosition = parentAssignment ? fiberInternalSplitterPosition(parentAssignment, insertAfterIndex) : null;
     const fallbackPosition = fiberInternalDefaultSplitterPosition(insertIndex);
     const terminalPosition = anchorPosition && parentTerminal
-      ? fiberInternalChildPositionForTerminal(anchorPosition, parentTerminal)
+      ? fiberInternalChildPositionForTerminal(anchorPosition, parentTerminal, parentAssignment)
       : null;
     const position = options.position || terminalPosition || fallbackPosition;
     const nextAssignment = {
@@ -7171,15 +7240,27 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
 
   function fiberAssignmentOutputTerminals(assignment, splitterMap = splittersById) {
     const splitter = assignment?.splitter || splitterMap.get(assignment?.splitterId) || {};
-    return normalizeSplitterType(splitter.splitterType) === 'FBT' ? ['splitA', 'splitB'] : ['output'];
+    const splitterType = normalizeSplitterType(splitter.splitterType);
+    if (splitterType === 'FBT') return ['splitA', 'splitB'];
+    const portTerminals = fiberAssignmentOutputPortTerminals({ ...assignment, splitter }, splitterMap);
+    return portTerminals.length ? portTerminals : ['output'];
   }
 
   function fiberLegacyChildTerminalForAssignment(assignment) {
-    return fiberAssignmentOutputTerminals(assignment).includes('splitA') ? 'splitA' : 'output';
+    const terminals = fiberAssignmentOutputTerminals(assignment);
+    if (terminals.includes('splitA')) return 'splitA';
+    return terminals[0] || 'output';
   }
 
-  function fiberInternalChildPositionForTerminal(anchorPosition, terminal) {
-    const verticalOffset = terminal === 'splitA' ? FIBER_INTERNAL_CANVAS.outputGap : terminal === 'splitB' ? -FIBER_INTERNAL_CANVAS.outputGap : 0;
+  function fiberInternalChildPositionForTerminal(anchorPosition, terminal, assignment = {}) {
+    const outputPorts = fiberAssignmentOutputPortCount(assignment);
+    const verticalOffset = fiberIsPortTerminal(terminal)
+      ? fiberInternalPortVerticalOffset(terminal, outputPorts)
+      : terminal === 'splitA'
+        ? FIBER_INTERNAL_CANVAS.outputGap
+        : terminal === 'splitB'
+          ? -FIBER_INTERNAL_CANVAS.outputGap
+          : 0;
     return {
       x: anchorPosition.x + FIBER_INTERNAL_CANVAS.branchLength + 54,
       y: anchorPosition.y + verticalOffset
@@ -7192,20 +7273,24 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     const occupied = new Set();
     assignments.forEach((assignment, index) => {
       if (assignment.assignmentId === parentAssignment.assignmentId) return;
-      if (assignment.parentAssignmentId === parentAssignment.assignmentId && terminals.includes(assignment.parentTerminal)) {
-        occupied.add(assignment.parentTerminal);
+      const normalizedParentTerminal = normalizeFiberAssignmentTerminal(parentAssignment, assignment.parentTerminal);
+      if (assignment.parentAssignmentId === parentAssignment.assignmentId && terminals.includes(normalizedParentTerminal)) {
+        occupied.add(normalizedParentTerminal);
         return;
       }
       if (index === parentIndex + 1 && !assignment.parentAssignmentId) {
         occupied.add(fiberLegacyChildTerminalForAssignment(parentAssignment));
       }
     });
-    const requested = terminals.includes(requestedTerminal) ? requestedTerminal : terminals[terminals.length - 1];
+    const normalizedRequestedTerminal = normalizeFiberAssignmentTerminal(parentAssignment, requestedTerminal);
+    const requested = terminals.includes(normalizedRequestedTerminal) ? normalizedRequestedTerminal : terminals[terminals.length - 1];
     if (!occupied.has(requested)) return requested;
     const fallback = terminals.find((terminal) => !occupied.has(terminal));
     if (fallback) return fallback;
-    const label = terminals.map((terminal) => terminal.replace('split', 'split ')).join(' and ');
-    setMessage(`Both ${label} outputs already have splitters.`);
+    const label = terminals.length > 2
+      ? `${terminals.length} output ports`
+      : terminals.map(fiberTerminalLabel).join(' and ');
+    setMessage(`All ${label} already have splitters.`);
     return '';
   }
 
@@ -7217,6 +7302,10 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
 
   function fiberMappingEndpointRole(point) {
     return point?.endpointRole === 'input' || point?.endpointRole === 'output' ? point.endpointRole : '';
+  }
+
+  function fiberMappingCustomerDrop(point) {
+    return Boolean(point?.customerDrop || point?.dropType === 'customer-house');
   }
 
   function fiberMappingConnectionPointForTerminal(containerKey, assignmentId, terminal) {
@@ -7242,12 +7331,14 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
       saveFiberMapping({ ...mapping, connectionPoints }, endpoint === 'input' ? 'IN removed.' : 'OUT removed.');
       return;
     }
-    Object.entries(connectionPoints).forEach(([key, value]) => {
-      if (!key.startsWith(`${containerKey}|`) || fiberMappingEndpointRole(value) !== role) return;
-      const { endpointRole, ...remainingPoint } = value;
-      if (Object.keys(remainingPoint).length) connectionPoints[key] = remainingPoint;
-      else delete connectionPoints[key];
-    });
+    if (role === 'input') {
+      Object.entries(connectionPoints).forEach(([key, value]) => {
+        if (!key.startsWith(`${containerKey}|`) || fiberMappingEndpointRole(value) !== role) return;
+        const { endpointRole, ...remainingPoint } = value;
+        if (Object.keys(remainingPoint).length) connectionPoints[key] = remainingPoint;
+        else delete connectionPoints[key];
+      });
+    }
     const currentPosition = point || naturalPoint || { x: FIBER_INTERNAL_CANVAS.inputX, y: FIBER_INTERNAL_CANVAS.height / 2 };
     const fallbackPosition = naturalPoint || currentPosition;
     const isOldFixedTarget = metrics && (
@@ -7291,6 +7382,34 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     setFiberMappingSelectedSplitterKey(fiberMapSplitterSelectionKey(containerKey, assignmentId));
     fiberMappingSelectedSplitterKeyRef.current = fiberMapSplitterSelectionKey(containerKey, assignmentId);
     saveFiberMapping(next, endpoint === 'input' ? 'Splitter set as IN.' : 'Splitter set as OUT.');
+  }
+
+  function toggleFiberMappingCustomerDrop(containerKey, assignmentId, terminal, point, naturalPoint = null) {
+    if (!containerKey || !assignmentId || !terminal) return;
+    const mapping = normalizeFiberMapping(fiberMappingRef.current || fiberMapping);
+    const pointKey = fiberMapConnectionPointKey(containerKey, assignmentId, terminal);
+    const currentPoint = mapping.connectionPoints?.[pointKey] || {};
+    const isRemoving = fiberMappingCustomerDrop(currentPoint);
+    const connectionPoints = { ...mapping.connectionPoints };
+    if (isRemoving) {
+      const { customerDrop, dropType, ...remainingPoint } = currentPoint;
+      if (Object.keys(remainingPoint).length) connectionPoints[pointKey] = remainingPoint;
+      else delete connectionPoints[pointKey];
+      saveFiberMapping({ ...mapping, connectionPoints }, 'Customer house drop removed.');
+      return;
+    }
+    const targetPoint = point || naturalPoint || { x: FIBER_INTERNAL_CANVAS.inputX, y: FIBER_INTERNAL_CANVAS.height / 2 };
+    connectionPoints[pointKey] = {
+      ...(connectionPoints[pointKey] || {}),
+      positionX: Math.round(targetPoint.x),
+      positionY: Math.round(targetPoint.y),
+      customerDrop: true,
+      dropType: 'customer-house',
+      updatedAt: new Date().toISOString()
+    };
+    setFiberMappingSelectedSplitterKey(fiberMapSplitterSelectionKey(containerKey, assignmentId));
+    fiberMappingSelectedSplitterKeyRef.current = fiberMapSplitterSelectionKey(containerKey, assignmentId);
+    saveFiberMapping({ ...mapping, connectionPoints }, 'Customer house drop marked.');
   }
 
   function addDefaultSplitterToFiberContainer(containerKey, afterAssignmentId = '', parentTerminal = '', anchorPoint = null) {
@@ -9629,6 +9748,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
       metrics = null,
       point: dotPoint = null,
       showAdd = terminal !== 'input',
+      showHouse = false,
       endpointAction = null,
       connectorLabel = ''
     } = options;
@@ -9638,9 +9758,10 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     const pointLabel = connectionPointLabel(point);
     const pointValue = connectionPointValue(point).toLowerCase().replace('_', '-');
     const endpointRole = fiberMappingEndpointRole(point);
+    const customerDrop = fiberMappingCustomerDrop(point);
     const terminalSide = terminal === 'input' ? 'input' : 'output';
     return (
-      <span className={`network-fiber-map-connection-wrap terminal-${terminalSide} ${endpointRole ? `endpoint-${endpointRole}` : ''} ${endpointAction ? 'has-role-action' : ''} ${showAdd ? 'has-add-action' : ''}`}>
+      <span className={`network-fiber-map-connection-wrap terminal-${terminalSide} ${endpointRole ? `endpoint-${endpointRole}` : ''} ${customerDrop ? 'has-customer-drop' : ''} ${endpointAction ? 'has-role-action' : ''} ${showAdd ? 'has-add-action' : ''} ${showHouse ? 'has-house-action' : ''}`}>
         <button
           type="button"
           className={`network-fiber-map-connection-dot ${pointValue}`}
@@ -9662,7 +9783,12 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
             {endpointRole === 'input' ? 'IN' : 'OUT'}
           </span>
         )}
-        {(endpointAction || showAdd) && (
+        {customerDrop && (
+          <span className="network-fiber-map-connection-house-marker" title="Customer house drop">
+            <IconHomeSignal size={11} />
+          </span>
+        )}
+        {(endpointAction || showAdd || showHouse) && (
           <span className="network-fiber-map-connection-actions" onPointerDown={(event) => event.stopPropagation()}>
             {endpointAction && (
               <button
@@ -9692,6 +9818,22 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
                 <IconPlus size={10} />
               </button>
             )}
+            {showHouse && (
+              <button
+                type="button"
+                className={`network-fiber-map-connection-house ${customerDrop ? 'is-active' : ''}`}
+                title={customerDrop ? 'Remove customer house drop' : 'Connect customer house from this port'}
+                aria-label={customerDrop ? 'Remove customer house drop' : 'Connect customer house from this port'}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  toggleFiberMappingCustomerDrop(containerKey, assignmentId, terminal, dotPoint);
+                }}
+              >
+                <IconHomeSignal size={11} />
+              </button>
+            )}
           </span>
         )}
         {connectorLabel && <span className="network-fiber-map-connection-caption">{connectorLabel}</span>}
@@ -9699,7 +9841,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     );
   }
 
-  function renderFiberInternalPoint(containerKey, assignmentId, terminal, terminalLabel, point, key, metrics, endpointAction = null, connectorLabel = '') {
+  function renderFiberInternalPoint(containerKey, assignmentId, terminal, terminalLabel, point, key, metrics, endpointAction = null, connectorLabel = '', connectionOptions = {}) {
     const endpointRole = fiberMappingEndpointRole(fiberMappingConnectionPointForTerminal(containerKey, assignmentId, terminal));
     return (
       <div
@@ -9711,6 +9853,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
           metrics,
           point,
           showAdd: terminal !== 'input',
+          showHouse: Boolean(connectionOptions.showHouse),
           endpointAction,
           connectorLabel
         })}
@@ -9724,7 +9867,11 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     const childByParentTerminal = new Map();
     assignments.forEach((assignment, index) => {
       if (!assignment.parentAssignmentId || !assignment.parentTerminal) return;
-      childByParentTerminal.set(`${assignment.parentAssignmentId}|${assignment.parentTerminal}`, { assignment, index });
+      const parentAssignment = assignments.find((candidate) => candidate.assignmentId === assignment.parentAssignmentId);
+      const parentTerminal = parentAssignment
+        ? normalizeFiberAssignmentTerminal(parentAssignment, assignment.parentTerminal)
+        : assignment.parentTerminal;
+      childByParentTerminal.set(`${assignment.parentAssignmentId}|${parentTerminal}`, { assignment, index });
     });
     const inputPoints = new Map();
     const naturalPoints = new Map();
@@ -9796,8 +9943,6 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     assignments.forEach((assignment, index) => {
       const position = metrics.positions[index];
       const isFirstSplitter = index === 0;
-      const isLastSplitter = index === assignments.length - 1;
-      const outputTerminal = fiberMappingOutTerminalForAssignment(assignment);
       const inputPoint = inputPoints.get(assignment.assignmentId);
       const splitterType = normalizeSplitterType(assignment.splitter?.splitterType);
       const isFbt = splitterType === 'FBT';
@@ -9872,7 +10017,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
             terminal: 'splitA',
             label: 'Split A connection',
             point: splitA,
-            endpointAction: isLastSplitter && outputTerminal === 'splitA' ? endpointActionFor(assignment, 'output', 'splitA', splitA, splitAFallback) : null
+            endpointAction: endpointActionFor(assignment, 'output', 'splitA', splitA, splitAFallback)
           });
         }
         if (!splitBChildPosition) {
@@ -9882,36 +10027,38 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
             terminal: 'splitB',
             label: 'Split B connection',
             point: splitB,
-            endpointAction: isLastSplitter && outputTerminal === 'splitB' ? endpointActionFor(assignment, 'output', 'splitB', splitB, splitBFallback) : null
+            endpointAction: endpointActionFor(assignment, 'output', 'splitB', splitB, splitBFallback)
           });
         }
       } else {
-        const outputFallback = {
-          x: Math.min(position.x + FIBER_INTERNAL_CANVAS.branchLength, metrics.width - 32),
-          y: position.y
-        };
-        const outputChildPosition = terminalChildPosition(assignment, index, 'output');
-        const outputChild = childByParentTerminal.get(`${assignment.assignmentId}|output`);
-        const output = outputChildPosition || fiberInternalConnectionPointPosition(containerKey, assignment.assignmentId, 'output', outputFallback);
-        paths.push({
-          id: `${assignment.assignmentId}-output`,
-          d: fiberInternalCurvePath(position, output),
-          assignmentId: outputChildPosition ? '' : assignment.assignmentId,
-          terminal: outputChildPosition ? '' : 'output',
-          point: outputChildPosition ? null : output,
-          spawnedKey: outputChild ? fiberMapSplitterSelectionKey(containerKey, outputChild.assignment.assignmentId) : '',
-          tone: 'output'
-        });
-        if (!outputChildPosition) {
-          points.push({
-            key: `${assignment.assignmentId}-output`,
-            assignmentId: assignment.assignmentId,
-            terminal: 'output',
-            label: 'Output connection',
-            point: output,
-            endpointAction: isLastSplitter && outputTerminal === 'output' ? endpointActionFor(assignment, 'output', 'output', output, outputFallback) : null
+        const showHouseDrops = ['PLC', 'LCP'].includes(splitterType);
+        fiberAssignmentOutputTerminals(assignment).forEach((terminal) => {
+          const outputFallback = fiberInternalOutputFallbackForTerminal(position, terminal, metrics, assignment);
+          const outputChildPosition = terminalChildPosition(assignment, index, terminal);
+          const outputChild = childByParentTerminal.get(`${assignment.assignmentId}|${terminal}`);
+          const output = outputChildPosition || fiberInternalConnectionPointPosition(containerKey, assignment.assignmentId, terminal, outputFallback);
+          const outputStart = fiberInternalOutputStartPoint(position, terminal, assignment);
+          paths.push({
+            id: `${assignment.assignmentId}-${terminal}`,
+            d: fiberInternalCurvePath(outputStart, output),
+            assignmentId: outputChildPosition ? '' : assignment.assignmentId,
+            terminal: outputChildPosition ? '' : terminal,
+            point: outputChildPosition ? null : output,
+            spawnedKey: outputChild ? fiberMapSplitterSelectionKey(containerKey, outputChild.assignment.assignmentId) : '',
+            tone: 'output'
           });
-        }
+          if (!outputChildPosition) {
+            points.push({
+              key: `${assignment.assignmentId}-${terminal}`,
+              assignmentId: assignment.assignmentId,
+              terminal,
+              label: `${fiberTerminalLabel(terminal)} connection`,
+              point: output,
+              endpointAction: endpointActionFor(assignment, 'output', terminal, output, outputFallback),
+              showHouse: showHouseDrops && fiberIsPortTerminal(terminal)
+            });
+          }
+        });
       }
     });
     return (
@@ -9997,7 +10144,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
             Incoming fiber
           </span>
         )}
-        {points.map((item) => renderFiberInternalPoint(containerKey, item.assignmentId, item.terminal, item.label, item.point, item.key, metrics, item.endpointAction || null, item.connectorLabel || ''))}
+        {points.map((item) => renderFiberInternalPoint(containerKey, item.assignmentId, item.terminal, item.label, item.point, item.key, metrics, item.endpointAction || null, item.connectorLabel || '', { showHouse: item.showHouse }))}
         {terminalCaptions.map((item) => (
           <span
             key={item.key}
