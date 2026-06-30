@@ -5357,7 +5357,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
   function fiberAssignmentOutputPortCount(assignment, splitterMap = splittersById) {
     const splitter = assignment?.splitter || splitterMap.get(assignment?.splitterId) || {};
     const splitterType = normalizeSplitterType(splitter.splitterType);
-    if (!['PLC', 'LCP'].includes(splitterType)) return 0;
+    if (splitterType !== 'LCP') return 0;
     const ratio = assignment?.ratio || splitter.splitRatio || (splitter.outputPorts ? `1:${splitter.outputPorts}` : '');
     const outputPorts = splitterOutputPortsFromRatio(ratio, Number(splitter.outputPorts || splitter.portCapacity || 0));
     return [4, 8, 16].includes(outputPorts) ? outputPorts : 0;
@@ -5372,6 +5372,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     const terminals = fiberAssignmentOutputTerminals(assignment, splitterMap);
     if (terminals.includes(terminal)) return terminal;
     if (terminal === 'output' && terminals.includes('port1')) return 'port1';
+    if (fiberIsPortTerminal(terminal) && terminals.includes('output')) return 'output';
     return terminal;
   }
 
@@ -5396,7 +5397,16 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     return rowOffset + ((column - columnCenter) * 6);
   }
 
-  function fiberInternalEquipmentHalfWidth(assignment) {
+  function fiberInternalVisualEquipmentHalfWidth(assignment) {
+    const display = plcSplitterDisplayFor(assignment);
+    const outputPorts = display?.outputPorts || 0;
+    if (outputPorts === 4) return 54;
+    if (outputPorts === 16) return 82;
+    if (outputPorts === 8) return 68;
+    return 0;
+  }
+
+  function fiberInternalPortTerminalHalfWidth(assignment) {
     const outputPorts = fiberAssignmentOutputPortCount(assignment);
     if (outputPorts === 4) return 54;
     if (outputPorts === 16) return 82;
@@ -5406,11 +5416,29 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
 
   function fiberInternalOutputStartPoint(position, terminal, assignment = {}) {
     const outputPorts = fiberAssignmentOutputPortCount(assignment);
-    if (!fiberIsPortTerminal(terminal) || !outputPorts) return position;
+    if (!fiberIsPortTerminal(terminal) || !outputPorts) {
+      const visualHalfWidth = fiberInternalVisualEquipmentHalfWidth(assignment);
+      return visualHalfWidth
+        ? { x: position.x + visualHalfWidth - 12, y: position.y }
+        : position;
+    }
     return {
-      x: position.x + fiberInternalEquipmentHalfWidth(assignment) - 12,
+      x: position.x + fiberInternalPortTerminalHalfWidth(assignment) - 12,
       y: position.y + fiberInternalPortVerticalOffset(terminal, outputPorts)
     };
+  }
+
+  function fiberInternalOutputPath(position, terminal, output, assignment = {}) {
+    const splitterType = fiberInternalSplitterTypeForAssignment(assignment);
+    if (splitterType === 'LCP' && fiberIsPortTerminal(terminal)) {
+      const root = {
+        x: position.x + fiberInternalVisualEquipmentHalfWidth(assignment) - 12,
+        y: position.y
+      };
+      const branchX = clamp(root.x + 36, root.x + 18, Math.max(root.x + 18, output.x - 34));
+      return `M ${root.x} ${root.y} C ${root.x + 22} ${root.y}, ${branchX - 20} ${output.y}, ${branchX} ${output.y} C ${branchX + 20} ${output.y}, ${Math.max(branchX + 22, output.x - 34)} ${output.y}, ${output.x} ${output.y}`;
+    }
+    return fiberInternalCurvePath(fiberInternalOutputStartPoint(position, terminal, assignment), output);
   }
 
   function renderPlcSplitterSvg(display, options = {}) {
@@ -10031,16 +10059,17 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
           });
         }
       } else {
-        const showHouseDrops = ['PLC', 'LCP'].includes(splitterType);
         fiberAssignmentOutputTerminals(assignment).forEach((terminal) => {
           const outputFallback = fiberInternalOutputFallbackForTerminal(position, terminal, metrics, assignment);
           const outputChildPosition = terminalChildPosition(assignment, index, terminal);
           const outputChild = childByParentTerminal.get(`${assignment.assignmentId}|${terminal}`);
           const output = outputChildPosition || fiberInternalConnectionPointPosition(containerKey, assignment.assignmentId, terminal, outputFallback);
-          const outputStart = fiberInternalOutputStartPoint(position, terminal, assignment);
+          const showHouseDrop = splitterType === 'PLC'
+            ? terminal === 'output'
+            : splitterType === 'LCP' && fiberIsPortTerminal(terminal);
           paths.push({
             id: `${assignment.assignmentId}-${terminal}`,
-            d: fiberInternalCurvePath(outputStart, output),
+            d: fiberInternalOutputPath(position, terminal, output, assignment),
             assignmentId: outputChildPosition ? '' : assignment.assignmentId,
             terminal: outputChildPosition ? '' : terminal,
             point: outputChildPosition ? null : output,
@@ -10055,7 +10084,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
               label: `${fiberTerminalLabel(terminal)} connection`,
               point: output,
               endpointAction: endpointActionFor(assignment, 'output', terminal, output, outputFallback),
-              showHouse: showHouseDrops && fiberIsPortTerminal(terminal)
+              showHouse: showHouseDrop
             });
           }
         });
