@@ -12538,7 +12538,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
                       const profileLabel = profile
                         ? [fiberProfileName, coreLabel].filter(Boolean).join(' / ')
                         : 'Assign fiber';
-                      const distanceLabel = edge.lengthKm ? `Total distance ${formatFiberDistanceKm(edge.lengthKm)}` : 'Distance not set';
+                      const distanceLabel = edge.lengthKm ? formatFiberDistanceKm(edge.lengthKm).replace(/\s+/g, '') : 'Distance not set';
                       return (
                         <g key={edge.id} className={`network-pon-fiber-link-edge ${edge.assigned ? 'assigned' : ''}`}>
                           <path
