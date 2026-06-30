@@ -12532,8 +12532,11 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
                       const profile = fiberOptics.find((row) => row.id === edge.config?.fiberOpticLossId);
                       const lineColor = fiberLineColorForConfig(edge.config, profile);
                       const coreLabel = profile ? fiberCoreLabelForConfig(edge.config, profile) : '';
+                      const fiberProfileName = profile
+                        ? buildFiberOpticDisplayName(profile, normalizeFiberCoreCount(profile.coreCount, fiberCoreCountFromGroups(profile.colorGroups) || 12))
+                        : '';
                       const profileLabel = profile
-                        ? [profile.manufacturer || profile.name || 'Fiber', coreLabel].filter(Boolean).join(' / ')
+                        ? [fiberProfileName, coreLabel].filter(Boolean).join(' / ')
                         : 'Assign fiber';
                       const distanceLabel = edge.lengthKm ? `Total distance ${formatFiberDistanceKm(edge.lengthKm)}` : 'Distance not set';
                       return (
