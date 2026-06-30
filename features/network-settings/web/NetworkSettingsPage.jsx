@@ -9813,7 +9813,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
         )}
         {customerDrop && (
           <span className="network-fiber-map-connection-house-marker" title="Customer house drop">
-            <IconHomeSignal size={11} />
+            <IconHomeSignal size={14} />
           </span>
         )}
         {(endpointAction || showAdd || showHouse) && (
@@ -9843,7 +9843,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
                   addDefaultSplitterToFiberContainer(containerKey, assignmentId, terminal, dotPoint);
                 }}
               >
-                <IconPlus size={10} />
+                <IconPlus size={13} />
               </button>
             )}
             {showHouse && (
@@ -9859,7 +9859,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
                   toggleFiberMappingCustomerDrop(containerKey, assignmentId, terminal, dotPoint);
                 }}
               >
-                <IconHomeSignal size={11} />
+                <IconHomeSignal size={14} />
               </button>
             )}
           </span>
