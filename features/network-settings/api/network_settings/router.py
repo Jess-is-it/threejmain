@@ -914,6 +914,10 @@ def normalize_fiber_mapping_connection_point(record: Any) -> dict[str, Any]:
     endpoint_role = clean_text(source.get("endpointRole"))
     if endpoint_role in {"input", "output"}:
         normalized["endpointRole"] = endpoint_role
+    drop_type = clean_text(source.get("dropType"))
+    if source.get("customerDrop") is True or drop_type == "customer-house":
+        normalized["customerDrop"] = True
+        normalized["dropType"] = "customer-house"
     return normalized
 
 
