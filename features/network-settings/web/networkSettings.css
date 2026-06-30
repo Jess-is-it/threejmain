@@ -2266,6 +2266,16 @@
   visibility: visible;
 }
 
+.network-fiber-map-connection-wrap.actions-dismissed .network-fiber-map-connection-actions,
+.network-fiber-map-connection-wrap.actions-dismissed:hover .network-fiber-map-connection-actions,
+.network-fiber-map-connection-wrap.actions-dismissed:focus-within .network-fiber-map-connection-actions {
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(var(--fiber-connection-actions-x), -50%) scale(0.96);
+  transition-delay: 0s;
+  visibility: hidden;
+}
+
 .network-fiber-map-connection-caption {
   color: #64748b;
   font-size: 0.56rem;

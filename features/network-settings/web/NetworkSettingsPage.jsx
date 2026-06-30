@@ -3009,6 +3009,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
   const [fiberMappingExpandedContainerKeys, setFiberMappingExpandedContainerKeys] = useState([]);
   const [fiberSplitterAddDraft, setFiberSplitterAddDraft] = useState(null);
   const [fiberLayoutModalView, setFiberLayoutModalView] = useState({ zoom: 1, panX: 32, panY: 32, panning: false });
+  const [fiberConnectionActionDismissedKey, setFiberConnectionActionDismissedKey] = useState('');
   const [fiberColorSettings, setFiberColorSettings] = useState(defaultFiberColorSettings);
   const [fiberColorDraft, setFiberColorDraft] = useState(defaultFiberColorSettings);
   const [fiberSettingsSaving, setFiberSettingsSaving] = useState(false);
@@ -9787,9 +9788,21 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     const pointValue = connectionPointValue(point).toLowerCase().replace('_', '-');
     const endpointRole = fiberMappingEndpointRole(point);
     const customerDrop = fiberMappingCustomerDrop(point);
+    const visibleEndpointAction = customerDrop && endpointAction?.role === 'output' ? null : endpointAction;
+    const actionsDismissed = fiberConnectionActionDismissedKey === pointKey;
     const terminalSide = terminal === 'input' ? 'input' : 'output';
+    const closeConnectionActions = () => setFiberConnectionActionDismissedKey(pointKey);
+    const clearConnectionActions = () => {
+      setFiberConnectionActionDismissedKey((current) => (current === pointKey ? '' : current));
+    };
     return (
-      <span className={`network-fiber-map-connection-wrap terminal-${terminalSide} ${endpointRole ? `endpoint-${endpointRole}` : ''} ${customerDrop ? 'has-customer-drop' : ''} ${endpointAction ? 'has-role-action' : ''} ${showAdd ? 'has-add-action' : ''} ${showHouse ? 'has-house-action' : ''}`}>
+      <span
+        className={`network-fiber-map-connection-wrap terminal-${terminalSide} ${endpointRole ? `endpoint-${endpointRole}` : ''} ${customerDrop ? 'has-customer-drop' : ''} ${visibleEndpointAction ? 'has-role-action' : ''} ${showAdd ? 'has-add-action' : ''} ${showHouse ? 'has-house-action' : ''} ${actionsDismissed ? 'actions-dismissed' : ''}`}
+        onPointerLeave={clearConnectionActions}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget)) clearConnectionActions();
+        }}
+      >
         <button
           type="button"
           className={`network-fiber-map-connection-dot ${pointValue}`}
@@ -9816,18 +9829,21 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
             <IconHomeSignal size={14} />
           </span>
         )}
-        {(endpointAction || showAdd || showHouse) && (
+        {(visibleEndpointAction || showAdd || showHouse) && (
           <span className="network-fiber-map-connection-actions" onPointerDown={(event) => event.stopPropagation()}>
-            {endpointAction && (
+            {visibleEndpointAction && (
               <button
                 type="button"
-                className={`network-fiber-map-connection-role-action set-${endpointAction.role} ${endpointAction.active ? 'is-active' : ''}`}
-                title={endpointAction.title}
-                aria-label={endpointAction.title}
+                className={`network-fiber-map-connection-role-action set-${visibleEndpointAction.role} ${visibleEndpointAction.active ? 'is-active' : ''}`}
+                title={visibleEndpointAction.title}
+                aria-label={visibleEndpointAction.title}
                 onPointerDown={(event) => event.stopPropagation()}
-                onClick={endpointAction.onClick}
+                onClick={(event) => {
+                  closeConnectionActions();
+                  visibleEndpointAction.onClick(event);
+                }}
               >
-                {endpointAction.label}
+                {visibleEndpointAction.label}
               </button>
             )}
             {showAdd && (
@@ -9856,6 +9872,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
                 onClick={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
+                  closeConnectionActions();
                   toggleFiberMappingCustomerDrop(containerKey, assignmentId, terminal, dotPoint);
                 }}
               >
