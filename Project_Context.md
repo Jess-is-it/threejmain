@@ -280,6 +280,7 @@ Production, staging, and the old stopped `threejmain` Compose project do not sha
 Production deployment commands:
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/Jess-is-it/threejmain/master/scripts/production_bootstrap.sh | sudo bash
 scripts/install_production_autodeploy.sh
 scripts/production_auto_deploy.sh --once
 scripts/production_deploy.sh
@@ -289,7 +290,9 @@ docker compose --project-name threejmain-production -f /home/threejmain-producti
 docker compose --project-name threejmain-staging -f /home/threejmain/docker-compose.yml ps
 ```
 
-`master` remains the production branch. Production releases should still merge `staging` into `master` through a Pull Request; the watcher updates production after `master` moves. Remaining hardening work: production secrets, non-default admin credentials, domain/TLS/reverse-proxy, backup/restore automation, and durable PostgreSQL persistence for modules beyond Customer Profiling.
+`scripts/production_bootstrap.sh` is the preferred fresh production server installer and manual updater. It is idempotent: first run prompts through `/dev/tty` for production owner username, email, contact number, and password, installs base packages and Docker, clones `origin/master` into `/home/threejmain`, creates `/home/threejmain/.env` with owner login values plus generated database credentials, and deploys the `threejmain-production` Compose project; later runs preserve `.env` and Docker volumes, fast-forward the source checkout, and redeploy the latest `origin/master`. Non-interactive installs can set `THREEJMAIN_OWNER_USERNAME`, `THREEJMAIN_OWNER_EMAIL`, `THREEJMAIN_OWNER_CONTACT`, and `THREEJMAIN_OWNER_PASSWORD`. `scripts/production_deploy.sh` loads `/home/threejmain/.env` by default, or `THREEJMAIN_PROD_ENV_FILE` when set.
+
+`master` remains the production branch. Production releases should still merge `staging` into `master` through a Pull Request; the watcher updates production after `master` moves. Remaining hardening work: production secrets, non-default admin credentials, domain/TLS/reverse-proxy, backup/restore automation, and durable PostgreSQL persistence for modules beyond Customer Profiling, Billing, and Service.
 
 Version metadata is provided through environment variables consumed by Docker Compose:
 
