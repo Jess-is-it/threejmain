@@ -283,6 +283,18 @@ maybe_install_autodeploy() {
   "$source_repo/scripts/install_production_autodeploy.sh"
 }
 
+maybe_install_deploy_control() {
+  local source_repo="$1"
+
+  if [[ "${THREEJMAIN_INSTALL_DEPLOY_CONTROL:-1}" != "1" ]]; then
+    return
+  fi
+
+  log "Installing manual production deploy control worker"
+  chmod +x "$source_repo/scripts/install_production_deploy_control.sh"
+  "$source_repo/scripts/install_production_deploy_control.sh"
+}
+
 main() {
   require_root
 
@@ -299,6 +311,7 @@ main() {
   ensure_source_repo "$repo_url" "$source_repo" "$branch"
   ensure_production_env "$env_file" "$web_port" "$api_port"
   run_production_deploy "$source_repo" "$prod_dir" "$env_file" "$branch"
+  maybe_install_deploy_control "$source_repo"
   maybe_install_autodeploy "$source_repo"
 
   log "Production install/update complete"

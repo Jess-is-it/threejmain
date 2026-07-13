@@ -8,7 +8,7 @@ On a fresh Ubuntu production server, run:
 curl -fsSL https://raw.githubusercontent.com/Jess-is-it/threejmain/master/scripts/production_bootstrap.sh | sudo bash
 ```
 
-The same command is used for later production updates. On first run it prompts for the production owner username, email, contact number, and password; installs base packages and Docker Engine; clones `origin/master` into `/home/threejmain`; creates `/home/threejmain/.env`; deploys `/home/threejmain-production`; and starts Docker Compose project `threejmain-production`. On later runs it preserves `.env` and Docker volumes, fast-forwards the source checkout, rebuilds, and redeploys from the latest `origin/master`.
+The same command is used for later production updates. On first run it prompts for the production owner username, email, contact number, and password; installs base packages and Docker Engine; clones `origin/master` into `/home/threejmain`; creates `/home/threejmain/.env`; deploys `/home/threejmain-production`; starts Docker Compose project `threejmain-production`; and installs `threejmain-production-deploy-control.service` for manual UI-controlled deploys. On later runs it preserves `.env` and Docker volumes, fast-forwards the source checkout, rebuilds, and redeploys from the latest `origin/master`.
 
 Useful overrides:
 
@@ -36,7 +36,15 @@ Production is deployed from `origin/master` on the same host as the shared devel
 
 The production Compose project creates its own Docker volumes, so production data is not shared with the old staging/test Compose project. The deploy script stops the old `threejmain` Compose project before starting production because both stacks would otherwise compete for ports `8180` and `8100`.
 
-Install or refresh the master watcher:
+Install or refresh the manual deploy control worker:
+
+```bash
+scripts/install_production_deploy_control.sh
+```
+
+The deploy control worker writes the latest 10 `master` commits and deployment status into the production API data volume. `System Settings -> Runtime -> Production Deployment` reads that status and queues selected commits for upgrade or rollback. The installer disables the old auto-deploy watcher to prevent it from overriding a manual rollback.
+
+Install or refresh the old master watcher only if you want automatic deploys on every `master` change:
 
 ```bash
 scripts/install_production_autodeploy.sh
@@ -60,6 +68,8 @@ Useful service checks:
 
 ```bash
 systemctl status threejmain-production-auto-deploy.service
+journalctl -u threejmain-production-deploy-control.service -n 100 --no-pager
+systemctl status threejmain-production-deploy-control.service
 journalctl -u threejmain-production-auto-deploy.service -n 100 --no-pager
 docker compose --project-name threejmain-production -f /home/threejmain-production/docker-compose.yml ps
 ```

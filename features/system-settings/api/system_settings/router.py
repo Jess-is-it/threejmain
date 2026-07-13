@@ -186,6 +186,7 @@ class AccessRolePayload(BaseModel):
 class AccessUserPayload(BaseModel):
     username: str | None = Field(default=None, min_length=3, max_length=60)
     email: str | None = Field(default=None, max_length=160)
+    contact: str | None = Field(default=None, max_length=80)
     fullName: str | None = Field(default=None, max_length=120)
     roleId: str | None = Field(default=None, max_length=80)
     password: str | None = Field(default=None, min_length=8, max_length=128)
@@ -200,6 +201,10 @@ class AccessResetPasswordPayload(BaseModel):
 
 class BackupRestorePayload(BaseModel):
     backup: dict[str, Any] = Field(default_factory=dict)
+
+
+class DeploymentRequestPayload(BaseModel):
+    commit: str = Field(..., min_length=7, max_length=40)
 
 
 ALLOWED_AVATAR_MIME_TYPES = {
@@ -1423,6 +1428,124 @@ def public_backup_metadata() -> dict[str, Any]:
     }
 
 
+def deployment_control_path() -> Path:
+    return Path(os.getenv("PRODUCTION_DEPLOY_CONTROL_PATH", "/app/data/deploy-control"))
+
+
+def deployment_control_enabled() -> bool:
+    configured = os.getenv("PRODUCTION_DEPLOY_CONTROL_ENABLED", "").strip().lower()
+    if configured:
+        return configured in {"1", "true", "yes", "on"}
+    return os.getenv("APP_ENV", "").strip().lower() in {"prod", "production"}
+
+
+def read_deployment_control_json(file_name: str) -> dict[str, Any]:
+    path = deployment_control_path() / file_name
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def deployment_commit_list() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    data = read_deployment_control_json("commits.json")
+    commits = data.get("commits") if isinstance(data.get("commits"), list) else []
+    normalized = []
+    for commit in commits:
+        if not isinstance(commit, dict):
+            continue
+        full_hash = normalize_access_text(commit.get("commit")).lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", full_hash):
+            continue
+        normalized.append(
+            {
+                "commit": full_hash,
+                "short": normalize_access_text(commit.get("short")) or full_hash[:7],
+                "committedAt": normalize_access_text(commit.get("committedAt")),
+                "author": normalize_access_text(commit.get("author")),
+                "subject": normalize_access_text(commit.get("subject")),
+            }
+        )
+    return normalized, data
+
+
+def public_deployment_control_status() -> dict[str, Any]:
+    commits, commit_data = deployment_commit_list()
+    status = read_deployment_control_json("status.json")
+    pending = read_deployment_control_json("request.json")
+    current_commit = os.getenv("APP_COMMIT", "").strip()
+    deployed_commit = normalize_access_text(status.get("deployedCommit")) or current_commit
+    return {
+        "enabled": deployment_control_enabled(),
+        "environment": os.getenv("APP_ENV", "").strip() or "unknown",
+        "controlPath": str(deployment_control_path()),
+        "current": {
+            "commit": current_commit,
+            "short": current_commit[:7] if current_commit else "",
+            "branch": os.getenv("APP_BRANCH", ""),
+            "version": os.getenv("APP_VERSION", ""),
+            "buildTime": os.getenv("APP_BUILD_TIME", ""),
+        },
+        "deployed": {
+            "commit": deployed_commit,
+            "short": deployed_commit[:7] if deployed_commit else "",
+        },
+        "status": status or {
+            "state": "unavailable",
+            "message": "Manual deploy worker status is not available yet.",
+        },
+        "pendingRequest": pending or None,
+        "remote": commit_data.get("remote") or "origin",
+        "branch": commit_data.get("branch") or "master",
+        "commitListUpdatedAt": commit_data.get("updatedAt"),
+        "commits": commits,
+    }
+
+
+def resolve_deployment_commit(selected_commit: str) -> dict[str, Any]:
+    normalized = normalize_access_text(selected_commit).lower()
+    if not re.fullmatch(r"[0-9a-f]{7,40}", normalized):
+        raise HTTPException(status_code=400, detail="Commit must be a 7-40 character SHA hash")
+
+    commits, _ = deployment_commit_list()
+    if not commits:
+        raise HTTPException(status_code=503, detail="Master commit list is not available. Check that the production deploy control worker is running.")
+
+    for commit in commits:
+        full_hash = commit["commit"]
+        if full_hash == normalized or full_hash.startswith(normalized):
+            return commit
+    raise HTTPException(status_code=400, detail="Selected commit is not in the latest 10 master commits")
+
+
+def write_deployment_request(commit: dict[str, Any], admin: dict[str, Any]) -> dict[str, Any]:
+    control_path = deployment_control_path()
+    control_path.mkdir(parents=True, exist_ok=True)
+    request_file = control_path / "request.json"
+    if request_file.exists():
+        raise HTTPException(status_code=409, detail="A production deploy request is already queued")
+
+    status = read_deployment_control_json("status.json")
+    if status.get("state") == "running":
+        raise HTTPException(status_code=409, detail="A production deploy is already running")
+
+    request_payload = {
+        "id": f"deploy-{int(time.time())}-{str(uuid4())[:8]}",
+        "targetCommit": commit["commit"],
+        "targetShort": commit["short"],
+        "subject": commit.get("subject", ""),
+        "requestedBy": admin.get("username", "unknown"),
+        "requestedAt": now_iso(),
+    }
+    tmp = control_path / f".request.{request_payload['id']}.json"
+    tmp.write_text(json.dumps(request_payload, indent=2))
+    tmp.replace(request_file)
+    return request_payload
+
+
 def normalize_access_text(value: Any) -> str:
     return str(value or "").strip()
 
@@ -1586,6 +1709,7 @@ def normalize_access_store(raw: dict[str, Any] | None) -> dict[str, Any]:
                 "id": user_id,
                 "username": username,
                 "email": normalize_access_text(user.get("email")).lower(),
+                "contact": normalize_access_text(user.get("contact") or user.get("mobile") or user.get("phone")),
                 "fullName": normalize_access_text(user.get("fullName")),
                 "roleId": role_id,
                 "password": normalize_access_text(user.get("password")),
@@ -1604,6 +1728,7 @@ def normalize_access_store(raw: dict[str, Any] | None) -> dict[str, Any]:
                 "id": os.getenv("DEFAULT_ADMIN_ID", "admin-1"),
                 "username": os.getenv("DEFAULT_ADMIN_USERNAME", "admin").strip().lower() or "admin",
                 "email": os.getenv("DEFAULT_ADMIN_EMAIL", "admin@example.local").strip().lower(),
+                "contact": os.getenv("DEFAULT_ADMIN_CONTACT", "").strip(),
                 "fullName": os.getenv("DEFAULT_ADMIN_NAME", "System Administrator").strip() or "System Administrator",
                 "roleId": "role-owner",
                 "password": os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123"),
@@ -1622,6 +1747,7 @@ def normalize_access_store(raw: dict[str, Any] | None) -> dict[str, Any]:
                 "id": "user-tech",
                 "username": TECHNICIAN_TEST_USERNAME,
                 "email": "tech@example.local",
+                "contact": "",
                 "fullName": "Test Technician",
                 "roleId": "role-technician",
                 "password": "",
@@ -1767,6 +1893,7 @@ def access_session_user(user: dict[str, Any], role: dict[str, Any]) -> dict[str,
         "username": user["username"],
         "full_name": user.get("fullName") or user["username"],
         "email": user.get("email", ""),
+        "contact": user.get("contact", ""),
         "role": role.get("name", ""),
         "status": "active" if user.get("isActive") else "inactive",
         "permissions": role.get("permissionCodes") or [],
@@ -3092,6 +3219,33 @@ def restore_backup(payload: BackupRestorePayload, admin=Depends(require_admin)):
     return restore_backup_data(payload.backup, admin)
 
 
+@router.get("/api/system-settings/deployments")
+def get_deployments(admin=Depends(require_admin)):
+    return public_deployment_control_status()
+
+
+@router.post("/api/system-settings/deployments/deploy")
+def request_deployment(payload: DeploymentRequestPayload, admin=Depends(require_admin)):
+    if not deployment_control_enabled():
+        raise HTTPException(status_code=400, detail="Manual production deployment is only enabled in production.")
+    commit = resolve_deployment_commit(payload.commit)
+    request_payload = write_deployment_request(commit, admin)
+    add_audit(
+        "production_deploy_requested",
+        "ProductionDeployment",
+        request_payload["id"],
+        {
+            "targetCommit": request_payload["targetCommit"],
+            "targetShort": request_payload["targetShort"],
+            "subject": request_payload.get("subject"),
+        },
+        admin["username"],
+    )
+    status = public_deployment_control_status()
+    status["message"] = "Production deploy request queued."
+    return status
+
+
 @router.get("/api/system-settings/access")
 def get_access(admin=Depends(require_admin)):
     return public_access_store(access_store())
@@ -3224,6 +3378,7 @@ def create_access_user(payload: AccessUserPayload, admin=Depends(require_admin))
         "id": f"user-{uuid4()}",
         "username": username,
         "email": email,
+        "contact": normalize_access_text(payload.contact),
         "fullName": normalize_access_text(payload.fullName),
         "roleId": role["id"],
         "password": "",
@@ -3258,6 +3413,7 @@ def update_access_user(user_id: str, payload: AccessUserPayload, admin=Depends(r
     user.update(
         {
             "email": email,
+            "contact": normalize_access_text(payload.contact),
             "fullName": normalize_access_text(payload.fullName),
             "roleId": next_role["id"],
             "isActive": bool(payload.isActive),

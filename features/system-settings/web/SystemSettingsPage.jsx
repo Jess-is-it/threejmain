@@ -2238,6 +2238,159 @@ function BackupTab() {
   );
 }
 
+function deployStateClass(state) {
+  if (state === 'succeeded' || state === 'idle') return 'bg-green-lt text-green';
+  if (state === 'running') return 'bg-blue-lt text-blue';
+  if (state === 'failed') return 'bg-red-lt text-red';
+  return 'bg-secondary-lt text-secondary';
+}
+
+function DeploymentControlTab() {
+  const [deployment, setDeployment] = useState(null);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [busyCommit, setBusyCommit] = useState('');
+
+  async function loadDeployment() {
+    try {
+      setDeployment(await request('/system-settings/deployments'));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  useEffect(() => {
+    loadDeployment();
+  }, []);
+
+  useEffect(() => {
+    const running = deployment?.status?.state === 'running' || deployment?.pendingRequest;
+    if (!running) return undefined;
+    const timer = window.setInterval(() => loadDeployment(), 7000);
+    return () => window.clearInterval(timer);
+  }, [deployment?.status?.state, deployment?.pendingRequest?.id]);
+
+  async function deployCommit(commit) {
+    if (!commit?.commit) return;
+    const label = `${commit.short || commit.commit.slice(0, 7)} - ${commit.subject || 'selected commit'}`;
+    if (!window.confirm(`Deploy production commit ${label}?`)) return;
+    setMessage('');
+    setError('');
+    setBusyCommit(commit.commit);
+    try {
+      const data = await request('/system-settings/deployments/deploy', {
+        method: 'POST',
+        body: JSON.stringify({ commit: commit.commit })
+      });
+      setDeployment(data);
+      setMessage(data.message || 'Production deploy request queued.');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusyCommit('');
+    }
+  }
+
+  const commits = deployment?.commits || [];
+  const status = deployment?.status || {};
+  const running = status.state === 'running';
+  const pending = Boolean(deployment?.pendingRequest);
+  const activeCommit = deployment?.deployed?.commit || deployment?.current?.commit || '';
+  const latestCommit = commits[0]?.commit || '';
+  const unavailable = deployment && !deployment.enabled;
+
+  return (
+    <Card
+      title="Production Deployment"
+      icon={IconPlayerPlay}
+      actions={<button className="btn btn-sm" type="button" onClick={loadDeployment}><IconRefresh size={16} className="me-1" />Refresh</button>}
+    >
+      {message && <div className="alert alert-success">{message}</div>}
+      {error && <div className="alert alert-danger">{error}</div>}
+      {unavailable && (
+        <div className="alert alert-warning">
+          Manual production deployment is disabled in this environment.
+        </div>
+      )}
+      <div className="row g-3 mb-3">
+        <div className="col-md-3">
+          <div className="text-muted small">Environment</div>
+          <div className="fw-semibold">{deployment?.environment || '-'}</div>
+        </div>
+        <div className="col-md-3">
+          <div className="text-muted small">Running Commit</div>
+          <div className="fw-semibold font-monospace">{deployment?.current?.short || '-'}</div>
+        </div>
+        <div className="col-md-3">
+          <div className="text-muted small">Deployed Commit</div>
+          <div className="fw-semibold font-monospace">{deployment?.deployed?.short || '-'}</div>
+        </div>
+        <div className="col-md-3">
+          <div className="text-muted small">Status</div>
+          <span className={`badge ${deployStateClass(status.state)}`}>{status.state || 'unknown'}</span>
+        </div>
+      </div>
+      {status.message && <div className="text-muted small mb-3">{status.message}</div>}
+      {status.logPath && <div className="text-muted small mb-3 font-monospace">{status.logPath}</div>}
+      <div className="alert alert-info">
+        Selecting an older commit can remove UI changes added after that commit. Use the one-line production updater if a downgrade removes this screen.
+      </div>
+      <div className="table-responsive">
+        <table className="table card-table table-vcenter">
+          <thead>
+            <tr>
+              <th>Commit</th>
+              <th>Message</th>
+              <th>Author</th>
+              <th>Date</th>
+              <th>Status</th>
+              <th className="text-end">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {commits.map((commit) => {
+              const isActive = activeCommit && commit.commit === activeCommit;
+              const isLatest = latestCommit && commit.commit === latestCommit;
+              const actionLabel = isActive ? 'Current' : isLatest ? 'Upgrade' : 'Deploy';
+              return (
+                <tr key={commit.commit}>
+                  <td className="font-monospace">{commit.short || commit.commit.slice(0, 7)}</td>
+                  <td>{commit.subject || '-'}</td>
+                  <td>{commit.author || '-'}</td>
+                  <td className="text-muted small">{formatDateTime(commit.committedAt)}</td>
+                  <td>
+                    {isActive && <span className="badge bg-green-lt text-green">CURRENT</span>}
+                    {!isActive && isLatest && <span className="badge bg-blue-lt text-blue">LATEST</span>}
+                    {!isActive && !isLatest && <span className="badge bg-yellow-lt text-yellow">OLDER</span>}
+                  </td>
+                  <td className="text-end">
+                    <button
+                      className="btn btn-sm btn-primary"
+                      type="button"
+                      disabled={!deployment?.enabled || isActive || running || pending || busyCommit === commit.commit}
+                      onClick={() => deployCommit(commit)}
+                    >
+                      <IconPlayerPlay size={16} className="me-1" />{busyCommit === commit.commit ? 'Queueing...' : actionLabel}
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+            {!commits.length && (
+              <tr>
+                <td colSpan="6" className="text-center text-muted py-4">No master commits available from the deploy worker yet.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div className="text-muted small mt-3">
+        Commit list updated {formatDateTime(deployment?.commitListUpdatedAt)}.
+      </div>
+    </Card>
+  );
+}
+
 const DEFAULT_OPENAI_TEST_PROMPT = 'Reply with one short sentence confirming this OpenAI API key works for 3J ISP Management.';
 
 const OPENAI_REASONING_FALLBACK_LABELS = {
@@ -2602,6 +2755,7 @@ const blankUser = {
   id: '',
   username: '',
   email: '',
+  contact: '',
   fullName: '',
   roleId: '',
   password: '',
@@ -2794,6 +2948,7 @@ function AccessTab() {
       id: user.id,
       username: user.username || '',
       email: user.email || '',
+      contact: user.contact || '',
       fullName: user.fullName || '',
       roleId: user.roleId || access.roles?.[0]?.id || '',
       password: '',
@@ -3030,6 +3185,7 @@ function AccessTab() {
                         <div className="fw-semibold">{user.username}</div>
                         <div className="text-muted small">{user.fullName || '-'}</div>
                         <div className="text-muted small">{user.email || '-'}</div>
+                        <div className="text-muted small">{user.contact || '-'}</div>
                       </td>
                       <td>{user.roleName || '-'}</td>
                       <td><span className={`badge ${user.isActive ? 'bg-green-lt text-green' : 'bg-yellow-lt text-yellow'}`}>{user.isActive ? 'ACTIVE' : 'INACTIVE'}</span></td>
@@ -3088,6 +3244,10 @@ function AccessTab() {
               <div className="col-md-4">
                 <label className="form-label">Email</label>
                 <input className="form-control" type="email" value={userForm.email} onChange={(event) => setUserForm({ ...userForm, email: event.target.value })} />
+              </div>
+              <div className="col-md-4">
+                <label className="form-label">Contact</label>
+                <input className="form-control" value={userForm.contact} onChange={(event) => setUserForm({ ...userForm, contact: event.target.value })} />
               </div>
               <div className="col-md-4">
                 <label className="form-label">Full Name</label>
@@ -3227,9 +3387,16 @@ export default function SystemSettingsPage({ refreshShell }) {
         </Card>
       )}
       {tab === 'Runtime' && (
-        <Card title="Runtime Paths" icon={IconDatabase}>
-          <Table rows={[settings.deployment]} columns={['environment', 'main_repo', 'worktrees']} />
-        </Card>
+        <div className="row row-cards">
+          <div className="col-12">
+            <DeploymentControlTab />
+          </div>
+          <div className="col-12">
+            <Card title="Runtime Paths" icon={IconDatabase}>
+              <Table rows={[settings.deployment]} columns={['environment', 'main_repo', 'worktrees']} />
+            </Card>
+          </div>
+        </div>
       )}
     </div>
   );

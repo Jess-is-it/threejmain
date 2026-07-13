@@ -282,15 +282,19 @@ Production deployment commands:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Jess-is-it/threejmain/master/scripts/production_bootstrap.sh | sudo bash
 scripts/install_production_autodeploy.sh
+scripts/install_production_deploy_control.sh
 scripts/production_auto_deploy.sh --once
 scripts/production_deploy.sh
 scripts/staging_deploy.sh
 systemctl status threejmain-production-auto-deploy.service
+systemctl status threejmain-production-deploy-control.service
 docker compose --project-name threejmain-production -f /home/threejmain-production/docker-compose.yml ps
 docker compose --project-name threejmain-staging -f /home/threejmain/docker-compose.yml ps
 ```
 
-`scripts/production_bootstrap.sh` is the preferred fresh production server installer and manual updater. It is idempotent: first run prompts through `/dev/tty` for production owner username, email, contact number, and password, installs base packages and Docker, clones `origin/master` into `/home/threejmain`, creates `/home/threejmain/.env` with owner login values plus generated database credentials, and deploys the `threejmain-production` Compose project; later runs preserve `.env` and Docker volumes, fast-forward the source checkout, and redeploy the latest `origin/master`. Non-interactive installs can set `THREEJMAIN_OWNER_USERNAME`, `THREEJMAIN_OWNER_EMAIL`, `THREEJMAIN_OWNER_CONTACT`, and `THREEJMAIN_OWNER_PASSWORD`. `scripts/production_deploy.sh` loads `/home/threejmain/.env` by default, or `THREEJMAIN_PROD_ENV_FILE` when set.
+`scripts/production_bootstrap.sh` is the preferred fresh production server installer and manual updater. It is idempotent: first run prompts through `/dev/tty` for production owner username, email, contact number, and password, installs base packages and Docker, clones `origin/master` into `/home/threejmain`, creates `/home/threejmain/.env` with owner login values plus generated database credentials, deploys the `threejmain-production` Compose project, and installs `threejmain-production-deploy-control.service`; later runs preserve `.env` and Docker volumes, fast-forward the source checkout, and redeploy the latest `origin/master`. Non-interactive installs can set `THREEJMAIN_OWNER_USERNAME`, `THREEJMAIN_OWNER_EMAIL`, `THREEJMAIN_OWNER_CONTACT`, and `THREEJMAIN_OWNER_PASSWORD`. `scripts/production_deploy.sh` loads `/home/threejmain/.env` by default, or `THREEJMAIN_PROD_ENV_FILE` when set.
+
+Manual production deployment is exposed in System Settings -> Runtime. The API reads/writes deployment control JSON under `/app/data/deploy-control` in the production API data volume. The host-side `scripts/production_deploy_control_worker.sh` refreshes the latest 10 commits from `origin/master`, processes queued commit requests, and runs `scripts/production_deploy.sh` with `THREEJMAIN_PROD_COMMIT=<selected-commit>`. `scripts/install_production_deploy_control.sh` installs the worker and disables the old `threejmain-production-auto-deploy.service` so manual rollback is not immediately overwritten by the latest `master`.
 
 `master` remains the production branch. Production releases should still merge `staging` into `master` through a Pull Request; the watcher updates production after `master` moves. Remaining hardening work: production secrets, non-default admin credentials, domain/TLS/reverse-proxy, backup/restore automation, and durable PostgreSQL persistence for modules beyond Customer Profiling, Billing, and Service.
 

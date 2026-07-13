@@ -43,6 +43,7 @@ PROD_DIR="${THREEJMAIN_PROD_DIR:-/home/threejmain-production}"
 STATE_DIR="${THREEJMAIN_PROD_STATE_DIR:-/var/lib/threejmain-production}"
 REMOTE="${THREEJMAIN_PROD_REMOTE:-origin}"
 BRANCH="${THREEJMAIN_PROD_BRANCH:-master}"
+TARGET_COMMIT_OVERRIDE="${THREEJMAIN_PROD_COMMIT:-}"
 COMPOSE_PROJECT="${THREEJMAIN_PROD_COMPOSE_PROJECT:-threejmain-production}"
 STOP_PROJECT="${THREEJMAIN_PROD_STOP_PROJECT:-threejmain}"
 DEPLOY_LOCK="${THREEJMAIN_PROD_DEPLOY_LOCK:-/tmp/threejmain-production-deploy.lock}"
@@ -65,7 +66,16 @@ fi
 
 log "Fetching $REMOTE/$BRANCH from $SOURCE_REPO"
 git -C "$SOURCE_REPO" fetch --prune "$REMOTE" "+refs/heads/$BRANCH:refs/remotes/$REMOTE/$BRANCH"
-TARGET_COMMIT="$(git -C "$SOURCE_REPO" rev-parse "$REMOTE/$BRANCH^{commit}")"
+
+if [[ -n "$TARGET_COMMIT_OVERRIDE" ]]; then
+  [[ "$TARGET_COMMIT_OVERRIDE" =~ ^[0-9a-fA-F]{7,40}$ ]] || fail "THREEJMAIN_PROD_COMMIT must be a 7-40 character commit hash"
+  TARGET_COMMIT="$(git -C "$SOURCE_REPO" rev-parse "$TARGET_COMMIT_OVERRIDE^{commit}")"
+  if ! git -C "$SOURCE_REPO" merge-base --is-ancestor "$TARGET_COMMIT" "$REMOTE/$BRANCH"; then
+    fail "target commit $TARGET_COMMIT is not in $REMOTE/$BRANCH history"
+  fi
+else
+  TARGET_COMMIT="$(git -C "$SOURCE_REPO" rev-parse "$REMOTE/$BRANCH^{commit}")"
+fi
 SHORT_TARGET="$(git -C "$SOURCE_REPO" rev-parse --short "$TARGET_COMMIT")"
 
 export APP_ENV="${APP_ENV:-production}"
@@ -138,6 +148,7 @@ wait_for_url "http://127.0.0.1:${API_PORT:-8100}/health" "API" || fail "API heal
 wait_for_head "http://127.0.0.1:${WEB_PORT:-8180}/" "Web" || fail "web health check failed"
 
 printf '%s\n' "$TARGET_COMMIT" > "$STATE_DIR/deployed-master"
+printf '%s\n' "$REMOTE/$BRANCH" > "$STATE_DIR/deployed-ref"
 date -Is > "$STATE_DIR/deployed-at"
 
 log "Production deploy complete at $SHORT_TARGET"

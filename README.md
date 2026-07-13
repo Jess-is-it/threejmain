@@ -60,7 +60,7 @@ On a fresh Ubuntu production server, run this one command:
 curl -fsSL https://raw.githubusercontent.com/Jess-is-it/threejmain/master/scripts/production_bootstrap.sh | sudo bash
 ```
 
-Use the same command later to update production from the latest `origin/master`. The first run prompts for the production owner username, email, contact number, and password; installs Docker; clones the repo into `/home/threejmain`; creates a fresh production `.env`; and deploys the production Docker Compose stack at:
+Use the same command later to update production from the latest `origin/master`. The first run prompts for the production owner username, email, contact number, and password; installs Docker; clones the repo into `/home/threejmain`; creates a fresh production `.env`; deploys the production Docker Compose stack; and installs the manual deploy control worker used by System Settings.
 
 ```text
 Web: http://SERVER_IP:8180/
@@ -68,5 +68,7 @@ API: http://SERVER_IP:8100/
 ```
 
 The owner login and generated database password are stored in `/home/threejmain/.env`. Later runs preserve this file and reuse the same production data volumes.
+
+Production owners can also update or roll back from `System Settings -> Runtime -> Production Deployment`, which lists the latest 10 commits from `master`.
 
 Read `Project_Context.md` before making project changes.
