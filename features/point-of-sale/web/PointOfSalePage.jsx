@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   IconArrowsExchange2,
+  IconAlertTriangle,
   IconCash,
+  IconCircleCheck,
   IconCreditCard,
   IconFileInvoice,
   IconPackage,
@@ -38,6 +40,11 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function newIdempotencyKey(scope) {
+  const randomValue = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${scope}:${randomValue}`;
+}
+
 function currency(value) {
   return new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP' }).format(Number(value || 0));
 }
@@ -64,12 +71,23 @@ function customerLabel(customer) {
   return `${customer.accountNumber || 'NO-ACCOUNT'} - ${customer.name || 'Unnamed customer'}`;
 }
 
+function customerNameOnly(customer) {
+  if (!customer) return 'Walk-in';
+  const firstLast = [customer.firstName || customer.first_name, customer.lastName || customer.last_name].filter(Boolean).join(' ').trim();
+  return firstLast || customer.fullName || customer.name || customer.displayName || 'Unnamed customer';
+}
+
 function saleUserLabel(sale) {
   return sale.cashierName || sale.cashierUsername || 'POS user';
 }
 
 function invoiceServiceLabel(invoice) {
   return invoice?.serviceId || invoice?.serviceAccountNumber || invoice?.catalogName || invoice?.lineItems?.[0]?.description || 'Billing invoice';
+}
+
+function paymentPromotionLabel(promotion) {
+  const code = promotion?.promoCode ? `${promotion.promoCode} - ` : '';
+  return `${code}${promotion?.name || 'Promotion'} (${currency(promotion?.discountAmountForInvoice)} off)`;
 }
 
 function isPayableInvoice(invoice) {
@@ -92,6 +110,18 @@ function matchesHistorySearch(search, fields) {
   const needle = String(search || '').trim().toLowerCase();
   if (!needle) return true;
   return fields.some((field) => String(field ?? '').toLowerCase().includes(needle));
+}
+
+function invoiceMatchesSearch(invoice, search) {
+  return matchesHistorySearch(search, [
+    invoice.invoiceNumber,
+    invoiceServiceLabel(invoice),
+    customerNameOnly(invoice.customer),
+    customerLabel(invoice.customer),
+    invoice.status,
+    invoice.balance,
+    invoice.dueDate
+  ]);
 }
 
 function uniqueOptions(values) {
@@ -229,7 +259,6 @@ const blankSale = {
   saleDate: today(),
   lineItems: [blankSaleLine],
   discountAmount: '0',
-  taxAmount: '0',
   status: 'COMPLETED',
   paymentAmount: '',
   paymentMethod: 'CASH',
@@ -249,6 +278,7 @@ const blankInvoicePayment = {
   amount: '',
   method: 'CASH',
   paymentDate: today(),
+  promotionId: '',
   referenceNumber: '',
   notes: ''
 };
@@ -274,6 +304,7 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
   const [sales, setSales] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [customerSearch, setCustomerSearch] = useState('');
+  const [customerSearchOpen, setCustomerSearchOpen] = useState(false);
   const [itemSearch, setItemSearch] = useState('');
   const [officeItems, setOfficeItems] = useState([]);
   const [officeSearch, setOfficeSearch] = useState('');
@@ -284,13 +315,16 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
   const [billingMeta, setBillingMeta] = useState({ paymentMethods: [] });
   const [billingInvoices, setBillingInvoices] = useState([]);
   const [billingPayments, setBillingPayments] = useState([]);
+  const [eligibleBillingPromotions, setEligibleBillingPromotions] = useState([]);
   const [billingSearch, setBillingSearch] = useState('');
   const [selectedBillingInvoiceId, setSelectedBillingInvoiceId] = useState('');
   const [invoicePaymentForm, setInvoicePaymentForm] = useState(blankInvoicePayment);
+  const [invoicePaymentIdempotencyKey, setInvoicePaymentIdempotencyKey] = useState(() => newIdempotencyKey('billing-payment'));
   const [itemForm, setItemForm] = useState(blankItem);
   const [saleForm, setSaleForm] = useState(blankSale);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [checkoutNotice, setCheckoutNotice] = useState(null);
   const [showLowStockPanel, setShowLowStockPanel] = useState(false);
   const [salesHistoryTab, setSalesHistoryTab] = useState('Register');
   const [historyControls, setHistoryControls] = useState(historyControlDefaults);
@@ -300,18 +334,28 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
   const cartLines = useMemo(() => saleForm.lineItems.filter((line) => line.itemId || line.description), [saleForm.lineItems]);
   const officeCartLines = useMemo(() => officeCart.filter((line) => line.itemId), [officeCart]);
   const payableBillingInvoices = useMemo(() => billingInvoices.filter(isPayableInvoice), [billingInvoices]);
+  const visiblePayableBillingInvoices = useMemo(() => (
+    payableBillingInvoices.filter((invoice) => invoiceMatchesSearch(invoice, billingSearch))
+  ), [payableBillingInvoices, billingSearch]);
   const selectedBillingInvoice = useMemo(() => billingInvoices.find((invoice) => invoice.id === selectedBillingInvoiceId), [billingInvoices, selectedBillingInvoiceId]);
+  const selectedBillingPromotion = useMemo(() => (
+    eligibleBillingPromotions.find((promotion) => promotion.id === invoicePaymentForm.promotionId)
+  ), [eligibleBillingPromotions, invoicePaymentForm.promotionId]);
+  const selectedInvoiceBalance = Number(selectedBillingInvoice?.balance || 0);
+  const selectedPromotionDiscount = selectedBillingPromotion ? Number(selectedBillingPromotion.discountAmountForInvoice || 0) : 0;
+  const selectedPromotionPayable = selectedBillingPromotion ? Number(selectedBillingPromotion.discountedPayable || 0) : selectedInvoiceBalance;
+  const selectedInvoiceRemaining = Math.max(0, selectedInvoiceBalance - selectedPromotionDiscount - Number(invoicePaymentForm.amount || 0));
   const billingPaymentMethods = useMemo(() => (
     billingMeta.paymentMethods?.length ? billingMeta.paymentMethods : (meta.paymentMethods?.length ? meta.paymentMethods : ['CASH'])
   ), [billingMeta.paymentMethods, meta.paymentMethods]);
   const billingPaymentMetrics = useMemo(() => ({
-    openInvoices: payableBillingInvoices.length,
-    outstanding: payableBillingInvoices.reduce((sum, invoice) => sum + Number(invoice.balance || 0), 0),
-    overdue: payableBillingInvoices.filter(isInvoiceOverdue).length,
+    openInvoices: visiblePayableBillingInvoices.length,
+    outstanding: visiblePayableBillingInvoices.reduce((sum, invoice) => sum + Number(invoice.balance || 0), 0),
+    overdue: visiblePayableBillingInvoices.filter(isInvoiceOverdue).length,
     collectedToday: billingPayments
       .filter((payment) => payment.status === 'POSTED' && payment.paymentDate === today())
       .reduce((sum, payment) => sum + Number(payment.amount || 0), 0)
-  }), [payableBillingInvoices, billingPayments]);
+  }), [visiblePayableBillingInvoices, billingPayments]);
   const registerHistoryRows = useMemo(() => (
     sales.filter((sale) => {
       const control = historyControls.register;
@@ -338,6 +382,7 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
       return statusMatches && matchesHistorySearch(control.search, [
         payment.receiptNumber,
         payment.invoiceNumber,
+        customerNameOnly(payment.customer),
         customerLabel(payment.customer),
         payment.method,
         payment.referenceNumber,
@@ -375,7 +420,11 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
     const amount = Number(line.quantity || 0) * Number(line.unitPrice || 0) - Number(line.discountAmount || 0);
     return sum + Math.max(0, amount);
   }, 0), [cartLines]);
-  const cartTotal = Math.max(0, cartSubtotal - Number(saleForm.discountAmount || 0) + Number(saleForm.taxAmount || 0));
+  const cartTotal = Math.max(0, cartSubtotal - Number(saleForm.discountAmount || 0));
+  const paymentAmount = Number(saleForm.paymentAmount || 0);
+  const paymentShortfall = Math.max(0, cartTotal - paymentAmount);
+  const cashChange = Math.max(0, paymentAmount - cartTotal);
+  const isCashPayment = String(saleForm.paymentMethod || '').toUpperCase() === 'CASH';
 
   async function load(search = customerSearch, itemTerm = itemSearch) {
     setError('');
@@ -392,6 +441,16 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
       setCustomers(nextCustomers);
       setItems(nextItems);
       setSales(nextSales);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function loadCustomers(search = customerSearch) {
+    setError('');
+    try {
+      const nextCustomers = await request(`/point-of-sale/customers?search=${encodeURIComponent(search)}`);
+      setCustomers(nextCustomers);
     } catch (err) {
       setError(err.message);
     }
@@ -423,6 +482,17 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
     }
   }
 
+  async function loadEligibleBillingPromotions(invoiceId, paymentDate = today()) {
+    if (!invoiceId) {
+      setEligibleBillingPromotions([]);
+      return { promotions: [], recommendedPromotionId: '' };
+    }
+    const result = await request(`/billing/invoices/${invoiceId}/eligible-promotions?paymentDate=${encodeURIComponent(paymentDate)}`);
+    const rows = result.promotions || [];
+    setEligibleBillingPromotions(rows);
+    return { promotions: rows, recommendedPromotionId: result.recommendedPromotionId || '' };
+  }
+
   async function loadOfficeMovements() {
     setError('');
     try {
@@ -439,6 +509,20 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
     loadBillingPayments();
     loadOfficeMovements();
   }, []);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      loadCustomers(customerSearch);
+    }, 250);
+    return () => window.clearTimeout(timeout);
+  }, [customerSearch]);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      loadBillingPayments(billingSearch);
+    }, 250);
+    return () => window.clearTimeout(timeout);
+  }, [billingSearch]);
 
   function updateHistoryControl(key, patch) {
     setHistoryControls((current) => ({
@@ -457,6 +541,46 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
         <option value="">Walk-in customer</option>
         {customers.map((customer) => <option key={customer.id} value={customer.id}>{customerLabel(customer)}</option>)}
       </>
+    );
+  }
+
+  function selectSaleCustomer(customer) {
+    setSaleForm({ ...saleForm, customerId: customer?.id || '' });
+    setCustomerSearch(customer ? customerLabel(customer) : '');
+    setCustomerSearchOpen(false);
+  }
+
+  function showCheckoutFailure(messageText) {
+    setError(messageText);
+    setCheckoutNotice({
+      type: 'error',
+      title: 'Checkout not completed',
+      message: messageText,
+      detail: 'Review the cart and payment details, then click Complete Checkout again.'
+    });
+  }
+
+  function customerSearchResults() {
+    if (!customerSearchOpen || !customerSearch.trim()) return null;
+    return (
+      <div className="pos-customer-suggestions">
+        {customers.length ? customers.map((customer) => (
+          <button
+            type="button"
+            className="pos-customer-option"
+            key={customer.id}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              selectSaleCustomer(customer);
+            }}
+          >
+            <strong>{customerLabel(customer)}</strong>
+            <span>{[customer.barangay, customer.city, customer.province].filter(Boolean).join(', ') || 'Customer profile'}</span>
+          </button>
+        )) : (
+          <div className="pos-customer-empty">No matching customers.</div>
+        )}
+      </div>
     );
   }
 
@@ -581,19 +705,64 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
   }
 
   function selectBillingInvoice(invoice) {
+    const paymentDate = today();
     setSelectedBillingInvoiceId(invoice.id);
+    setInvoicePaymentIdempotencyKey(newIdempotencyKey('billing-payment'));
+    setEligibleBillingPromotions([]);
     setInvoicePaymentForm({
       ...blankInvoicePayment,
       invoiceId: invoice.id,
       amount: String(invoice.balance || ''),
-      method: invoicePaymentForm.method || 'CASH'
+      method: invoicePaymentForm.method || 'CASH',
+      paymentDate
     });
     setError('');
+    loadEligibleBillingPromotions(invoice.id, paymentDate)
+      .then(({ promotions: rows, recommendedPromotionId }) => {
+        const recommended = rows.find((item) => item.id === recommendedPromotionId) || rows.find((item) => item.autoApply);
+        if (!recommended) return;
+        setInvoicePaymentForm((form) => (
+          form.invoiceId === invoice.id
+            ? { ...form, promotionId: recommended.id, amount: String(recommended.discountedPayable || '') }
+            : form
+        ));
+      })
+      .catch((err) => setError(err.message));
+  }
+
+  function applyBillingPromotion(promotionId, promotionRows = eligibleBillingPromotions) {
+    const promotion = promotionRows.find((item) => item.id === promotionId);
+    setInvoicePaymentForm((form) => ({
+      ...form,
+      promotionId,
+      amount: promotion ? String(promotion.discountedPayable || '') : String(selectedBillingInvoice?.balance || '')
+    }));
+  }
+
+  function changeInvoicePaymentDate(paymentDate) {
+    setInvoicePaymentForm((form) => ({ ...form, paymentDate }));
+    if (!selectedBillingInvoice) return;
+    loadEligibleBillingPromotions(selectedBillingInvoice.id, paymentDate)
+      .then(({ promotions: rows, recommendedPromotionId }) => {
+        setInvoicePaymentForm((form) => {
+          const promotion = form.promotionId ? rows.find((item) => item.id === form.promotionId) : null;
+          if (!promotion) {
+            const recommended = rows.find((item) => item.id === recommendedPromotionId) || rows.find((item) => item.autoApply);
+            return recommended
+              ? { ...form, promotionId: recommended.id, amount: String(recommended.discountedPayable || '') }
+              : { ...form, promotionId: '', amount: String(selectedBillingInvoice.balance || '') };
+          }
+          return { ...form, amount: String(promotion.discountedPayable || '') };
+        });
+      })
+      .catch((err) => setError(err.message));
   }
 
   function resetInvoicePayment() {
     setSelectedBillingInvoiceId('');
+    setEligibleBillingPromotions([]);
     setInvoicePaymentForm(blankInvoicePayment);
+    setInvoicePaymentIdempotencyKey(newIdempotencyKey('billing-payment'));
   }
 
   async function saveInvoicePayment(e) {
@@ -607,6 +776,10 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
       setError('Payment amount must be greater than zero.');
       return;
     }
+    if (selectedBillingPromotion && Number(amount.toFixed(2)) !== Number(selectedPromotionPayable.toFixed(2))) {
+      setError(`Payment amount must match the promo payable amount of ${currency(selectedPromotionPayable)}.`);
+      return;
+    }
     if (amount > Number(selectedBillingInvoice.balance || 0)) {
       setError('Payment amount cannot exceed the invoice balance.');
       return;
@@ -614,12 +787,14 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
     try {
       await request('/billing/payments', {
         method: 'POST',
+        headers: { 'Idempotency-Key': invoicePaymentIdempotencyKey },
         body: JSON.stringify({
           invoiceId: selectedBillingInvoice.id,
           amount,
           method: invoicePaymentForm.method,
           paymentDate: invoicePaymentForm.paymentDate,
           referenceNumber: invoicePaymentForm.referenceNumber,
+          promotionId: invoicePaymentForm.promotionId || null,
           collectionChannel: 'POS',
           status: 'POSTED',
           notes: invoicePaymentForm.notes || `Posted from POS for ${selectedBillingInvoice.invoiceNumber}`
@@ -729,11 +904,11 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
         discountAmount: Number(line.discountAmount || 0)
       })),
       discountAmount: Number(saleForm.discountAmount || 0),
-      taxAmount: Number(saleForm.taxAmount || 0),
+      taxAmount: 0,
       status: saleForm.status,
       notes: saleForm.notes,
-      payments: Number(saleForm.paymentAmount || 0) > 0 ? [{
-        amount: Number(saleForm.paymentAmount || 0),
+      payments: paymentAmount > 0 ? [{
+        amount: paymentAmount,
         method: saleForm.paymentMethod,
         paymentDate: saleForm.saleDate,
         referenceNumber: saleForm.paymentReference,
@@ -743,16 +918,44 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
   }
 
   async function saveSale(e) {
-    e.preventDefault();
+    e?.preventDefault?.();
     if (!cartLines.length) {
-      setError('Add at least one item to the cart.');
+      showCheckoutFailure('Add at least one item to the cart.');
       return;
     }
-    await request(saleForm.id ? `/point-of-sale/sales/${saleForm.id}` : '/point-of-sale/sales', {
-      method: saleForm.id ? 'PATCH' : 'POST',
-      body: JSON.stringify(salePayload())
+    if (cartTotal <= 0) {
+      showCheckoutFailure('Checkout total must be greater than zero.');
+      return;
+    }
+    if (paymentAmount <= 0) {
+      showCheckoutFailure('Payment amount is required before completing checkout.');
+      return;
+    }
+    if (paymentAmount + 0.001 < cartTotal) {
+      showCheckoutFailure('Payment amount must cover the checkout total.');
+      return;
+    }
+    setError('');
+    setCheckoutNotice(null);
+    let postedSale;
+    try {
+      postedSale = await request(saleForm.id ? `/point-of-sale/sales/${saleForm.id}` : '/point-of-sale/sales', {
+        method: saleForm.id ? 'PATCH' : 'POST',
+        body: JSON.stringify(salePayload())
+      });
+    } catch (err) {
+      showCheckoutFailure(err.message || 'Checkout failed. No sale was posted.');
+      return;
+    }
+    const receiptNumber = postedSale.receiptNumber || postedSale.saleNumber || 'receipt';
+    const successMessage = saleForm.id ? 'Sale saved.' : 'Sale posted.';
+    setMessage(successMessage);
+    setCheckoutNotice({
+      type: 'success',
+      title: 'Checkout completed',
+      message: `${receiptNumber} was posted successfully.`,
+      detail: `${currency(postedSale.total || cartTotal)} collected by ${labelize(saleForm.paymentMethod)}.`
     });
-    setMessage(saleForm.id ? 'Sale saved.' : 'Sale posted.');
     resetSale();
     await load();
     refreshShell();
@@ -775,8 +978,21 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
 
   return (
     <div className="pos-page">
-      {message && <div className="alert alert-info">{message}</div>}
-      {error && <div className="alert alert-danger">{error}</div>}
+      {checkoutNotice && (
+        <div className={`pos-checkout-popup pos-checkout-popup-${checkoutNotice.type}`} role="alert" aria-live="assertive">
+          <div className="pos-checkout-popup-icon" aria-hidden="true">
+            {checkoutNotice.type === 'success' ? <IconCircleCheck size={26} /> : <IconAlertTriangle size={26} />}
+          </div>
+          <div className="pos-checkout-popup-copy">
+            <strong>{checkoutNotice.title}</strong>
+            <span>{checkoutNotice.message}</span>
+            {checkoutNotice.detail && <small>{checkoutNotice.detail}</small>}
+          </div>
+          <button type="button" className="btn btn-icon btn-sm" onClick={() => setCheckoutNotice(null)} aria-label="Close checkout notification">
+            <IconX size={16} />
+          </button>
+        </div>
+      )}
 
       <ul className="nav nav-tabs mb-3">
         {['Register', 'Invoice Payments', 'Office Stock', 'Sales', 'Catalog'].map((tab) => (
@@ -818,14 +1034,33 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
           </Card>
 
           <Card title="Cart" icon={IconReceipt}>
-            <form onSubmit={saveSale}>
+            <form onSubmit={(e) => e.preventDefault()}>
               <div className="row g-3">
                 <div className="col-md-6"><TextField label="Sale Date" type="date" value={saleForm.saleDate} onChange={(value) => setSaleForm({ ...saleForm, saleDate: value })} /></div>
                 <div className="col-12">
                   <div className="d-flex gap-2">
-                    <select className="form-select" value={saleForm.customerId} onChange={(e) => setSaleForm({ ...saleForm, customerId: e.target.value })}>{customerOptions()}</select>
-                    <input className="form-control" value={customerSearch} onChange={(e) => setCustomerSearch(e.target.value)} placeholder="Search customers" />
-                    <button type="button" className="btn" onClick={() => load(customerSearch, itemSearch)}><IconSearch size={16} /></button>
+                    <select
+                      className="form-select"
+                      value={saleForm.customerId}
+                      onChange={(e) => selectSaleCustomer(customers.find((customer) => customer.id === e.target.value) || null)}
+                    >
+                      {customerOptions()}
+                    </select>
+                    <div className="pos-customer-picker">
+                      <input
+                        className="form-control"
+                        value={customerSearch}
+                        onChange={(e) => {
+                          setCustomerSearch(e.target.value);
+                          setCustomerSearchOpen(true);
+                        }}
+                        onFocus={() => setCustomerSearchOpen(true)}
+                        onBlur={() => window.setTimeout(() => setCustomerSearchOpen(false), 120)}
+                        placeholder="Search customers"
+                      />
+                      {customerSearchResults()}
+                    </div>
+                    <button type="button" className="btn" onClick={() => { setCustomerSearchOpen(true); loadCustomers(customerSearch); }}><IconSearch size={16} /></button>
                   </div>
                 </div>
                 <div className="col-12">
@@ -849,20 +1084,35 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                     {!cartLines.length && <div className="empty">Add items from the checkout menu.</div>}
                   </div>
                 </div>
-                <div className="col-6"><TextField label="Discount" type="number" min="0" step="0.01" value={saleForm.discountAmount} onChange={(value) => setSaleForm({ ...saleForm, discountAmount: value })} /></div>
-                <div className="col-6"><TextField label="Tax" type="number" min="0" step="0.01" value={saleForm.taxAmount} onChange={(value) => setSaleForm({ ...saleForm, taxAmount: value })} /></div>
-                <div className="col-md-4"><TextField label="Payment" type="number" min="0" step="0.01" value={saleForm.paymentAmount} onChange={(value) => setSaleForm({ ...saleForm, paymentAmount: value })} /></div>
+                <div className="col-md-4"><TextField label="Discount" type="number" min="0" step="0.01" value={saleForm.discountAmount} onChange={(value) => setSaleForm({ ...saleForm, discountAmount: value })} /></div>
+                <div className="col-md-4"><TextField label="Payment" type="number" min="0.01" step="0.01" required value={saleForm.paymentAmount} onChange={(value) => setSaleForm({ ...saleForm, paymentAmount: value })} /></div>
                 <div className="col-md-4"><SelectField label="Method" value={saleForm.paymentMethod} options={meta.paymentMethods} onChange={(value) => setSaleForm({ ...saleForm, paymentMethod: value })} /></div>
-                <div className="col-md-4"><TextField label="Reference" value={saleForm.paymentReference} onChange={(value) => setSaleForm({ ...saleForm, paymentReference: value })} /></div>
+                <div className="col-12"><TextField label="Reference" value={saleForm.paymentReference} onChange={(value) => setSaleForm({ ...saleForm, paymentReference: value })} /></div>
                 <div className="col-12">
-                  <div className="pos-total-panel">
-                    <span>Subtotal {currency(cartSubtotal)}</span>
-                    <strong>Total {currency(cartTotal)}</strong>
+                  <div className="pos-total-panel pos-checkout-summary">
+                    <div>
+                      <span>Subtotal</span>
+                      <strong>{currency(cartSubtotal)}</strong>
+                    </div>
+                    <div>
+                      <span>Discount</span>
+                      <strong>{currency(saleForm.discountAmount)}</strong>
+                    </div>
+                    <div>
+                      <span>Total due</span>
+                      <strong>{currency(cartTotal)}</strong>
+                    </div>
+                    <div>
+                      <span>{isCashPayment ? 'Change' : 'Remaining due'}</span>
+                      <strong className={paymentShortfall > 0 ? 'text-danger' : 'text-green'}>
+                        {currency(isCashPayment ? cashChange : paymentShortfall)}
+                      </strong>
+                    </div>
                   </div>
                 </div>
                 <div className="col-12 d-flex justify-content-between gap-2">
                   <button type="button" className="btn" onClick={resetSale}>Clear</button>
-                  <button className="btn btn-primary"><IconReceipt size={18} className="me-2" />Complete Checkout</button>
+                  <button type="button" className="btn btn-primary" onClick={saveSale}><IconReceipt size={18} className="me-2" />Complete Checkout</button>
                 </div>
               </div>
             </form>
@@ -921,13 +1171,13 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                   <table className="table card-table table-vcenter pos-invoice-table">
                     <thead><tr><th>Invoice</th><th>Customer</th><th>Due</th><th>Balance</th><th>Status</th><th /></tr></thead>
                     <tbody>
-                      {payableBillingInvoices.map((invoice) => (
+                      {visiblePayableBillingInvoices.map((invoice) => (
                         <tr key={invoice.id} className={selectedBillingInvoiceId === invoice.id ? 'is-selected' : ''}>
                           <td>
                             <strong>{invoice.invoiceNumber}</strong>
                             <div className="text-muted small">{invoiceServiceLabel(invoice)}</div>
                           </td>
-                          <td>{customerLabel(invoice.customer)}</td>
+                          <td>{customerNameOnly(invoice.customer)}</td>
                           <td className={isInvoiceOverdue(invoice) ? 'text-danger' : ''}>{invoice.dueDate}</td>
                           <td>{currency(invoice.balance)}</td>
                           <td><span className={`badge ${statusClass(invoice.status)}`}>{invoice.status?.replaceAll('_', ' ')}</span></td>
@@ -936,7 +1186,7 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                           </td>
                         </tr>
                       ))}
-                      {!payableBillingInvoices.length && <tr><td colSpan="6" className="text-muted">No payable invoices.</td></tr>}
+                      {!visiblePayableBillingInvoices.length && <tr><td colSpan="6" className="text-muted">No payable invoices.</td></tr>}
                     </tbody>
                   </table>
                 </div>
@@ -952,7 +1202,7 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                       </div>
                       <div>
                         <span>Customer</span>
-                        <strong>{customerLabel(selectedBillingInvoice.customer)}</strong>
+                        <strong>{customerNameOnly(selectedBillingInvoice.customer)}</strong>
                       </div>
                       <div>
                         <span>Service</span>
@@ -964,18 +1214,46 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                       </div>
                     </div>
                     <div className="row g-3 mt-1">
-                      <div className="col-md-6"><TextField label="Payment Date" type="date" value={invoicePaymentForm.paymentDate} required onChange={(paymentDate) => setInvoicePaymentForm({ ...invoicePaymentForm, paymentDate })} /></div>
+                      <div className="col-md-6"><TextField label="Payment Date" type="date" value={invoicePaymentForm.paymentDate} required onChange={changeInvoicePaymentDate} /></div>
                       <div className="col-md-6"><SelectField label="Method" value={invoicePaymentForm.method} options={billingPaymentMethods} onChange={(method) => setInvoicePaymentForm({ ...invoicePaymentForm, method })} /></div>
-                      <div className="col-md-6"><TextField label="Amount" type="number" min="0.01" max={selectedBillingInvoice.balance} step="0.01" value={invoicePaymentForm.amount} required onChange={(amount) => setInvoicePaymentForm({ ...invoicePaymentForm, amount })} /></div>
+                      <div className="col-md-6">
+                        <SelectField label="Promotion" value={invoicePaymentForm.promotionId} onChange={applyBillingPromotion}>
+                          <option value="">No promotion</option>
+                          {eligibleBillingPromotions.map((promotion) => (
+                            <option key={promotion.id} value={promotion.id}>{paymentPromotionLabel(promotion)}</option>
+                          ))}
+                        </SelectField>
+                      </div>
+                      <div className="col-md-6"><TextField label={selectedBillingPromotion ? 'Amount to Collect' : 'Amount'} type="number" min="0.01" max={selectedPromotionPayable || selectedBillingInvoice.balance} step="0.01" value={invoicePaymentForm.amount} required onChange={(amount) => setInvoicePaymentForm({ ...invoicePaymentForm, amount })} /></div>
                       <div className="col-md-6"><TextField label="Reference" value={invoicePaymentForm.referenceNumber} onChange={(referenceNumber) => setInvoicePaymentForm({ ...invoicePaymentForm, referenceNumber })} /></div>
+                      {selectedBillingPromotion && (
+                        <div className="col-12">
+                          <div className="pos-promo-note">
+                            <strong>{selectedBillingPromotion.name}</strong>
+                            <span>{currency(selectedPromotionDiscount)} discount applied to this payment.</span>
+                          </div>
+                        </div>
+                      )}
                       <div className="col-12">
                         <label className="form-label">Notes</label>
                         <textarea className="form-control" rows="3" value={invoicePaymentForm.notes} onChange={(e) => setInvoicePaymentForm({ ...invoicePaymentForm, notes: e.target.value })} />
                       </div>
                       <div className="col-12">
-                        <div className="pos-total-panel">
-                          <span>Remaining after payment</span>
-                          <strong>{currency(Math.max(0, Number(selectedBillingInvoice.balance || 0) - Number(invoicePaymentForm.amount || 0)))}</strong>
+                        <div className="pos-total-panel pos-payment-totals">
+                          <div>
+                            <span>Invoice balance</span>
+                            <strong>{currency(selectedInvoiceBalance)}</strong>
+                          </div>
+                          {selectedBillingPromotion && (
+                            <div>
+                              <span>Promo discount</span>
+                              <strong>-{currency(selectedPromotionDiscount)}</strong>
+                            </div>
+                          )}
+                          <div>
+                            <span>Remaining after payment</span>
+                            <strong>{currency(selectedInvoiceRemaining)}</strong>
+                          </div>
                         </div>
                       </div>
                       <div className="col-12 d-flex justify-content-between gap-2">
@@ -1230,7 +1508,7 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                         {invoicePaymentHistory.rows.map((payment) => (
                           <tr key={payment.id}>
                             <td>{payment.receiptNumber}</td>
-                            <td>{customerLabel(payment.customer)}</td>
+                            <td>{customerNameOnly(payment.customer)}</td>
                             <td>{payment.invoiceNumber || '-'}</td>
                             <td>{labelize(payment.method)}</td>
                             <td>{labelize(payment.collectionChannel || 'Billing')}</td>
@@ -1238,7 +1516,9 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                             <td>{payment.postedByName || payment.postedByUsername || '-'}</td>
                             <td><span className={`badge ${statusClass(payment.status)}`}>{labelize(payment.status)}</span></td>
                             <td className="text-end">
-                              <button type="button" className="btn btn-sm text-danger" onClick={() => voidBillingPayment(payment)}>Void</button>
+                              {payment.status === 'POSTED' && (
+                                <button type="button" className="btn btn-sm text-danger" onClick={() => voidBillingPayment(payment)}>Void</button>
+                              )}
                             </td>
                           </tr>
                         ))}
