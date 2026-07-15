@@ -1,3 +1,5 @@
+import logging
+import os
 from datetime import date, datetime, timezone
 from typing import Any, Callable
 from uuid import uuid4
@@ -5,12 +7,27 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+    from psycopg.types.json import Json
+except Exception:  # pragma: no cover - keeps local syntax checks independent of optional deps.
+    psycopg = None
+    dict_row = None
+    Json = None
+
 
 router = APIRouter(prefix="/api/service", tags=["service"])
+logger = logging.getLogger(__name__)
 
 service_catalog: list[dict[str, Any]] = []
 service_accounts: list[dict[str, Any]] = []
 service_orders: list[dict[str, Any]] = []
+SERVICE_RECORD_COLLECTIONS = {
+    "catalog": service_catalog,
+    "account": service_accounts,
+    "order": service_orders,
+}
 
 _current_admin: Callable[[str | None], dict[str, Any]] | None = None
 _audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None] | None = None
@@ -18,6 +35,9 @@ _customer_resolver: Callable[[str], dict[str, Any]] | None = None
 _customer_searcher: Callable[[str], list[dict[str, Any]]] | None = None
 _customer_seed: Callable[[], None] | None = None
 _ticket_creator: Callable[[dict[str, Any], str], dict[str, Any]] | None = None
+
+SERVICE_STORAGE_MODE = os.getenv("SERVICE_STORAGE") or ("postgres" if os.getenv("DATABASE_URL") else "memory")
+SERVICE_SEED_CATALOG = os.getenv("SERVICE_SEED_CATALOG", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 SERVICE_TYPES = ["FIBER_INTERNET", "WIRELESS_INTERNET", "DEDICATED_INTERNET", "STATIC_IP", "INSTALLATION", "OTHER"]
 INTERNET_SERVICE_TYPES = {"FIBER_INTERNET", "WIRELESS_INTERNET", "DEDICATED_INTERNET"}
@@ -66,6 +86,16 @@ ORDER_STATUSES = [
 ORDER_PRIORITIES = ["LOW", "NORMAL", "HIGH", "URGENT"]
 OPEN_ORDER_STATUSES = ["SUBMITTED", "PENDING_REQUIREMENT", "PENDING_REVIEW", "APPROVED", "IN_PROGRESS", "ON_HOLD"]
 DETAIL_REQUIRED_STATUSES = ["SUBMITTED", "PENDING_REVIEW", "APPROVED", "IN_PROGRESS", "COMPLETED", "ON_HOLD"]
+CREATED_ORDER_STATUS = "SUBMITTED"
+TICKET_STATUS_TO_ORDER_STATUS = {
+    "OPEN": "SUBMITTED",
+    "IN_PROGRESS": "IN_PROGRESS",
+    "WAITING_CUSTOMER": "PENDING_REQUIREMENT",
+    "WAITING_INTERNAL": "ON_HOLD",
+    "RESOLVED": "COMPLETED",
+    "CLOSED": "COMPLETED",
+    "CANCELLED": "CANCELLED",
+}
 ORDER_STATUS_ALIASES = {
     "REQUESTED": "SUBMITTED",
     "SCHEDULED": "APPROVED",
@@ -239,6 +269,209 @@ def clean_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+class ServiceRecordStore:
+    def __init__(self) -> None:
+        self.database_url = os.getenv("DATABASE_URL", "").strip()
+        self.storage_mode = SERVICE_STORAGE_MODE.strip().lower()
+        self._schema_ready = False
+        self._loaded = False
+
+    @property
+    def postgres_enabled(self) -> bool:
+        return self.storage_mode == "postgres"
+
+    def _connect(self):
+        if not self.postgres_enabled:
+            return None
+        if psycopg is None or dict_row is None:
+            raise HTTPException(status_code=503, detail="Service database driver is not installed")
+        if not self.database_url:
+            raise HTTPException(status_code=503, detail="Service database URL is not configured")
+        return psycopg.connect(self.database_url, autocommit=True, row_factory=dict_row)
+
+    def ensure_schema(self) -> bool:
+        if not self.postgres_enabled:
+            return False
+        if self._schema_ready:
+            return True
+        try:
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT to_regclass('public.service_records') AS table_name")
+                    row = cursor.fetchone() or {}
+                    if not row.get("table_name"):
+                        raise HTTPException(status_code=503, detail="Service database migration has not run")
+            self._schema_ready = True
+            return True
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Service database schema initialization failed")
+            raise HTTPException(status_code=503, detail=f"Service database is unavailable: {exc}") from exc
+
+    def load_records(self, force: bool = False) -> bool:
+        if not self.ensure_schema():
+            return False
+        if self._loaded and not force:
+            return True
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT record_type, record_id, data
+                    FROM service_records
+                    ORDER BY created_at DESC, record_type, record_id
+                    """,
+                )
+                rows = cursor.fetchall()
+        for collection in SERVICE_RECORD_COLLECTIONS.values():
+            collection.clear()
+        for row in rows:
+            collection = SERVICE_RECORD_COLLECTIONS.get(row["record_type"])
+            if collection is None:
+                continue
+            payload = dict(row.get("data") or {})
+            payload.setdefault("id", row["record_id"])
+            collection.append(payload)
+        self._loaded = True
+        return True
+
+    def save_record(self, record_type: str, record: dict[str, Any]) -> bool:
+        if not self.ensure_schema():
+            return False
+        if Json is None:
+            raise HTTPException(status_code=503, detail="Service JSON database adapter is not installed")
+        payload = dict(record)
+        record_id = str(payload.get("id") or "").strip()
+        if not record_id:
+            raise HTTPException(status_code=500, detail="Service record is missing an id")
+        created_at = payload.get("createdAt") or now_iso()
+        updated_at = payload.get("updatedAt") or created_at
+        deleted_at = payload.get("deletedAt") or None
+        account_payload = payload.get("serviceAccount") if isinstance(payload.get("serviceAccount"), dict) else {}
+        customer_payload = payload.get("customer") if isinstance(payload.get("customer"), dict) else {}
+        catalog_id = payload.get("catalogId") or (record_id if record_type == "catalog" else "")
+        service_account_id = payload.get("serviceAccountId") or account_payload.get("id") or (record_id if record_type == "account" else "")
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO service_records (
+                        record_type,
+                        record_id,
+                        customer_id,
+                        service_account_id,
+                        catalog_id,
+                        order_number,
+                        status,
+                        data,
+                        created_at,
+                        updated_at,
+                        deleted_at,
+                        created_by_user_id,
+                        updated_by_user_id
+                    )
+                    VALUES (
+                        %(record_type)s,
+                        %(record_id)s,
+                        %(customer_id)s,
+                        %(service_account_id)s,
+                        %(catalog_id)s,
+                        %(order_number)s,
+                        %(status)s,
+                        %(data)s,
+                        %(created_at)s,
+                        %(updated_at)s,
+                        %(deleted_at)s,
+                        %(created_by_user_id)s,
+                        %(updated_by_user_id)s
+                    )
+                    ON CONFLICT (record_type, record_id) DO UPDATE SET
+                        customer_id = EXCLUDED.customer_id,
+                        service_account_id = EXCLUDED.service_account_id,
+                        catalog_id = EXCLUDED.catalog_id,
+                        order_number = EXCLUDED.order_number,
+                        status = EXCLUDED.status,
+                        data = EXCLUDED.data,
+                        updated_at = EXCLUDED.updated_at,
+                        deleted_at = EXCLUDED.deleted_at,
+                        updated_by_user_id = EXCLUDED.updated_by_user_id
+                    """,
+                    {
+                        "record_type": record_type,
+                        "record_id": record_id,
+                        "customer_id": payload.get("customerId") or customer_payload.get("id") or "",
+                        "service_account_id": service_account_id or "",
+                        "catalog_id": catalog_id or "",
+                        "order_number": payload.get("orderNumber") or "",
+                        "status": payload.get("status") or "",
+                        "data": Json(payload),
+                        "created_at": created_at,
+                        "updated_at": updated_at,
+                        "deleted_at": deleted_at,
+                        "created_by_user_id": payload.get("createdByUserId") or "",
+                        "updated_by_user_id": payload.get("updatedByUserId") or "",
+                    },
+                )
+        return True
+
+    def save_all(self) -> bool:
+        if not self.ensure_schema():
+            return False
+        for record_type, collection in SERVICE_RECORD_COLLECTIONS.items():
+            for record in collection:
+                self.save_record(record_type, record)
+        return True
+
+    def status(self) -> dict[str, Any]:
+        if not self.postgres_enabled:
+            return {
+                "mode": "memory",
+                "ready": False,
+                "reason": "SERVICE_STORAGE is not postgres",
+                "catalogSeedEnabled": SERVICE_SEED_CATALOG,
+            }
+        self.ensure_schema()
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        record_type,
+                        count(*) AS total,
+                        count(*) FILTER (WHERE deleted_at IS NULL) AS active
+                    FROM service_records
+                    GROUP BY record_type
+                    ORDER BY record_type
+                    """,
+                )
+                rows = cursor.fetchall()
+        return {
+            "mode": "postgres",
+            "ready": True,
+            "table": "service_records",
+            "recordCounts": {
+                row["record_type"]: {
+                    "totalRows": int(row.get("total") or 0),
+                    "activeRows": int(row.get("active") or 0),
+                }
+                for row in rows
+            },
+            "catalogSeedEnabled": SERVICE_SEED_CATALOG,
+        }
+
+
+service_store = ServiceRecordStore()
+
+
+def ensure_service_data_loaded(force: bool = False) -> None:
+    service_store.load_records(force=force)
+
+
+def persist_service_state() -> None:
+    service_store.save_all()
+
+
 def money(value: Any, field_name: str = "Amount") -> float:
     try:
         return round(float(value or 0), 2)
@@ -365,6 +598,8 @@ def customer_snapshot(customer: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": customer["id"],
         "accountNumber": customer.get("accountNumber", ""),
+        "firstName": customer.get("firstName", ""),
+        "lastName": customer.get("lastName", ""),
         "name": customer_name(customer),
         "status": customer.get("status", ""),
         "gender": customer.get("gender", ""),
@@ -552,6 +787,8 @@ def order_payload_to_record(payload: ServiceOrderPayload, current: dict[str, Any
     data = payload.model_dump(exclude_unset=True)
     record = dict(current or {})
     record.update({key: value for key, value in data.items() if value is not None})
+    if current is None and normalize_upper(record.get("status")) in ["", "DRAFT"]:
+        record["status"] = CREATED_ORDER_STATUS
     record["orderType"] = validate_choice(record.get("orderType"), ORDER_TYPES, "order type", "NEW_INSTALLATION")
     linked_account = find_account(record["serviceAccountId"]) if record.get("serviceAccountId") else None
     if linked_account:
@@ -780,6 +1017,39 @@ def create_ticket_for_order(order: dict[str, Any], actor: str) -> dict[str, Any]
     return ticket
 
 
+def update_service_order_from_ticket(ticket: dict[str, Any], actor: str = "system") -> dict[str, Any] | None:
+    seed_service_data()
+    service_order_id = clean_text(ticket.get("serviceOrderId"))
+    if not service_order_id:
+        return None
+    order = next((row for row in service_orders if row.get("id") == service_order_id and not row.get("deletedAt")), None)
+    if order is None:
+        return None
+
+    previous_status = order_status(order)
+    attach_ticket(order, ticket)
+    next_status = TICKET_STATUS_TO_ORDER_STATUS.get(normalize_upper(ticket.get("status")))
+    if next_status:
+        order["status"] = next_status
+    order["updatedAt"] = now_iso()
+    apply_order_lifecycle_effects(order, actor)
+    if order_status(order) != previous_status:
+        add_audit(
+            "service_order_status_synced_from_ticket",
+            "ServiceOrder",
+            order["id"],
+            {
+                "ticketNumber": ticket.get("ticketNumber", ""),
+                "ticketStatus": ticket.get("status", ""),
+                "previousStatus": previous_status,
+                "status": order_status(order),
+            },
+            actor,
+        )
+    persist_service_state()
+    return order_summary(order)
+
+
 def create_or_activate_service_account_from_order(order: dict[str, Any], actor: str, target_status: str = "ACTIVE") -> dict[str, Any]:
     account = find_account(order["serviceAccountId"]) if order.get("serviceAccountId") else find_account_by_reference(order.get("serviceReference", ""))
     status = validate_account_status(target_status)
@@ -910,9 +1180,12 @@ def apply_order_lifecycle_effects(order: dict[str, Any], actor: str) -> None:
     attach_service_account(order, account)
 
 
-def seed_service_catalog() -> None:
+def seed_service_catalog() -> bool:
+    ensure_service_data_loaded()
+    if not SERVICE_SEED_CATALOG:
+        return False
     if service_catalog:
-        return
+        return False
     timestamp = now_iso()
     rows = [
         {
@@ -1006,20 +1279,28 @@ def seed_service_catalog() -> None:
                 **catalog_payload_to_record(CatalogPayload(**row)),
             },
         )
+    persist_service_state()
+    return True
 
 
 def seed_service_data() -> None:
+    ensure_service_data_loaded()
     seed_service_catalog()
     seed_service_accounts()
 
 
-def seed_service_accounts() -> None:
+def seed_service_accounts() -> bool:
     if service_accounts:
-        return
+        return False
+    changed = False
     for order in visible_orders():
         if order_status(order) != "COMPLETED" or (order.get("orderType") or "NEW_INSTALLATION") != "NEW_INSTALLATION":
             continue
         create_or_activate_service_account_from_order(order, "system")
+        changed = True
+    if changed:
+        persist_service_state()
+    return changed
 
 
 def service_metrics() -> dict[str, int | float]:
@@ -1046,6 +1327,21 @@ def service_metrics() -> dict[str, int | float]:
 @router.get("/health")
 def service_health():
     return {"module": "service", "status": "functional-shell"}
+
+
+@router.get("/readiness")
+def service_readiness(admin=Depends(require_admin)):
+    storage = service_store.status()
+    return {
+        "module": "service",
+        "realDataReady": storage.get("ready") is True and storage.get("mode") == "postgres",
+        "storage": storage,
+        "remainingProductionStages": [
+            "Replace list-length Service Order and Service Account numbering with sequence-backed numbering.",
+            "Add database-level foreign key enforcement after all related modules use durable tables.",
+            "Add backup/restore runbooks and operational monitoring for Service records before live operations.",
+        ],
+    }
 
 
 @router.get("/meta")
@@ -1137,6 +1433,7 @@ def create_service_account(payload: ServiceAccountPayload, admin=Depends(require
 
 @router.patch("/accounts/{account_id}")
 def update_service_account(account_id: str, payload: ServiceAccountPayload, admin=Depends(require_admin)):
+    seed_service_data()
     current = find_account(account_id)
     record = account_payload_to_record(payload, current)
     if any(account.get("serviceReference") == record["serviceReference"] and account["id"] != account_id and not account.get("deletedAt") for account in service_accounts):
@@ -1144,16 +1441,19 @@ def update_service_account(account_id: str, payload: ServiceAccountPayload, admi
     current.update(record)
     current["updatedAt"] = now_iso()
     add_audit("service_account_updated", "ServiceAccount", current["id"], {"customerId": current["customerId"]}, admin["username"])
+    persist_service_state()
     return account_summary(current)
 
 
 @router.delete("/accounts/{account_id}")
 def archive_service_account(account_id: str, admin=Depends(require_admin)):
+    seed_service_data()
     current = find_account(account_id)
     current["status"] = "DISCONNECTED"
     current["deletedAt"] = now_iso()
     current["updatedAt"] = current["deletedAt"]
     add_audit("service_account_archived", "ServiceAccount", current["id"], {"customerId": current["customerId"]}, admin["username"])
+    persist_service_state()
     return {"status": "ok"}
 
 
@@ -1173,11 +1473,13 @@ def create_catalog_item(payload: CatalogPayload, admin=Depends(require_admin)):
     }
     service_catalog.append(item)
     add_audit("service_catalog_created", "ServiceCatalog", item["id"], {"code": item["code"]}, admin["username"])
+    persist_service_state()
     return item
 
 
 @router.patch("/catalog/{catalog_id}")
 def update_catalog_item(catalog_id: str, payload: CatalogPayload, admin=Depends(require_admin)):
+    seed_service_data()
     current = find_catalog(catalog_id)
     record = catalog_payload_to_record(payload, current)
     if any(item["code"] == record["code"] and item["id"] != catalog_id and not item.get("deletedAt") for item in service_catalog):
@@ -1185,11 +1487,13 @@ def update_catalog_item(catalog_id: str, payload: CatalogPayload, admin=Depends(
     current.update(record)
     current["updatedAt"] = now_iso()
     add_audit("service_catalog_updated", "ServiceCatalog", current["id"], {"code": current["code"]}, admin["username"])
+    persist_service_state()
     return current
 
 
 @router.delete("/catalog/{catalog_id}")
 def archive_catalog_item(catalog_id: str, admin=Depends(require_admin)):
+    seed_service_data()
     current = find_catalog(catalog_id)
     if any(order["catalogId"] == catalog_id and order_status(order) in OPEN_ORDER_STATUSES + ["COMPLETED"] for order in visible_orders()):
         raise HTTPException(status_code=400, detail="Catalog item has active or open service orders")
@@ -1197,6 +1501,7 @@ def archive_catalog_item(catalog_id: str, admin=Depends(require_admin)):
     current["deletedAt"] = now_iso()
     current["updatedAt"] = current["deletedAt"]
     add_audit("service_catalog_archived", "ServiceCatalog", current["id"], {"code": current["code"]}, admin["username"])
+    persist_service_state()
     return {"status": "ok"}
 
 
@@ -1261,11 +1566,13 @@ def create_service_order(payload: ServiceOrderPayload, admin=Depends(require_adm
         {"customerId": order["customerId"], "ticketNumber": order.get("ticketNumber", "")},
         admin["username"],
     )
+    persist_service_state()
     return order_summary(order)
 
 
 @router.patch("/orders/{order_id}")
 def update_service_order(order_id: str, payload: ServiceOrderPayload, admin=Depends(require_admin)):
+    seed_service_data()
     current = find_order(order_id)
     record = order_payload_to_record(payload, current)
     ensure_no_conflicting_open_order(record, current_id=order_id)
@@ -1273,14 +1580,17 @@ def update_service_order(order_id: str, payload: ServiceOrderPayload, admin=Depe
     current["updatedAt"] = now_iso()
     apply_order_lifecycle_effects(current, admin["username"])
     add_audit("service_order_updated", "ServiceOrder", current["id"], {"customerId": current["customerId"]}, admin["username"])
+    persist_service_state()
     return order_summary(current)
 
 
 @router.delete("/orders/{order_id}")
 def cancel_service_order(order_id: str, admin=Depends(require_admin)):
+    seed_service_data()
     current = find_order(order_id)
     current["status"] = "CANCELLED"
     current["cancelledAt"] = now_iso()
     current["updatedAt"] = current["cancelledAt"]
     add_audit("service_order_cancelled", "ServiceOrder", current["id"], {"customerId": current["customerId"]}, admin["username"])
+    persist_service_state()
     return {"status": "ok"}

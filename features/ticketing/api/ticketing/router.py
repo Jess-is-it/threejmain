@@ -15,6 +15,7 @@ _audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None] | Non
 _customer_resolver: Callable[[str], dict[str, Any]] | None = None
 _customer_searcher: Callable[[str], list[dict[str, Any]]] | None = None
 _customer_seed: Callable[[], None] | None = None
+_service_order_status_syncer: Callable[[dict[str, Any], str], dict[str, Any] | None] | None = None
 
 TICKET_STATUSES = ["OPEN", "IN_PROGRESS", "WAITING_CUSTOMER", "WAITING_INTERNAL", "RESOLVED", "CLOSED", "CANCELLED"]
 TICKET_PRIORITIES = ["LOW", "NORMAL", "HIGH", "URGENT"]
@@ -75,13 +76,15 @@ def configure_ticketing(
     customer_resolver: Callable[[str], dict[str, Any]] | None = None,
     customer_searcher: Callable[[str], list[dict[str, Any]]] | None = None,
     customer_seed: Callable[[], None] | None = None,
+    service_order_status_syncer: Callable[[dict[str, Any], str], dict[str, Any] | None] | None = None,
 ) -> None:
-    global _current_admin, _audit_logger, _customer_resolver, _customer_searcher, _customer_seed
+    global _current_admin, _audit_logger, _customer_resolver, _customer_searcher, _customer_seed, _service_order_status_syncer
     _current_admin = current_admin
     _audit_logger = audit_logger
     _customer_resolver = customer_resolver
     _customer_searcher = customer_searcher
     _customer_seed = customer_seed
+    _service_order_status_syncer = service_order_status_syncer
 
 
 def require_admin(authorization: str | None = Header(default=None)):
@@ -118,6 +121,14 @@ def parse_day(value: str | None, field_name: str) -> str:
 def add_audit(action: str, target_id: str, details: dict[str, Any] | None, actor: str) -> None:
     if _audit_logger is not None:
         _audit_logger(action, "ticket", target_id, details, actor)
+
+
+def sync_service_order_status(ticket: dict[str, Any], actor: str) -> None:
+    if _service_order_status_syncer is None:
+        return
+    if ticket.get("sourceModule") != "service" or not ticket.get("serviceOrderId"):
+        return
+    _service_order_status_syncer(ticket, actor)
 
 
 def seed_customers() -> None:
@@ -293,6 +304,7 @@ def update_ticket_from_techportal(
         },
         actor,
     )
+    sync_service_order_status(ticket, actor)
     return ticket
 
 
@@ -480,6 +492,7 @@ def create_ticket_record(
         audit_details or {"ticketNumber": record["ticketNumber"], "subject": record["subject"]},
         actor,
     )
+    sync_service_order_status(record, actor)
     return record
 
 
@@ -602,6 +615,7 @@ def update_ticket(ticket_id: str, payload: TicketPayload, admin=Depends(require_
     ticket["updatedAt"] = now_iso()
     apply_status_dates(ticket, previous_status)
     add_audit("ticket_updated", ticket["id"], {"ticketNumber": ticket["ticketNumber"], "status": ticket["status"]}, admin["username"])
+    sync_service_order_status(ticket, admin["username"])
     return ticket
 
 

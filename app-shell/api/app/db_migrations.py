@@ -15,6 +15,9 @@ except Exception:  # pragma: no cover - keeps local syntax checks independent of
 logger = logging.getLogger(__name__)
 
 CUSTOMER_PROFILES_MIGRATION_ID = "2026052601_customer_profiles"
+BILLING_RECORDS_MIGRATION_ID = "2026071001_billing_records"
+SERVICE_RECORDS_MIGRATION_ID = "2026071002_service_records"
+BILLING_INTEGRITY_MIGRATION_ID = "2026071401_billing_financial_integrity"
 
 MIGRATIONS: list[dict[str, Any]] = [
     {
@@ -52,6 +55,145 @@ MIGRATIONS: list[dict[str, Any]] = [
             "CREATE INDEX IF NOT EXISTS idx_customer_profiles_status ON customer_profiles (status)",
             "CREATE INDEX IF NOT EXISTS idx_customer_profiles_type ON customer_profiles (customer_type)",
             "CREATE INDEX IF NOT EXISTS idx_customer_profiles_location ON customer_profiles (province, city, barangay)",
+        ],
+    },
+    {
+        "id": BILLING_RECORDS_MIGRATION_ID,
+        "description": "Create Billing durable billing_records table",
+        "statements": [
+            """
+            CREATE TABLE IF NOT EXISTS billing_records (
+                record_type text NOT NULL,
+                record_id text NOT NULL,
+                customer_id text NOT NULL DEFAULT '',
+                service_account_id text NOT NULL DEFAULT '',
+                invoice_id text NOT NULL DEFAULT '',
+                status text NOT NULL DEFAULT '',
+                data jsonb NOT NULL,
+                created_at timestamptz NOT NULL,
+                updated_at timestamptz NOT NULL,
+                deleted_at timestamptz,
+                created_by_user_id text,
+                updated_by_user_id text,
+                PRIMARY KEY (record_type, record_id)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_billing_records_type_deleted ON billing_records (record_type, deleted_at)",
+            "CREATE INDEX IF NOT EXISTS idx_billing_records_customer ON billing_records (customer_id)",
+            "CREATE INDEX IF NOT EXISTS idx_billing_records_service_account ON billing_records (service_account_id)",
+            "CREATE INDEX IF NOT EXISTS idx_billing_records_invoice ON billing_records (invoice_id)",
+            "CREATE INDEX IF NOT EXISTS idx_billing_records_status ON billing_records (record_type, status)",
+            "CREATE INDEX IF NOT EXISTS idx_billing_records_updated ON billing_records (updated_at DESC)",
+        ],
+    },
+    {
+        "id": BILLING_INTEGRITY_MIGRATION_ID,
+        "description": "Add Billing posting integrity constraints, document sequences, and durable events",
+        "statements": [
+            "ALTER TABLE billing_records ADD COLUMN IF NOT EXISTS document_number text NOT NULL DEFAULT ''",
+            "ALTER TABLE billing_records ADD COLUMN IF NOT EXISTS subscription_id text NOT NULL DEFAULT ''",
+            "ALTER TABLE billing_records ADD COLUMN IF NOT EXISTS billing_cycle_start date",
+            "ALTER TABLE billing_records ADD COLUMN IF NOT EXISTS idempotency_key text NOT NULL DEFAULT ''",
+            """
+            UPDATE billing_records
+            SET
+                document_number = CASE
+                    WHEN record_type = 'invoice' THEN COALESCE(data->>'invoiceNumber', '')
+                    WHEN record_type = 'payment' THEN COALESCE(data->>'receiptNumber', '')
+                    ELSE ''
+                END,
+                subscription_id = COALESCE(data->>'subscriptionId', ''),
+                billing_cycle_start = CASE
+                    WHEN COALESCE(data->>'billingCycleStart', '') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+                    THEN (data->>'billingCycleStart')::date
+                    ELSE NULL
+                END,
+                idempotency_key = COALESCE(data->>'idempotencyKey', '')
+            """,
+            "CREATE SEQUENCE IF NOT EXISTS billing_invoice_document_seq AS bigint START WITH 1",
+            "CREATE SEQUENCE IF NOT EXISTS billing_receipt_document_seq AS bigint START WITH 1",
+            """
+            SELECT setval(
+                'billing_invoice_document_seq',
+                GREATEST(COALESCE(MAX(NULLIF(substring(document_number FROM '([0-9]+)$'), '')::bigint), 0), 1),
+                COALESCE(MAX(NULLIF(substring(document_number FROM '([0-9]+)$'), '')::bigint), 0) > 0
+            )
+            FROM billing_records
+            WHERE record_type = 'invoice'
+            """,
+            """
+            SELECT setval(
+                'billing_receipt_document_seq',
+                GREATEST(COALESCE(MAX(NULLIF(substring(document_number FROM '([0-9]+)$'), '')::bigint), 0), 1),
+                COALESCE(MAX(NULLIF(substring(document_number FROM '([0-9]+)$'), '')::bigint), 0) > 0
+            )
+            FROM billing_records
+            WHERE record_type = 'payment'
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS billing_posting_events (
+                id text PRIMARY KEY,
+                operation_id text NOT NULL,
+                event_type text NOT NULL,
+                target_type text NOT NULL,
+                target_id text NOT NULL,
+                actor text NOT NULL,
+                details jsonb NOT NULL DEFAULT '{}'::jsonb,
+                created_at timestamptz NOT NULL DEFAULT now()
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_billing_records_document_number ON billing_records (record_type, document_number)",
+            "CREATE INDEX IF NOT EXISTS idx_billing_records_subscription_cycle ON billing_records (subscription_id, billing_cycle_start)",
+            "CREATE INDEX IF NOT EXISTS idx_billing_posting_events_operation ON billing_posting_events (operation_id)",
+            "CREATE INDEX IF NOT EXISTS idx_billing_posting_events_target ON billing_posting_events (target_type, target_id, created_at DESC)",
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_billing_records_document_number
+            ON billing_records (record_type, document_number)
+            WHERE document_number <> ''
+            """,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_billing_records_idempotency
+            ON billing_records (record_type, idempotency_key)
+            WHERE idempotency_key <> ''
+            """,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_billing_invoice_subscription_cycle
+            ON billing_records (subscription_id, billing_cycle_start)
+            WHERE record_type = 'invoice'
+              AND subscription_id <> ''
+              AND billing_cycle_start IS NOT NULL
+            """,
+        ],
+    },
+    {
+        "id": SERVICE_RECORDS_MIGRATION_ID,
+        "description": "Create Service durable service_records table",
+        "statements": [
+            """
+            CREATE TABLE IF NOT EXISTS service_records (
+                record_type text NOT NULL,
+                record_id text NOT NULL,
+                customer_id text NOT NULL DEFAULT '',
+                service_account_id text NOT NULL DEFAULT '',
+                catalog_id text NOT NULL DEFAULT '',
+                order_number text NOT NULL DEFAULT '',
+                status text NOT NULL DEFAULT '',
+                data jsonb NOT NULL,
+                created_at timestamptz NOT NULL,
+                updated_at timestamptz NOT NULL,
+                deleted_at timestamptz,
+                created_by_user_id text,
+                updated_by_user_id text,
+                PRIMARY KEY (record_type, record_id)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_service_records_type_deleted ON service_records (record_type, deleted_at)",
+            "CREATE INDEX IF NOT EXISTS idx_service_records_customer ON service_records (customer_id)",
+            "CREATE INDEX IF NOT EXISTS idx_service_records_service_account ON service_records (service_account_id)",
+            "CREATE INDEX IF NOT EXISTS idx_service_records_catalog ON service_records (catalog_id)",
+            "CREATE INDEX IF NOT EXISTS idx_service_records_order_number ON service_records (order_number)",
+            "CREATE INDEX IF NOT EXISTS idx_service_records_status ON service_records (record_type, status)",
+            "CREATE INDEX IF NOT EXISTS idx_service_records_updated ON service_records (updated_at DESC)",
         ],
     },
 ]

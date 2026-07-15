@@ -66,6 +66,9 @@ function statusClass(value) {
 
 const OPEN_ORDER_STATUSES = ['SUBMITTED', 'PENDING_REQUIREMENT', 'PENDING_REVIEW', 'APPROVED', 'IN_PROGRESS', 'ON_HOLD'];
 const DETAIL_REQUIRED_STATUSES = ['SUBMITTED', 'PENDING_REVIEW', 'APPROVED', 'IN_PROGRESS', 'COMPLETED', 'ON_HOLD'];
+const CREATED_ORDER_STATUS = 'SUBMITTED';
+const NON_CANCELABLE_ORDER_STATUSES = ['COMPLETED', 'RESOLVED', 'CANCELLED', 'REJECTED'];
+const NON_CANCELABLE_TICKET_STATUSES = ['RESOLVED', 'CLOSED', 'CANCELLED'];
 const SERVICE_PAGE_SIZE_OPTIONS = ['10', '25', '50', 'ALL'];
 const INTERNET_CATALOG_TYPES = ['FIBER_INTERNET', 'WIRELESS_INTERNET', 'DEDICATED_INTERNET'];
 const ADD_ON_CATALOG_TYPES = ['STATIC_IP', 'OTHER'];
@@ -413,6 +416,17 @@ function orderUsesCatalogSelection(orderType) {
 
 function orderShowsInstallAddressField(orderType) {
   return INSTALL_ADDRESS_ORDER_TYPES.includes(orderType || 'NEW_INSTALLATION');
+}
+
+function editableOrderStatus(value) {
+  const normalized = String(value || CREATED_ORDER_STATUS).toUpperCase();
+  return normalized === 'DRAFT' ? CREATED_ORDER_STATUS : normalized;
+}
+
+function canCancelServiceOrder(order) {
+  const orderStatus = String(order?.status || '').toUpperCase();
+  const ticketStatus = String(order?.ticketStatus || order?.ticket?.status || '').toUpperCase();
+  return !NON_CANCELABLE_ORDER_STATUSES.includes(orderStatus) && !NON_CANCELABLE_TICKET_STATUSES.includes(ticketStatus);
 }
 
 function orderAddressLabel(orderType) {
@@ -769,7 +783,7 @@ const blankOrder = {
   installLocationId: '',
   installLocationLabel: '',
   installStreetAddress: '',
-  status: 'DRAFT',
+  status: CREATED_ORDER_STATUS,
   priority: 'NORMAL',
   serviceReference: '',
   orderDetails: {},
@@ -1066,8 +1080,14 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
   );
   const orderDetailRequiredStatuses = meta.orderDetailRequiredStatuses || DETAIL_REQUIRED_STATUSES;
   const orderDetailMissingFields = useMemo(
-    () => missingRequiredOrderDetailLabels(orderForm.orderType, orderForm.orderDetails || {}, meta.orderDetailSchemas),
-    [meta.orderDetailSchemas, orderForm.orderDetails, orderForm.orderType]
+    () => missingRequiredOrderDetails(
+      orderForm.orderType,
+      orderForm.orderDetails || {},
+      editableOrderStatus(orderForm.status),
+      meta.orderDetailSchemas,
+      orderDetailRequiredStatuses
+    ),
+    [meta.orderDetailSchemas, orderDetailRequiredStatuses, orderForm.orderDetails, orderForm.orderType, orderForm.status]
   );
   const shouldShowOrderCatalog = orderUsesCatalogSelection(orderForm.orderType);
   const orderCatalogRows = useMemo(
@@ -1510,6 +1530,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
       catalogId: order.catalogId || order.catalog?.id || '',
       serviceAccountId: order.serviceAccountId || order.serviceAccount?.id || '',
       orderType: order.orderType || 'NEW_INSTALLATION',
+      status: editableOrderStatus(order.status),
       orderDetails: detailsForOrderType(order.orderType || 'NEW_INSTALLATION', order.orderDetails || {}, seedDetailsForAccount(order.orderType || 'NEW_INSTALLATION', order.serviceAccount), meta.orderDetailSchemas),
       targetActivationDate: order.targetActivationDate || '',
       activationDate: order.activationDate || '',
@@ -1565,8 +1586,9 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
   async function saveOrder(event) {
     event.preventDefault();
     setError('');
+    const isCreatingOrder = !orderForm.id;
     const body = { ...orderForm };
-    delete body.status;
+    body.status = isCreatingOrder ? CREATED_ORDER_STATUS : editableOrderStatus(body.status);
     delete body.serviceReference;
     delete body.activationDate;
     if (!body.customerId) {
@@ -1610,7 +1632,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
     try {
       const path = orderForm.id ? `/service/orders/${orderForm.id}` : '/service/orders';
       const saved = await request(path, { method: orderForm.id ? 'PATCH' : 'POST', body: JSON.stringify(body) });
-      setMessage(`${saved.orderNumber} saved${saved.ticketNumber ? ` with ${saved.ticketNumber}` : ''}.`);
+      setMessage(`${saved.orderNumber} ${isCreatingOrder ? 'created' : 'updated'}${saved.ticketNumber ? ` with ${saved.ticketNumber}` : ''}.`);
       setOrderForm(blankOrder);
       setIsOrderModalOpen(false);
       setOrderCustomerSearch('');
@@ -1631,6 +1653,10 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
   }
 
   async function cancelOrder(order) {
+    if (!canCancelServiceOrder(order)) {
+      setError(`${order.orderNumber || 'Service order'} can no longer be cancelled.`);
+      return;
+    }
     if (!window.confirm(`Cancel ${order.orderNumber}?`)) return;
     setError('');
     try {
@@ -2047,6 +2073,12 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
           {!shouldShowOrderCatalog && selectedOrderAccount && (
             <div className="alert alert-info mb-0">This order type uses the account's current service catalog: {selectedOrderAccount.catalogName || selectedOrderAccount.catalog?.name || 'Service'}.</div>
           )}
+          {isEditingOrder && (
+            <div className="service-two-cols">
+              <TextField label="Workflow Status" value={label(editableOrderStatus(orderForm.status))} disabled onChange={() => {}} />
+              <TextField label="Order Number" value={orderForm.orderNumber || ''} disabled onChange={() => {}} />
+            </div>
+          )}
           <div className="service-two-cols">
             <TextField label={orderForm.orderType === 'NEW_INSTALLATION' ? 'Requested installation date' : 'Requested Date'} type="date" value={orderForm.requestedDate} onChange={(requestedDate) => setOrderForm({ ...orderForm, requestedDate })} />
             <SelectField label="Priority" value={orderForm.priority} options={meta.orderPriorities || ['NORMAL']} onChange={(priority) => setOrderForm({ ...orderForm, priority })} />
@@ -2101,7 +2133,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
             schemas={meta.orderDetailSchemas}
             status={orderForm.status}
             requiredStatuses={orderDetailRequiredStatuses}
-            forceRequired
+            forceRequired={!isEditingOrder}
             customers={customers}
             currentCustomerId={orderForm.customerId}
             onChange={setOrderDetail}
@@ -2200,6 +2232,7 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
           <div className="service-order-form-panel">
             <div className="fw-semibold">Order Summary</div>
             <DetailRow label="Order Type" value={orderForm.orderType ? label(orderForm.orderType) : '-'} />
+            <DetailRow label="Workflow Status" value={label(editableOrderStatus(orderForm.status))} />
             <DetailRow label="Customer" value={selectedOrderCustomer ? customerLabel(selectedOrderCustomer) : '-'} />
             <DetailRow label="Service Account" value={selectedOrderAccount ? serviceAccountLabel(selectedOrderAccount) : 'New installation'} />
             <DetailRow label={orderForm.orderType === 'NEW_INSTALLATION' ? 'Requested installation date' : 'Requested Date'} value={orderForm.requestedDate || '-'} />
@@ -2838,7 +2871,10 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
                         Next<IconChevronRight size={16} className="ms-1" />
                       </button>
                     ) : (
-                      <button className="btn btn-primary" type="submit" disabled={orderSaveDisabled}><IconDeviceFloppy size={16} className="me-1" />Save</button>
+                      <button className="btn btn-primary" type="submit" disabled={orderSaveDisabled}>
+                        {isEditingOrder ? <IconDeviceFloppy size={16} className="me-1" /> : <IconPlus size={16} className="me-1" />}
+                        {isEditingOrder ? 'Update Service Order' : 'Create Service Order'}
+                      </button>
                     )}
                   </div>
                 </div>
@@ -2928,7 +2964,9 @@ function OrderTable({ rows, onEdit, onCancel }) {
               <td><span className={`badge ${statusClass(row.status)}`}>{label(row.status)}</span></td>
               <td className="text-end">
                 <button className="btn btn-sm me-1" type="button" onClick={() => onEdit(row)}><IconEdit size={14} /></button>
-                <button className="btn btn-sm btn-outline-danger" type="button" onClick={() => onCancel(row)}><IconTrash size={14} /></button>
+                {canCancelServiceOrder(row) && (
+                  <button className="btn btn-sm btn-outline-danger" type="button" onClick={() => onCancel(row)}><IconTrash size={14} /></button>
+                )}
               </td>
             </tr>
           ))}
@@ -3039,7 +3077,7 @@ function ServiceOrderTypeFields({ orderType, details, schemas, status, requiredS
       <div className="service-order-type-heading">
         <div>
           <div className="fw-semibold">{label(orderType)} Details</div>
-          <div className="text-muted small">{requiredNow ? 'Required fields must be complete before this order can continue.' : 'Required fields become mandatory when this order moves beyond draft review.'}</div>
+          <div className="text-muted small">{requiredNow ? 'Required fields must be complete before this order can continue.' : 'Required fields become mandatory in active workflow statuses.'}</div>
         </div>
         <span className={`badge ${readinessClass}`}>
           {requiredNow ? (missingFields.length ? `${missingFields.length} required missing` : 'Ready') : 'Optional now'}
@@ -3369,7 +3407,9 @@ function CustomerAccountDetailPanel({ row, selectedOrderId, onAddOrder, onSelect
                         <div className="service-customer-order-expanded">
                           <div className="service-detail-actions">
                             <button className="btn btn-sm" type="button" onClick={() => onEdit(order)}><IconEdit size={14} className="me-1" />Edit</button>
-                            <button className="btn btn-sm btn-outline-danger" type="button" onClick={() => onCancel(order)}><IconTrash size={14} className="me-1" />Cancel</button>
+                            {canCancelServiceOrder(order) && (
+                              <button className="btn btn-sm btn-outline-danger" type="button" onClick={() => onCancel(order)}><IconTrash size={14} className="me-1" />Cancel</button>
+                            )}
                           </div>
                           <div className="service-detail-grid">
                             <DetailRow label="Order Number" value={valueOrDash(order.orderNumber)} />
@@ -3687,7 +3727,9 @@ function ServiceOrderDetailPanel({ order, onEdit, onCancel, onClose }) {
           </div>
           <div className="service-detail-actions">
             <button className="btn btn-sm" type="button" onClick={() => onEdit(order)}><IconEdit size={14} className="me-1" />Edit</button>
-            <button className="btn btn-sm btn-outline-danger" type="button" onClick={() => onCancel(order)}><IconTrash size={14} className="me-1" />Cancel</button>
+            {canCancelServiceOrder(order) && (
+              <button className="btn btn-sm btn-outline-danger" type="button" onClick={() => onCancel(order)}><IconTrash size={14} className="me-1" />Cancel</button>
+            )}
             <button type="button" className="badge bg-secondary-lt text-secondary service-header-icon-badge border-0" title="Close" aria-label="Close" onClick={onClose}>
               <IconX size={14} />
             </button>
@@ -4050,9 +4092,11 @@ function ServiceOrdersRegistryTable({ rows, selectedOrderId, onSelectOrder, onEd
                     <button className="badge bg-secondary-lt text-secondary service-add-order-badge" type="button" title="Edit service order" aria-label={`Edit ${order.orderNumber}`} onClick={(event) => { event.stopPropagation(); onEdit(order); }}>
                       <IconEdit size={14} />
                     </button>
-                    <button className="badge bg-red-lt text-red service-add-order-badge" type="button" title="Cancel service order" aria-label={`Cancel ${order.orderNumber}`} onClick={(event) => { event.stopPropagation(); onCancel(order); }}>
-                      <IconTrash size={14} />
-                    </button>
+                    {canCancelServiceOrder(order) && (
+                      <button className="badge bg-red-lt text-red service-add-order-badge" type="button" title="Cancel service order" aria-label={`Cancel ${order.orderNumber}`} onClick={(event) => { event.stopPropagation(); onCancel(order); }}>
+                        <IconTrash size={14} />
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>

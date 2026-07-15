@@ -63,7 +63,7 @@ from network_settings import (
 from point_of_sale import configure_point_of_sale, point_of_sale_metrics, router as point_of_sale_router, seed_point_of_sale_data
 from process_flow import configure_process_flow, process_flow_metrics, router as process_flow_router
 from logs import configure_logs, router as logs_router
-from service import configure_service, router as service_router, seed_service_data, service_metrics
+from service import configure_service, router as service_router, seed_service_data, service_metrics, update_service_order_from_ticket
 from system_settings import (
     authenticate_access_user,
     change_access_session_password,
@@ -529,7 +529,14 @@ configure_point_of_sale(current_admin, add_audit, resolve_customer_for_modules, 
 configure_inventory(current_admin, add_audit)
 configure_account_access_management(current_admin, add_audit)
 configure_customer_service_management(current_admin, add_audit, resolve_customer_for_modules, search_customers_for_modules, seed_customer_data)
-configure_ticketing(current_admin, add_audit, resolve_customer_for_modules, search_customers_for_modules, seed_customer_data)
+configure_ticketing(
+    current_admin,
+    add_audit,
+    resolve_customer_for_modules,
+    search_customers_for_modules,
+    seed_customer_data,
+    update_service_order_from_ticket,
+)
 configure_service(
     current_admin,
     add_audit,

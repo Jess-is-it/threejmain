@@ -45,6 +45,7 @@ The first pass is in-memory only and supports:
 - Status, priority, category, source, due date, service reference, outage reference, assignment placeholder, and resolution fields
 - Technician field status values for Tech Portal: `ASSIGNED`, `ACCEPTED`, `EN_ROUTE`, `ON_SITE`, `IN_PROGRESS`, `ON_HOLD`, and `COMPLETED`
 - Service-created tickets store `sourceModule`, `sourceReference`, `serviceOrderId`, `serviceOrderNumber`, `serviceOrderType`, and service account reference fields.
+- Service-created ticket status changes sync back to linked Service Orders through the app-shell-provided callback. Ticket `OPEN` maps to Service Order `SUBMITTED`, `IN_PROGRESS` maps to `IN_PROGRESS`, `WAITING_CUSTOMER` maps to `PENDING_REQUIREMENT`, `WAITING_INTERNAL` maps to `ON_HOLD`, `RESOLVED`/`CLOSED` maps to `COMPLETED`, and `CANCELLED` maps to `CANCELLED`.
 - Internal and customer-visible notes
 - Dashboard-ready module metrics for total tickets, open tickets, urgent tickets, field jobs, and SLA risks
 
@@ -66,7 +67,7 @@ The first pass is in-memory only and supports:
 - Customer Profiling: optional integration provider for customer lookup and ticket customer snapshots.
 - Ticketing customer snapshots include `gender` from Customer Profiling so male/female avatar slots resolve correctly.
 - Account Admin: future dependency for real staff assignment; `assignedTo` is free text for now.
-- Service: Service Order records are the source for selectable `serviceId` references in ticket create/edit. Service also calls `create_ticket_from_service_order` so every new Service Order automatically creates an operations ticket.
+- Service: Service Order records are the source for selectable `serviceId` references in ticket create/edit. Service also calls `create_ticket_from_service_order` so every new Service Order automatically creates an operations ticket. Ticketing receives a Service Order status sync callback from app-shell so Service-created ticket movement can drive the linked Service Order workflow.
 - Tech Portal: reads visible tickets through `visible_tickets` and writes technician field status/internal notes through `update_ticket_from_techportal` and `add_ticket_note_from_techportal`.
 - Outage tracking: future source for `outageId`; currently a placeholder reference field.
 - Inventory and dispatch workflows: future dependencies for field job equipment and technician scheduling.
@@ -76,7 +77,7 @@ The first pass is in-memory only and supports:
 - Do not run this module as a separate app.
 - Integration should import the router from `ticketing.api.ticketing` and include it in the shared FastAPI app.
 - Integration should import `TicketingPage` from `features/ticketing/web/TicketingPage.jsx` into the shared React shell.
-- The router expects the integration layer to call `configure_ticketing(...)` with shared auth, audit logging, and optional customer providers.
+- The router expects the integration layer to call `configure_ticketing(...)` with shared auth, audit logging, optional customer providers, and the optional Service Order status sync callback.
 - Tech Portal integration passes `visible_tickets`, `seed_ticketing_data`, `update_ticket_from_techportal`, and `add_ticket_note_from_techportal` into `configure_techportal(...)`.
 - The module currently assumes the shared shell handles login/session and bearer token storage.
 
