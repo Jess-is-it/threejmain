@@ -296,7 +296,7 @@ docker compose --project-name threejmain-staging -f /home/threejmain/docker-comp
 
 Manual production deployment is exposed in System Settings -> Runtime. The API reads/writes deployment control JSON under `/app/data/deploy-control` in the production API data volume. The host-side `scripts/production_deploy_control_worker.sh` refreshes the latest 10 commits from `origin/master`, processes queued commit requests, and runs `scripts/production_deploy.sh` with `THREEJMAIN_PROD_COMMIT=<selected-commit>`. `scripts/install_production_deploy_control.sh` installs the worker and disables the old `threejmain-production-auto-deploy.service` so manual rollback is not immediately overwritten by the latest `master`.
 
-`master` remains the production branch. Production releases should still merge `staging` into `master` through a Pull Request; the watcher updates production after `master` moves. Remaining hardening work: production secrets, non-default admin credentials, domain/TLS/reverse-proxy, backup/restore automation, and durable PostgreSQL persistence for modules beyond Customer Profiling, Billing, and Service.
+`master` remains the production branch. Production releases may be published by a coordinated normal push to `master` after the user explicitly asks to publish, release, update, or deploy production. Pull Requests are optional when the user specifically requests one. Production update tooling reads `origin/master`, so moving `master` makes that release available to the production updater and to any auto-deploy watcher that is still installed. Remaining hardening work: production secrets, non-default admin credentials, domain/TLS/reverse-proxy, backup/restore automation, and durable PostgreSQL persistence for modules beyond Customer Profiling, Billing, and Service.
 
 Version metadata is provided through environment variables consumed by Docker Compose:
 
@@ -338,14 +338,14 @@ Cross-module work is allowed only after locking every affected module folder and
 - `master` is production only.
 - `staging` is the shared integration/testing branch.
 - `/home/threejmain` is the normal shared development working tree.
-- Codex sessions must not commit directly to `master`.
-- Codex sessions must not push directly to `master`.
 - Codex sessions may commit and push directly to `staging` after following coordination locks, checking status/diffs, staging only owned locked files, and running appropriate verification.
+- Codex sessions may commit and push directly to `master` when the user explicitly asks to publish, release, update, or deploy production from the current task. Treat any `master` commit or push as production-impacting.
 - Module Codex sessions may commit their own completed module work directly on `staging`.
 - Before committing, stage only files/folders owned and locked by that Codex, then verify exactly what is staged.
 - Integration Codex owns shared app-shell wiring, cross-module integration checks, and shared runtime verification when needed.
-- GitHub Codex owns status checks and the later `staging` -> `master` production PR.
-- Production releases should merge `staging` into `master` by Pull Request.
+- Any Codex session may perform the user-authorized `staging` and `master` push flow after following coordination, status, diff, and verification rules.
+- GitHub Codex may still help with status checks or Pull Requests when requested.
+- Production releases may be published by direct normal push to `master`; Pull Requests are optional when the user specifically requests one.
 - Codex sessions must not force push unless the user explicitly approves.
 
 ## Shared Working Tree Workflow
@@ -373,7 +373,7 @@ Cross-module work is allowed only after locking every affected module folder and
 
 ## Documentation
 
-- `docs/GITHUB_WORKFLOW.md`: Shared staging workflow, shared server rules, and production PR flow.
+- `docs/GITHUB_WORKFLOW.md`: Shared staging workflow, shared server rules, and direct production release flow.
 - `docs/BRANCH_PROTECTION.md`: GitHub UI guidance for protecting `master` and `staging`.
 
 ## Cross-System Monthly Subscriber Hotspot Access

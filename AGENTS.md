@@ -710,11 +710,9 @@ This repo uses:
 - `staging` for the shared integration/testing branch
 - `/home/threejmain` as the normal shared development working tree
 
-Codex sessions must not commit directly to `master`.
-
-Codex sessions must not push directly to `master`.
-
 Codex sessions may commit and push directly to `staging` after following the coordination, lock, status, diff, and verification rules in this file.
+
+Codex sessions may commit and push directly to `master` when the user explicitly asks to publish, release, update, or deploy production from the current task. Treat any `master` commit or push as production-impacting.
 
 Before starting work, Codex must verify the current branch:
 
@@ -722,7 +720,7 @@ Before starting work, Codex must verify the current branch:
 git branch --show-current
 ```
 
-The normal shared development branch is `staging`. If a Codex is on any other branch, it must switch to an up-to-date `staging` branch before committing or pushing unless the user explicitly requested an isolated experiment.
+The normal shared development branch is `staging`. If a Codex is on any other branch, it must switch to an up-to-date `staging` branch before normal development commits or pushes unless the user explicitly requested an isolated experiment. For a user-authorized production release, switch to an up-to-date `master` branch only for the release commit or promotion.
 
 Before committing or pushing, Codex must run:
 
@@ -733,23 +731,24 @@ git diff --name-only
 
 Module Codex sessions may commit their own completed work directly on `staging`. In the shared working tree, stage only the files/folders that Codex locked and changed, then verify the staged paths before committing.
 
-Pushes to `staging` must be normal non-force pushes:
+Pushes to `staging` or `master` must be normal non-force pushes:
 
 ```bash
 git push origin staging
+git push origin master
 ```
 
 Default local development flow:
 
 ```text
-shared /home/threejmain edits -> shared server verification -> commit on staging -> push to staging -> staging to master release PR
+shared /home/threejmain edits -> shared server verification -> commit on staging -> push to staging -> user-authorized production release -> push master
 ```
 
 Integration Codex owns app-shell wiring and shared runtime verification when a module feature affects shared routes, navigation, Docker files, or cross-module contracts.
 
-GitHub Codex is primarily for status checks and the later `staging` -> `master` release flow.
+Any Codex session may perform the user-authorized `staging` and `master` push flow after following these rules. GitHub Codex may still help with status checks or Pull Requests when requested.
 
-Production releases should be merged from `staging` into `master` through a Pull Request.
+Production releases may be published by direct normal push to `master` after explicit user instruction. A Pull Request is optional when the user specifically requests one.
 
 Codex must update `Project_Context.md` when important lasting project information changes.
 

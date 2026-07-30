@@ -14,16 +14,16 @@ Normal Codex development happens in:
 /home/threejmain
 ```
 
-The shared test server is:
+The shared staging test server is:
 
 ```text
-http://192.168.50.70:8180/
+http://192.168.50.70:8280/
 ```
 
 ## Rules
 
-- Codex must not push directly to `master`.
 - Codex may commit and push directly to `staging` after coordination locks, status/diff checks, staging only owned locked files, and appropriate verification.
+- Codex may commit and push directly to `master` when the user explicitly asks to publish, release, update, or deploy production from the current task.
 - Normal module work does not use per-Codex worktrees, per-Codex preview servers, or per-module PRs.
 - All Codex sessions coordinate with `scripts/ai_coord.py` file/folder locks.
 - Use `runtime/server` before rebuilding or restarting the shared server.
@@ -31,7 +31,8 @@ http://192.168.50.70:8180/
 - Cross-module features must lock every affected module folder and shared file.
 - Module Codex sessions may commit completed module work directly on `staging`.
 - Integration Codex owns shared app-shell integration and shared runtime verification.
-- GitHub Codex owns status checks and `staging` -> `master` production PR flow.
+- Any Codex session may perform the user-authorized `staging` and `master` push flow after following coordination and verification rules.
+- GitHub Codex may still help with status checks or Pull Requests when requested.
 - Do not force push unless the user explicitly approves.
 - Do not commit secrets, `.env` files, credentials, API keys, database passwords, or tokens.
 
@@ -68,6 +69,7 @@ Ask for shared server restart only when needed.
 Unlock when done.
 Commit owned locked files on staging when the task is complete.
 Push staging with a normal non-force push.
+When the user explicitly requests a production release, promote the verified release to master and push master with a normal non-force push.
 ```
 
 Integration Codex:
@@ -84,9 +86,9 @@ Push staging with a normal non-force push.
 GitHub Codex:
 
 ```text
-Check staging status.
-Create staging -> master PR when requested.
-Merge staging -> master PR when requested and safe.
+Check staging and master status.
+Create or merge staging -> master PRs only when requested.
+Production may also be released by direct normal push to master when the user requests it.
 ```
 
 ## Shared Server Commands
@@ -105,16 +107,22 @@ After restart/build and checks:
 python3 scripts/ai_coord.py unlock runtime/server <agent>
 ```
 
-## Production Release PR
+## Production Release
 
-Production release PR:
+Direct production release:
 
 ```bash
-gh pr create --base master --head staging --title "Promote staging to master" --body "Promotes staging to master."
+git fetch origin
+git checkout master
+git pull --ff-only origin master
+git merge --ff-only staging
+git push origin master
 ```
 
 Production release flow:
 
 ```text
-staging -> master
+staging -> master -> production updater
 ```
+
+Pull Requests are optional when the user specifically requests a PR-based release.
