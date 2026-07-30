@@ -18,6 +18,7 @@ CUSTOMER_PROFILES_MIGRATION_ID = "2026052601_customer_profiles"
 BILLING_RECORDS_MIGRATION_ID = "2026071001_billing_records"
 SERVICE_RECORDS_MIGRATION_ID = "2026071002_service_records"
 BILLING_INTEGRITY_MIGRATION_ID = "2026071401_billing_financial_integrity"
+COLLECTOR_RECORDS_MIGRATION_ID = "2026072801_collector_records"
 
 MIGRATIONS: list[dict[str, Any]] = [
     {
@@ -194,6 +195,48 @@ MIGRATIONS: list[dict[str, Any]] = [
             "CREATE INDEX IF NOT EXISTS idx_service_records_order_number ON service_records (order_number)",
             "CREATE INDEX IF NOT EXISTS idx_service_records_status ON service_records (record_type, status)",
             "CREATE INDEX IF NOT EXISTS idx_service_records_updated ON service_records (updated_at DESC)",
+        ],
+    },
+    {
+        "id": COLLECTOR_RECORDS_MIGRATION_ID,
+        "description": "Create durable Collector claims, collection custody, and remittance records",
+        "statements": [
+            """
+            CREATE TABLE IF NOT EXISTS collector_records (
+                record_type text NOT NULL,
+                record_id text NOT NULL,
+                collector_username text NOT NULL DEFAULT '',
+                customer_id text NOT NULL DEFAULT '',
+                billing_payment_id text NOT NULL DEFAULT '',
+                status text NOT NULL DEFAULT '',
+                method text NOT NULL DEFAULT '',
+                reference_number text NOT NULL DEFAULT '',
+                idempotency_key text NOT NULL DEFAULT '',
+                data jsonb NOT NULL,
+                created_at timestamptz NOT NULL,
+                updated_at timestamptz NOT NULL,
+                deleted_at timestamptz,
+                PRIMARY KEY (record_type, record_id)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_collector_records_type_status ON collector_records (record_type, status)",
+            "CREATE INDEX IF NOT EXISTS idx_collector_records_collector ON collector_records (collector_username, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_collector_records_customer ON collector_records (customer_id, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_collector_records_billing_payment ON collector_records (billing_payment_id)",
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_collector_record_idempotency
+            ON collector_records (record_type, idempotency_key)
+            WHERE record_type = 'collection' AND idempotency_key <> ''
+            """,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_collector_gcash_reference
+            ON collector_records (lower(reference_number))
+            WHERE record_type = 'collection'
+              AND method = 'GCASH'
+              AND status = 'POSTED'
+              AND reference_number <> ''
+              AND deleted_at IS NULL
+            """,
         ],
     },
 ]

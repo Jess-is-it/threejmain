@@ -7,12 +7,16 @@ from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from math import ceil
-from threading import RLock, local
+from threading import Event, RLock, Thread, local
 from typing import Any, Callable, Iterator
 from uuid import uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
+
+from .invoice_pdf import render_invoice_pdf
 
 try:
     import psycopg
@@ -27,12 +31,24 @@ except Exception:  # pragma: no cover - keeps local syntax checks independent of
 router = APIRouter(prefix="/api/billing", tags=["billing"])
 logger = logging.getLogger(__name__)
 
+
+def bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s; using %s", name, default)
+        value = default
+    return max(minimum, min(value, maximum))
+
+
 subscriptions: list[dict[str, Any]] = []
 invoices: list[dict[str, Any]] = []
 payments: list[dict[str, Any]] = []
+credit_applications: list[dict[str, Any]] = []
 adjustments: list[dict[str, Any]] = []
 installation_charges: list[dict[str, Any]] = []
 promotions: list[dict[str, Any]] = []
+billing_runs: list[dict[str, Any]] = []
 
 _current_admin: Callable[[str | None], dict[str, Any]] | None = None
 _audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None] | None = None
@@ -53,18 +69,56 @@ PROMOTION_STATUSES = ["DRAFT", "ACTIVE", "PAUSED", "EXPIRED", "ARCHIVED"]
 PROMOTION_SCOPES = ["MONTHLY_SERVICE", "INSTALLATION_FEE"]
 PROMOTION_DISCOUNT_TYPES = ["FIXED_AMOUNT", "PERCENT", "WAIVE"]
 PROMOTION_PAYMENT_RULES = ["ANY_PAYMENT", "EARLY_BIRD"]
+BILLING_RUN_TYPES = ["AUTOMATIC", "MANUAL"]
+BILLING_RUN_STATUSES = ["RUNNING", "COMPLETED", "PARTIAL_SUCCESS", "FAILED"]
 MONTHLY_INVOICE_TYPES = {"MONTHLY", "FIRST_PRORATED", "FIRST_FULL"}
+COLLECTION_PERFORMANCE_STATUSES = {
+    "ALL",
+    "ACTION_REQUIRED",
+    "FULLY_PAID",
+    "PARTIALLY_PAID",
+    "UNPAID",
+}
 BILLING_RECORD_COLLECTIONS = {
     "subscription": subscriptions,
     "invoice": invoices,
     "payment": payments,
+    "credit_application": credit_applications,
     "adjustment": adjustments,
     "installation_charge": installation_charges,
     "promotion": promotions,
+    "billing_run": billing_runs,
 }
 BILLING_STORAGE_MODE = os.getenv("BILLING_STORAGE") or ("postgres" if os.getenv("DATABASE_URL") else "memory")
 BILLING_SEED_DEMO = os.getenv("BILLING_SEED_DEMO", "false").strip().lower() in {"1", "true", "yes", "on"}
+BILLING_AUTO_BILLER_ENABLED = os.getenv("BILLING_AUTO_BILLER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+BILLING_TIMEZONE = os.getenv("BILLING_TIMEZONE", "Asia/Manila").strip() or "Asia/Manila"
+BILLING_PREPAID_LEAD_DAYS = bounded_env_int("BILLING_PREPAID_LEAD_DAYS", 7, 0, 31)
+BILLING_SCHEDULER_INTERVAL_SECONDS = bounded_env_int("BILLING_SCHEDULER_INTERVAL_SECONDS", 300, 30, 86400)
+MAX_BILLING_CATCHUP_CYCLES = 240
 DEFAULT_EARLY_BIRD_DISCOUNT = 200.0
+ACCOUNT_SUMMARY_SNAPSHOT_VERSION = 1
+PAYMENT_PROMOTION_QUOTE_VERSION = 1
+OUTAGE_REBATE_QUOTE_VERSION = 2
+
+try:
+    BILLING_ZONE = ZoneInfo(BILLING_TIMEZONE)
+except ZoneInfoNotFoundError:
+    logger.warning("Unknown BILLING_TIMEZONE %s; falling back to UTC", BILLING_TIMEZONE)
+    BILLING_TIMEZONE = "UTC"
+    BILLING_ZONE = ZoneInfo("UTC")
+
+_billing_scheduler_lock = RLock()
+_billing_scheduler_stop = Event()
+_billing_scheduler_thread: Thread | None = None
+_billing_scheduler_state: dict[str, Any] = {
+    "startedAt": "",
+    "lastAttemptAt": "",
+    "lastCompletedAt": "",
+    "lastRunId": "",
+    "lastStatus": "",
+    "lastError": "",
+}
 
 
 class SubscriptionPayload(BaseModel):
@@ -87,6 +141,7 @@ class SubscriptionPayload(BaseModel):
     startDate: str | None = None
     nextInvoiceDate: str | None = None
     dueDays: int | None = Field(default=None, ge=0, le=60)
+    qualifiedPromotionIds: list[str] | None = None
     earlyBirdEligible: bool | None = None
     earlyBirdPromotionId: str | None = None
     earlyBirdPromotionCode: str | None = None
@@ -108,15 +163,27 @@ class InvoicePayload(BaseModel):
     notes: str | None = None
 
 
+class PaymentAllocationPayload(BaseModel):
+    invoiceId: str | None = None
+    amount: float | None = Field(default=None, gt=0)
+    promotionId: str | None = None
+    promotionIds: list[str] | None = None
+    promotionQuoteDate: str | None = None
+    promotionQuoteFingerprint: str | None = None
+
+
 class PaymentPayload(BaseModel):
     invoiceId: str | None = None
     customerId: str | None = None
     amount: float | None = Field(default=None, gt=0)
+    allocations: list[PaymentAllocationPayload] | None = None
+    advanceAmount: float | None = Field(default=None, ge=0)
     method: str | None = None
     paymentDate: str | None = None
     referenceNumber: str | None = None
     collectionChannel: str | None = None
     promotionId: str | None = None
+    promotionIds: list[str] | None = None
     status: str | None = None
     notes: str | None = None
 
@@ -129,6 +196,16 @@ class AdjustmentPayload(BaseModel):
     reason: str | None = None
     status: str | None = None
     notes: str | None = None
+
+
+class OutageRebatePreviewPayload(BaseModel):
+    customerIds: list[str] = Field(default_factory=list, min_length=1, max_length=500)
+    outageStart: str
+    outageEnd: str
+
+
+class OutageRebateBatchPayload(OutageRebatePreviewPayload):
+    previewFingerprint: str
 
 
 class InstallationChargePayload(BaseModel):
@@ -173,6 +250,10 @@ class PromotionPayload(BaseModel):
     requiresApproval: bool | None = None
     stackable: bool | None = None
     notes: str | None = None
+
+
+class BillingRunPayload(BaseModel):
+    asOf: str | None = None
 
 
 class BillingRecordStore:
@@ -674,6 +755,13 @@ def today_iso() -> str:
     return date.today().isoformat()
 
 
+def billing_business_date(now: datetime | None = None) -> date:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return current.astimezone(BILLING_ZONE).date()
+
+
 def add_audit(action: str, target_type: str, target_id: str, details: dict[str, Any] | None, actor: str) -> None:
     event = billing_store.queue_audit(action, target_type, target_id, details, actor)
     if not billing_store.in_transaction and _audit_logger is not None:
@@ -833,6 +921,11 @@ def visible_payments() -> list[dict[str, Any]]:
     return [payment for payment in payments if not payment.get("deletedAt")]
 
 
+def visible_credit_applications() -> list[dict[str, Any]]:
+    ensure_billing_data_loaded()
+    return [application for application in credit_applications if not application.get("deletedAt")]
+
+
 def visible_adjustments() -> list[dict[str, Any]]:
     ensure_billing_data_loaded()
     return [adjustment for adjustment in adjustments if not adjustment.get("deletedAt")]
@@ -846,6 +939,11 @@ def visible_installation_charges() -> list[dict[str, Any]]:
 def visible_promotions() -> list[dict[str, Any]]:
     ensure_billing_data_loaded()
     return [promotion for promotion in promotions if not promotion.get("deletedAt")]
+
+
+def visible_billing_runs() -> list[dict[str, Any]]:
+    ensure_billing_data_loaded()
+    return [run for run in billing_runs if not run.get("deletedAt")]
 
 
 def find_row(rows: list[dict[str, Any]], row_id: str, label: str) -> dict[str, Any]:
@@ -878,6 +976,10 @@ def find_installation_charge(charge_id: str) -> dict[str, Any]:
 
 def find_promotion(promotion_id: str) -> dict[str, Any]:
     return find_row(promotions, promotion_id, "Promotion")
+
+
+def find_billing_run(run_id: str) -> dict[str, Any]:
+    return find_row(billing_runs, run_id, "Billing run")
 
 
 def next_number(prefix: str, rows: list[dict[str, Any]], field_name: str) -> str:
@@ -983,6 +1085,93 @@ def promotion_priority(promotion: dict[str, Any]) -> int:
         return 0
 
 
+def promotion_order_key(promotion: dict[str, Any]) -> tuple[int, str, str]:
+    return (
+        -promotion_priority(promotion),
+        clean_text(promotion.get("promoCode")),
+        clean_text(promotion.get("id")),
+    )
+
+
+def normalized_promotion_ids(values: list[Any] | None, field_name: str = "promotionIds") -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        promotion_id = clean_text(value)
+        if not promotion_id:
+            continue
+        if promotion_id in seen:
+            raise HTTPException(status_code=400, detail=f"Duplicate {field_name} are not allowed")
+        seen.add(promotion_id)
+        normalized.append(promotion_id)
+    return normalized
+
+
+def promotion_qualification_snapshot(promotion: dict[str, Any], base_amount: float) -> dict[str, Any]:
+    return {
+        "id": promotion["id"],
+        "name": clean_text(promotion.get("name")),
+        "promoCode": clean_text(promotion.get("promoCode")),
+        "appliesTo": normalize_upper(promotion.get("appliesTo")),
+        "discountType": normalize_upper(promotion.get("discountType")),
+        "discountAmount": money(promotion.get("discountAmount")),
+        "discountPercent": money(promotion.get("discountPercent")),
+        "discountAmountForSubscription": promotion_discount_amount(promotion, base_amount),
+        "startDate": clean_text(promotion.get("startDate")),
+        "endDate": clean_text(promotion.get("endDate")),
+        "status": normalize_upper(promotion.get("status") or "ACTIVE"),
+        "billingMode": normalize_upper(promotion.get("billingMode") or ""),
+        "paymentRule": promotion_payment_rule(promotion),
+        "priority": promotion_priority(promotion),
+        "requiresApproval": clean_bool(promotion.get("requiresApproval")),
+        "stackable": clean_bool(promotion.get("stackable")),
+    }
+
+
+def validate_promotion_stack(promotions_to_stack: list[dict[str, Any]]) -> None:
+    if len(promotions_to_stack) <= 1:
+        return
+    non_stackable = [promotion for promotion in promotions_to_stack if not clean_bool(promotion.get("stackable"))]
+    if non_stackable:
+        labels = ", ".join(
+            clean_text(promotion.get("promoCode") or promotion.get("name") or promotion.get("id"))
+            for promotion in non_stackable
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Multiple promotions require every selected promotion to be stackable: {labels}",
+        )
+
+
+def promotion_bundle_quote(
+    promotions_to_stack: list[dict[str, Any]],
+    base_amount: float,
+) -> dict[str, Any]:
+    ordered = sorted(promotions_to_stack, key=promotion_order_key)
+    validate_promotion_stack(ordered)
+    remaining = money(base_amount)
+    quoted: list[dict[str, Any]] = []
+    for promotion in ordered:
+        discount_amount = money(min(remaining, promotion_discount_amount(promotion, remaining)))
+        if discount_amount <= 0:
+            continue
+        remaining = money(max(0, remaining - discount_amount))
+        quoted.append(
+            {
+                **promotion,
+                "discountBase": money(remaining + discount_amount),
+                "discountAmountForInvoice": discount_amount,
+                "discountedPayable": remaining,
+            }
+        )
+    return {
+        "promotions": quoted,
+        "promotionIds": [promotion["id"] for promotion in quoted],
+        "discountAmount": money(base_amount - remaining),
+        "discountedPayable": remaining,
+    }
+
+
 def promotion_summary(promotion: dict[str, Any]) -> dict[str, Any]:
     effective_status = promotion_effective_status(promotion)
     return {
@@ -1016,8 +1205,10 @@ def normalize_promotion_payload(payload: PromotionPayload, current: dict[str, An
     record["discountType"] = normalize_upper(record.get("discountType") or "FIXED_AMOUNT")
     record["status"] = normalize_upper(record.get("status") or "ACTIVE")
     record["billingMode"] = normalize_upper(record.get("billingMode") or "")
-    record["customerId"] = clean_text(record.get("customerId"))
-    record["catalogId"] = clean_text(record.get("catalogId"))
+    # Promotion definitions are generic. Customer eligibility is assigned on the
+    # subscription or installation-fee decision rather than embedded in the rule.
+    record["customerId"] = ""
+    record["catalogId"] = ""
     record["paymentRule"] = normalize_upper(record.get("paymentRule") or "ANY_PAYMENT") if record["appliesTo"] == "MONTHLY_SERVICE" else "ANY_PAYMENT"
     record["priority"] = promotion_priority(record)
     record["notes"] = clean_text(record.get("notes"))
@@ -1061,18 +1252,14 @@ def normalize_promotion_payload(payload: PromotionPayload, current: dict[str, An
 def validate_promotion_for_subscription(promotion: dict[str, Any], subscription: dict[str, Any]) -> None:
     if promotion.get("appliesTo") != "MONTHLY_SERVICE":
         raise HTTPException(status_code=400, detail="Promotion is not valid for monthly service billing")
-    if promotion_payment_rule(promotion) != "EARLY_BIRD":
-        raise HTTPException(status_code=400, detail="Subscription promotion qualification requires an Early Bird payment condition")
+    if promotion_payment_rule(promotion) not in PROMOTION_PAYMENT_RULES:
+        raise HTTPException(status_code=400, detail="Promotion has an invalid payment condition")
     if not promotion_is_active(promotion):
         raise HTTPException(status_code=400, detail="Promotion is not currently active")
     if clean_bool(promotion.get("requiresApproval")):
         raise HTTPException(status_code=400, detail="Approval-required promotions cannot be selected for automatic subscription discounts yet")
     if promotion.get("billingMode") and promotion.get("billingMode") != subscription.get("billingMode"):
         raise HTTPException(status_code=400, detail="Promotion is not valid for this billing mode")
-    if promotion.get("customerId") and promotion.get("customerId") != subscription.get("customerId"):
-        raise HTTPException(status_code=400, detail="Promotion is not valid for this customer")
-    if promotion.get("catalogId") and promotion.get("catalogId") != subscription.get("catalogId"):
-        raise HTTPException(status_code=400, detail="Promotion is not valid for this plan")
 
 
 def validate_promotion_for_installation_charge(promotion: dict[str, Any], charge: dict[str, Any]) -> None:
@@ -1080,10 +1267,6 @@ def validate_promotion_for_installation_charge(promotion: dict[str, Any], charge
         raise HTTPException(status_code=400, detail="Promotion is not valid for installation fees")
     if not promotion_is_active(promotion):
         raise HTTPException(status_code=400, detail="Promotion is not currently active")
-    if promotion.get("customerId") and promotion.get("customerId") != charge.get("customerId"):
-        raise HTTPException(status_code=400, detail="Promotion is not valid for this customer")
-    if promotion.get("catalogId") and promotion.get("catalogId") != charge.get("catalogId"):
-        raise HTTPException(status_code=400, detail="Promotion is not valid for this plan")
     if promotion.get("billingMode") and promotion.get("billingMode") != charge.get("billingMode"):
         raise HTTPException(status_code=400, detail="Promotion is not valid for this billing mode")
 
@@ -1096,6 +1279,7 @@ def normalize_subscription_payload(payload: SubscriptionPayload, current: dict[s
         "priceOverrideReason",
         "pricingSource",
         "serviceOrderId",
+        "qualifiedPromotionIds",
         "earlyBirdPromotionId",
         "earlyBirdPromotionCode",
         "earlyBirdPromotionName",
@@ -1153,24 +1337,50 @@ def normalize_subscription_payload(payload: SubscriptionPayload, current: dict[s
         raise HTTPException(status_code=400, detail="Invalid pricing source")
     record["priceOverrideReason"] = override_reason if record["pricingSource"] == "PRICE_OVERRIDE" else ""
     record["billingDay"] = int(record.get("billingDay") or min(parse_day(record["startDate"], "startDate").day, 28))
-    record["dueDays"] = int(record.get("dueDays") if record.get("dueDays") is not None else 0)
-    record["earlyBirdEligible"] = clean_bool(record.get("earlyBirdEligible")) if record["billingMode"] in BILLING_MODES else False
-    record["earlyBirdPromotionId"] = clean_text(record.get("earlyBirdPromotionId"))
-    record["earlyBirdPromotionCode"] = clean_text(record.get("earlyBirdPromotionCode"))
-    record["earlyBirdPromotionName"] = clean_text(record.get("earlyBirdPromotionName"))
-    if record["earlyBirdEligible"]:
-        if not record["earlyBirdPromotionId"]:
-            raise HTTPException(status_code=400, detail="Select a promotion before qualifying this subscription")
-        promotion = find_promotion(record["earlyBirdPromotionId"])
-        validate_promotion_for_subscription(promotion, record)
-        record["earlyBirdPromotionCode"] = promotion["promoCode"]
-        record["earlyBirdPromotionName"] = promotion["name"]
-        record["earlyBirdDiscountAmount"] = promotion_discount_amount(promotion, record["monthlyRate"])
+    default_due_days = 0 if record["billingMode"] == "PREPAID" else 7
+    record["dueDays"] = int(record.get("dueDays") if record.get("dueDays") is not None else default_due_days)
+    legacy_qualification_changed = "earlyBirdEligible" in data or "earlyBirdPromotionId" in data
+    if "qualifiedPromotionIds" in data:
+        qualified_promotion_ids = normalized_promotion_ids(data.get("qualifiedPromotionIds"), "qualified promotion IDs")
+    elif legacy_qualification_changed:
+        legacy_promotion_id = clean_text(record.get("earlyBirdPromotionId"))
+        qualified_promotion_ids = [legacy_promotion_id] if clean_bool(record.get("earlyBirdEligible")) and legacy_promotion_id else []
     else:
-        record["earlyBirdPromotionId"] = ""
-        record["earlyBirdPromotionCode"] = ""
-        record["earlyBirdPromotionName"] = ""
-        record["earlyBirdDiscountAmount"] = 0
+        qualified_promotion_ids = normalized_promotion_ids(record.get("qualifiedPromotionIds"), "qualified promotion IDs")
+        if not qualified_promotion_ids:
+            legacy_promotion_id = clean_text(record.get("earlyBirdPromotionId"))
+            if clean_bool(record.get("earlyBirdEligible")) and legacy_promotion_id:
+                qualified_promotion_ids = [legacy_promotion_id]
+
+    qualified_promotions = [find_promotion(promotion_id) for promotion_id in qualified_promotion_ids]
+    for promotion in qualified_promotions:
+        validate_promotion_for_subscription(promotion, record)
+    qualified_promotions.sort(key=promotion_order_key)
+    validate_promotion_stack(qualified_promotions)
+    if qualified_promotions:
+        qualification_quote = promotion_bundle_quote(qualified_promotions, record["monthlyRate"])
+        if qualification_quote["discountedPayable"] <= 0:
+            raise HTTPException(status_code=400, detail="Combined promotions must leave a payable monthly balance")
+    record["qualifiedPromotionIds"] = [promotion["id"] for promotion in qualified_promotions]
+    record["qualifiedPromotions"] = [
+        promotion_qualification_snapshot(promotion, record["monthlyRate"])
+        for promotion in qualified_promotions
+    ]
+    record["qualifiedPromotionCount"] = len(qualified_promotions)
+
+    early_bird_promotion = next(
+        (promotion for promotion in qualified_promotions if promotion_payment_rule(promotion) == "EARLY_BIRD"),
+        None,
+    )
+    record["earlyBirdEligible"] = early_bird_promotion is not None
+    record["earlyBirdPromotionId"] = early_bird_promotion["id"] if early_bird_promotion else ""
+    record["earlyBirdPromotionCode"] = clean_text(early_bird_promotion.get("promoCode")) if early_bird_promotion else ""
+    record["earlyBirdPromotionName"] = clean_text(early_bird_promotion.get("name")) if early_bird_promotion else ""
+    record["earlyBirdDiscountAmount"] = (
+        promotion_discount_amount(early_bird_promotion, record["monthlyRate"])
+        if early_bird_promotion
+        else 0
+    )
     record["startDate"] = parse_day(record.get("startDate"), "startDate").isoformat()
     record["nextInvoiceDate"] = parse_day(record.get("nextInvoiceDate") or record["startDate"], "nextInvoiceDate").isoformat()
     record["billingCycleAnchor"] = "CALENDAR_MONTH"
@@ -1405,6 +1615,7 @@ def sync_installation_charge_invoice(charge: dict[str, Any]) -> dict[str, Any] |
         "deletedAt": None,
     }
     invoices.append(invoice)
+    capture_invoice_account_summary_at_issue(invoice)
     charge["invoiceId"] = invoice["id"]
     charge["invoiceNumber"] = invoice["invoiceNumber"]
     return invoice_summary(invoice)
@@ -1436,11 +1647,12 @@ def subscription_line_item(
     amount: float | None = None,
     item_type: str = "MONTHLY_SERVICE",
     proration: dict[str, Any] | None = None,
+    billing_period_label: str = "",
 ) -> dict[str, Any]:
     service_ref = subscription.get("serviceId")
     line_description = description or f"{subscription['planName']} monthly internet service"
-    if service_ref and not description:
-        line_description = f"{line_description} ({service_ref})"
+    if billing_period_label and not description:
+        line_description = f"{line_description} ({billing_period_label})"
     item = {
         "description": line_description,
         "quantity": 1,
@@ -1463,9 +1675,13 @@ def subscription_line_item(
     return item
 
 
-def normalize_line_items(items: list[dict[str, Any]] | None, subscription: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def normalize_line_items(
+    items: list[dict[str, Any]] | None,
+    subscription: dict[str, Any] | None = None,
+    billing_period_label: str = "",
+) -> list[dict[str, Any]]:
     if not items and subscription is not None:
-        items = [subscription_line_item(subscription)]
+        items = [subscription_line_item(subscription, billing_period_label=billing_period_label)]
     normalized = []
     for item in items or []:
         description = str(item.get("description") or "Billing item").strip()
@@ -1500,8 +1716,208 @@ def invoice_adjustments(invoice_id: str) -> list[dict[str, Any]]:
     return [adjustment for adjustment in visible_adjustments() if adjustment.get("invoiceId") == invoice_id and adjustment["status"] == "POSTED"]
 
 
+def payment_allocations(payment: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = payment.get("allocations") or []
+    if rows:
+        return rows
+    if payment.get("invoiceId"):
+        return [
+            {
+                "invoiceId": payment["invoiceId"],
+                "invoiceNumber": payment.get("invoiceNumber", ""),
+                "customerId": payment.get("customerId", ""),
+                "amount": money(payment.get("amount", 0)),
+            }
+        ]
+    return []
+
+
+def payment_invoice_ids(payment: dict[str, Any]) -> list[str]:
+    invoice_ids: list[str] = []
+    for allocation in payment_allocations(payment):
+        invoice_id = clean_text(allocation.get("invoiceId"))
+        if invoice_id and invoice_id not in invoice_ids:
+            invoice_ids.append(invoice_id)
+    return invoice_ids
+
+
+def payment_amount_for_invoice(payment: dict[str, Any], invoice_id: str) -> float:
+    return money(
+        sum(
+            money(allocation.get("amount"))
+            for allocation in payment_allocations(payment)
+            if allocation.get("invoiceId") == invoice_id
+        )
+    )
+
+
+def credit_applications_for_invoice(invoice_id: str) -> list[dict[str, Any]]:
+    return [
+        application
+        for application in visible_credit_applications()
+        if application.get("invoiceId") == invoice_id and application.get("status") == "POSTED"
+    ]
+
+
+def credit_applications_for_payment(payment_id: str) -> list[dict[str, Any]]:
+    return [
+        application
+        for application in visible_credit_applications()
+        if application.get("sourcePaymentId") == payment_id and application.get("status") == "POSTED"
+    ]
+
+
+def credit_applications_for_adjustment(adjustment_id: str) -> list[dict[str, Any]]:
+    return [
+        application
+        for application in visible_credit_applications()
+        if application.get("sourceAdjustmentId") == adjustment_id and application.get("status") == "POSTED"
+    ]
+
+
+def payment_advance_remaining(payment: dict[str, Any]) -> float:
+    if payment.get("status") != "POSTED":
+        return 0.0
+    advance_amount = money(payment.get("advanceAmount"))
+    applied_amount = money(sum(row.get("amount") for row in credit_applications_for_payment(payment.get("id") or "")))
+    return money(max(0, advance_amount - applied_amount))
+
+
+def is_customer_account_credit(adjustment: dict[str, Any]) -> bool:
+    return (
+        adjustment.get("type") == "CREDIT"
+        and adjustment.get("applicationMode") == "CUSTOMER_ACCOUNT_CREDIT"
+    )
+
+
+def adjustment_credit_remaining(adjustment: dict[str, Any]) -> float:
+    if adjustment.get("status") != "POSTED" or not is_customer_account_credit(adjustment):
+        return 0.0
+    applied_amount = money(
+        sum(row.get("amount") for row in credit_applications_for_adjustment(adjustment.get("id") or ""))
+    )
+    return money(max(0, money(adjustment.get("amount")) - applied_amount))
+
+
+def customer_credit_balance(customer_id: str) -> float:
+    return money(
+        sum(
+            payment_advance_remaining(payment)
+            for payment in visible_payments()
+            if payment.get("customerId") == customer_id and payment.get("status") == "POSTED"
+        )
+        + sum(
+            adjustment_credit_remaining(adjustment)
+            for adjustment in visible_adjustments()
+            if adjustment.get("customerId") == customer_id
+        )
+    )
+
+
+def credit_application_source_adjustment(application: dict[str, Any]) -> dict[str, Any] | None:
+    adjustment_id = clean_text(application.get("sourceAdjustmentId"))
+    if not adjustment_id:
+        return None
+    return next(
+        (
+            adjustment
+            for adjustment in visible_adjustments()
+            if adjustment.get("id") == adjustment_id
+        ),
+        None,
+    )
+
+
+def adjustment_summary(adjustment: dict[str, Any]) -> dict[str, Any]:
+    row = deepcopy(adjustment)
+    if not is_customer_account_credit(adjustment):
+        return row
+    applications = credit_applications_for_adjustment(adjustment.get("id") or "")
+    row["creditAppliedAmount"] = money(sum(application.get("amount") for application in applications))
+    row["creditAvailableAmount"] = adjustment_credit_remaining(adjustment)
+    row["applicationInvoiceIds"] = [
+        application.get("invoiceId")
+        for application in applications
+        if application.get("invoiceId")
+    ]
+    row["applicationInvoiceNumbers"] = [
+        application.get("invoiceNumber")
+        for application in applications
+        if application.get("invoiceNumber")
+    ]
+    return row
+
+
 def invoice_payments(invoice_id: str) -> list[dict[str, Any]]:
-    return [payment for payment in visible_payments() if payment.get("invoiceId") == invoice_id and payment["status"] == "POSTED"]
+    rows: list[dict[str, Any]] = []
+    for payment in visible_payments():
+        if payment["status"] != "POSTED":
+            continue
+        allocated_amount = payment_amount_for_invoice(payment, invoice_id)
+        if allocated_amount <= 0:
+            continue
+        allocation = next(
+            (
+                row
+                for row in payment_allocations(payment)
+                if row.get("invoiceId") == invoice_id and money(row.get("amount")) > 0
+            ),
+            None,
+        )
+        rows.append(
+            {
+                **payment,
+                "amount": allocated_amount,
+                "allocationAmount": allocated_amount,
+                "paymentAmount": money(payment.get("amount", 0)),
+                "allocation": allocation or {},
+            }
+        )
+    for application in credit_applications_for_invoice(invoice_id):
+        source_payment = next(
+            (payment for payment in visible_payments() if payment.get("id") == application.get("sourcePaymentId")),
+            {},
+        )
+        source_adjustment = credit_application_source_adjustment(application) or {}
+        rows.append(
+            {
+                "id": application["id"],
+                "receiptNumber": application.get("sourceReceiptNumber") or source_payment.get("receiptNumber") or "",
+                "activityLabel": application.get("sourceLabel") or (
+                    "Service rebate"
+                    if source_adjustment.get("adjustmentSource") == "SERVICE_REBATE"
+                    else "Account credit"
+                ),
+                "customerId": application.get("customerId") or "",
+                "amount": money(application.get("amount")),
+                "allocationAmount": money(application.get("amount")),
+                "paymentAmount": money(source_payment.get("amount")),
+                "method": "SERVICE_REBATE" if source_adjustment else "ACCOUNT_CREDIT",
+                "paymentDate": application.get("appliedAt") or "",
+                "postedAt": application.get("appliedAt") or application.get("createdAt") or "",
+                "status": "POSTED",
+                "isCreditApplication": True,
+                "sourcePaymentId": application.get("sourcePaymentId") or "",
+                "sourceAdjustmentId": application.get("sourceAdjustmentId") or "",
+                "createdAt": application.get("createdAt") or application.get("appliedAt") or "",
+                "allocation": {
+                    "invoiceId": invoice_id,
+                    "invoiceNumber": application.get("invoiceNumber") or "",
+                    "amount": money(application.get("amount")),
+                },
+            }
+        )
+    return rows
+
+
+def payment_invoice_label(allocations: list[dict[str, Any]], advance_amount: float = 0) -> str:
+    if not allocations and advance_amount > 0:
+        return "Advance credit"
+    if len(allocations) == 1:
+        label = allocations[0].get("invoiceNumber", "")
+    else:
+        label = f"{len(allocations)} invoices"
+    return f"{label} + advance" if advance_amount > 0 else label
 
 
 def early_bird_discount_adjustment(invoice_id: str) -> dict[str, Any] | None:
@@ -1545,9 +1961,43 @@ def invoice_amounts(invoice: dict[str, Any]) -> dict[str, float]:
         )
     )
     total = money(max(0, subtotal + adjustment_total))
-    paid = money(sum(payment["amount"] for payment in invoice_payments(invoice["id"])))
+    payment_total = money(
+        sum(
+            payment_amount_for_invoice(payment, invoice["id"])
+            for payment in visible_payments()
+            if payment.get("status") == "POSTED"
+        )
+    )
+    account_credit_total = money(
+        sum(application.get("amount") for application in credit_applications_for_invoice(invoice["id"]))
+    )
+    paid = money(payment_total + account_credit_total)
     balance = money(max(0, total - paid))
-    return {"subtotal": subtotal, "adjustmentsTotal": adjustment_total, "total": total, "paidTotal": paid, "balance": balance}
+    return {
+        "subtotal": subtotal,
+        "adjustmentsTotal": adjustment_total,
+        "total": total,
+        "paymentTotal": payment_total,
+        "accountCreditAppliedTotal": account_credit_total,
+        "paidTotal": paid,
+        "balance": balance,
+    }
+
+
+def invoice_rebate_total(invoice_id: str) -> float:
+    direct_rebates = sum(
+        adjustment["amount"]
+        for adjustment in invoice_adjustments(invoice_id)
+        if adjustment.get("adjustmentSource") == "SERVICE_REBATE"
+    )
+    applied_rebates = sum(
+        application.get("amount")
+        for application in credit_applications_for_invoice(invoice_id)
+        if (
+            credit_application_source_adjustment(application) or {}
+        ).get("adjustmentSource") == "SERVICE_REBATE"
+    )
+    return money(direct_rebates + applied_rebates)
 
 
 def derived_invoice_status(invoice: dict[str, Any], amounts: dict[str, float] | None = None) -> str:
@@ -1571,23 +2021,967 @@ def validate_invoice_payment(invoice: dict[str, Any], amount: float, current_pay
     if summary["status"] in ["VOID", "DRAFT"]:
         raise HTTPException(status_code=400, detail="Invoice is not payable")
     available_balance = summary["balance"]
-    if current_payment and current_payment.get("invoiceId") == invoice["id"] and current_payment.get("status") == "POSTED":
-        available_balance = money(available_balance + current_payment["amount"])
+    current_payment_amount = payment_amount_for_invoice(current_payment, invoice["id"]) if current_payment else 0
+    if current_payment_amount > 0 and current_payment.get("status") == "POSTED":
+        available_balance = money(available_balance + current_payment_amount)
     if amount > available_balance:
         raise HTTPException(status_code=400, detail="Payment amount cannot exceed invoice balance")
     return summary
+
+
+def invoice_billing_period(invoice: dict[str, Any]) -> dict[str, str]:
+    start_value = clean_text(invoice.get("billingCycleStart") or invoice.get("issueDate"))
+    end_value = clean_text(invoice.get("billingCycleEnd") or start_value)
+    try:
+        start_day = date.fromisoformat(start_value)
+        end_day = date.fromisoformat(end_value)
+    except ValueError:
+        return {
+            "billingPeriodMonth": start_value[:7],
+            "billingPeriodLabel": start_value[:7],
+        }
+
+    same_month = (start_day.year, start_day.month) == (end_day.year, end_day.month)
+    label = (
+        start_day.strftime("%B %Y")
+        if same_month
+        else f"{start_day.strftime('%b %Y')} - {end_day.strftime('%b %Y')}"
+    )
+    return {
+        "billingPeriodMonth": start_day.strftime("%Y-%m"),
+        "billingPeriodLabel": label,
+    }
+
+
+def invoice_charge_description(
+    invoice: dict[str, Any],
+    item: dict[str, Any],
+    billing_period_label: str,
+) -> str:
+    description = clean_text(item.get("description")) or "Billing item"
+    if invoice.get("invoiceType") not in MONTHLY_INVOICE_TYPES:
+        return description
+
+    service_references = list(
+        dict.fromkeys(
+            clean_text(reference)
+            for reference in [item.get("serviceId"), invoice.get("serviceId")]
+            if clean_text(reference)
+        )
+    )
+    for service_reference in service_references:
+        for suffix in [f" ({service_reference})", f" - {service_reference}"]:
+            if description.endswith(suffix):
+                description = description[:-len(suffix)].rstrip()
+                break
+
+    coverage_start = clean_text(invoice.get("billingCycleStart"))
+    coverage_end = clean_text(invoice.get("billingCycleEnd"))
+    legacy_coverage_suffix = (
+        f" ({coverage_start} to {coverage_end})"
+        if coverage_start and coverage_end
+        else ""
+    )
+    if legacy_coverage_suffix and description.endswith(legacy_coverage_suffix):
+        description = description[:-len(legacy_coverage_suffix)].rstrip()
+
+    description_has_period = bool(
+        billing_period_label
+        and billing_period_label.lower() in description.lower()
+    )
+    if billing_period_label and not description_has_period:
+        description = f"{description} ({billing_period_label})"
+    return description
+
+
+def invoice_document_line_items(
+    invoice: dict[str, Any],
+    billing_period_label: str,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            **item,
+            "description": invoice_charge_description(invoice, item, billing_period_label),
+        }
+        for item in invoice.get("lineItems") or []
+    ]
 
 
 def invoice_summary(invoice: dict[str, Any]) -> dict[str, Any]:
     amounts = invoice_amounts(invoice)
     status = derived_invoice_status(invoice, amounts)
     invoice["status"] = status
-    return {**invoice, **amounts, **invoice_early_bird_details(invoice, amounts)}
+    billing_period = invoice_billing_period(invoice)
+    return {
+        **invoice,
+        **amounts,
+        **billing_period,
+        "lineItems": invoice_document_line_items(invoice, billing_period["billingPeriodLabel"]),
+        "rebateTotal": invoice_rebate_total(invoice["id"]),
+        **invoice_early_bird_details(invoice, amounts),
+    }
 
 
-def payment_promotion_adjustment(invoice_id: str) -> dict[str, Any] | None:
+def invoice_payment_history(invoice_id: str) -> list[dict[str, Any]]:
+    history: list[dict[str, Any]] = []
+    for payment in visible_payments():
+        allocated_amount = payment_amount_for_invoice(payment, invoice_id)
+        if allocated_amount <= 0:
+            continue
+        history.append(
+            {
+                **deepcopy(payment),
+                "amount": allocated_amount,
+                "allocationAmount": allocated_amount,
+                "paymentAmount": money(payment.get("amount")),
+                "isCreditApplication": False,
+            }
+        )
+    for application in visible_credit_applications():
+        if application.get("invoiceId") != invoice_id:
+            continue
+        source_adjustment = credit_application_source_adjustment(application)
+        if source_adjustment is not None:
+            continue
+        source_payment = next(
+            (payment for payment in visible_payments() if payment.get("id") == application.get("sourcePaymentId")),
+            {},
+        )
+        history.append(
+            {
+                "id": application.get("id"),
+                "receiptNumber": application.get("sourceReceiptNumber") or source_payment.get("receiptNumber") or "",
+                "customerId": application.get("customerId") or "",
+                "amount": money(application.get("amount")),
+                "allocationAmount": money(application.get("amount")),
+                "paymentAmount": money(source_payment.get("amount")),
+                "method": "ACCOUNT_CREDIT",
+                "paymentDate": application.get("appliedAt") or application.get("createdAt") or "",
+                "postedAt": application.get("appliedAt") or application.get("createdAt") or "",
+                "referenceNumber": source_payment.get("referenceNumber") or "",
+                "collectionChannel": source_payment.get("collectionChannel") or "",
+                "status": application.get("status") or "POSTED",
+                "isCreditApplication": True,
+                "sourcePaymentId": application.get("sourcePaymentId") or "",
+                "createdAt": application.get("createdAt") or application.get("appliedAt") or "",
+            }
+        )
+    return sorted(
+        history,
+        key=lambda row: (
+            clean_text(row.get("paymentDate") or row.get("createdAt")),
+            clean_text(row.get("receiptNumber") or row.get("id")),
+        ),
+    )
+
+
+def invoice_adjustment_history(invoice_id: str) -> list[dict[str, Any]]:
+    labels = {
+        "SERVICE_REBATE": "Service rebate",
+        "PAYMENT_PROMOTION": "Payment promotion",
+        "EARLY_BIRD_DISCOUNT": "Early bird discount",
+        "MANUAL_ADJUSTMENT": "Manual adjustment",
+    }
+    history = []
+    for adjustment in visible_adjustments():
+        if adjustment.get("invoiceId") != invoice_id:
+            continue
+        source = clean_text(adjustment.get("adjustmentSource"))
+        history.append(
+            {
+                **deepcopy(adjustment),
+                "adjustmentLabel": labels.get(source, source.replace("_", " ").title() if source else "Adjustment"),
+            }
+        )
+    for application in credit_applications_for_invoice(invoice_id):
+        source_adjustment = credit_application_source_adjustment(application)
+        if source_adjustment is None:
+            continue
+        source = clean_text(source_adjustment.get("adjustmentSource"))
+        history.append(
+            {
+                **deepcopy(source_adjustment),
+                "id": application["id"],
+                "sourceAdjustmentId": source_adjustment["id"],
+                "invoiceId": invoice_id,
+                "invoiceNumber": application.get("invoiceNumber") or "",
+                "amount": money(application.get("amount")),
+                "status": application.get("status") or "POSTED",
+                "createdAt": application.get("appliedAt") or application.get("createdAt") or "",
+                "isCreditApplication": True,
+                "adjustmentLabel": labels.get(
+                    source,
+                    source.replace("_", " ").title() if source else "Account credit",
+                ),
+            }
+        )
+    return sorted(
+        history,
+        key=lambda row: (
+            clean_text(row.get("createdAt")),
+            clean_text(row.get("id")),
+        ),
+    )
+
+
+def invoice_detail(invoice: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **invoice_summary(invoice),
+        "accountSummaryAtIssue": (
+            deepcopy(invoice.get("accountSummaryAtIssue"))
+            if isinstance(invoice.get("accountSummaryAtIssue"), dict)
+            else None
+        ),
+        "payments": invoice_payment_history(invoice["id"]),
+        "adjustments": invoice_adjustment_history(invoice["id"]),
+    }
+
+
+def parse_record_moment(value: Any) -> datetime | None:
+    text = clean_text(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def record_moment(record: dict[str, Any], *field_names: str) -> datetime | None:
+    for field_name in field_names:
+        parsed = parse_record_moment(record.get(field_name))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def moment_is_in_window(moment: datetime | None, start: datetime | None, end: datetime) -> bool:
+    if moment is None:
+        return False
+    return (start is None or moment > start) and moment <= end
+
+
+def previous_open_invoice_snapshot(invoice: dict[str, Any], as_of: date) -> dict[str, Any] | None:
+    summary = invoice_summary(invoice)
+    if summary.get("status") in {"DRAFT", "PAID", "VOID"} or money(summary.get("balance")) <= 0:
+        return None
+    due_day = parse_day(summary.get("dueDate"), "dueDate")
+    days_overdue = max(0, (as_of - due_day).days)
+    status_at_issue = (
+        "PARTIALLY_PAID"
+        if money(summary.get("paidTotal")) > 0
+        else "OVERDUE"
+        if days_overdue > 0
+        else "ISSUED"
+    )
+    posted_adjustments = invoice_adjustments(invoice["id"])
+    credit_adjustments = money(
+        sum(adjustment.get("amount") for adjustment in posted_adjustments if adjustment.get("type") == "CREDIT")
+    )
+    debit_adjustments = money(
+        sum(adjustment.get("amount") for adjustment in posted_adjustments if adjustment.get("type") == "DEBIT")
+    )
+    return {
+        "invoiceId": summary["id"],
+        "invoiceNumber": summary.get("invoiceNumber") or "",
+        "invoiceType": summary.get("invoiceType") or "",
+        "billingPeriodMonth": summary.get("billingPeriodMonth") or "",
+        "billingPeriodLabel": summary.get("billingPeriodLabel") or "",
+        "billingCycleStart": summary.get("billingCycleStart") or "",
+        "billingCycleEnd": summary.get("billingCycleEnd") or "",
+        "issueDate": summary.get("issueDate") or "",
+        "dueDate": summary.get("dueDate") or "",
+        "statusAtIssue": status_at_issue,
+        "isOverdueAtIssue": days_overdue > 0,
+        "daysOverdueAtIssue": days_overdue,
+        "invoiceTotalAtIssue": money(summary.get("total")),
+        "paidTotalAtIssue": money(summary.get("paidTotal")),
+        "creditAdjustmentsAtIssue": credit_adjustments,
+        "debitAdjustmentsAtIssue": debit_adjustments,
+        "remainingBalanceAtIssue": money(summary.get("balance")),
+    }
+
+
+def capture_invoice_account_summary_at_issue(invoice: dict[str, Any]) -> dict[str, Any] | None:
+    existing = invoice.get("accountSummaryAtIssue")
+    if isinstance(existing, dict):
+        return deepcopy(existing)
+    if invoice.get("status") in {"DRAFT", "VOID"}:
+        return None
+
+    captured_at = now_iso()
+    captured_moment = parse_record_moment(captured_at) or datetime.now(timezone.utc)
+    as_of = parse_day(invoice.get("issueDate"), "issueDate")
+    customer_id = clean_text(invoice.get("customerId"))
+    prior_documents = [
+        row
+        for row in visible_invoices()
+        if row.get("id") != invoice.get("id")
+        and row.get("customerId") == customer_id
+        and row.get("status") not in {"DRAFT", "VOID"}
+    ]
+    prior_document = max(
+        prior_documents,
+        key=lambda row: (
+            clean_text(row.get("createdAt")),
+            clean_text(row.get("issueDate")),
+            clean_text(row.get("invoiceNumber")),
+        ),
+        default=None,
+    )
+    prior_account_summary = (
+        prior_document.get("accountSummaryAtIssue")
+        if prior_document and isinstance(prior_document.get("accountSummaryAtIssue"), dict)
+        else {}
+    )
+    activity_start_at = clean_text(
+        prior_account_summary.get("capturedAt")
+        or prior_document.get("createdAt")
+    ) if prior_document else ""
+    activity_start_moment = parse_record_moment(activity_start_at)
+
+    previous_open_invoices = [
+        row
+        for row in (
+            previous_open_invoice_snapshot(prior_invoice, as_of)
+            for prior_invoice in prior_documents
+        )
+        if row is not None
+    ]
+    previous_open_invoices.sort(
+        key=lambda row: (
+            row.get("dueDate") or "9999-12-31",
+            row.get("invoiceNumber") or "",
+        )
+    )
+    previous_balance = money(sum(row["remainingBalanceAtIssue"] for row in previous_open_invoices))
+
+    payments_applied = money(
+        sum(
+            sum(money(allocation.get("amount")) for allocation in payment_allocations(payment))
+            for payment in visible_payments()
+            if payment.get("customerId") == customer_id
+            and payment.get("status") == "POSTED"
+            and moment_is_in_window(
+                record_moment(payment, "postedAt", "createdAt"),
+                activity_start_moment,
+                captured_moment,
+            )
+        )
+    ) if prior_document else 0.0
+    account_credit_applied = money(
+        sum(
+            application.get("amount")
+            for application in visible_credit_applications()
+            if application.get("customerId") == customer_id
+            and application.get("status") == "POSTED"
+            and moment_is_in_window(
+                record_moment(application, "appliedAt", "createdAt"),
+                activity_start_moment,
+                captured_moment,
+            )
+        )
+    ) if prior_document else 0.0
+    credits_posted = money(
+        sum(
+            adjustment.get("amount")
+            for adjustment in visible_adjustments()
+            if adjustment.get("customerId") == customer_id
+            and adjustment.get("status") == "POSTED"
+            and adjustment.get("type") == "CREDIT"
+            and moment_is_in_window(
+                record_moment(adjustment, "createdAt"),
+                activity_start_moment,
+                captured_moment,
+            )
+        )
+    ) if prior_document else 0.0
+    debits_posted = money(
+        sum(
+            adjustment.get("amount")
+            for adjustment in visible_adjustments()
+            if adjustment.get("customerId") == customer_id
+            and adjustment.get("status") == "POSTED"
+            and adjustment.get("type") == "DEBIT"
+            and moment_is_in_window(
+                record_moment(adjustment, "createdAt"),
+                activity_start_moment,
+                captured_moment,
+            )
+        )
+    ) if prior_document else 0.0
+
+    current_summary = invoice_summary(invoice)
+    current_account_credit = money(
+        sum(
+            application.get("amount")
+            for application in visible_credit_applications()
+            if application.get("invoiceId") == invoice.get("id")
+            and application.get("status") == "POSTED"
+        )
+    )
+    snapshot = {
+        "version": ACCOUNT_SUMMARY_SNAPSHOT_VERSION,
+        "source": "ISSUE_TIME_LEDGER_SNAPSHOT",
+        "capturedAt": captured_at,
+        "asOfDate": as_of.isoformat(),
+        "currency": "PHP",
+        "previousInvoiceId": prior_document.get("id") if prior_document else "",
+        "previousInvoiceNumber": prior_document.get("invoiceNumber") if prior_document else "",
+        "activityStartAt": activity_start_at,
+        "previousOpenInvoiceCount": len(previous_open_invoices),
+        "previousBalance": previous_balance,
+        "paymentsAppliedSincePreviousInvoice": payments_applied,
+        "accountCreditAppliedSincePreviousInvoice": account_credit_applied,
+        "creditsPostedSincePreviousInvoice": credits_posted,
+        "debitsPostedSincePreviousInvoice": debits_posted,
+        "currentInvoiceTotal": money(current_summary.get("total")),
+        "currentInvoicePaidTotal": money(current_summary.get("paidTotal")),
+        "currentInvoiceAccountCreditApplied": current_account_credit,
+        "currentInvoiceBalance": money(current_summary.get("balance")),
+        "totalAccountAmountDue": money(previous_balance + money(current_summary.get("balance"))),
+        "previousOpenInvoices": previous_open_invoices,
+    }
+    invoice["accountSummaryAtIssue"] = snapshot
+    return deepcopy(snapshot)
+
+
+def customer_rebate_invoice(customer_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    candidates: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for invoice in visible_invoices():
+        if invoice.get("customerId") != customer_id or invoice.get("invoiceType") == "INSTALLATION_FEE":
+            continue
+        summary = invoice_summary(invoice)
+        if summary["status"] in {"DRAFT", "PAID", "VOID"} or money(summary["balance"]) <= 0:
+            continue
+        candidates.append((invoice, summary))
+    if not candidates:
+        raise HTTPException(status_code=409, detail="Customer has no outstanding service bill available for a rebate")
+
+    monthly_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate[0].get("invoiceType") in MONTHLY_INVOICE_TYPES
+    ]
+    eligible = monthly_candidates or candidates
+    return max(
+        eligible,
+        key=lambda candidate: (
+            candidate[0].get("billingCycleStart") or "",
+            candidate[0].get("issueDate") or "",
+            candidate[0].get("createdAt") or "",
+            candidate[0].get("invoiceNumber") or "",
+        ),
+    )
+
+
+def parse_billing_datetime(value: Any, field_name: str) -> datetime:
+    text = clean_text(value)
+    if not text:
+        raise HTTPException(status_code=400, detail=f"{field_name} is required")
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"{field_name} must be a valid date and time") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=BILLING_ZONE)
+    return parsed.astimezone(BILLING_ZONE).replace(microsecond=0)
+
+
+def normalize_outage_customer_ids(values: list[str] | None) -> list[str]:
+    customer_ids = sorted({clean_text(value) for value in values or [] if clean_text(value)})
+    if not customer_ids:
+        raise HTTPException(status_code=400, detail="Select at least one customer")
+    if len(customer_ids) > 500:
+        raise HTTPException(status_code=400, detail="A rebate batch cannot exceed 500 customers")
+    return customer_ids
+
+
+def normalize_outage_window(start_value: Any, end_value: Any) -> tuple[datetime, datetime]:
+    outage_start = parse_billing_datetime(start_value, "outageStart")
+    outage_end = parse_billing_datetime(end_value, "outageEnd")
+    if outage_end <= outage_start:
+        raise HTTPException(status_code=400, detail="Outage end must be after outage start")
+    if outage_end - outage_start > timedelta(days=366):
+        raise HTTPException(status_code=400, detail="Outage duration cannot exceed 366 days")
+    current_business_time = datetime.now(timezone.utc).astimezone(BILLING_ZONE)
+    if outage_end > current_business_time + timedelta(minutes=1):
+        raise HTTPException(status_code=400, detail="Outage end cannot be in the future")
+    return outage_start, outage_end
+
+
+def next_local_month_start(source: datetime) -> datetime:
+    if source.month == 12:
+        return datetime(source.year + 1, 1, 1, tzinfo=BILLING_ZONE)
+    return datetime(source.year, source.month + 1, 1, tzinfo=BILLING_ZONE)
+
+
+def prorated_monthly_outage_amount(monthly_rate: float, outage_start: datetime, outage_end: datetime) -> float:
+    cursor = outage_start
+    total = 0.0
+    while cursor < outage_end:
+        current_month_start = datetime(cursor.year, cursor.month, 1, tzinfo=BILLING_ZONE)
+        following_month_start = next_local_month_start(cursor)
+        segment_end = min(outage_end, following_month_start)
+        month_seconds = (following_month_start - current_month_start).total_seconds()
+        segment_seconds = (segment_end - cursor).total_seconds()
+        total += float(monthly_rate) * segment_seconds / month_seconds
+        cursor = segment_end
+    return money(total)
+
+
+def existing_outage_rebate(customer_id: str, outage_start: str, outage_end: str) -> dict[str, Any] | None:
+    return next(
+        (
+            adjustment
+            for adjustment in visible_adjustments()
+            if adjustment.get("customerId") == customer_id
+            and adjustment.get("status") == "POSTED"
+            and adjustment.get("adjustmentSource") == "SERVICE_REBATE"
+            and adjustment.get("outageStart") == outage_start
+            and adjustment.get("outageEnd") == outage_end
+        ),
+        None,
+    )
+
+
+def outage_rebate_quote(payload: OutageRebatePreviewPayload | OutageRebateBatchPayload) -> dict[str, Any]:
+    customer_ids = normalize_outage_customer_ids(payload.customerIds)
+    outage_start, outage_end = normalize_outage_window(payload.outageStart, payload.outageEnd)
+    outage_start_value = outage_start.isoformat()
+    outage_end_value = outage_end.isoformat()
+    duration_minutes = round((outage_end - outage_start).total_seconds() / 60, 2)
+    rows: list[dict[str, Any]] = []
+
+    for customer_id in customer_ids:
+        customer = resolve_customer(customer_id)
+        subscription_rows: list[dict[str, Any]] = []
+        for subscription in visible_subscriptions():
+            if (
+                subscription.get("customerId") != customer_id
+                or subscription.get("status") != "ACTIVE"
+                or money(subscription.get("monthlyRate")) <= 0
+            ):
+                continue
+            subscription_start_day = parse_day(subscription.get("startDate"), "subscription.startDate")
+            subscription_start = datetime(
+                subscription_start_day.year,
+                subscription_start_day.month,
+                subscription_start_day.day,
+                tzinfo=BILLING_ZONE,
+            )
+            effective_start = max(outage_start, subscription_start)
+            if effective_start >= outage_end:
+                continue
+            calculated_amount = prorated_monthly_outage_amount(
+                money(subscription.get("monthlyRate")),
+                effective_start,
+                outage_end,
+            )
+            if calculated_amount <= 0:
+                continue
+            subscription_rows.append(
+                {
+                    "subscriptionId": subscription["id"],
+                    "serviceAccountId": clean_text(subscription.get("serviceAccountId")),
+                    "serviceAccountNumber": clean_text(subscription.get("serviceAccountNumber")),
+                    "serviceId": clean_text(subscription.get("serviceId")),
+                    "planName": clean_text(subscription.get("planName")) or "Monthly service",
+                    "monthlyRate": money(subscription.get("monthlyRate")),
+                    "effectiveOutageStart": effective_start.isoformat(),
+                    "outageEnd": outage_end_value,
+                    "durationMinutes": round((outage_end - effective_start).total_seconds() / 60, 2),
+                    "calculatedAmount": calculated_amount,
+                }
+            )
+
+        calculated_amount = money(sum(row["calculatedAmount"] for row in subscription_rows))
+        monthly_recurring_charge = money(sum(row["monthlyRate"] for row in subscription_rows))
+        invoice = None
+        invoice_state = None
+        ineligible_reason = ""
+        try:
+            invoice, invoice_state = customer_rebate_invoice(customer_id)
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                raise
+
+        duplicate = existing_outage_rebate(customer_id, outage_start_value, outage_end_value)
+        if duplicate:
+            ineligible_reason = "Rebate already posted to this customer account for this outage window"
+        elif not subscription_rows:
+            ineligible_reason = "Customer has no active priced subscription during this outage window"
+        elif calculated_amount <= 0:
+            ineligible_reason = "The selected outage duration produces no billable rebate"
+
+        invoice_balance = money(invoice_state.get("balance")) if invoice_state else 0.0
+        rebate_amount = calculated_amount if not ineligible_reason else 0.0
+        apply_now_amount = money(min(rebate_amount, invoice_balance))
+        carry_forward_amount = money(max(0, rebate_amount - apply_now_amount))
+        application_mode = (
+            "CURRENT_BILL_AND_ACCOUNT_CREDIT"
+            if apply_now_amount > 0 and carry_forward_amount > 0
+            else "CURRENT_BILL"
+            if apply_now_amount > 0
+            else "NEXT_INVOICE"
+        )
+        rows.append(
+            {
+                "customerId": customer_id,
+                "customer": customer,
+                "eligible": not ineligible_reason,
+                "ineligibleReason": ineligible_reason,
+                "subscriptionCount": len(subscription_rows),
+                "subscriptions": subscription_rows,
+                "monthlyRecurringCharge": monthly_recurring_charge,
+                "calculatedAmount": calculated_amount,
+                "rebateAmount": rebate_amount,
+                "applyNowAmount": apply_now_amount,
+                "carryForwardAmount": carry_forward_amount,
+                "applicationMode": application_mode,
+                "cappedToInvoiceBalance": False,
+                "invoiceId": invoice.get("id") if invoice else "",
+                "invoiceNumber": invoice.get("invoiceNumber") if invoice else "",
+                "invoiceBalance": invoice_balance,
+            }
+        )
+
+    rows.sort(key=lambda row: (customer_name(row["customer"]).lower(), row["customerId"]))
+    fingerprint_rows = [
+        {
+            "customerId": row["customerId"],
+            "eligible": row["eligible"],
+            "ineligibleReason": row["ineligibleReason"],
+            "invoiceId": row["invoiceId"],
+            "invoiceBalance": row["invoiceBalance"],
+            "subscriptions": [
+                {
+                    "subscriptionId": subscription["subscriptionId"],
+                    "monthlyRate": subscription["monthlyRate"],
+                    "effectiveOutageStart": subscription["effectiveOutageStart"],
+                    "calculatedAmount": subscription["calculatedAmount"],
+                }
+                for subscription in row["subscriptions"]
+            ],
+            "calculatedAmount": row["calculatedAmount"],
+            "rebateAmount": row["rebateAmount"],
+            "applyNowAmount": row["applyNowAmount"],
+            "carryForwardAmount": row["carryForwardAmount"],
+            "applicationMode": row["applicationMode"],
+        }
+        for row in rows
+    ]
+    quote_fingerprint = posting_fingerprint(
+        "outage_rebate_quote",
+        {
+            "version": OUTAGE_REBATE_QUOTE_VERSION,
+            "customerIds": customer_ids,
+            "outageStart": outage_start_value,
+            "outageEnd": outage_end_value,
+            "rows": fingerprint_rows,
+        },
+    )
+    eligible_rows = [row for row in rows if row["eligible"]]
+    return {
+        "version": OUTAGE_REBATE_QUOTE_VERSION,
+        "timezone": BILLING_TIMEZONE,
+        "calculationMethod": "ACTUAL_CALENDAR_MONTH_HOURLY_PRORATION",
+        "outageStart": outage_start_value,
+        "outageEnd": outage_end_value,
+        "durationMinutes": duration_minutes,
+        "durationHours": round(duration_minutes / 60, 2),
+        "customerCount": len(rows),
+        "eligibleCount": len(eligible_rows),
+        "ineligibleCount": len(rows) - len(eligible_rows),
+        "canPost": bool(rows) and len(eligible_rows) == len(rows),
+        "totalCalculatedAmount": money(sum(row["calculatedAmount"] for row in rows)),
+        "totalRebateAmount": money(sum(row["rebateAmount"] for row in eligible_rows)),
+        "quoteFingerprint": quote_fingerprint,
+        "rows": rows,
+    }
+
+
+def outage_rebate_batch_response(
+    batch_adjustments: list[dict[str, Any]],
+    *,
+    idempotent_replay: bool = False,
+) -> dict[str, Any]:
+    ordered = sorted(
+        [adjustment_summary(adjustment) for adjustment in batch_adjustments],
+        key=lambda adjustment: (
+            customer_name(adjustment.get("customer") or {}).lower(),
+            adjustment.get("customerId") or "",
+        ),
+    )
+    first = ordered[0]
+    return {
+        "batchId": first.get("outageBatchId"),
+        "outageStart": first.get("outageStart"),
+        "outageEnd": first.get("outageEnd"),
+        "timezone": first.get("outageTimezone") or BILLING_TIMEZONE,
+        "durationMinutes": first.get("outageDurationMinutes"),
+        "durationHours": first.get("outageDurationHours"),
+        "customerCount": len(ordered),
+        "totalRebateAmount": money(sum(adjustment.get("amount") for adjustment in ordered)),
+        "totalAppliedAmount": money(sum(adjustment.get("creditAppliedAmount") for adjustment in ordered)),
+        "totalAvailableCredit": money(sum(adjustment.get("creditAvailableAmount") for adjustment in ordered)),
+        "previewFingerprint": first.get("outageQuoteFingerprint"),
+        "idempotentReplay": idempotent_replay,
+        "adjustments": ordered,
+    }
+
+
+def post_credit_application(
+    invoice: dict[str, Any],
+    amount: float,
+    actor_username: str,
+    *,
+    source_payment: dict[str, Any] | None = None,
+    source_adjustment: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if (source_payment is None) == (source_adjustment is None):
+        raise RuntimeError("A credit application requires exactly one source")
+    timestamp = now_iso()
+    customer_id = clean_text(invoice.get("customerId"))
+    source_type = "PAYMENT_ADVANCE" if source_payment is not None else "ADJUSTMENT_CREDIT"
+    source_label = (
+        "Advance payment"
+        if source_payment is not None
+        else (
+            "Service rebate"
+            if source_adjustment.get("adjustmentSource") == "SERVICE_REBATE"
+            else "Account credit"
+        )
+    )
+    application = {
+        "id": str(uuid4()),
+        "customerId": customer_id,
+        "customer": (
+            invoice.get("customer")
+            or (source_payment or {}).get("customer")
+            or (source_adjustment or {}).get("customer")
+            or {}
+        ),
+        "sourceType": source_type,
+        "sourcePaymentId": (source_payment or {}).get("id") or "",
+        "sourceReceiptNumber": (source_payment or {}).get("receiptNumber") or "",
+        "sourceAdjustmentId": (source_adjustment or {}).get("id") or "",
+        "sourceLabel": source_label,
+        "sourceReason": (source_adjustment or {}).get("reason") or "",
+        "invoiceId": invoice["id"],
+        "invoiceNumber": invoice.get("invoiceNumber") or "",
+        "amount": money(amount),
+        "status": "POSTED",
+        "appliedAt": timestamp,
+        "appliedByUsername": actor_username,
+        "createdAt": timestamp,
+        "updatedAt": timestamp,
+        "deletedAt": None,
+    }
+    credit_applications.append(application)
+    invoice["updatedAt"] = timestamp
+    audit_action = (
+        "billing_advance_credit_applied"
+        if source_payment is not None
+        else "billing_adjustment_credit_applied"
+    )
+    add_audit(
+        audit_action,
+        "BillingCreditApplication",
+        application["id"],
+        {
+            "customerId": customer_id,
+            "sourceType": source_type,
+            "sourcePaymentId": application["sourcePaymentId"],
+            "sourceReceiptNumber": application["sourceReceiptNumber"],
+            "sourceAdjustmentId": application["sourceAdjustmentId"],
+            "invoiceId": invoice["id"],
+            "invoiceNumber": invoice.get("invoiceNumber") or "",
+            "amount": application["amount"],
+        },
+        actor_username,
+    )
+    return application
+
+
+def apply_adjustment_credit_to_invoice(
+    adjustment: dict[str, Any],
+    invoice: dict[str, Any],
+    actor_username: str = "system",
+) -> list[dict[str, Any]]:
+    if invoice.get("status") in {"DRAFT", "VOID"}:
+        return []
+    if adjustment.get("customerId") != invoice.get("customerId"):
+        raise RuntimeError("A customer credit cannot be applied to another customer's invoice")
+    available = adjustment_credit_remaining(adjustment)
+    invoice_balance = money(invoice_summary(invoice).get("balance"))
+    if available <= 0 or invoice_balance <= 0:
+        return []
+    return [
+        post_credit_application(
+            invoice,
+            min(invoice_balance, available),
+            actor_username,
+            source_adjustment=adjustment,
+        )
+    ]
+
+
+def apply_available_customer_credit(invoice: dict[str, Any], actor_username: str = "system") -> list[dict[str, Any]]:
+    """Apply posted advance and adjustment credits FIFO to a newly issued invoice."""
+    if invoice.get("status") in {"DRAFT", "VOID"}:
+        return []
+    customer_id = clean_text(invoice.get("customerId"))
+    if not customer_id or customer_credit_balance(customer_id) <= 0:
+        return []
+    applied_rows: list[dict[str, Any]] = []
+    sources = [
+        {
+            "sourceType": "PAYMENT_ADVANCE",
+            "source": payment,
+            "sortAt": payment.get("paymentDate") or payment.get("createdAt") or "",
+            "sortId": payment.get("receiptNumber") or payment.get("id") or "",
+        }
+        for payment in visible_payments()
+        if payment.get("customerId") == customer_id
+        and payment.get("status") == "POSTED"
+        and payment_advance_remaining(payment) > 0
+    ]
+    sources.extend(
+        {
+            "sourceType": "ADJUSTMENT_CREDIT",
+            "source": adjustment,
+            "sortAt": adjustment.get("createdAt") or "",
+            "sortId": adjustment.get("id") or "",
+        }
+        for adjustment in visible_adjustments()
+        if adjustment.get("customerId") == customer_id
+        and adjustment_credit_remaining(adjustment) > 0
+    )
+    sources.sort(
+        key=lambda source: (
+            source["sortAt"],
+            source["sourceType"],
+            source["sortId"],
+        )
+    )
+    for source_row in sources:
+        invoice_balance = money(invoice_summary(invoice).get("balance"))
+        if invoice_balance <= 0:
+            break
+        source = source_row["source"]
+        available = (
+            payment_advance_remaining(source)
+            if source_row["sourceType"] == "PAYMENT_ADVANCE"
+            else adjustment_credit_remaining(source)
+        )
+        if available <= 0:
+            continue
+        applied_amount = money(min(invoice_balance, available))
+        application = post_credit_application(
+            invoice,
+            applied_amount,
+            actor_username,
+            source_payment=source if source_row["sourceType"] == "PAYMENT_ADVANCE" else None,
+            source_adjustment=source if source_row["sourceType"] == "ADJUSTMENT_CREDIT" else None,
+        )
+        applied_rows.append(application)
+    return applied_rows
+
+
+def normalize_payment_allocations(
+    payload: PaymentPayload,
+    amount: float,
+    advance_amount: float = 0,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any] | None]:
+    raw_allocations = payload.allocations or []
+    if raw_allocations:
+        if payload.invoiceId:
+            requested_invoice_ids = {clean_text(allocation.invoiceId) for allocation in raw_allocations}
+            if requested_invoice_ids != {clean_text(payload.invoiceId)}:
+                raise HTTPException(status_code=400, detail="invoiceId must match the supplied allocation invoice")
+    elif payload.invoiceId:
+        raw_allocations = [PaymentAllocationPayload(invoiceId=payload.invoiceId, amount=money(amount - advance_amount))]
+    elif advance_amount <= 0:
+        raise HTTPException(status_code=400, detail="invoiceId or allocations are required")
+
+    customer_id = clean_text(payload.customerId)
+    customer: dict[str, Any] | None = None
+    primary_invoice: dict[str, Any] | None = None
+    allocations: list[dict[str, Any]] = []
+    seen_invoice_ids: set[str] = set()
+
+    for allocation_payload in raw_allocations:
+        invoice_id = clean_text(allocation_payload.invoiceId)
+        if not invoice_id:
+            raise HTTPException(status_code=400, detail="Allocation invoiceId is required")
+        if invoice_id in seen_invoice_ids:
+            raise HTTPException(status_code=400, detail="Duplicate invoice allocations are not allowed")
+        seen_invoice_ids.add(invoice_id)
+        invoice = find_invoice(invoice_id)
+        allocation_amount = money(allocation_payload.amount)
+        if allocation_amount <= 0:
+            raise HTTPException(status_code=400, detail="Allocation amount must be greater than zero")
+        if customer_id and invoice["customerId"] != customer_id:
+            raise HTTPException(status_code=400, detail="All allocated invoices must belong to the selected customer")
+        if not customer_id:
+            customer_id = invoice["customerId"]
+            customer = invoice["customer"]
+        elif customer is None:
+            customer = invoice["customer"]
+        if invoice["customerId"] != customer_id:
+            raise HTTPException(status_code=400, detail="All allocated invoices must belong to the same customer")
+        validate_invoice_payment(invoice, allocation_amount)
+        allocation_promotion_ids = normalized_promotion_ids(
+            allocation_payload.promotionIds,
+            "allocation promotion IDs",
+        )
+        legacy_promotion_id = clean_text(allocation_payload.promotionId)
+        if legacy_promotion_id and legacy_promotion_id not in allocation_promotion_ids:
+            allocation_promotion_ids.append(legacy_promotion_id)
+        primary_invoice = primary_invoice or invoice
+        allocations.append(
+            {
+                "id": str(uuid4()),
+                "invoiceId": invoice["id"],
+                "invoiceNumber": invoice["invoiceNumber"],
+                "customerId": invoice["customerId"],
+                "amount": allocation_amount,
+                "promotionId": allocation_promotion_ids[0] if len(allocation_promotion_ids) == 1 else "",
+                "promotionIds": allocation_promotion_ids,
+                "promotionQuoteDate": clean_text(allocation_payload.promotionQuoteDate)[:20],
+                "promotionQuoteFingerprint": clean_text(allocation_payload.promotionQuoteFingerprint)[:128],
+                "balanceBefore": money(invoice_summary(invoice)["balance"]),
+                "serviceAccountId": invoice.get("serviceAccountId", ""),
+                "serviceAccountNumber": invoice.get("serviceAccountNumber", ""),
+                "serviceId": invoice.get("serviceId", ""),
+                "catalogName": invoice.get("catalogName", ""),
+                "dueDate": invoice.get("dueDate", ""),
+            }
+        )
+
+    allocation_total = money(sum(allocation["amount"] for allocation in allocations))
+    if money(allocation_total + advance_amount) != amount:
+        raise HTTPException(
+            status_code=400,
+            detail="Payment amount must equal invoice allocations plus advance credit",
+        )
+    if customer is None:
+        if not customer_id:
+            raise HTTPException(status_code=400, detail="customerId is required for an advance payment")
+        customer = resolve_customer(customer_id)
+    return customer, allocations, primary_invoice if len(allocations) == 1 else None
+
+
+def payment_promotion_adjustment(invoice_id: str, promotion_id: str = "") -> dict[str, Any] | None:
     for adjustment in invoice_adjustments(invoice_id):
-        if adjustment.get("adjustmentSource") == "PAYMENT_PROMOTION":
+        if (
+            adjustment.get("adjustmentSource") == "PAYMENT_PROMOTION"
+            and (not promotion_id or clean_text(adjustment.get("promotionId")) == promotion_id)
+        ):
             return adjustment
     return None
 
@@ -1602,28 +2996,94 @@ def promotion_matches_invoice_scope(promotion: dict[str, Any], invoice: dict[str
     return False
 
 
+def payment_promotion_validity_day(invoice: dict[str, Any], promotion: dict[str, Any], payment_day: date) -> date:
+    if promotion_payment_rule(promotion) == "EARLY_BIRD":
+        return payment_day
+    for field_name in ("billingCycleStart", "issueDate", "billingCycleEnd", "dueDate"):
+        field_value = clean_text(invoice.get(field_name))
+        if field_value:
+            return parse_day(field_value, field_name)
+    return payment_day
+
+
+def invoice_qualified_promotion_terms(invoice: dict[str, Any]) -> list[dict[str, Any]]:
+    snapshots = invoice.get("qualifiedPromotions")
+    snapshot_by_id = {
+        clean_text(snapshot.get("id")): dict(snapshot)
+        for snapshot in snapshots or []
+        if isinstance(snapshot, dict) and clean_text(snapshot.get("id"))
+    }
+    promotion_ids = normalized_promotion_ids(
+        invoice.get("qualifiedPromotionIds"),
+        "invoice qualified promotion IDs",
+    )
+    if not promotion_ids:
+        promotion_ids = list(snapshot_by_id)
+    if not promotion_ids:
+        subscription_id = clean_text(invoice.get("subscriptionId"))
+        if subscription_id:
+            try:
+                subscription = find_subscription(subscription_id)
+            except HTTPException:
+                subscription = None
+            if subscription is not None:
+                subscription_snapshots = subscription.get("qualifiedPromotions") or []
+                snapshot_by_id = {
+                    clean_text(snapshot.get("id")): dict(snapshot)
+                    for snapshot in subscription_snapshots
+                    if isinstance(snapshot, dict) and clean_text(snapshot.get("id"))
+                }
+                promotion_ids = normalized_promotion_ids(
+                    subscription.get("qualifiedPromotionIds"),
+                    "subscription qualified promotion IDs",
+                )
+                if not promotion_ids:
+                    promotion_ids = list(snapshot_by_id)
+    if not promotion_ids:
+        legacy_promotion_id = clean_text(invoice.get("earlyBirdPromotionId"))
+        if clean_bool(invoice.get("earlyBirdEligible")) and legacy_promotion_id:
+            promotion_ids = [legacy_promotion_id]
+
+    promotion_terms: list[dict[str, Any]] = []
+    for promotion_id in promotion_ids:
+        try:
+            live_promotion = find_promotion(promotion_id)
+        except HTTPException:
+            continue
+        snapshot = snapshot_by_id.get(promotion_id, {})
+        terms = {
+            **live_promotion,
+            **snapshot,
+            "id": promotion_id,
+            "status": live_promotion.get("status"),
+            "startDate": live_promotion.get("startDate"),
+            "endDate": live_promotion.get("endDate"),
+            "requiresApproval": live_promotion.get("requiresApproval"),
+            "billingMode": live_promotion.get("billingMode"),
+            "appliesTo": live_promotion.get("appliesTo"),
+        }
+        promotion_terms.append(terms)
+    return sorted(promotion_terms, key=promotion_order_key)
+
+
 def payment_promotion_option(invoice: dict[str, Any], promotion: dict[str, Any], payment_day: date) -> dict[str, Any] | None:
     summary = invoice_summary(invoice)
     if summary["status"] in ["VOID", "DRAFT", "PAID"] or money(summary.get("balance")) <= 0:
         return None
-    if payment_promotion_adjustment(invoice["id"]):
+    if payment_promotion_adjustment(invoice["id"], clean_text(promotion.get("id"))):
         return None
     if not promotion_matches_invoice_scope(promotion, invoice):
         return None
-    if not promotion_is_active(promotion, payment_day):
+    payment_rule = promotion_payment_rule(promotion)
+    if not promotion_is_active(promotion, payment_promotion_validity_day(invoice, promotion, payment_day)):
         return None
     if clean_bool(promotion.get("requiresApproval")):
         return None
     if promotion.get("billingMode") and promotion.get("billingMode") != invoice.get("billingMode"):
         return None
-    if promotion.get("customerId") and promotion.get("customerId") != invoice.get("customerId"):
-        return None
-    if promotion.get("catalogId") and promotion.get("catalogId") != invoice.get("catalogId"):
-        return None
-    payment_rule = promotion_payment_rule(promotion)
-    auto_apply = False
+    auto_apply = True
     if payment_rule == "EARLY_BIRD":
-        if not summary.get("earlyBirdEligible") or clean_text(summary.get("earlyBirdPromotionId")) != promotion["id"]:
+        if not summary.get("earlyBirdEligible"):
             return None
         cutoff_date = summary.get("earlyBirdCutoffDate")
         if not cutoff_date:
@@ -1631,7 +3091,6 @@ def payment_promotion_option(invoice: dict[str, Any], promotion: dict[str, Any],
         cutoff_day = parse_day(cutoff_date, "earlyBirdCutoffDate")
         if payment_day >= cutoff_day:
             return None
-        auto_apply = True
     discount_amount = money(min(promotion_discount_amount(promotion, money(summary["balance"])), money(summary["balance"])))
     if discount_amount <= 0:
         return None
@@ -1655,7 +3114,7 @@ def payment_promotion_option(invoice: dict[str, Any], promotion: dict[str, Any],
 def eligible_payment_promotions(invoice: dict[str, Any], payment_day: date) -> list[dict[str, Any]]:
     options = [
         option
-        for promotion in visible_promotions()
+        for promotion in invoice_qualified_promotion_terms(invoice)
         if (option := payment_promotion_option(invoice, promotion, payment_day)) is not None
     ]
     return sorted(
@@ -1672,24 +3131,124 @@ def recommended_payment_promotion(options: list[dict[str, Any]]) -> dict[str, An
     return next((option for option in options if option.get("autoApply")), options[0] if options else None)
 
 
-def automatic_payment_promotion_for_payment(invoice: dict[str, Any], amount: float, payment_day: date) -> dict[str, Any] | None:
-    for option in eligible_payment_promotions(invoice, payment_day):
-        if option.get("autoApply") and amount == money(option.get("discountedPayable")):
-            return option
-    return None
+def recommended_payment_promotion_bundle(
+    invoice: dict[str, Any],
+    options: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    automatic_options = [option for option in options if option.get("autoApply")]
+    if not automatic_options:
+        return None
+    highest_priority = automatic_options[0]
+    selected_options = (
+        [option for option in automatic_options if clean_bool(option.get("stackable"))]
+        if clean_bool(highest_priority.get("stackable"))
+        else [highest_priority]
+    )
+    quote = promotion_bundle_quote(selected_options, money(invoice_summary(invoice)["balance"]))
+    if quote["discountedPayable"] <= 0 and len(selected_options) > 1:
+        quote = promotion_bundle_quote([highest_priority], money(invoice_summary(invoice)["balance"]))
+    if quote["discountedPayable"] <= 0 or not quote["promotions"]:
+        return None
+    return {
+        **quote,
+        "invoiceId": invoice["id"],
+        "invoiceNumber": invoice["invoiceNumber"],
+        "invoiceBalance": money(invoice_summary(invoice)["balance"]),
+        "autoApply": True,
+    }
 
 
-def payment_promotion_for_payment(invoice: dict[str, Any], promotion_id: str, amount: float, payment_day: date) -> dict[str, Any]:
-    promotion = find_promotion(promotion_id)
-    option = payment_promotion_option(invoice, promotion, payment_day)
-    if option is None:
-        raise HTTPException(status_code=400, detail="Promotion is not eligible for this invoice payment")
-    discounted_payable = money(option["discountedPayable"])
+def payment_promotion_quote(invoice: dict[str, Any], payment_day: date) -> dict[str, Any]:
+    """Return the authoritative automatic-promotion quote used by payment channels."""
+    summary = invoice_summary(invoice)
+    invoice_balance = money(summary.get("balance"))
+    options = eligible_payment_promotions(invoice, payment_day)
+    bundle = recommended_payment_promotion_bundle(invoice, options) or {
+        "promotionIds": [],
+        "promotions": [],
+        "discountAmount": 0.0,
+        "discountedPayable": invoice_balance,
+    }
+    promotion_rows = [
+        {
+            "id": clean_text(promotion.get("id")),
+            "name": clean_text(promotion.get("name")),
+            "promoCode": clean_text(promotion.get("promoCode")),
+            "paymentRule": clean_text(promotion.get("paymentRule")),
+            "discountAmount": money(promotion.get("discountAmountForInvoice")),
+        }
+        for promotion in bundle.get("promotions") or []
+    ]
+    quote_payload = {
+        "version": PAYMENT_PROMOTION_QUOTE_VERSION,
+        "paymentDate": payment_day.isoformat(),
+        "invoiceId": invoice["id"],
+        "invoiceBalance": invoice_balance,
+        "promotionIds": list(bundle.get("promotionIds") or []),
+        "promotionDiscountAmount": money(bundle.get("discountAmount")),
+        "discountedPayable": money(bundle.get("discountedPayable", invoice_balance)),
+    }
+    return {
+        "version": PAYMENT_PROMOTION_QUOTE_VERSION,
+        "paymentDate": payment_day.isoformat(),
+        "quoteFingerprint": posting_fingerprint("payment_promotion_quote", quote_payload),
+        "invoiceBalance": invoice_balance,
+        "promotionIds": quote_payload["promotionIds"],
+        "promotions": promotion_rows,
+        "promotionDiscountAmount": quote_payload["promotionDiscountAmount"],
+        "discountedPayable": quote_payload["discountedPayable"],
+        "hasAutomaticPromotion": bool(quote_payload["promotionIds"]),
+    }
+
+
+def payment_promotions_for_payment(
+    invoice: dict[str, Any],
+    promotion_ids: list[str],
+    amount: float,
+    payment_day: date,
+) -> list[dict[str, Any]]:
+    requested_ids = normalized_promotion_ids(promotion_ids, "payment promotion IDs")
+    options_by_id = {
+        option["id"]: option
+        for option in eligible_payment_promotions(invoice, payment_day)
+    }
+    selected_options: list[dict[str, Any]] = []
+    for promotion_id in requested_ids:
+        option = options_by_id.get(promotion_id)
+        if option is None:
+            raise HTTPException(status_code=400, detail="Promotion is not eligible for this invoice payment")
+        selected_options.append(option)
+    quote = promotion_bundle_quote(selected_options, money(invoice_summary(invoice)["balance"]))
+    discounted_payable = money(quote["discountedPayable"])
+    if discounted_payable <= 0:
+        raise HTTPException(status_code=400, detail="Combined promotions must leave a payable invoice balance")
     if amount > discounted_payable:
         raise HTTPException(status_code=400, detail=f"Payment amount cannot exceed promo payable balance of {discounted_payable:.2f}")
     if amount != discounted_payable:
         raise HTTPException(status_code=400, detail=f"Payment amount must equal promo payable balance of {discounted_payable:.2f} to apply this promotion")
-    return option
+    return quote["promotions"]
+
+
+def automatic_payment_promotions_for_payment(
+    invoice: dict[str, Any],
+    amount: float,
+    payment_day: date,
+) -> list[dict[str, Any]]:
+    options = eligible_payment_promotions(invoice, payment_day)
+    bundle = recommended_payment_promotion_bundle(invoice, options)
+    if bundle is not None and amount == money(bundle.get("discountedPayable")):
+        return bundle["promotions"]
+    return []
+
+
+def automatic_payment_promotion_for_payment(invoice: dict[str, Any], amount: float, payment_day: date) -> dict[str, Any] | None:
+    promotions_for_payment = automatic_payment_promotions_for_payment(invoice, amount, payment_day)
+    return promotions_for_payment[0] if len(promotions_for_payment) == 1 else None
+
+
+def payment_promotion_for_payment(invoice: dict[str, Any], promotion_id: str, amount: float, payment_day: date) -> dict[str, Any]:
+    promotions_for_payment = payment_promotions_for_payment(invoice, [promotion_id], amount, payment_day)
+    return promotions_for_payment[0]
 
 
 def invoice_month_key(invoice: dict[str, Any]) -> str:
@@ -1841,7 +3400,8 @@ def customer_balance(customer_id: str) -> dict[str, Any]:
         customer = billing_customer_snapshot(customer_id)
     invoiced_total = money(sum(invoice["total"] for invoice in customer_invoices))
     paid_total = money(sum(payment["amount"] for payment in customer_payments))
-    balance = money(invoiced_total - paid_total)
+    balance = money(sum(invoice["balance"] for invoice in customer_invoices))
+    available_credit = customer_credit_balance(customer_id)
     overdue_total = money(sum(invoice["balance"] for invoice in customer_invoices if invoice["status"] == "OVERDUE"))
     unpaid_months = unpaid_month_summary(customer_invoices)
     missing_cycles = missing_billing_cycle_summary_for_subscriptions(customer_subscriptions, customer_invoices)
@@ -1850,12 +3410,585 @@ def customer_balance(customer_id: str) -> dict[str, Any]:
         "invoicedTotal": invoiced_total,
         "paidTotal": paid_total,
         "balance": balance,
-        "credit": money(abs(balance)) if balance < 0 else 0,
+        "credit": available_credit,
         "overdueTotal": overdue_total,
         "openInvoices": sum(1 for invoice in customer_invoices if invoice["status"] not in ["PAID", "VOID"]),
         **unpaid_months,
         **missing_cycles,
     }
+
+
+def latest_posted_customer_payments() -> dict[str, dict[str, Any]]:
+    latest_by_customer: dict[str, dict[str, Any]] = {}
+    for payment in visible_payments():
+        customer_id = clean_text(payment.get("customerId"))
+        if not customer_id or payment.get("status") != "POSTED":
+            continue
+        current = latest_by_customer.get(customer_id)
+        recency = (
+            clean_text(payment.get("paymentDate")),
+            clean_text(payment.get("postedAt") or payment.get("createdAt")),
+            clean_text(payment.get("id")),
+        )
+        current_recency = (
+            clean_text(current.get("paymentDate")),
+            clean_text(current.get("postedAt") or current.get("createdAt")),
+            clean_text(current.get("id")),
+        ) if current else ("", "", "")
+        if current is None or recency > current_recency:
+            latest_by_customer[customer_id] = payment
+    return latest_by_customer
+
+
+def reporting_record_day(value: Any) -> date | None:
+    text = clean_text(value)
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def posting_active_as_of(
+    record: dict[str, Any],
+    as_of: date,
+    posting_fields: tuple[str, ...],
+) -> bool:
+    posting_days = [
+        parsed
+        for field_name in posting_fields
+        if (parsed := reporting_record_day(record.get(field_name))) is not None
+    ]
+    if posting_days and max(posting_days) > as_of:
+        return False
+    status = normalize_upper(record.get("status"))
+    if status == "POSTED":
+        return True
+    if status != "VOID":
+        return False
+    voided_day = reporting_record_day(record.get("voidedAt"))
+    return voided_day is not None and voided_day > as_of
+
+
+def invoice_active_as_of(invoice: dict[str, Any], as_of: date) -> bool:
+    status = normalize_upper(invoice.get("status"))
+    if status == "DRAFT":
+        return False
+    posting_days = [
+        parsed
+        for value in (invoice.get("createdAt"), invoice.get("issueDate"))
+        if (parsed := reporting_record_day(value)) is not None
+    ]
+    if posting_days and max(posting_days) > as_of:
+        return False
+    if status != "VOID":
+        return True
+    voided_day = reporting_record_day(invoice.get("voidedAt"))
+    return voided_day is not None and voided_day > as_of
+
+
+def parse_billing_month(value: str | None, default_day: date) -> date:
+    month_value = clean_text(value) or default_day.strftime("%Y-%m")
+    try:
+        parsed = date.fromisoformat(f"{month_value}-01")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="billingMonth must be YYYY-MM") from exc
+    if parsed.strftime("%Y-%m") != month_value:
+        raise HTTPException(status_code=400, detail="billingMonth must be YYYY-MM")
+    return parsed
+
+
+def receivables_aging_summary(
+    report_day: date,
+    adjustments_by_invoice: dict[str, list[dict[str, Any]]],
+    cash_by_invoice: dict[str, float],
+    account_credit_by_invoice: dict[str, float],
+) -> dict[str, Any]:
+    bucket_rows = [
+        {"key": "CURRENT", "label": "Current", "amount": 0.0, "invoiceCount": 0},
+        {"key": "DAYS_1_30", "label": "1-30 Days", "amount": 0.0, "invoiceCount": 0},
+        {"key": "DAYS_31_60", "label": "31-60 Days", "amount": 0.0, "invoiceCount": 0},
+        {"key": "DAYS_61_90", "label": "61-90 Days", "amount": 0.0, "invoiceCount": 0},
+        {"key": "DAYS_90_PLUS", "label": "90+ Days", "amount": 0.0, "invoiceCount": 0},
+    ]
+    buckets_by_key = {bucket["key"]: bucket for bucket in bucket_rows}
+    customer_ids_by_bucket = {bucket["key"]: set() for bucket in bucket_rows}
+    open_customer_ids: set[str] = set()
+    overdue_customer_ids: set[str] = set()
+    open_amount = 0.0
+    overdue_amount = 0.0
+    open_invoice_count = 0
+    overdue_invoice_count = 0
+    oldest_days_overdue = 0
+
+    for invoice in visible_invoices():
+        if not invoice_active_as_of(invoice, report_day):
+            continue
+        invoice_id = clean_text(invoice.get("id"))
+        subtotal = money(
+            sum(item.get("amount", line_amount(item)) for item in invoice.get("lineItems", []))
+        )
+        invoice_adjustments = adjustments_by_invoice.get(invoice_id, [])
+        debit_total = money(
+            sum(row.get("amount") for row in invoice_adjustments if row.get("type") == "DEBIT")
+        )
+        credit_total = money(
+            sum(row.get("amount") for row in invoice_adjustments if row.get("type") == "CREDIT")
+        )
+        billed_amount = money(max(0, subtotal + debit_total - credit_total))
+        outstanding = money(
+            max(
+                0,
+                billed_amount
+                - cash_by_invoice.get(invoice_id, 0.0)
+                - account_credit_by_invoice.get(invoice_id, 0.0),
+            )
+        )
+        if outstanding <= 0:
+            continue
+
+        due_day = reporting_record_day(invoice.get("dueDate"))
+        days_overdue = max(0, (report_day - due_day).days) if due_day and due_day < report_day else 0
+        if days_overdue <= 0:
+            bucket_key = "CURRENT"
+        elif days_overdue <= 30:
+            bucket_key = "DAYS_1_30"
+        elif days_overdue <= 60:
+            bucket_key = "DAYS_31_60"
+        elif days_overdue <= 90:
+            bucket_key = "DAYS_61_90"
+        else:
+            bucket_key = "DAYS_90_PLUS"
+
+        customer_id = clean_text(invoice.get("customerId"))
+        bucket = buckets_by_key[bucket_key]
+        bucket["amount"] = money(bucket["amount"] + outstanding)
+        bucket["invoiceCount"] += 1
+        if customer_id:
+            customer_ids_by_bucket[bucket_key].add(customer_id)
+            open_customer_ids.add(customer_id)
+
+        open_amount = money(open_amount + outstanding)
+        open_invoice_count += 1
+        if days_overdue > 0:
+            overdue_amount = money(overdue_amount + outstanding)
+            overdue_invoice_count += 1
+            oldest_days_overdue = max(oldest_days_overdue, days_overdue)
+            if customer_id:
+                overdue_customer_ids.add(customer_id)
+
+    aging_buckets = [
+        {
+            **bucket,
+            "customerCount": len(customer_ids_by_bucket[bucket["key"]]),
+        }
+        for bucket in bucket_rows
+    ]
+    return {
+        "openAmount": open_amount,
+        "openInvoiceCount": open_invoice_count,
+        "openCustomerCount": len(open_customer_ids),
+        "overdueAmount": overdue_amount,
+        "overdueInvoiceCount": overdue_invoice_count,
+        "overdueCustomerCount": len(overdue_customer_ids),
+        "oldestDaysOverdue": oldest_days_overdue,
+        "agingBuckets": aging_buckets,
+    }
+
+
+def monthly_collection_performance(
+    billing_month: str = "",
+    as_of: date | None = None,
+    status: str = "ALL",
+    search: str = "",
+    page: int = 1,
+    page_size: int = 20,
+) -> dict[str, Any]:
+    """Report monthly-service settlement by unique billed customer and cash separately."""
+    report_day = as_of or billing_business_date()
+    business_today = billing_business_date()
+    if report_day > business_today:
+        raise HTTPException(status_code=400, detail="asOf cannot be in the future")
+    period_start = parse_billing_month(billing_month, report_day)
+    period_key = period_start.strftime("%Y-%m")
+    normalized_status = normalize_upper(status or "ALL")
+    if normalized_status not in COLLECTION_PERFORMANCE_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "status must be ALL, ACTION_REQUIRED, FULLY_PAID, "
+                "PARTIALLY_PAID, or UNPAID"
+            ),
+        )
+
+    adjustments_by_invoice: dict[str, list[dict[str, Any]]] = {}
+    source_adjustments: dict[str, dict[str, Any]] = {}
+    for adjustment in visible_adjustments():
+        adjustment_id = clean_text(adjustment.get("id"))
+        if adjustment_id:
+            source_adjustments[adjustment_id] = adjustment
+        invoice_id = clean_text(adjustment.get("invoiceId"))
+        if not invoice_id or not posting_active_as_of(adjustment, report_day, ("createdAt",)):
+            continue
+        adjustments_by_invoice.setdefault(invoice_id, []).append(adjustment)
+
+    cash_by_invoice: dict[str, float] = {}
+    for payment in visible_payments():
+        if not posting_active_as_of(payment, report_day, ("paymentDate", "postedAt", "createdAt")):
+            continue
+        for allocation in payment_allocations(payment):
+            invoice_id = clean_text(allocation.get("invoiceId"))
+            if not invoice_id:
+                continue
+            cash_by_invoice[invoice_id] = money(
+                cash_by_invoice.get(invoice_id, 0) + money(allocation.get("amount"))
+            )
+
+    account_credit_by_invoice: dict[str, float] = {}
+    rebate_credit_by_invoice: dict[str, float] = {}
+    for application in visible_credit_applications():
+        if not posting_active_as_of(application, report_day, ("appliedAt", "createdAt")):
+            continue
+        invoice_id = clean_text(application.get("invoiceId"))
+        if not invoice_id:
+            continue
+        application_amount = money(application.get("amount"))
+        account_credit_by_invoice[invoice_id] = money(
+            account_credit_by_invoice.get(invoice_id, 0) + application_amount
+        )
+        source_adjustment = source_adjustments.get(clean_text(application.get("sourceAdjustmentId")))
+        if source_adjustment and source_adjustment.get("adjustmentSource") == "SERVICE_REBATE":
+            rebate_credit_by_invoice[invoice_id] = money(
+                rebate_credit_by_invoice.get(invoice_id, 0) + application_amount
+            )
+
+    available_months: set[str] = {period_key}
+    cohort_invoices: list[dict[str, Any]] = []
+    for invoice in visible_invoices():
+        if normalize_upper(invoice.get("invoiceType")) not in MONTHLY_INVOICE_TYPES:
+            continue
+        month_value = clean_text(invoice.get("billingCycleStart") or invoice.get("issueDate"))[:7]
+        try:
+            parsed_month = date.fromisoformat(f"{month_value}-01").strftime("%Y-%m")
+        except ValueError:
+            continue
+        available_months.add(parsed_month)
+        if parsed_month != period_key or not invoice_active_as_of(invoice, report_day):
+            continue
+        cohort_invoices.append(invoice)
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for invoice in cohort_invoices:
+        customer_id = clean_text(invoice.get("customerId"))
+        if not customer_id:
+            continue
+        group = grouped.get(customer_id)
+        if group is None:
+            try:
+                customer = resolve_customer(customer_id)
+            except (HTTPException, KeyError, TypeError):
+                customer = dict(invoice.get("customer") or {})
+            group = {
+                "customerId": customer_id,
+                "customer": customer,
+                "invoiceCount": 0,
+                "invoiceNumbers": [],
+                "serviceAccountNumbers": [],
+                "grossCharges": 0.0,
+                "invoiceCredits": 0.0,
+                "billedAmount": 0.0,
+                "cashCollected": 0.0,
+                "accountCreditsApplied": 0.0,
+                "rebatesApplied": 0.0,
+                "creditsApplied": 0.0,
+                "outstandingAmount": 0.0,
+                "overdueAmount": 0.0,
+                "oldestDueDate": "",
+                "oldestOverdueDate": "",
+                "daysOverdue": 0,
+            }
+            grouped[customer_id] = group
+
+        invoice_id = clean_text(invoice.get("id"))
+        subtotal = money(
+            sum(item.get("amount", line_amount(item)) for item in invoice.get("lineItems", []))
+        )
+        invoice_adjustment_rows = adjustments_by_invoice.get(invoice_id, [])
+        debit_total = money(
+            sum(row.get("amount") for row in invoice_adjustment_rows if row.get("type") == "DEBIT")
+        )
+        credit_total = money(
+            sum(row.get("amount") for row in invoice_adjustment_rows if row.get("type") == "CREDIT")
+        )
+        direct_rebate_total = money(
+            sum(
+                row.get("amount")
+                for row in invoice_adjustment_rows
+                if row.get("type") == "CREDIT" and row.get("adjustmentSource") == "SERVICE_REBATE"
+            )
+        )
+        gross_charges = money(subtotal + debit_total)
+        billed_amount = money(max(0, gross_charges - credit_total))
+        cash_collected = cash_by_invoice.get(invoice_id, 0.0)
+        account_credits = account_credit_by_invoice.get(invoice_id, 0.0)
+        rebates_applied = money(direct_rebate_total + rebate_credit_by_invoice.get(invoice_id, 0.0))
+        outstanding = money(max(0, billed_amount - cash_collected - account_credits))
+        due_day = reporting_record_day(invoice.get("dueDate"))
+        if due_day is not None:
+            due_date = due_day.isoformat()
+            if not group["oldestDueDate"] or due_date < group["oldestDueDate"]:
+                group["oldestDueDate"] = due_date
+            if outstanding > 0 and due_day < report_day:
+                group["overdueAmount"] = money(group["overdueAmount"] + outstanding)
+                group["daysOverdue"] = max(group["daysOverdue"], (report_day - due_day).days)
+                if not group["oldestOverdueDate"] or due_date < group["oldestOverdueDate"]:
+                    group["oldestOverdueDate"] = due_date
+
+        group["invoiceCount"] += 1
+        invoice_number = clean_text(invoice.get("invoiceNumber"))
+        if invoice_number and invoice_number not in group["invoiceNumbers"]:
+            group["invoiceNumbers"].append(invoice_number)
+        service_account_number = clean_text(invoice.get("serviceAccountNumber"))
+        if service_account_number and service_account_number not in group["serviceAccountNumbers"]:
+            group["serviceAccountNumbers"].append(service_account_number)
+        for field_name, amount in (
+            ("grossCharges", gross_charges),
+            ("invoiceCredits", credit_total),
+            ("billedAmount", billed_amount),
+            ("cashCollected", cash_collected),
+            ("accountCreditsApplied", account_credits),
+            ("rebatesApplied", rebates_applied),
+            ("creditsApplied", money(credit_total + account_credits)),
+            ("outstandingAmount", outstanding),
+        ):
+            group[field_name] = money(group[field_name] + amount)
+
+    customer_rows: list[dict[str, Any]] = []
+    for group in grouped.values():
+        if group["outstandingAmount"] <= 0:
+            collection_status = "FULLY_PAID"
+        elif money(group["cashCollected"] + group["accountCreditsApplied"]) > 0:
+            collection_status = "PARTIALLY_PAID"
+        else:
+            collection_status = "UNPAID"
+        group["status"] = collection_status
+        group["reconciliationVariance"] = money(
+            group["billedAmount"]
+            - group["cashCollected"]
+            - group["accountCreditsApplied"]
+            - group["outstandingAmount"]
+        )
+        customer_rows.append(group)
+
+    status_order = {"UNPAID": 0, "PARTIALLY_PAID": 1, "FULLY_PAID": 2}
+    customer_rows.sort(
+        key=lambda row: (
+            0 if money(row.get("overdueAmount")) > 0 else 1,
+            -int(row.get("daysOverdue") or 0),
+            status_order[row["status"]],
+            -money(row.get("outstandingAmount")),
+            customer_name(row.get("customer") or {}).lower(),
+        )
+    )
+
+    billed_subscribers = len(customer_rows)
+    fully_paid = sum(row["status"] == "FULLY_PAID" for row in customer_rows)
+    partially_paid = sum(row["status"] == "PARTIALLY_PAID" for row in customer_rows)
+    unpaid = sum(row["status"] == "UNPAID" for row in customer_rows)
+    gross_charges = money(sum(row["grossCharges"] for row in customer_rows))
+    invoice_credits = money(sum(row["invoiceCredits"] for row in customer_rows))
+    billed_amount = money(sum(row["billedAmount"] for row in customer_rows))
+    cash_collected = money(sum(row["cashCollected"] for row in customer_rows))
+    account_credits = money(sum(row["accountCreditsApplied"] for row in customer_rows))
+    rebates_applied = money(sum(row["rebatesApplied"] for row in customer_rows))
+    outstanding = money(sum(row["outstandingAmount"] for row in customer_rows))
+    reconciliation_variance = money(
+        billed_amount - cash_collected - account_credits - outstanding
+    )
+    receivables = receivables_aging_summary(
+        report_day,
+        adjustments_by_invoice,
+        cash_by_invoice,
+        account_credit_by_invoice,
+    )
+
+    search_terms = clean_text(search).lower().split()
+    filtered_rows = []
+    for row in customer_rows:
+        if normalized_status == "ACTION_REQUIRED" and row["status"] == "FULLY_PAID":
+            continue
+        if normalized_status not in {"ALL", "ACTION_REQUIRED"} and row["status"] != normalized_status:
+            continue
+        searchable = " ".join(
+            [
+                customer_name(row.get("customer") or {}),
+                clean_text((row.get("customer") or {}).get("accountNumber")),
+                clean_text((row.get("customer") or {}).get("contactNumber")),
+                clean_text((row.get("customer") or {}).get("address")),
+                row["customerId"],
+                *row["invoiceNumbers"],
+                *row["serviceAccountNumbers"],
+            ]
+        ).lower()
+        if search_terms and not all(term in searchable for term in search_terms):
+            continue
+        filtered_rows.append(row)
+
+    normalized_page_size = max(10, min(int(page_size or 20), 100))
+    total_rows = len(filtered_rows)
+    total_pages = max(1, ceil(total_rows / normalized_page_size))
+    normalized_page = max(1, min(int(page or 1), total_pages))
+    start_index = (normalized_page - 1) * normalized_page_size
+    paginated_rows = filtered_rows[start_index:start_index + normalized_page_size]
+    return {
+        "billingMonth": period_key,
+        "billingPeriodLabel": period_start.strftime("%B %Y"),
+        "asOfDate": report_day.isoformat(),
+        "timeZone": BILLING_TIMEZONE,
+        "scope": "MONTHLY_SERVICE_INVOICES",
+        "billedSubscriberCount": billed_subscribers,
+        "fullyPaidSubscriberCount": fully_paid,
+        "partiallyPaidSubscriberCount": partially_paid,
+        "unpaidSubscriberCount": unpaid,
+        "subscriberOutstandingCount": partially_paid + unpaid,
+        "subscriberCollectionRate": round(
+            (fully_paid / billed_subscribers) * 100,
+            2,
+        ) if billed_subscribers else 0.0,
+        "subscriberCollectionRateApplicable": billed_subscribers > 0,
+        "cashCollectionRate": round(
+            (cash_collected / billed_amount) * 100,
+            2,
+        ) if billed_amount > 0 else 0.0,
+        "cashCollectionRateApplicable": billed_amount > 0,
+        "cohortInvoiceCount": sum(row["invoiceCount"] for row in customer_rows),
+        "grossCharges": gross_charges,
+        "invoiceCredits": invoice_credits,
+        "netBilledAmount": billed_amount,
+        "cashCollected": cash_collected,
+        "accountCreditsApplied": account_credits,
+        "creditsApplied": money(invoice_credits + account_credits),
+        "rebatesApplied": rebates_applied,
+        "outstandingAmount": outstanding,
+        "reconciliationVariance": reconciliation_variance,
+        "hasReconciliationException": abs(reconciliation_variance) >= 0.01,
+        "receivables": receivables,
+        "availableBillingMonths": sorted(available_months, reverse=True),
+        "selectedStatus": normalized_status,
+        "search": clean_text(search),
+        "rows": paginated_rows,
+        "pagination": {
+            "page": normalized_page,
+            "pageSize": normalized_page_size,
+            "totalRows": total_rows,
+            "totalPages": total_pages,
+        },
+        "definitions": {
+            "subscriberUnit": "UNIQUE_CUSTOMER",
+            "subscriberCollectionRate": "Fully settled billed customers divided by billed customers",
+            "cashCollectionRate": "Posted cash receipt allocations divided by net billed amount",
+            "creditTreatment": "Invoice and account credits are reported separately and never counted as cash",
+            "receivablesAging": "Open invoice balance aged by due date as of the selected reporting date",
+        },
+        "generatedAt": now_iso(),
+    }
+
+
+def collection_account_rows(
+    invoice_rows: list[dict[str, Any]] | None = None,
+    as_of: date | None = None,
+) -> list[dict[str, Any]]:
+    """Group actionable open receivables by customer for the Billing overview."""
+    business_day = as_of or billing_business_date()
+    source_rows = invoice_rows if invoice_rows is not None else [invoice_summary(invoice) for invoice in visible_invoices()]
+    grouped: dict[str, dict[str, Any]] = {}
+
+    for invoice in source_rows:
+        if invoice.get("status") in {"DRAFT", "PAID", "VOID"} or money(invoice.get("balance")) <= 0:
+            continue
+        customer_id = clean_text(invoice.get("customerId"))
+        if not customer_id:
+            continue
+        group = grouped.get(customer_id)
+        if group is None:
+            try:
+                customer = resolve_customer(customer_id)
+            except HTTPException:
+                customer = dict(invoice.get("customer") or {})
+            group = {
+                "customerId": customer_id,
+                "customer": customer,
+                "outstandingBalance": 0.0,
+                "overdueBalance": 0.0,
+                "partiallyPaidBalance": 0.0,
+                "openInvoiceCount": 0,
+                "overdueInvoiceCount": 0,
+                "partiallyPaidInvoiceCount": 0,
+                "oldestDueDate": "",
+                "oldestOverdueDate": "",
+                "daysOverdue": 0,
+                "_openInvoices": [],
+            }
+            grouped[customer_id] = group
+
+        balance = money(invoice.get("balance"))
+        group["_openInvoices"].append(invoice)
+        group["outstandingBalance"] = money(group["outstandingBalance"] + balance)
+        group["openInvoiceCount"] += 1
+
+        due_day: date | None = None
+        due_value = clean_text(invoice.get("dueDate"))
+        if due_value:
+            try:
+                due_day = parse_day(due_value, "dueDate")
+            except HTTPException:
+                due_day = None
+        if due_day is not None:
+            due_date = due_day.isoformat()
+            if not group["oldestDueDate"] or due_date < group["oldestDueDate"]:
+                group["oldestDueDate"] = due_date
+            if due_day < business_day:
+                group["overdueBalance"] = money(group["overdueBalance"] + balance)
+                group["overdueInvoiceCount"] += 1
+                group["daysOverdue"] = max(group["daysOverdue"], (business_day - due_day).days)
+                if not group["oldestOverdueDate"] or due_date < group["oldestOverdueDate"]:
+                    group["oldestOverdueDate"] = due_date
+
+        if money(invoice.get("paidTotal")) > 0:
+            group["partiallyPaidBalance"] = money(group["partiallyPaidBalance"] + balance)
+            group["partiallyPaidInvoiceCount"] += 1
+
+    latest_payments = latest_posted_customer_payments()
+    rows: list[dict[str, Any]] = []
+    for group in grouped.values():
+        if group["overdueBalance"] <= 0 and group["partiallyPaidInvoiceCount"] <= 0:
+            continue
+        open_invoices = group.pop("_openInvoices")
+        latest_payment = latest_payments.get(group["customerId"])
+        rows.append(
+            {
+                **group,
+                "collectionStatus": "OVERDUE" if group["overdueBalance"] > 0 else "PARTIALLY_PAID",
+                **unpaid_month_summary(open_invoices),
+                "lastPaymentDate": clean_text(latest_payment.get("paymentDate")) if latest_payment else "",
+                "lastPaymentAmount": money(latest_payment.get("amount")) if latest_payment else 0.0,
+                "lastPaymentChannel": clean_text(latest_payment.get("collectionChannel")) if latest_payment else "",
+                "lastPaymentPostedByName": clean_text(latest_payment.get("postedByName")) if latest_payment else "",
+                "lastPaymentReceiptNumber": clean_text(latest_payment.get("receiptNumber")) if latest_payment else "",
+            }
+        )
+
+    return sorted(
+        rows,
+        key=lambda row: (
+            0 if money(row.get("overdueBalance")) > 0 else 1,
+            -int(row.get("daysOverdue") or 0),
+            -money(row.get("overdueBalance")),
+            -money(row.get("outstandingBalance")),
+            customer_name(row.get("customer") or {}).lower(),
+        ),
+    )
 
 
 @billing_read_snapshot
@@ -1876,47 +4009,200 @@ def billing_metrics() -> dict[str, float | int]:
     }
 
 
-def early_bird_invoice_fields(subscription: dict[str, Any], cycle_start_day: date, invoice_type: str, due_day: date | None = None) -> dict[str, Any]:
-    promotion_id = clean_text(subscription.get("earlyBirdPromotionId"))
-    eligible = (
-        subscription.get("billingMode") in BILLING_MODES
-        and invoice_type == "MONTHLY"
-        and bool(subscription.get("earlyBirdEligible"))
-        and bool(promotion_id)
-    )
-    discount_amount = 0
-    promotion_code = clean_text(subscription.get("earlyBirdPromotionCode"))
-    promotion_name = clean_text(subscription.get("earlyBirdPromotionName"))
-    if eligible:
-        try:
-            promotion = find_promotion(promotion_id)
-        except HTTPException:
-            promotion = None
-        promotion_valid = bool(
-            promotion
-            and promotion.get("appliesTo") == "MONTHLY_SERVICE"
-            and promotion_payment_rule(promotion) == "EARLY_BIRD"
-            and promotion_is_active(promotion, cycle_start_day)
-            and not clean_bool(promotion.get("requiresApproval"))
-            and (not promotion.get("billingMode") or promotion.get("billingMode") == subscription.get("billingMode"))
-            and (not promotion.get("customerId") or promotion.get("customerId") == subscription.get("customerId"))
-            and (not promotion.get("catalogId") or promotion.get("catalogId") == subscription.get("catalogId"))
+@billing_read_snapshot
+def collector_aging_accounts(search: str = "") -> list[dict[str, Any]]:
+    """Return active customer accounts, open invoices, and available credit for Collector."""
+    seed_billing_data()
+    payment_day = billing_business_date()
+    grouped: dict[str, dict[str, Any]] = {}
+    for invoice in visible_invoices():
+        summary = invoice_summary(invoice)
+        if summary.get("status") in {"DRAFT", "PAID", "VOID"} or money(summary.get("balance")) <= 0:
+            continue
+        customer_id = clean_text(summary.get("customerId"))
+        if not customer_id:
+            continue
+        group = grouped.get(customer_id)
+        if group is None:
+            try:
+                customer = resolve_customer(customer_id)
+            except HTTPException:
+                customer = dict(summary.get("customer") or {})
+            group = {
+                "customerId": customer_id,
+                "customer": customer,
+                "outstandingBalance": 0.0,
+                "promotionDiscountTotal": 0.0,
+                "payableToday": 0.0,
+                "paymentDate": payment_day.isoformat(),
+                "overdueBalance": 0.0,
+                "openInvoiceCount": 0,
+                "overdueInvoiceCount": 0,
+                "oldestDueDate": "",
+                "accountCredit": customer_credit_balance(customer_id),
+                "invoices": [],
+            }
+            grouped[customer_id] = group
+        promotion_quote = payment_promotion_quote(invoice, payment_day)
+        invoice_row = {
+            "id": summary["id"],
+            "invoiceNumber": summary.get("invoiceNumber") or "",
+            "status": summary.get("status") or "",
+            "issueDate": summary.get("issueDate") or "",
+            "dueDate": summary.get("dueDate") or "",
+            "billingCycleStart": summary.get("billingCycleStart") or "",
+            "billingCycleEnd": summary.get("billingCycleEnd") or "",
+            "invoiceType": summary.get("invoiceType") or "",
+            "catalogName": summary.get("catalogName") or "",
+            "serviceAccountNumber": summary.get("serviceAccountNumber") or "",
+            "serviceId": summary.get("serviceId") or "",
+            "lineItems": summary.get("lineItems") or [],
+            "total": money(summary.get("total")),
+            "paidTotal": money(summary.get("paidTotal")),
+            "balance": money(summary.get("balance")),
+            "promotionQuote": promotion_quote,
+        }
+        group["invoices"].append(invoice_row)
+        group["outstandingBalance"] = money(group["outstandingBalance"] + invoice_row["balance"])
+        group["promotionDiscountTotal"] = money(
+            group["promotionDiscountTotal"] + promotion_quote["promotionDiscountAmount"]
         )
-        if promotion_valid:
-            promotion_code = promotion["promoCode"]
-            promotion_name = promotion["name"]
-            discount_amount = promotion_discount_amount(promotion, money(subscription.get("monthlyRate")))
-        else:
-            eligible = False
-            discount_amount = 0
-            promotion_id = ""
-            promotion_code = ""
-            promotion_name = ""
+        group["payableToday"] = money(
+            group["payableToday"] + promotion_quote["discountedPayable"]
+        )
+        group["openInvoiceCount"] += 1
+        if invoice_row["status"] == "OVERDUE":
+            group["overdueBalance"] = money(group["overdueBalance"] + invoice_row["balance"])
+            group["overdueInvoiceCount"] += 1
+        due_date = clean_text(invoice_row["dueDate"])
+        if due_date and (not group["oldestDueDate"] or due_date < group["oldestDueDate"]):
+            group["oldestDueDate"] = due_date
+
+    for subscription in visible_subscriptions():
+        if subscription.get("status") != "ACTIVE":
+            continue
+        customer_id = clean_text(subscription.get("customerId"))
+        if not customer_id or customer_id in grouped:
+            continue
+        try:
+            customer = resolve_customer(customer_id)
+        except HTTPException:
+            customer = dict(subscription.get("customer") or {})
+        grouped[customer_id] = {
+            "customerId": customer_id,
+            "customer": customer,
+            "outstandingBalance": 0.0,
+            "promotionDiscountTotal": 0.0,
+            "payableToday": 0.0,
+            "paymentDate": payment_day.isoformat(),
+            "overdueBalance": 0.0,
+            "openInvoiceCount": 0,
+            "overdueInvoiceCount": 0,
+            "oldestDueDate": "",
+            "accountCredit": customer_credit_balance(customer_id),
+            "invoices": [],
+        }
+
+    rows = list(grouped.values())
+    for row in rows:
+        row["invoices"].sort(
+            key=lambda invoice: (
+                invoice.get("dueDate") or "9999-12-31",
+                invoice.get("invoiceNumber") or "",
+            )
+        )
+    needle = clean_text(search).lower()
+    if needle:
+        rows = [
+            row
+            for row in rows
+            if any(
+                needle in clean_text(value).lower()
+                for value in [
+                    row["customer"].get("name"),
+                    row["customer"].get("accountNumber"),
+                    row["customer"].get("contactNumber"),
+                    row["customer"].get("address"),
+                ]
+            )
+            or any(
+                needle in clean_text(invoice.get("invoiceNumber")).lower()
+                for invoice in row["invoices"]
+            )
+        ]
+    return sorted(
+        rows,
+        key=lambda row: (
+            0 if money(row.get("overdueBalance")) > 0 else 1,
+            row.get("oldestDueDate") or "9999-12-31",
+            clean_text((row.get("customer") or {}).get("name")).lower(),
+        ),
+    )
+
+
+def early_bird_invoice_fields(
+    subscription: dict[str, Any],
+    cycle_start_day: date,
+    invoice_type: str,
+    due_day: date | None = None,
+) -> dict[str, Any]:
+    qualified_promotion_ids = normalized_promotion_ids(
+        subscription.get("qualifiedPromotionIds"),
+        "qualified promotion IDs",
+    )
+    if not qualified_promotion_ids:
+        legacy_promotion_id = clean_text(subscription.get("earlyBirdPromotionId"))
+        if clean_bool(subscription.get("earlyBirdEligible")) and legacy_promotion_id:
+            qualified_promotion_ids = [legacy_promotion_id]
+
+    qualified_promotions: list[dict[str, Any]] = []
+    if subscription.get("billingMode") in BILLING_MODES and invoice_type == "MONTHLY":
+        for promotion_id in qualified_promotion_ids:
+            try:
+                promotion = find_promotion(promotion_id)
+            except HTTPException:
+                continue
+            promotion_valid = bool(
+                promotion.get("appliesTo") == "MONTHLY_SERVICE"
+                and promotion_payment_rule(promotion) in PROMOTION_PAYMENT_RULES
+                and promotion_is_active(promotion, cycle_start_day)
+                and not clean_bool(promotion.get("requiresApproval"))
+                and (not promotion.get("billingMode") or promotion.get("billingMode") == subscription.get("billingMode"))
+            )
+            if promotion_valid:
+                qualified_promotions.append(promotion)
+    qualified_promotions.sort(key=promotion_order_key)
+    try:
+        validate_promotion_stack(qualified_promotions)
+    except HTTPException:
+        qualified_promotions = []
+
+    base_amount = money(subscription.get("monthlyRate"))
+    snapshots = [
+        promotion_qualification_snapshot(promotion, base_amount)
+        for promotion in qualified_promotions
+    ]
+    early_bird_promotion = next(
+        (promotion for promotion in qualified_promotions if promotion_payment_rule(promotion) == "EARLY_BIRD"),
+        None,
+    )
+    eligible = early_bird_promotion is not None
+    promotion_id = early_bird_promotion["id"] if early_bird_promotion else ""
+    promotion_code = clean_text(early_bird_promotion.get("promoCode")) if early_bird_promotion else ""
+    promotion_name = clean_text(early_bird_promotion.get("name")) if early_bird_promotion else ""
+    discount_amount = (
+        promotion_discount_amount(early_bird_promotion, base_amount)
+        if early_bird_promotion
+        else 0
+    )
     if subscription.get("billingMode") == "POSTPAID" and due_day:
         cutoff_day = due_day + timedelta(days=1)
     else:
         cutoff_day = cycle_start_day
     return {
+        "qualifiedPromotionIds": [promotion["id"] for promotion in qualified_promotions],
+        "qualifiedPromotions": snapshots,
+        "qualifiedPromotionCount": len(snapshots),
         "earlyBirdEligible": eligible,
         "earlyBirdDiscountAmount": discount_amount,
         "earlyBirdPromotionId": promotion_id if eligible else "",
@@ -1939,10 +4225,24 @@ def invoice_for_subscription_cycle(subscription_id: str, cycle_start: str) -> di
     )
 
 
+def subscription_invoice_due_date(
+    subscription: dict[str, Any],
+    cycle_start: date,
+    cycle_end: date,
+    issue_day: date,
+) -> date:
+    if normalize_upper(subscription.get("billingMode")) == "PREPAID":
+        return max(cycle_start, issue_day)
+    due_base = max(cycle_end, issue_day)
+    return due_base + timedelta(days=int(subscription.get("dueDays") or 0))
+
+
 def create_invoice_from_subscription(
     subscription: dict[str, Any],
     cycle_start: str | None = None,
     idempotency_key: str = "",
+    credit_actor: str = "system",
+    generated_on: date | None = None,
 ) -> dict[str, Any]:
     cycle_start_day = parse_day(cycle_start or subscription.get("nextInvoiceDate") or today_iso(), "billingCycleStart")
     cycle_start_value = cycle_start_day.isoformat()
@@ -1964,8 +4264,8 @@ def create_invoice_from_subscription(
             raise HTTPException(status_code=409, detail="This subscription cycle already has a voided invoice and requires a reissue workflow")
         return {**invoice_summary(existing), "idempotentReplay": True}
     cycle_end_day = month_end(cycle_start_day)
-    issue_day = cycle_start_day if subscription["billingMode"] == "PREPAID" else cycle_end_day
-    due_day = cycle_start_day if subscription["billingMode"] == "PREPAID" else cycle_end_day + timedelta(days=subscription["dueDays"])
+    issue_day = generated_on or billing_business_date()
+    due_day = subscription_invoice_due_date(subscription, cycle_start_day, cycle_end_day, issue_day)
     timestamp = now_iso()
     invoice = {
         "id": str(uuid4()),
@@ -1995,16 +4295,537 @@ def create_invoice_from_subscription(
         "issueDate": issue_day.isoformat(),
         "dueDate": due_day.isoformat(),
         "status": "ISSUED",
-        "lineItems": normalize_line_items(None, subscription),
+        "lineItems": normalize_line_items(
+            None,
+            subscription,
+            billing_period_label=cycle_start_day.strftime("%B %Y"),
+        ),
         "notes": "",
         "createdAt": timestamp,
         "updatedAt": timestamp,
         "deletedAt": None,
     }
     invoices.append(invoice)
+    apply_available_customer_credit(invoice, credit_actor)
+    capture_invoice_account_summary_at_issue(invoice)
     subscription["nextInvoiceDate"] = (cycle_end_day + timedelta(days=1)).isoformat()
     subscription["updatedAt"] = timestamp
     return invoice_summary(invoice)
+
+
+def billing_cycle_generation_date(subscription: dict[str, Any], cycle_start: date) -> date:
+    if normalize_upper(subscription.get("billingMode")) == "PREPAID":
+        return cycle_start - timedelta(days=BILLING_PREPAID_LEAD_DAYS)
+    return month_end(cycle_start)
+
+
+def billing_cycle_ready(subscription: dict[str, Any], cycle_start: date, as_of: date) -> bool:
+    return billing_cycle_generation_date(subscription, cycle_start) <= as_of
+
+
+def billing_run_preview_data(as_of: date) -> dict[str, Any]:
+    ensure_billing_data_loaded()
+    rows: list[dict[str, Any]] = []
+    invalid_rows: list[dict[str, Any]] = []
+    for subscription in visible_subscriptions():
+        if normalize_upper(subscription.get("status")) != "ACTIVE":
+            continue
+        try:
+            cycle_start = parse_day(
+                subscription.get("nextInvoiceDate") or subscription.get("startDate"),
+                "nextInvoiceDate",
+            )
+            due_cycles = 0
+            first_generation_date = billing_cycle_generation_date(subscription, cycle_start)
+            cursor = cycle_start
+            for _ in range(MAX_BILLING_CATCHUP_CYCLES):
+                if not billing_cycle_ready(subscription, cursor, as_of):
+                    break
+                due_cycles += 1
+                cursor = next_month_start(cursor)
+            if not due_cycles:
+                continue
+            customer = subscription.get("customer") if isinstance(subscription.get("customer"), dict) else {}
+            rows.append(
+                {
+                    "subscriptionId": subscription["id"],
+                    "customerId": subscription.get("customerId", ""),
+                    "accountNumber": customer.get("accountNumber", ""),
+                    "customerName": clean_text(
+                        " ".join(
+                            clean_text(part)
+                            for part in [customer.get("firstName"), customer.get("lastName")]
+                            if clean_text(part)
+                        )
+                        or customer.get("fullName")
+                        or customer.get("name")
+                    ),
+                    "planName": subscription.get("planName", ""),
+                    "billingMode": normalize_upper(subscription.get("billingMode")),
+                    "nextCycleStart": cycle_start.isoformat(),
+                    "nextGenerationDate": first_generation_date.isoformat(),
+                    "dueCycles": due_cycles,
+                    "estimatedAmount": money(due_cycles * money(subscription.get("monthlyRate"))),
+                }
+            )
+        except (HTTPException, TypeError, ValueError) as exc:
+            detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+            invalid_rows.append(
+                {
+                    "subscriptionId": subscription.get("id", ""),
+                    "nextInvoiceDate": subscription.get("nextInvoiceDate", ""),
+                    "error": clean_text(detail)[:500] or "Invalid billing schedule",
+                }
+            )
+    return {
+        "businessDate": as_of.isoformat(),
+        "dueSubscriptions": len(rows),
+        "dueCycles": sum(row["dueCycles"] for row in rows),
+        "estimatedAmount": money(sum(row["estimatedAmount"] for row in rows)),
+        "prepaidCycles": sum(row["dueCycles"] for row in rows if row["billingMode"] == "PREPAID"),
+        "postpaidCycles": sum(row["dueCycles"] for row in rows if row["billingMode"] == "POSTPAID"),
+        "invalidSubscriptions": invalid_rows,
+        "subscriptions": sorted(rows, key=lambda row: (row["nextGenerationDate"], row["subscriptionId"])),
+    }
+
+
+def billing_run_summary(run: dict[str, Any]) -> dict[str, Any]:
+    summary = deepcopy(run)
+    summary["items"] = sorted(
+        summary.get("items") or [],
+        key=lambda item: (item.get("cycleStart", ""), item.get("subscriptionId", "")),
+    )
+    return summary
+
+
+def billing_run_by_idempotency_key(idempotency_key: str) -> dict[str, Any] | None:
+    return next(
+        (run for run in billing_runs if run.get("idempotencyKey") == idempotency_key and not run.get("deletedAt")),
+        None,
+    )
+
+
+def billing_run_error_detail(exc: Exception) -> str:
+    detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+    if isinstance(detail, (dict, list)):
+        detail = json.dumps(detail, sort_keys=True)
+    return clean_text(detail)[:500] or exc.__class__.__name__
+
+
+def upsert_billing_run_item(run: dict[str, Any], item: dict[str, Any]) -> None:
+    items = run.setdefault("items", [])
+    for current in items:
+        if current.get("itemKey") == item["itemKey"]:
+            current.update(item)
+            return
+    items.append(item)
+
+
+def begin_billing_run(
+    as_of: date,
+    run_type: str,
+    actor: str,
+    idempotency_key: str,
+) -> tuple[dict[str, Any], list[str], list[str], bool]:
+    with billing_store.transaction():
+        preview = billing_run_preview_data(as_of)
+        existing = billing_run_by_idempotency_key(idempotency_key)
+        fingerprint = posting_fingerprint(
+            "billing_run",
+            {"businessDate": as_of.isoformat(), "runType": run_type},
+        )
+        if existing is not None and existing.get("idempotencyFingerprint") != fingerprint:
+            raise HTTPException(status_code=409, detail="Idempotency-Key was already used for a different billing run")
+        has_candidates = bool(preview["dueCycles"] or preview["invalidSubscriptions"])
+        if existing is not None and (
+            (run_type == "MANUAL" and existing.get("status") in BILLING_RUN_STATUSES[1:])
+            or (run_type == "AUTOMATIC" and existing.get("status") in BILLING_RUN_STATUSES[1:] and not has_candidates)
+        ):
+            return billing_run_summary(existing), [], [], True
+
+        timestamp = now_iso()
+        if existing is None:
+            run_id = str(uuid4())
+            run_number = (
+                f"BR-{as_of.strftime('%Y%m%d')}-AUTO"
+                if run_type == "AUTOMATIC"
+                else f"BR-{as_of.strftime('%Y%m%d')}-{run_id[:8].upper()}"
+            )
+            run = {
+                "id": run_id,
+                "runNumber": run_number,
+                "idempotencyKey": idempotency_key,
+                "idempotencyFingerprint": fingerprint,
+                "runType": run_type,
+                "businessDate": as_of.isoformat(),
+                "status": "RUNNING",
+                "attemptCount": 0,
+                "eligibleSubscriptions": 0,
+                "candidateCycles": 0,
+                "invoicesCreated": 0,
+                "invoicesReplayed": 0,
+                "failedCycles": 0,
+                "resolvedFailures": 0,
+                "remainingDueCycles": 0,
+                "totalAmount": 0.0,
+                "items": [],
+                "startedAt": timestamp,
+                "finishedAt": "",
+                "lastAttemptAt": timestamp,
+                "createdByUsername": actor,
+                "createdAt": timestamp,
+                "updatedAt": timestamp,
+                "deletedAt": None,
+            }
+            billing_runs.append(run)
+        else:
+            run = existing
+            run["status"] = "RUNNING"
+            run["lastAttemptAt"] = timestamp
+            run["finishedAt"] = ""
+            run["updatedAt"] = timestamp
+        run["attemptCount"] = int(run.get("attemptCount") or 0) + 1
+        run["eligibleSubscriptions"] = preview["dueSubscriptions"]
+        run["candidateCycles"] = preview["dueCycles"]
+        run["lastAttemptByUsername"] = actor
+        add_audit(
+            "billing_run_started",
+            "BillingRun",
+            run["id"],
+            {
+                "runNumber": run["runNumber"],
+                "runType": run_type,
+                "businessDate": as_of.isoformat(),
+                "candidateCycles": preview["dueCycles"],
+            },
+            actor,
+        )
+        persist_billing_state()
+        return (
+            billing_run_summary(run),
+            [row["subscriptionId"] for row in preview["subscriptions"]],
+            [row["subscriptionId"] for row in preview["invalidSubscriptions"]],
+            False,
+        )
+
+
+def process_next_billing_cycle(
+    run_id: str,
+    subscription_id: str,
+    as_of: date,
+    actor: str,
+    generated_on: date,
+) -> dict[str, Any] | None:
+    with billing_store.transaction():
+        run = find_billing_run(run_id)
+        subscription = find_subscription(subscription_id)
+        if normalize_upper(subscription.get("status")) != "ACTIVE":
+            return None
+        cycle_start = parse_day(
+            subscription.get("nextInvoiceDate") or subscription.get("startDate"),
+            "nextInvoiceDate",
+        )
+        if not billing_cycle_ready(subscription, cycle_start, as_of):
+            return None
+        cycle_value = cycle_start.isoformat()
+        invoice = create_invoice_from_subscription(
+            subscription,
+            cycle_value,
+            f"subscription-cycle:{subscription_id}:{cycle_value}",
+            credit_actor=actor,
+            generated_on=generated_on,
+        )
+        replayed = bool(invoice.get("idempotentReplay"))
+        if replayed and parse_day(subscription.get("nextInvoiceDate"), "nextInvoiceDate") <= cycle_start:
+            subscription["nextInvoiceDate"] = next_month_start(cycle_start).isoformat()
+            subscription["updatedAt"] = now_iso()
+        timestamp = now_iso()
+        for previous in run.get("items") or []:
+            if previous.get("subscriptionId") == subscription_id and previous.get("status") == "FAILED":
+                previous["status"] = "RESOLVED"
+                previous["resolvedAt"] = timestamp
+                previous["resolvedByCycle"] = cycle_value
+        upsert_billing_run_item(
+            run,
+            {
+                "itemKey": f"{subscription_id}:{cycle_value}",
+                "subscriptionId": subscription_id,
+                "customerId": subscription.get("customerId", ""),
+                "serviceAccountId": subscription.get("serviceAccountId", ""),
+                "planName": subscription.get("planName", ""),
+                "billingMode": subscription.get("billingMode", ""),
+                "cycleStart": cycle_value,
+                "cycleEnd": invoice.get("billingCycleEnd", ""),
+                "generationDate": billing_cycle_generation_date(subscription, cycle_start).isoformat(),
+                "status": "REPLAYED" if replayed else "CREATED",
+                "invoiceId": invoice["id"],
+                "invoiceNumber": invoice.get("invoiceNumber", ""),
+                "amount": money(invoice.get("total")),
+                "attemptCount": int(
+                    next(
+                        (
+                            item.get("attemptCount") or 0
+                            for item in run.get("items") or []
+                            if item.get("itemKey") == f"{subscription_id}:{cycle_value}"
+                        ),
+                        0,
+                    )
+                )
+                + 1,
+                "lastAttemptAt": timestamp,
+                "error": "",
+            },
+        )
+        run["updatedAt"] = timestamp
+        if not replayed:
+            add_audit(
+                "billing_invoice_generated",
+                "BillingInvoice",
+                invoice["id"],
+                {
+                    "subscriptionId": subscription_id,
+                    "billingCycleStart": cycle_value,
+                    "billingRunId": run_id,
+                    "source": "AUTOMATIC_BILLING_RUN" if run.get("runType") == "AUTOMATIC" else "MANUAL_BILLING_RUN",
+                },
+                actor,
+            )
+        persist_billing_state()
+        return {
+            "subscriptionId": subscription_id,
+            "cycleStart": cycle_value,
+            "invoiceId": invoice["id"],
+            "replayed": replayed,
+        }
+
+
+def record_billing_run_failure(run_id: str, subscription_id: str, actor: str, exc: Exception) -> None:
+    with billing_store.transaction():
+        run = find_billing_run(run_id)
+        subscription = next(
+            (row for row in subscriptions if row.get("id") == subscription_id and not row.get("deletedAt")),
+            {},
+        )
+        cycle_value = clean_text(subscription.get("nextInvoiceDate") or subscription.get("startDate") or "UNKNOWN")
+        item_key = f"{subscription_id}:{cycle_value}"
+        current_attempts = next(
+            (
+                int(item.get("attemptCount") or 0)
+                for item in run.get("items") or []
+                if item.get("itemKey") == item_key
+            ),
+            0,
+        )
+        timestamp = now_iso()
+        upsert_billing_run_item(
+            run,
+            {
+                "itemKey": item_key,
+                "subscriptionId": subscription_id,
+                "customerId": subscription.get("customerId", ""),
+                "serviceAccountId": subscription.get("serviceAccountId", ""),
+                "planName": subscription.get("planName", ""),
+                "billingMode": subscription.get("billingMode", ""),
+                "cycleStart": cycle_value,
+                "cycleEnd": "",
+                "generationDate": "",
+                "status": "FAILED",
+                "invoiceId": "",
+                "invoiceNumber": "",
+                "amount": 0.0,
+                "attemptCount": current_attempts + 1,
+                "lastAttemptAt": timestamp,
+                "error": billing_run_error_detail(exc),
+            },
+        )
+        run["updatedAt"] = timestamp
+        add_audit(
+            "billing_run_item_failed",
+            "BillingRun",
+            run_id,
+            {
+                "subscriptionId": subscription_id,
+                "billingCycleStart": cycle_value,
+                "error": billing_run_error_detail(exc),
+            },
+            actor,
+        )
+        persist_billing_state()
+
+
+def finalize_billing_run(run_id: str, as_of: date, actor: str) -> dict[str, Any]:
+    with billing_store.transaction():
+        run = find_billing_run(run_id)
+        preview = billing_run_preview_data(as_of)
+        items = run.get("items") or []
+        created_items = [item for item in items if item.get("status") == "CREATED"]
+        replayed_items = [item for item in items if item.get("status") == "REPLAYED"]
+        failed_items = [item for item in items if item.get("status") == "FAILED"]
+        resolved_items = [item for item in items if item.get("status") == "RESOLVED"]
+        successful_items = [*created_items, *replayed_items]
+        if failed_items:
+            status = "PARTIAL_SUCCESS" if successful_items else "FAILED"
+        elif preview["dueCycles"] or preview["invalidSubscriptions"]:
+            status = "PARTIAL_SUCCESS"
+        else:
+            status = "COMPLETED"
+        timestamp = now_iso()
+        run.update(
+            {
+                "status": status,
+                "invoicesCreated": len(created_items),
+                "invoicesReplayed": len(replayed_items),
+                "failedCycles": len(failed_items),
+                "resolvedFailures": len(resolved_items),
+                "remainingDueCycles": preview["dueCycles"] + len(preview["invalidSubscriptions"]),
+                "totalAmount": money(sum(item.get("amount") or 0 for item in created_items)),
+                "finishedAt": timestamp,
+                "updatedAt": timestamp,
+                "completedByUsername": actor,
+            }
+        )
+        add_audit(
+            "billing_run_completed",
+            "BillingRun",
+            run_id,
+            {
+                "status": status,
+                "invoicesCreated": run["invoicesCreated"],
+                "invoicesReplayed": run["invoicesReplayed"],
+                "failedCycles": run["failedCycles"],
+                "remainingDueCycles": run["remainingDueCycles"],
+                "totalAmount": run["totalAmount"],
+            },
+            actor,
+        )
+        persist_billing_state()
+        return billing_run_summary(run)
+
+
+def execute_billing_run(
+    as_of: date,
+    run_type: str,
+    actor: str,
+    idempotency_key: str,
+    generated_on: date | None = None,
+) -> dict[str, Any]:
+    normalized_type = normalize_upper(run_type)
+    if normalized_type not in BILLING_RUN_TYPES:
+        raise HTTPException(status_code=400, detail=f"runType must be one of {', '.join(BILLING_RUN_TYPES)}")
+    run, subscription_ids, invalid_subscription_ids, replayed = begin_billing_run(
+        as_of,
+        normalized_type,
+        actor,
+        idempotency_key,
+    )
+    if replayed:
+        return {**run, "idempotentReplay": True}
+    issue_day = generated_on or billing_business_date()
+    for subscription_id in invalid_subscription_ids:
+        record_billing_run_failure(
+            run["id"],
+            subscription_id,
+            actor,
+            ValueError("Subscription has an invalid next invoice date"),
+        )
+    for subscription_id in subscription_ids:
+        for _ in range(MAX_BILLING_CATCHUP_CYCLES):
+            try:
+                result = process_next_billing_cycle(run["id"], subscription_id, as_of, actor, issue_day)
+            except Exception as exc:
+                logger.exception(
+                    "Billing run %s failed for subscription %s",
+                    run["id"],
+                    subscription_id,
+                )
+                record_billing_run_failure(run["id"], subscription_id, actor, exc)
+                break
+            if result is None:
+                break
+    return finalize_billing_run(run["id"], as_of, actor)
+
+
+def billing_scheduler_status() -> dict[str, Any]:
+    with _billing_scheduler_lock:
+        thread = _billing_scheduler_thread
+        return {
+            "enabled": BILLING_AUTO_BILLER_ENABLED,
+            "running": bool(thread and thread.is_alive()),
+            "timezone": BILLING_TIMEZONE,
+            "businessDate": billing_business_date().isoformat(),
+            "prepaidLeadDays": BILLING_PREPAID_LEAD_DAYS,
+            "intervalSeconds": BILLING_SCHEDULER_INTERVAL_SECONDS,
+            **deepcopy(_billing_scheduler_state),
+        }
+
+
+def run_automatic_billing() -> dict[str, Any]:
+    as_of = billing_business_date()
+    return execute_billing_run(
+        as_of,
+        "AUTOMATIC",
+        "system:automatic-biller",
+        f"billing-run:auto:{as_of.isoformat()}",
+    )
+
+
+def billing_scheduler_loop() -> None:
+    while not _billing_scheduler_stop.is_set():
+        attempt_at = now_iso()
+        with _billing_scheduler_lock:
+            _billing_scheduler_state["lastAttemptAt"] = attempt_at
+        try:
+            run = run_automatic_billing()
+            with _billing_scheduler_lock:
+                _billing_scheduler_state.update(
+                    {
+                        "lastCompletedAt": now_iso(),
+                        "lastRunId": run.get("id", ""),
+                        "lastStatus": run.get("status", ""),
+                        "lastError": "",
+                    }
+                )
+        except Exception as exc:
+            logger.exception("Automatic billing scheduler pass failed")
+            with _billing_scheduler_lock:
+                _billing_scheduler_state.update(
+                    {
+                        "lastStatus": "FAILED",
+                        "lastError": billing_run_error_detail(exc),
+                    }
+                )
+        _billing_scheduler_stop.wait(BILLING_SCHEDULER_INTERVAL_SECONDS)
+
+
+def start_billing_scheduler() -> dict[str, Any]:
+    global _billing_scheduler_thread
+    with _billing_scheduler_lock:
+        if not BILLING_AUTO_BILLER_ENABLED:
+            return billing_scheduler_status()
+        if _billing_scheduler_thread is not None and _billing_scheduler_thread.is_alive():
+            return billing_scheduler_status()
+        _billing_scheduler_stop.clear()
+        _billing_scheduler_state["startedAt"] = now_iso()
+        _billing_scheduler_thread = Thread(
+            target=billing_scheduler_loop,
+            name="billing-auto-biller",
+            daemon=True,
+        )
+        _billing_scheduler_thread.start()
+    return billing_scheduler_status()
+
+
+def stop_billing_scheduler() -> dict[str, Any]:
+    global _billing_scheduler_thread
+    with _billing_scheduler_lock:
+        thread = _billing_scheduler_thread
+        _billing_scheduler_stop.set()
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=5)
+    with _billing_scheduler_lock:
+        if thread is None or not thread.is_alive():
+            _billing_scheduler_thread = None
+    return billing_scheduler_status()
 
 
 def first_subscription_invoice_details(subscription: dict[str, Any]) -> dict[str, Any]:
@@ -2028,7 +4849,10 @@ def first_subscription_invoice_details(subscription: dict[str, Any]) -> dict[str
     }
 
 
-def create_first_subscription_invoice(subscription: dict[str, Any]) -> dict[str, Any] | None:
+def create_first_subscription_invoice(
+    subscription: dict[str, Any],
+    credit_actor: str = "system",
+) -> dict[str, Any] | None:
     if not subscription.get("serviceAccountId") or subscription.get("billingMode") not in ["PREPAID", "POSTPAID"] or subscription.get("status") != "ACTIVE":
         return None
     if subscription.get("firstInvoiceId"):
@@ -2045,14 +4869,16 @@ def create_first_subscription_invoice(subscription: dict[str, Any]) -> dict[str,
         subscription["firstInvoiceNumber"] = summary["invoiceNumber"]
         return {**summary, "idempotentReplay": True}
     is_prepaid = subscription["billingMode"] == "PREPAID"
-    issue_day = details["cycleStart"] if is_prepaid else details["cycleEnd"]
-    due_day = details["cycleStart"] if is_prepaid else details["cycleEnd"] + timedelta(days=subscription["dueDays"])
-    service_ref = subscription.get("serviceId")
+    issue_day = billing_business_date()
+    due_day = subscription_invoice_due_date(
+        subscription,
+        details["cycleStart"],
+        details["cycleEnd"],
+        issue_day,
+    )
     mode_label = "prepaid" if is_prepaid else "postpaid"
     description = f"{subscription['planName']} {'prorated ' if details['isProrated'] else ''}{mode_label} internet service"
-    description = f"{description} ({details['cycleStart'].isoformat()} to {details['cycleEnd'].isoformat()})"
-    if service_ref:
-        description = f"{description} - {service_ref}"
+    description = f"{description} ({details['cycleStart'].strftime('%B %Y')})"
     proration = {
         "policy": "CALENDAR_MONTH_ACTUAL_DAYS",
         "serviceDays": details["serviceDays"],
@@ -2091,7 +4917,7 @@ def create_first_subscription_invoice(subscription: dict[str, Any]) -> dict[str,
         "billingMode": subscription["billingMode"],
         "billingCycleAnchor": subscription.get("billingCycleAnchor", "CALENDAR_MONTH"),
         "invoiceType": details["invoiceType"],
-        **early_bird_invoice_fields(subscription, details["cycleStart"], details["invoiceType"]),
+        **early_bird_invoice_fields(subscription, details["cycleStart"], details["invoiceType"], due_day),
         "proration": proration,
         "billingCycleStart": details["cycleStart"].isoformat(),
         "billingCycleEnd": details["cycleEnd"].isoformat(),
@@ -2113,6 +4939,8 @@ def create_first_subscription_invoice(subscription: dict[str, Any]) -> dict[str,
         "deletedAt": None,
     }
     invoices.append(invoice)
+    apply_available_customer_credit(invoice, credit_actor)
+    capture_invoice_account_summary_at_issue(invoice)
     summary = invoice_summary(invoice)
     subscription.update(
         {
@@ -2200,6 +5028,7 @@ def filter_rows(rows: list[dict[str, Any]], search: str = "", status: str = "", 
             for row in filtered
             if needle in str(row.get("invoiceNumber", "")).lower()
             or needle in str(row.get("receiptNumber", "")).lower()
+            or any(needle in str(allocation.get("invoiceNumber", "")).lower() for allocation in row.get("allocations", []))
             or needle in str(row.get("planName", "")).lower()
             or needle in str(row.get("serviceAccountNumber", "")).lower()
             or needle in str(row.get("serviceId", "")).lower()
@@ -2226,6 +5055,8 @@ def billing_meta(admin=Depends(require_admin)):
         "promotionScopes": PROMOTION_SCOPES,
         "promotionDiscountTypes": PROMOTION_DISCOUNT_TYPES,
         "promotionPaymentRules": PROMOTION_PAYMENT_RULES,
+        "billingRunTypes": BILLING_RUN_TYPES,
+        "billingRunStatuses": BILLING_RUN_STATUSES,
     }
 
 
@@ -2245,6 +5076,7 @@ def billing_readiness(admin=Depends(require_admin)):
                 "subscriptionCycleUniqueness",
             ]
         ),
+        "automaticBilling": billing_scheduler_status(),
         "storage": storage,
         "remainingProductionStages": [
             "Normalize invoice lines and payment allocations into dedicated relational tables as volume grows.",
@@ -2332,12 +5164,88 @@ def delete_promotion(promotion_id: str, admin=Depends(require_admin)):
 def billing_overview(admin=Depends(require_admin)):
     seed_billing_data()
     invoice_rows = [invoice_summary(invoice) for invoice in visible_invoices()]
+    collection_accounts = collection_account_rows(invoice_rows)
     return {
         "metrics": billing_metrics(),
         "recentInvoices": sorted(invoice_rows, key=lambda invoice: invoice["createdAt"], reverse=True)[:5],
         "recentPayments": sorted(visible_payments(), key=lambda payment: payment["createdAt"], reverse=True)[:5],
         "atRisk": [invoice for invoice in invoice_rows if invoice["status"] in ["OVERDUE", "PARTIALLY_PAID"]][:5],
+        "collectionAccounts": collection_accounts[:10],
+        "collectionAccountCount": len(collection_accounts),
     }
+
+
+@router.get("/collection-performance")
+@billing_read_snapshot
+def get_monthly_collection_performance(
+    billingMonth: str = "",
+    asOf: str = "",
+    status: str = "ALL",
+    search: str = "",
+    page: int = 1,
+    pageSize: int = 20,
+    admin=Depends(require_admin),
+):
+    seed_billing_data()
+    report_day = parse_day(asOf, "asOf") if asOf else billing_business_date()
+    return monthly_collection_performance(
+        billing_month=billingMonth,
+        as_of=report_day,
+        status=status,
+        search=search,
+        page=page,
+        page_size=pageSize,
+    )
+
+
+@router.get("/billing-runs/preview")
+@billing_read_snapshot
+def preview_billing_run(asOf: str | None = None, admin=Depends(require_admin)):
+    as_of = parse_day(asOf or billing_business_date().isoformat(), "asOf")
+    return {
+        **billing_run_preview_data(as_of),
+        "scheduler": billing_scheduler_status(),
+    }
+
+
+@router.get("/billing-runs")
+@billing_read_snapshot
+def list_billing_runs(
+    status: str = "",
+    runType: str = "",
+    limit: int = 50,
+    admin=Depends(require_admin),
+):
+    rows = visible_billing_runs()
+    if status:
+        rows = [run for run in rows if normalize_upper(run.get("status")) == normalize_upper(status)]
+    if runType:
+        rows = [run for run in rows if normalize_upper(run.get("runType")) == normalize_upper(runType)]
+    capped_limit = max(1, min(int(limit or 50), 250))
+    return [
+        billing_run_summary(run)
+        for run in sorted(rows, key=lambda row: row.get("createdAt", ""), reverse=True)[:capped_limit]
+    ]
+
+
+@router.post("/billing-runs/run")
+def trigger_billing_run(
+    payload: BillingRunPayload,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    admin=Depends(require_admin),
+):
+    posting_key = normalize_idempotency_key(idempotency_key, required=True)
+    business_today = billing_business_date()
+    as_of = parse_day(payload.asOf or business_today.isoformat(), "asOf")
+    if as_of > business_today:
+        raise HTTPException(status_code=400, detail="Billing runs cannot post future billing dates")
+    return execute_billing_run(as_of, "MANUAL", admin["username"], posting_key)
+
+
+@router.get("/billing-runs/{run_id}")
+@billing_read_snapshot
+def get_billing_run(run_id: str, admin=Depends(require_admin)):
+    return billing_run_summary(find_billing_run(run_id))
 
 
 @router.get("/subscriptions")
@@ -2372,7 +5280,7 @@ def create_subscription(payload: SubscriptionPayload, admin=Depends(require_admi
     }
     subscriptions.append(subscription)
     add_audit("billing_subscription_created", "BillingSubscription", subscription["id"], {"customerId": customer["id"]}, admin["username"])
-    first_invoice = create_first_subscription_invoice(subscription)
+    first_invoice = create_first_subscription_invoice(subscription, admin["username"])
     if first_invoice:
         add_audit("billing_invoice_generated", "BillingInvoice", first_invoice["id"], {"subscriptionId": subscription["id"], "invoiceType": first_invoice["invoiceType"]}, admin["username"])
     persist_billing_state()
@@ -2432,6 +5340,7 @@ def generate_subscription_invoice(
         subscription,
         cycleStart,
         posting_key,
+        admin["username"],
     )
     if invoice.get("idempotentReplay"):
         return invoice
@@ -2573,6 +5482,33 @@ def list_invoices(
     return sorted(rows, key=lambda row: row["createdAt"], reverse=True)
 
 
+@router.get("/invoices/{invoice_id}/pdf", response_class=Response)
+@billing_read_snapshot
+def download_invoice_pdf(invoice_id: str, admin=Depends(require_admin)):
+    document = invoice_detail(find_invoice(invoice_id))
+    pdf = render_invoice_pdf(document, generated_at=now_iso())
+    invoice_number = clean_text(document.get("invoiceNumber")) or "invoice"
+    filename_stem = "".join(
+        character if character.isascii() and (character.isalnum() or character in "-_") else "_"
+        for character in invoice_number
+    ).strip("_") or "invoice"
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename_stem}.pdf"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/invoices/{invoice_id}")
+@billing_read_snapshot
+def get_invoice(invoice_id: str, admin=Depends(require_admin)):
+    return invoice_detail(find_invoice(invoice_id))
+
+
 @router.post("/invoices")
 @billing_mutation
 def create_invoice(
@@ -2588,8 +5524,8 @@ def create_invoice(
     subscription = find_subscription(payload.subscriptionId) if payload.subscriptionId else None
     customer_id = payload.customerId or (subscription["customerId"] if subscription else "")
     customer = subscription["customer"] if subscription else resolve_customer(customer_id)
-    issue_day = parse_day(payload.issueDate, "issueDate")
-    cycle_start = parse_day(payload.billingCycleStart or issue_day.isoformat(), "billingCycleStart")
+    requested_issue_day = parse_day(payload.issueDate, "issueDate")
+    cycle_start = parse_day(payload.billingCycleStart or requested_issue_day.isoformat(), "billingCycleStart")
     cycle_end = parse_day(payload.billingCycleEnd or (add_months(cycle_start, 1) - timedelta(days=1)).isoformat(), "billingCycleEnd")
     if cycle_end < cycle_start:
         raise HTTPException(status_code=400, detail="billingCycleEnd cannot be before billingCycleStart")
@@ -2598,7 +5534,12 @@ def create_invoice(
         raise HTTPException(status_code=400, detail="Invalid invoice status")
     if status not in ["DRAFT", "ISSUED"]:
         raise HTTPException(status_code=400, detail="New invoices must be saved as DRAFT or ISSUED")
-    due_day = parse_day(payload.dueDate or cycle_end.isoformat(), "dueDate")
+    issue_day = billing_business_date() if subscription and status == "ISSUED" else requested_issue_day
+    due_day = (
+        subscription_invoice_due_date(subscription, cycle_start, cycle_end, issue_day)
+        if subscription and status == "ISSUED"
+        else parse_day(payload.dueDate or cycle_end.isoformat(), "dueDate")
+    )
     invoice_type = "MONTHLY" if subscription else "MANUAL"
     if subscription and invoice_for_subscription_cycle(subscription["id"], cycle_start.isoformat()) is not None:
         raise HTTPException(status_code=409, detail="An invoice already exists for this subscription billing cycle")
@@ -2624,19 +5565,43 @@ def create_invoice(
         "priceOverrideReason": subscription.get("priceOverrideReason", "") if subscription else "",
         "billingMode": subscription["billingMode"] if subscription else None,
         "invoiceType": invoice_type,
-        **(early_bird_invoice_fields(subscription, cycle_start, invoice_type, due_day) if subscription else {"earlyBirdEligible": False, "earlyBirdDiscountAmount": 0, "earlyBirdCutoffDate": ""}),
+        **(
+            early_bird_invoice_fields(subscription, cycle_start, invoice_type, due_day)
+            if subscription
+            else {
+                "qualifiedPromotionIds": [],
+                "qualifiedPromotions": [],
+                "qualifiedPromotionCount": 0,
+                "earlyBirdEligible": False,
+                "earlyBirdDiscountAmount": 0,
+                "earlyBirdCutoffDate": "",
+            }
+        ),
         "billingCycleStart": cycle_start.isoformat(),
         "billingCycleEnd": cycle_end.isoformat(),
         "issueDate": issue_day.isoformat(),
         "dueDate": due_day.isoformat(),
         "status": status,
-        "lineItems": normalize_line_items(payload.lineItems, subscription),
+        "lineItems": normalize_line_items(
+            payload.lineItems,
+            subscription,
+            billing_period_label=invoice_billing_period(
+                {
+                    "billingCycleStart": cycle_start.isoformat(),
+                    "billingCycleEnd": cycle_end.isoformat(),
+                }
+            )["billingPeriodLabel"],
+        ),
         "notes": payload.notes or "",
         "createdAt": timestamp,
         "updatedAt": timestamp,
         "deletedAt": None,
     }
     invoices.append(invoice)
+    if invoice.get("status") == "ISSUED" and invoice.get("invoiceType") in MONTHLY_INVOICE_TYPES:
+        apply_available_customer_credit(invoice, admin["username"])
+    if invoice.get("status") != "DRAFT":
+        capture_invoice_account_summary_at_issue(invoice)
     add_audit("billing_invoice_created", "BillingInvoice", invoice["id"], {"customerId": customer["id"]}, admin["username"])
     persist_billing_state()
     return invoice_summary(invoice)
@@ -2648,6 +5613,7 @@ def update_invoice(invoice_id: str, payload: InvoicePayload, admin=Depends(requi
     current = find_invoice(invoice_id)
     if current.get("status") != "DRAFT":
         raise HTTPException(status_code=409, detail="Posted invoices are immutable; use a credit or debit adjustment for corrections")
+    previous_status = current.get("status")
     data = payload.model_dump(exclude_unset=True)
     if "subscriptionId" in data:
         if data["subscriptionId"]:
@@ -2683,6 +5649,9 @@ def update_invoice(invoice_id: str, payload: InvoicePayload, admin=Depends(requi
             current["priceOverrideReason"] = ""
             current["billingMode"] = None
             current["invoiceType"] = "MANUAL"
+            current["qualifiedPromotionIds"] = []
+            current["qualifiedPromotions"] = []
+            current["qualifiedPromotionCount"] = 0
             current["earlyBirdEligible"] = False
             current["earlyBirdDiscountAmount"] = 0
             current["earlyBirdCutoffDate"] = ""
@@ -2708,6 +5677,17 @@ def update_invoice(invoice_id: str, payload: InvoicePayload, admin=Depends(requi
         if existing_cycle_invoice is not None and existing_cycle_invoice["id"] != current["id"]:
             raise HTTPException(status_code=409, detail="An invoice already exists for this subscription billing cycle")
         current["invoiceType"] = current.get("invoiceType") or "MONTHLY"
+        if previous_status == "DRAFT" and current.get("status") == "ISSUED":
+            issue_day = billing_business_date()
+            cycle_start = parse_day(current.get("billingCycleStart"), "billingCycleStart")
+            cycle_end = parse_day(current.get("billingCycleEnd"), "billingCycleEnd")
+            current["issueDate"] = issue_day.isoformat()
+            current["dueDate"] = subscription_invoice_due_date(
+                subscription,
+                cycle_start,
+                cycle_end,
+                issue_day,
+            ).isoformat()
         current.update(early_bird_invoice_fields(
             subscription,
             parse_day(current.get("billingCycleStart"), "billingCycleStart"),
@@ -2715,6 +5695,10 @@ def update_invoice(invoice_id: str, payload: InvoicePayload, admin=Depends(requi
             parse_day(current.get("dueDate"), "dueDate"),
         ))
     current["updatedAt"] = now_iso()
+    if previous_status == "DRAFT" and current.get("status") == "ISSUED":
+        if current.get("invoiceType") in MONTHLY_INVOICE_TYPES:
+            apply_available_customer_credit(current, admin["username"])
+        capture_invoice_account_summary_at_issue(current)
     add_audit("billing_invoice_updated", "BillingInvoice", current["id"], {"customerId": current["customerId"]}, admin["username"])
     persist_billing_state()
     return invoice_summary(current)
@@ -2757,11 +5741,22 @@ def invoice_eligible_promotions(invoice_id: str, paymentDate: str = "", admin=De
     invoice = find_invoice(invoice_id)
     payment_day = parse_day(paymentDate or today_iso(), "paymentDate")
     promotion_options = eligible_payment_promotions(invoice, payment_day)
-    recommended_promotion = recommended_payment_promotion(promotion_options)
+    recommended_bundle = recommended_payment_promotion_bundle(invoice, promotion_options)
+    recommended_promotions = recommended_bundle["promotions"] if recommended_bundle else []
+    recommended_promotion = recommended_promotions[0] if recommended_promotions else None
+    quote = payment_promotion_quote(invoice, payment_day)
     return {
         "invoice": invoice_summary(invoice),
         "paymentDate": payment_day.isoformat(),
+        "promotionQuote": quote,
         "recommendedPromotionId": recommended_promotion["id"] if recommended_promotion else "",
+        "recommendedPromotionIds": [promotion["id"] for promotion in recommended_promotions],
+        "recommendedPromotionBundle": recommended_bundle or {
+            "promotionIds": [],
+            "promotions": [],
+            "discountAmount": 0,
+            "discountedPayable": money(invoice_summary(invoice)["balance"]),
+        },
         "promotions": promotion_options,
     }
 
@@ -2834,9 +5829,23 @@ def create_early_bird_discount_adjustment(
         "deletedAt": None,
     }
     adjustments.append(adjustment)
+    payment_adjustments = payment.setdefault("earlyBirdDiscountAdjustments", [])
+    payment_adjustments.append(
+        {
+            "invoiceId": invoice["id"],
+            "invoiceNumber": invoice["invoiceNumber"],
+            "adjustmentId": adjustment["id"],
+            "amount": adjustment["amount"],
+            "promotionId": invoice.get("earlyBirdPromotionId", ""),
+            "promotionCode": promotion_code,
+            "promotionName": promotion_name,
+        }
+    )
+    adjustment_ids = payment.setdefault("earlyBirdDiscountAdjustmentIds", [])
+    adjustment_ids.append(adjustment["id"])
     payment["earlyBirdDiscountApplied"] = True
-    payment["earlyBirdDiscountAmount"] = adjustment["amount"]
-    payment["earlyBirdDiscountAdjustmentId"] = adjustment["id"]
+    payment["earlyBirdDiscountAmount"] = money(money(payment.get("earlyBirdDiscountAmount")) + adjustment["amount"])
+    payment["earlyBirdDiscountAdjustmentId"] = adjustment["id"] if len(adjustment_ids) == 1 else ""
     invoice["updatedAt"] = timestamp
     add_audit("billing_adjustment_posted", "BillingAdjustment", adjustment["id"], {"invoiceId": invoice["id"], "source": "EARLY_BIRD_DISCOUNT", "paymentId": payment["id"]}, admin["username"])
     return adjustment
@@ -2847,44 +5856,47 @@ def void_early_bird_discount_for_payment(
     timestamp: str,
     admin: dict[str, Any],
 ) -> None:
-    adjustment_id = payment.get("earlyBirdDiscountAdjustmentId")
-    adjustment = None
-    if adjustment_id:
+    adjustment_ids = [clean_text(payment.get("earlyBirdDiscountAdjustmentId"))]
+    adjustment_ids.extend(clean_text(row) for row in payment.get("earlyBirdDiscountAdjustmentIds") or [])
+    adjustment_by_id: dict[str, dict[str, Any]] = {}
+    for adjustment_id in adjustment_ids:
+        if not adjustment_id:
+            continue
         try:
             adjustment = find_adjustment(adjustment_id)
         except HTTPException:
-            adjustment = None
-    if adjustment is None:
-        adjustment = next(
-            (
-                row
-                for row in visible_adjustments()
-                if row.get("paymentId") == payment["id"]
-                and row.get("adjustmentSource") == "EARLY_BIRD_DISCOUNT"
-                and row.get("status") == "POSTED"
-            ),
-            None,
-        )
-    if adjustment is None or adjustment.get("status") != "POSTED":
+            continue
+        adjustment_by_id[adjustment["id"]] = adjustment
+    for row in visible_adjustments():
+        if (
+            row.get("paymentId") == payment["id"]
+            and row.get("adjustmentSource") == "EARLY_BIRD_DISCOUNT"
+            and row.get("status") == "POSTED"
+        ):
+            adjustment_by_id[row["id"]] = row
+    posted_adjustments = [row for row in adjustment_by_id.values() if row.get("status") == "POSTED"]
+    if not posted_adjustments:
         return
-    adjustment["status"] = "VOID"
-    adjustment["voidedAt"] = timestamp
-    adjustment["voidedByUsername"] = admin["username"]
-    adjustment["voidReason"] = "Related payment voided"
-    adjustment["updatedAt"] = timestamp
+    for adjustment in posted_adjustments:
+        adjustment["status"] = "VOID"
+        adjustment["voidedAt"] = timestamp
+        adjustment["voidedByUsername"] = admin["username"]
+        adjustment["voidReason"] = "Related payment voided"
+        adjustment["updatedAt"] = timestamp
+        add_audit(
+            "billing_adjustment_voided",
+            "BillingAdjustment",
+            adjustment["id"],
+            {
+                "invoiceId": adjustment["invoiceId"],
+                "source": "EARLY_BIRD_DISCOUNT",
+                "paymentId": payment["id"],
+                "reason": adjustment["voidReason"],
+            },
+            admin["username"],
+        )
     payment["earlyBirdDiscountApplied"] = False
-    add_audit(
-        "billing_adjustment_voided",
-        "BillingAdjustment",
-        adjustment["id"],
-        {
-            "invoiceId": adjustment["invoiceId"],
-            "source": "EARLY_BIRD_DISCOUNT",
-            "paymentId": payment["id"],
-            "reason": adjustment["voidReason"],
-        },
-        admin["username"],
-    )
+    payment["earlyBirdDiscountAmount"] = 0
 
 
 def create_payment_promotion_adjustment(
@@ -2922,12 +5934,29 @@ def create_payment_promotion_adjustment(
         "deletedAt": None,
     }
     adjustments.append(adjustment)
+    payment_adjustments = payment.setdefault("promotionDiscountAdjustments", [])
+    payment_adjustments.append(
+        {
+            "invoiceId": invoice["id"],
+            "invoiceNumber": invoice["invoiceNumber"],
+            "adjustmentId": adjustment["id"],
+            "promotionId": promotion_option["id"],
+            "promotionCode": promotion_code,
+            "promotionName": promotion_name,
+            "amount": adjustment["amount"],
+        }
+    )
+    adjustment_ids = payment.setdefault("promotionDiscountAdjustmentIds", [])
+    adjustment_ids.append(adjustment["id"])
+    promotion_ids = payment.setdefault("promotionIds", [])
+    if promotion_option["id"] not in promotion_ids:
+        promotion_ids.append(promotion_option["id"])
     payment["promotionDiscountApplied"] = True
-    payment["promotionDiscountAmount"] = adjustment["amount"]
-    payment["promotionDiscountAdjustmentId"] = adjustment["id"]
-    payment["promotionId"] = promotion_option["id"]
-    payment["promotionCode"] = promotion_code
-    payment["promotionName"] = promotion_name
+    payment["promotionDiscountAmount"] = money(money(payment.get("promotionDiscountAmount")) + adjustment["amount"])
+    payment["promotionDiscountAdjustmentId"] = adjustment["id"] if len(adjustment_ids) == 1 else ""
+    payment["promotionId"] = promotion_option["id"] if len(promotion_ids) == 1 else ""
+    payment["promotionCode"] = promotion_code if len(promotion_ids) == 1 else "MULTIPLE"
+    payment["promotionName"] = promotion_name if len(promotion_ids) == 1 else "Multiple promotions"
     invoice["updatedAt"] = timestamp
     add_audit(
         "billing_adjustment_posted",
@@ -2944,44 +5973,47 @@ def void_payment_promotion_for_payment(
     timestamp: str,
     admin: dict[str, Any],
 ) -> None:
-    adjustment_id = payment.get("promotionDiscountAdjustmentId")
-    adjustment = None
-    if adjustment_id:
+    adjustment_ids = [clean_text(payment.get("promotionDiscountAdjustmentId"))]
+    adjustment_ids.extend(clean_text(row) for row in payment.get("promotionDiscountAdjustmentIds") or [])
+    adjustment_by_id: dict[str, dict[str, Any]] = {}
+    for adjustment_id in adjustment_ids:
+        if not adjustment_id:
+            continue
         try:
             adjustment = find_adjustment(adjustment_id)
         except HTTPException:
-            adjustment = None
-    if adjustment is None:
-        adjustment = next(
-            (
-                row
-                for row in visible_adjustments()
-                if row.get("paymentId") == payment["id"]
-                and row.get("adjustmentSource") == "PAYMENT_PROMOTION"
-                and row.get("status") == "POSTED"
-            ),
-            None,
-        )
-    if adjustment is None or adjustment.get("status") != "POSTED":
+            continue
+        adjustment_by_id[adjustment["id"]] = adjustment
+    for row in visible_adjustments():
+        if (
+            row.get("paymentId") == payment["id"]
+            and row.get("adjustmentSource") == "PAYMENT_PROMOTION"
+            and row.get("status") == "POSTED"
+        ):
+            adjustment_by_id[row["id"]] = row
+    posted_adjustments = [row for row in adjustment_by_id.values() if row.get("status") == "POSTED"]
+    if not posted_adjustments:
         return
-    adjustment["status"] = "VOID"
-    adjustment["voidedAt"] = timestamp
-    adjustment["voidedByUsername"] = admin["username"]
-    adjustment["voidReason"] = "Related payment voided"
-    adjustment["updatedAt"] = timestamp
+    for adjustment in posted_adjustments:
+        adjustment["status"] = "VOID"
+        adjustment["voidedAt"] = timestamp
+        adjustment["voidedByUsername"] = admin["username"]
+        adjustment["voidReason"] = "Related payment voided"
+        adjustment["updatedAt"] = timestamp
+        add_audit(
+            "billing_adjustment_voided",
+            "BillingAdjustment",
+            adjustment["id"],
+            {
+                "invoiceId": adjustment["invoiceId"],
+                "source": "PAYMENT_PROMOTION",
+                "paymentId": payment["id"],
+                "reason": adjustment["voidReason"],
+            },
+            admin["username"],
+        )
     payment["promotionDiscountApplied"] = False
-    add_audit(
-        "billing_adjustment_voided",
-        "BillingAdjustment",
-        adjustment["id"],
-        {
-            "invoiceId": adjustment["invoiceId"],
-            "source": "PAYMENT_PROMOTION",
-            "paymentId": payment["id"],
-            "reason": adjustment["voidReason"],
-        },
-        admin["username"],
-    )
+    payment["promotionDiscountAmount"] = 0
 
 
 @router.post("/payments")
@@ -2996,12 +6028,12 @@ def create_payment(
     replay = idempotent_replay("payment", posting_key, fingerprint)
     if replay is not None:
         return replay
-    invoice = find_invoice(payload.invoiceId) if payload.invoiceId else None
-    customer_id = payload.customerId or (invoice["customerId"] if invoice else "")
-    customer = invoice["customer"] if invoice else resolve_customer(customer_id)
     amount = money(payload.amount)
     if amount <= 0:
         raise HTTPException(status_code=400, detail="Payment amount must be greater than zero")
+    advance_amount = money(payload.advanceAmount)
+    if advance_amount < 0 or advance_amount > amount:
+        raise HTTPException(status_code=400, detail="Advance credit must be between zero and the payment amount")
     method = normalize_upper(payload.method or "CASH")
     status = normalize_upper(payload.status or "POSTED")
     if method not in PAYMENT_METHODS:
@@ -3011,25 +6043,156 @@ def create_payment(
     if status != "POSTED":
         raise HTTPException(status_code=400, detail="New payments must be posted; use the void action for reversals")
     payment_day = parse_day(payload.paymentDate, "paymentDate")
-    selected_promotion_id = clean_text(payload.promotionId)
-    early_bird_discount = None
-    payment_promotion = None
-    if invoice is not None and status == "POSTED":
-        if selected_promotion_id:
-            payment_promotion = payment_promotion_for_payment(invoice, selected_promotion_id, amount, payment_day)
-        else:
-            payment_promotion = automatic_payment_promotion_for_payment(invoice, amount, payment_day)
-            if payment_promotion is None:
-                early_bird_discount = early_bird_discount_for_payment(invoice, amount, payment_day)
-        validate_invoice_payment(invoice, amount)
+    for quoted_allocation in payload.allocations or []:
+        quote_fingerprint = clean_text(quoted_allocation.promotionQuoteFingerprint)[:128]
+        if not quote_fingerprint:
+            continue
+        quote_date = clean_text(quoted_allocation.promotionQuoteDate)[:20]
+        allocation_invoice = find_invoice(clean_text(quoted_allocation.invoiceId))
+        allocation_promotion_ids = normalized_promotion_ids(
+            quoted_allocation.promotionIds,
+            "allocation promotion IDs",
+        )
+        legacy_allocation_promotion_id = clean_text(quoted_allocation.promotionId)
+        if (
+            legacy_allocation_promotion_id
+            and legacy_allocation_promotion_id not in allocation_promotion_ids
+        ):
+            allocation_promotion_ids.append(legacy_allocation_promotion_id)
+        current_quote = payment_promotion_quote(allocation_invoice, payment_day)
+        if quote_date != payment_day.isoformat():
+            raise HTTPException(
+                status_code=409,
+                detail="Promotion quote date changed. Refresh the customer account before collecting payment",
+            )
+        if (
+            quote_fingerprint != current_quote["quoteFingerprint"]
+            or allocation_promotion_ids != current_quote["promotionIds"]
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Promotion or invoice balance changed. Refresh the customer account before collecting payment",
+            )
+    selected_promotion_ids = normalized_promotion_ids(payload.promotionIds, "payment promotion IDs")
+    legacy_selected_promotion_id = clean_text(payload.promotionId)
+    if legacy_selected_promotion_id and legacy_selected_promotion_id not in selected_promotion_ids:
+        selected_promotion_ids.append(legacy_selected_promotion_id)
+    customer, allocations, invoice = normalize_payment_allocations(payload, amount, advance_amount)
+    if selected_promotion_ids:
+        if len(allocations) != 1:
+            raise HTTPException(status_code=400, detail="Use allocation promotion IDs for multi-invoice payment promotions")
+        allocations[0]["promotionIds"] = selected_promotion_ids
+        allocations[0]["promotionId"] = selected_promotion_ids[0] if len(selected_promotion_ids) == 1 else ""
+    allocation_payment_promotions: dict[str, list[dict[str, Any]]] = {}
+    allocation_early_bird_discounts: dict[str, dict[str, Any]] = {}
+    if status == "POSTED":
+        for allocation in allocations:
+            allocation_invoice = find_invoice(allocation["invoiceId"])
+            allocation_promotion_ids = normalized_promotion_ids(
+                allocation.get("promotionIds"),
+                "allocation promotion IDs",
+            )
+            quote_fingerprint = clean_text(allocation.get("promotionQuoteFingerprint"))[:128]
+            quote_date = clean_text(allocation.get("promotionQuoteDate"))[:20]
+            if quote_fingerprint:
+                if quote_date != payment_day.isoformat():
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Promotion quote date changed. Refresh the customer account before collecting payment",
+                    )
+                current_quote = payment_promotion_quote(allocation_invoice, payment_day)
+                if (
+                    quote_fingerprint != current_quote["quoteFingerprint"]
+                    or allocation_promotion_ids != current_quote["promotionIds"]
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Promotion or invoice balance changed. Refresh the customer account before collecting payment",
+                    )
+            if allocation_promotion_ids:
+                allocation_payment_promotions[allocation_invoice["id"]] = payment_promotions_for_payment(
+                    allocation_invoice,
+                    allocation_promotion_ids,
+                    allocation["amount"],
+                    payment_day,
+                )
+                allocation["promotionIds"] = [
+                    promotion["id"]
+                    for promotion in allocation_payment_promotions[allocation_invoice["id"]]
+                ]
+                allocation["promotionId"] = allocation["promotionIds"][0] if len(allocation["promotionIds"]) == 1 else ""
+                continue
+            automatic_promotions = automatic_payment_promotions_for_payment(
+                allocation_invoice,
+                allocation["amount"],
+                payment_day,
+            )
+            if automatic_promotions:
+                allocation_payment_promotions[allocation_invoice["id"]] = automatic_promotions
+                allocation["promotionIds"] = [promotion["id"] for promotion in automatic_promotions]
+                allocation["promotionId"] = allocation["promotionIds"][0] if len(allocation["promotionIds"]) == 1 else ""
+                continue
+            early_bird_discount = early_bird_discount_for_payment(allocation_invoice, allocation["amount"], payment_day)
+            if early_bird_discount is not None:
+                allocation_early_bird_discounts[allocation_invoice["id"]] = early_bird_discount
+
+    if advance_amount > 0:
+        allocation_by_invoice = {
+            allocation["invoiceId"]: allocation
+            for allocation in allocations
+        }
+        for open_invoice in visible_invoices():
+            summary = invoice_summary(open_invoice)
+            if (
+                open_invoice.get("customerId") != customer["id"]
+                or summary.get("status") in {"DRAFT", "PAID", "VOID"}
+                or money(summary.get("balance")) <= 0
+            ):
+                continue
+            allocation = allocation_by_invoice.get(open_invoice["id"])
+            if allocation is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Advance credit can only be stored after all current invoice balances are fully paid",
+                )
+            promotion_discount = money(
+                sum(
+                    promotion.get("discountAmountForInvoice")
+                    for promotion in allocation_payment_promotions.get(open_invoice["id"], [])
+                )
+            )
+            early_bird_discount = money(
+                (allocation_early_bird_discounts.get(open_invoice["id"]) or {}).get("amount")
+            )
+            settled_value = money(allocation["amount"] + promotion_discount + early_bird_discount)
+            if settled_value != money(summary["balance"]):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Advance credit can only be stored after all current invoice balances are fully paid",
+                )
+
+    promotion_ids = [
+        promotion["id"]
+        for promotion_rows in allocation_payment_promotions.values()
+        for promotion in promotion_rows
+    ]
+    if promotion_ids:
+        selected_promotion_id = promotion_ids[0] if len(set(promotion_ids)) == 1 else ""
+    else:
+        selected_promotion_id = ""
     timestamp = now_iso()
+    invoice_ids = [allocation["invoiceId"] for allocation in allocations]
     payment = {
         "id": str(uuid4()),
         "receiptNumber": next_number("OR", payments, "receiptNumber"),
         "idempotencyKey": posting_key,
         "idempotencyFingerprint": fingerprint,
         "invoiceId": invoice["id"] if invoice else None,
-        "invoiceNumber": invoice["invoiceNumber"] if invoice else "",
+        "invoiceNumber": payment_invoice_label(allocations, advance_amount),
+        "allocations": allocations,
+        "allocationCount": len(allocations),
+        "appliedAmount": money(amount - advance_amount),
+        "advanceAmount": advance_amount,
         "customerId": customer["id"],
         "customer": customer,
         "amount": amount,
@@ -3039,6 +6202,7 @@ def create_payment(
         "collectionChannel": clean_text(payload.collectionChannel) or "BILLING",
         "postedByUsername": admin["username"],
         "postedByName": admin_display_name(admin),
+        "postedAt": timestamp,
         "status": status,
         "earlyBirdDiscountApplied": False,
         "earlyBirdDiscountAmount": 0,
@@ -3047,6 +6211,7 @@ def create_payment(
         "promotionDiscountAmount": 0,
         "promotionDiscountAdjustmentId": "",
         "promotionId": selected_promotion_id,
+        "promotionIds": list(dict.fromkeys(promotion_ids)),
         "promotionCode": "",
         "promotionName": "",
         "notes": payload.notes or "",
@@ -3055,13 +6220,37 @@ def create_payment(
         "deletedAt": None,
     }
     payments.append(payment)
-    if invoice is not None and payment_promotion is not None:
-        create_payment_promotion_adjustment(invoice, payment, payment_promotion, admin, timestamp)
-    elif invoice is not None and early_bird_discount is not None:
-        create_early_bird_discount_adjustment(invoice, payment, early_bird_discount, admin, timestamp)
+    payment["accountCreditAfter"] = customer_credit_balance(customer["id"])
+    for allocation in allocations:
+        allocation_invoice = find_invoice(allocation["invoiceId"])
+        payment_promotions = allocation_payment_promotions.get(allocation_invoice["id"]) or []
+        if payment_promotions:
+            for payment_promotion in payment_promotions:
+                create_payment_promotion_adjustment(allocation_invoice, payment, payment_promotion, admin, timestamp)
+            continue
+        early_bird_discount = allocation_early_bird_discounts.get(allocation_invoice["id"])
+        if early_bird_discount is not None:
+            create_early_bird_discount_adjustment(allocation_invoice, payment, early_bird_discount, admin, timestamp)
     if invoice is not None:
         invoice["updatedAt"] = timestamp
-    add_audit("billing_payment_posted", "BillingPayment", payment["id"], {"customerId": customer["id"], "invoiceId": payment["invoiceId"]}, admin["username"])
+    for invoice_id in invoice_ids:
+        find_invoice(invoice_id)["updatedAt"] = timestamp
+    add_audit(
+        "billing_payment_posted",
+        "BillingPayment",
+        payment["id"],
+        {
+            "customerId": customer["id"],
+            "invoiceId": payment["invoiceId"],
+            "invoiceIds": invoice_ids,
+            "allocationCount": len(allocations),
+            "appliedAmount": payment["appliedAmount"],
+            "advanceAmount": advance_amount,
+            "accountCreditAfter": payment["accountCreditAfter"],
+            "postedAt": timestamp,
+        },
+        admin["username"],
+    )
     persist_billing_state()
     return payment
 
@@ -3081,6 +6270,12 @@ def delete_payment(payment_id: str, reason: str = "", admin=Depends(require_admi
     current = find_payment(payment_id)
     if current.get("status") == "VOID":
         return {"status": "ok", "idempotentReplay": True}
+    applied_credit_rows = credit_applications_for_payment(current["id"])
+    if applied_credit_rows:
+        raise HTTPException(
+            status_code=409,
+            detail="This advance receipt has already been applied to an invoice and cannot be voided",
+        )
     timestamp = now_iso()
     current["status"] = "VOID"
     current["voidedAt"] = timestamp
@@ -3089,17 +6284,233 @@ def delete_payment(payment_id: str, reason: str = "", admin=Depends(require_admi
     current["updatedAt"] = timestamp
     void_early_bird_discount_for_payment(current, timestamp, admin)
     void_payment_promotion_for_payment(current, timestamp, admin)
-    if current.get("invoiceId"):
-        find_invoice(current["invoiceId"])["updatedAt"] = timestamp
+    invoice_ids = payment_invoice_ids(current)
+    for invoice_id in invoice_ids:
+        find_invoice(invoice_id)["updatedAt"] = timestamp
     add_audit(
         "billing_payment_voided",
         "BillingPayment",
         current["id"],
-        {"customerId": current["customerId"], "invoiceId": current.get("invoiceId"), "reason": current["voidReason"]},
+        {
+            "customerId": current["customerId"],
+            "invoiceId": current.get("invoiceId"),
+            "invoiceIds": invoice_ids,
+            "reason": current["voidReason"],
+        },
         admin["username"],
     )
     persist_billing_state()
     return {"status": "ok"}
+
+
+def post_collector_payment(
+    payload: dict[str, Any],
+    idempotency_key: str,
+    actor: dict[str, Any],
+) -> dict[str, Any]:
+    """Post a Collector receipt through Billing's canonical transaction path."""
+    normalized_payload = dict(payload)
+    normalized_payload["collectionChannel"] = "COLLECTOR"
+    return create_payment(
+        PaymentPayload(**normalized_payload),
+        idempotency_key=idempotency_key,
+        admin=actor,
+    )
+
+
+@router.post("/adjustments/outage-rebates/preview")
+@billing_read_snapshot
+def preview_outage_rebates(
+    payload: OutageRebatePreviewPayload,
+    admin=Depends(require_admin),
+):
+    seed_billing_data()
+    return outage_rebate_quote(payload)
+
+
+@router.post("/adjustments/outage-rebates")
+@billing_mutation
+def create_outage_rebate_batch(
+    payload: OutageRebateBatchPayload,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    admin=Depends(require_admin),
+):
+    posting_key = normalize_idempotency_key(idempotency_key)
+    customer_ids = normalize_outage_customer_ids(payload.customerIds)
+    outage_start, outage_end = normalize_outage_window(payload.outageStart, payload.outageEnd)
+    normalized_request = {
+        "customerIds": customer_ids,
+        "outageStart": outage_start.isoformat(),
+        "outageEnd": outage_end.isoformat(),
+        "previewFingerprint": clean_text(payload.previewFingerprint),
+    }
+    batch_fingerprint = posting_fingerprint("outage_rebate_batch", normalized_request)
+    existing_batch = [
+        adjustment
+        for adjustment in visible_adjustments()
+        if adjustment.get("outageBatchIdempotencyKey") == posting_key
+    ]
+    if existing_batch:
+        if any(
+            adjustment.get("outageBatchFingerprint") != batch_fingerprint
+            for adjustment in existing_batch
+        ):
+            raise HTTPException(status_code=409, detail="Idempotency-Key was already used with a different outage rebate batch")
+        return outage_rebate_batch_response(existing_batch, idempotent_replay=True)
+
+    quote = outage_rebate_quote(payload)
+    if not normalized_request["previewFingerprint"]:
+        raise HTTPException(status_code=400, detail="previewFingerprint is required")
+    if normalized_request["previewFingerprint"] != quote["quoteFingerprint"]:
+        raise HTTPException(
+            status_code=409,
+            detail="Rebate preview changed. Review the recalculated amounts before posting",
+        )
+    if not quote["canPost"]:
+        problems = [
+            f"{customer_name(row['customer'])}: {row['ineligibleReason']}"
+            for row in quote["rows"]
+            if not row["eligible"]
+        ]
+        problem_summary = "; ".join(problems[:3])
+        if len(problems) > 3:
+            problem_summary = f"{problem_summary}; and {len(problems) - 3} more"
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot post outage rebate batch. {problem_summary}",
+        )
+    if money(quote["totalRebateAmount"]) <= 0:
+        raise HTTPException(status_code=400, detail="The selected outage window produces no rebate")
+
+    batch_id = str(uuid4())
+    timestamp = now_iso()
+    outage_label = (
+        f"{outage_start.strftime('%b %d, %Y %I:%M %p')} to "
+        f"{outage_end.strftime('%b %d, %Y %I:%M %p')} {BILLING_TIMEZONE}"
+    )
+    reason = f"Service outage rebate ({outage_label})"
+    batch_adjustments: list[dict[str, Any]] = []
+    for row in quote["rows"]:
+        invoice = find_invoice(row["invoiceId"]) if row["invoiceId"] else None
+        child_idempotency_key = (
+            "outage:"
+            + hashlib.sha256(f"{posting_key}|{row['customerId']}".encode("utf-8")).hexdigest()
+        )
+        child_fingerprint = posting_fingerprint(
+            "adjustment",
+            {
+                "customerId": row["customerId"],
+                "invoiceId": row["invoiceId"],
+                "amount": row["rebateAmount"],
+                "outageStart": quote["outageStart"],
+                "outageEnd": quote["outageEnd"],
+            },
+        )
+        adjustment = {
+            "id": str(uuid4()),
+            "idempotencyKey": child_idempotency_key,
+            "idempotencyFingerprint": child_fingerprint,
+            "invoiceId": "",
+            "invoiceNumber": "",
+            "customerId": row["customerId"],
+            "customer": row["customer"],
+            "type": "CREDIT",
+            "amount": money(row["rebateAmount"]),
+            "reason": reason,
+            "adjustmentSource": "SERVICE_REBATE",
+            "applicationMode": "CUSTOMER_ACCOUNT_CREDIT",
+            "status": "POSTED",
+            "notes": "Automatically calculated from active subscription rates and held as customer credit until applied.",
+            "outageBatchId": batch_id,
+            "outageBatchIdempotencyKey": posting_key,
+            "outageBatchFingerprint": batch_fingerprint,
+            "outageQuoteFingerprint": quote["quoteFingerprint"],
+            "outageQuoteVersion": quote["version"],
+            "outageStart": quote["outageStart"],
+            "outageEnd": quote["outageEnd"],
+            "outageTimezone": quote["timezone"],
+            "outageDurationMinutes": quote["durationMinutes"],
+            "outageDurationHours": quote["durationHours"],
+            "outageCalculationMethod": quote["calculationMethod"],
+            "outageMonthlyRecurringCharge": row["monthlyRecurringCharge"],
+            "outageCalculatedAmount": row["calculatedAmount"],
+            "outageApplyNowAmount": row["applyNowAmount"],
+            "outageCarryForwardAmount": row["carryForwardAmount"],
+            "outageApplicationMode": row["applicationMode"],
+            "outageRebateCapped": False,
+            "outageSubscriptions": deepcopy(row["subscriptions"]),
+            "initialAppliedInvoiceId": invoice.get("id") if invoice else "",
+            "initialAppliedInvoiceNumber": invoice.get("invoiceNumber") if invoice else "",
+            "initialAppliedAmount": 0.0,
+            "initialCreditApplicationIds": [],
+            "postedByUsername": admin["username"],
+            "postedByName": admin_display_name(admin),
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+            "deletedAt": None,
+        }
+        adjustments.append(adjustment)
+        batch_adjustments.append(adjustment)
+        applied_rows = (
+            apply_adjustment_credit_to_invoice(adjustment, invoice, admin["username"])
+            if invoice is not None
+            else []
+        )
+        applied_amount = money(sum(application.get("amount") for application in applied_rows))
+        if applied_amount != money(row["applyNowAmount"]):
+            raise HTTPException(
+                status_code=409,
+                detail="Customer balance changed while posting rebates. Refresh the preview and try again",
+            )
+        adjustment["initialAppliedAmount"] = applied_amount
+        adjustment["initialCreditApplicationIds"] = [
+            application["id"]
+            for application in applied_rows
+        ]
+        add_audit(
+            "billing_adjustment_posted",
+            "BillingAdjustment",
+            adjustment["id"],
+            {
+                "invoiceId": invoice.get("id") if invoice else "",
+                "customerId": row["customerId"],
+                "source": adjustment["adjustmentSource"],
+                "amount": adjustment["amount"],
+                "appliedAmount": applied_amount,
+                "availableCredit": adjustment_credit_remaining(adjustment),
+                "reason": adjustment["reason"],
+                "outageBatchId": batch_id,
+                "outageStart": quote["outageStart"],
+                "outageEnd": quote["outageEnd"],
+                "calculationMethod": quote["calculationMethod"],
+            },
+            admin["username"],
+        )
+
+    add_audit(
+        "billing_outage_rebate_batch_posted",
+        "BillingAdjustmentBatch",
+        batch_id,
+        {
+            "customerCount": len(batch_adjustments),
+            "totalRebateAmount": quote["totalRebateAmount"],
+            "outageStart": quote["outageStart"],
+            "outageEnd": quote["outageEnd"],
+            "timezone": quote["timezone"],
+            "durationMinutes": quote["durationMinutes"],
+            "calculationMethod": quote["calculationMethod"],
+            "totalAppliedAmount": money(
+                sum(adjustment.get("initialAppliedAmount") for adjustment in batch_adjustments)
+            ),
+            "totalAvailableCredit": money(
+                sum(adjustment_credit_remaining(adjustment) for adjustment in batch_adjustments)
+            ),
+            "adjustmentIds": [adjustment["id"] for adjustment in batch_adjustments],
+        },
+        admin["username"],
+    )
+    persist_billing_state()
+    return outage_rebate_batch_response(batch_adjustments)
 
 
 @router.get("/adjustments")
@@ -3109,7 +6520,11 @@ def list_adjustments(customerId: str = "", admin=Depends(require_admin)):
     rows = visible_adjustments()
     if customerId:
         rows = [row for row in rows if row["customerId"] == customerId]
-    return sorted(rows, key=lambda row: row["createdAt"], reverse=True)
+    return sorted(
+        [adjustment_summary(row) for row in rows],
+        key=lambda row: row["createdAt"],
+        reverse=True,
+    )
 
 
 @router.post("/adjustments")
@@ -3123,38 +6538,72 @@ def create_adjustment(
     fingerprint = posting_fingerprint("adjustment", payload)
     replay = idempotent_replay("adjustment", posting_key, fingerprint)
     if replay is not None:
-        return replay
-    invoice = find_invoice(payload.invoiceId or "")
-    invoice_status = invoice_summary(invoice)["status"]
-    if invoice_status in ["DRAFT", "VOID"]:
+        return adjustment_summary(replay)
+
+    invoice_id = clean_text(payload.invoiceId)
+    customer_id = clean_text(payload.customerId)
+    is_customer_rebate = bool(customer_id and not invoice_id)
+    invoice = None
+    invoice_state = None
+    if invoice_id:
+        invoice = find_invoice(invoice_id)
+        if customer_id and invoice.get("customerId") != customer_id:
+            raise HTTPException(status_code=400, detail="Selected invoice does not belong to the selected customer")
+        customer = invoice.get("customer") or resolve_customer(invoice["customerId"])
+        invoice_state = invoice_summary(invoice)
+    elif customer_id:
+        customer = resolve_customer(customer_id)
+        try:
+            invoice, invoice_state = customer_rebate_invoice(customer_id)
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                raise
+    else:
+        raise HTTPException(status_code=400, detail="customerId is required")
+
+    invoice_status = invoice_state["status"] if invoice_state else ""
+    if invoice is not None and invoice_status in ["DRAFT", "VOID"]:
         raise HTTPException(status_code=400, detail="Adjustments can only be posted to an issued invoice")
-    adjustment_type = normalize_upper(payload.type or "CREDIT")
-    status = normalize_upper(payload.status or "POSTED")
+    adjustment_type = "CREDIT" if is_customer_rebate else normalize_upper(payload.type or "CREDIT")
+    status = "POSTED" if is_customer_rebate else normalize_upper(payload.status or "POSTED")
     amount = money(payload.amount)
+    reason = clean_text(payload.reason)
     if amount <= 0:
         raise HTTPException(status_code=400, detail="Adjustment amount must be greater than zero")
+    if is_customer_rebate and not reason:
+        raise HTTPException(status_code=400, detail="Rebate reason is required")
+    if is_customer_rebate and payload.type and normalize_upper(payload.type) != "CREDIT":
+        raise HTTPException(status_code=400, detail="Customer rebates must be credit adjustments")
+    if is_customer_rebate and payload.status and normalize_upper(payload.status) != "POSTED":
+        raise HTTPException(status_code=400, detail="Customer rebates must be posted immediately")
     if adjustment_type not in ADJUSTMENT_TYPES:
         raise HTTPException(status_code=400, detail="Invalid adjustment type")
     if status not in ADJUSTMENT_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid adjustment status")
     if status != "POSTED":
         raise HTTPException(status_code=400, detail="New adjustments must be posted; use the void action for reversals")
-    if adjustment_type == "CREDIT" and amount > invoice_amounts(invoice)["total"]:
+    if not is_customer_rebate and adjustment_type == "CREDIT" and amount > invoice_amounts(invoice)["total"]:
         raise HTTPException(status_code=400, detail="Credit adjustment cannot exceed the invoice total")
     timestamp = now_iso()
     adjustment = {
         "id": str(uuid4()),
         "idempotencyKey": posting_key,
         "idempotencyFingerprint": fingerprint,
-        "invoiceId": invoice["id"],
-        "invoiceNumber": invoice["invoiceNumber"],
-        "customerId": invoice["customerId"],
-        "customer": invoice["customer"],
+        "invoiceId": "" if is_customer_rebate else invoice["id"],
+        "invoiceNumber": "" if is_customer_rebate else invoice["invoiceNumber"],
+        "customerId": customer_id if is_customer_rebate else invoice["customerId"],
+        "customer": customer,
         "type": adjustment_type,
         "amount": amount,
-        "reason": payload.reason or "Billing adjustment",
+        "reason": reason or "Billing adjustment",
+        "adjustmentSource": "SERVICE_REBATE" if is_customer_rebate else "MANUAL_ADJUSTMENT",
+        "applicationMode": "CUSTOMER_ACCOUNT_CREDIT" if is_customer_rebate else "SELECTED_INVOICE",
         "status": status,
         "notes": payload.notes or "",
+        "initialAppliedInvoiceId": invoice.get("id") if is_customer_rebate and invoice else "",
+        "initialAppliedInvoiceNumber": invoice.get("invoiceNumber") if is_customer_rebate and invoice else "",
+        "initialAppliedAmount": 0.0,
+        "initialCreditApplicationIds": [],
         "postedByUsername": admin["username"],
         "postedByName": admin_display_name(admin),
         "createdAt": timestamp,
@@ -3162,10 +6611,37 @@ def create_adjustment(
         "deletedAt": None,
     }
     adjustments.append(adjustment)
-    invoice["updatedAt"] = timestamp
-    add_audit("billing_adjustment_posted", "BillingAdjustment", adjustment["id"], {"invoiceId": invoice["id"]}, admin["username"])
+    applied_rows = (
+        apply_adjustment_credit_to_invoice(adjustment, invoice, admin["username"])
+        if is_customer_rebate and invoice is not None
+        else []
+    )
+    adjustment["initialAppliedAmount"] = money(
+        sum(application.get("amount") for application in applied_rows)
+    )
+    adjustment["initialCreditApplicationIds"] = [
+        application["id"]
+        for application in applied_rows
+    ]
+    if not is_customer_rebate:
+        invoice["updatedAt"] = timestamp
+    add_audit(
+        "billing_adjustment_posted",
+        "BillingAdjustment",
+        adjustment["id"],
+        {
+            "invoiceId": invoice.get("id") if invoice else "",
+            "customerId": adjustment["customerId"],
+            "source": adjustment["adjustmentSource"],
+            "amount": amount,
+            "appliedAmount": adjustment["initialAppliedAmount"],
+            "availableCredit": adjustment_credit_remaining(adjustment),
+            "reason": adjustment["reason"],
+        },
+        admin["username"],
+    )
     persist_billing_state()
-    return adjustment
+    return adjustment_summary(adjustment)
 
 
 @router.patch("/adjustments/{adjustment_id}")
@@ -3183,6 +6659,12 @@ def delete_adjustment(adjustment_id: str, reason: str = "", admin=Depends(requir
     current = find_adjustment(adjustment_id)
     if current.get("status") == "VOID":
         return {"status": "ok", "idempotentReplay": True}
+    applied_credit_rows = credit_applications_for_adjustment(current["id"])
+    if applied_credit_rows:
+        raise HTTPException(
+            status_code=409,
+            detail="This customer credit has already been applied to an invoice and cannot be voided",
+        )
     if current.get("paymentId"):
         linked_payment = next((payment for payment in payments if payment.get("id") == current["paymentId"]), None)
         if linked_payment and linked_payment.get("status") == "POSTED":
@@ -3193,7 +6675,8 @@ def delete_adjustment(adjustment_id: str, reason: str = "", admin=Depends(requir
     current["voidedByUsername"] = admin["username"]
     current["voidReason"] = clean_text(reason) or "Voided by Billing user"
     current["updatedAt"] = timestamp
-    find_invoice(current["invoiceId"])["updatedAt"] = timestamp
+    if current.get("invoiceId"):
+        find_invoice(current["invoiceId"])["updatedAt"] = timestamp
     add_audit(
         "billing_adjustment_voided",
         "BillingAdjustment",

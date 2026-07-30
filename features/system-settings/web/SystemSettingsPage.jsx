@@ -10,8 +10,11 @@ import {
   IconDatabase,
   IconDeviceFloppy,
   IconEdit,
+  IconEye,
+  IconGitCommit,
   IconInfoCircle,
   IconKey,
+  IconListCheck,
   IconListDetails,
   IconMap,
   IconMapPin,
@@ -23,6 +26,8 @@ import {
   IconPlus,
   IconRefresh,
   IconRobot,
+  IconRocket,
+  IconRotateClockwise2,
   IconSearch,
   IconSend,
   IconSettings,
@@ -156,11 +161,11 @@ function KpiCard({ icon: Icon, label, value, tone = 'blue' }) {
   );
 }
 
-function Modal({ title, children, onClose }) {
+function Modal({ title, children, onClose, size = 'lg' }) {
   return (
     <>
       <div className="modal modal-blur fade show d-block system-settings-modal" tabIndex="-1" role="dialog">
-        <div className="modal-dialog modal-lg modal-dialog-centered">
+        <div className={`modal-dialog modal-${size} modal-dialog-centered`}>
           <div className="modal-content">
             <div className="modal-header">
               <h5 className="modal-title">{title}</h5>
@@ -2240,9 +2245,166 @@ function BackupTab() {
 
 function deployStateClass(state) {
   if (state === 'succeeded' || state === 'idle') return 'bg-green-lt text-green';
-  if (state === 'running') return 'bg-blue-lt text-blue';
+  if (state === 'running' || state === 'queued') return 'bg-blue-lt text-blue';
   if (state === 'failed') return 'bg-red-lt text-red';
   return 'bg-secondary-lt text-secondary';
+}
+
+function deploymentRelation(commits, commit, activeCommit) {
+  if (!commit) return 'Update';
+  if (commit.commit === activeCommit) return 'Current';
+  const activeIndex = commits.findIndex((item) => item.commit === activeCommit);
+  const targetIndex = commits.findIndex((item) => item.commit === commit.commit);
+  if (activeIndex >= 0 && targetIndex > activeIndex) return 'Downgrade';
+  if (activeIndex >= 0 && targetIndex < activeIndex) return 'Update';
+  return targetIndex === 0 ? 'Update' : 'Deploy';
+}
+
+function DeploymentPreflightPanel({ preflight, pending, disabled, onRun }) {
+  const checks = preflight?.checks || [];
+  const blocking = Number(preflight?.blocking || 0);
+  return (
+    <Card
+      title="Deployment Preflight"
+      icon={IconListCheck}
+      actions={(
+        <div className="d-flex align-items-center gap-2">
+          <span className={`badge ${!preflight ? 'bg-secondary-lt text-secondary' : blocking ? 'bg-red-lt text-red' : 'bg-green-lt text-green'}`}>
+            {!preflight ? 'NOT CHECKED' : blocking ? `${blocking} BLOCKED` : 'READY'}
+          </span>
+          <button className="btn btn-sm" type="button" disabled={pending || disabled} onClick={onRun}>
+            <IconRefresh size={16} className={`me-1 ${pending ? 'system-update-spin' : ''}`} />
+            {pending ? 'Checking...' : 'Run preflight'}
+          </button>
+        </div>
+      )}
+    >
+      <p className="text-muted">
+        Confirm that the production server is ready before installing an update. Every update or downgrade also runs these checks automatically.
+      </p>
+      {!preflight ? (
+        <div className="system-update-empty-check">
+          Preflight has not been run yet. Run it before choosing a production version.
+        </div>
+      ) : (
+        <>
+          <div className="system-update-check-grid">
+            {checks.map((check) => (
+              <div className="system-update-check" key={check.id}>
+                <div className="d-flex align-items-start justify-content-between gap-3">
+                  <div>
+                    <div className="fw-semibold">{check.label}</div>
+                    <div className={`small mt-1 ${check.ok ? 'text-green' : 'text-red'}`}>{check.message}</div>
+                  </div>
+                  {check.ok
+                    ? <IconCircleCheck size={22} className="text-green flex-shrink-0" />
+                    : <IconAlertTriangle size={22} className="text-red flex-shrink-0" />}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="text-muted small mt-3">Last checked {formatDateTime(preflight.checkedAt)}.</div>
+        </>
+      )}
+    </Card>
+  );
+}
+
+function UpdateDetailsModal({ commit, onClose }) {
+  const summary = commit?.summary?.length
+    ? commit.summary
+    : [`This update includes: ${(commit?.subject || 'Feature and workflow improvements').replace(/\.$/, '')}.`];
+  return (
+    <Modal title="Update details" onClose={onClose} size="xl">
+      <div className="system-update-details-heading">
+        <div className="text-uppercase text-muted small fw-bold">What changes</div>
+        <h3 className="mt-2 mb-1">{commit?.subject || 'Production update'}</h3>
+        <div className="text-muted small">
+          {commit?.short || commit?.commit?.slice(0, 7)} · {commit?.author || 'Unknown author'} · {formatDateTime(commit?.committedAt)}
+        </div>
+      </div>
+      <div className="system-update-summary-list mt-4">
+        {summary.map((line, index) => (
+          <div className="system-update-summary-item" key={`${index}-${line}`}>
+            <IconCircleCheck size={19} className="text-blue flex-shrink-0" />
+            <span>{line}</span>
+          </div>
+        ))}
+      </div>
+      <div className="alert alert-info mt-4 mb-0">
+        This view describes user-facing features and workflow changes only. Technical files and code differences are intentionally hidden.
+      </div>
+    </Modal>
+  );
+}
+
+function UpdateProgressModal({ deployment, onClose }) {
+  const pending = deployment?.pendingRequest;
+  const status = deployment?.status || {};
+  const state = pending ? 'queued' : (status.state || 'idle');
+  const targetShort = pending?.targetShort || status.targetShort || deployment?.deployed?.short || '-';
+  const targetSubject = pending?.subject
+    || deployment?.commits?.find((commit) => commit.commit === status.targetCommit)?.subject
+    || 'Selected production version';
+  const percent = pending ? 8 : Number(status.percent ?? (state === 'running' ? 45 : state === 'succeeded' || state === 'failed' ? 100 : 0));
+  const isActive = state === 'queued' || state === 'running';
+  return (
+    <Modal title={`System update · ${targetShort}`} onClose={onClose} size="xl">
+      <div className="d-flex flex-wrap align-items-start justify-content-between gap-3">
+        <div>
+          <div className="text-uppercase text-muted small fw-bold">Production update</div>
+          <h3 className="mt-2 mb-1">{targetSubject}</h3>
+          <div className="text-muted small">Target version {targetShort}</div>
+        </div>
+        <span className={`badge ${deployStateClass(state)}`}>{state.toUpperCase()}</span>
+      </div>
+      <div className="system-update-progress mt-4">
+        <div className="system-update-progress-bar" style={{ width: `${Math.max(0, Math.min(100, percent))}%` }} />
+      </div>
+      <div className="d-flex justify-content-between text-muted small fw-semibold mt-2">
+        <span>{pending ? 'Waiting for update worker' : (status.currentStep || 'Preparing')}</span>
+        <span>{percent}%</span>
+      </div>
+      <div className={`alert mt-4 mb-0 ${state === 'failed' ? 'alert-danger' : state === 'succeeded' ? 'alert-success' : 'alert-info'}`}>
+        {pending ? 'The update request is queued and will start shortly.' : (status.message || 'Waiting for update status.')}
+      </div>
+      <div className="system-update-timeline mt-4">
+        <div><strong>Requested:</strong> {formatDateTime(pending?.requestedAt || status.updatedAt)}</div>
+        {status.finishedAt && <div><strong>Finished:</strong> {formatDateTime(status.finishedAt)}</div>}
+      </div>
+      <div className="text-end mt-4">
+        <button className="btn" type="button" onClick={onClose}>{isActive ? 'Hide' : 'Close'}</button>
+      </div>
+    </Modal>
+  );
+}
+
+function DowngradeConfirmModal({ commit, onCancel, onConfirm, busy }) {
+  return (
+    <Modal title="Confirm downgrade" onClose={onCancel}>
+      <div className="alert alert-warning d-flex gap-3">
+        <IconAlertTriangle size={22} className="flex-shrink-0 mt-1" />
+        <div>
+          <div className="fw-bold">Downgrade confirmation required</div>
+          <div className="mt-1">
+            Downgrading installs an older production version. Features or workflows added by newer releases may no longer be available.
+          </div>
+        </div>
+      </div>
+      <div className="system-update-target-card">
+        <div className="text-uppercase text-muted small fw-bold">Target version</div>
+        <div className="fw-bold mt-2">{commit?.short} · {commit?.subject}</div>
+        <div className="text-muted small mt-1">{commit?.author} · {formatDateTime(commit?.committedAt)}</div>
+      </div>
+      <div className="d-flex justify-content-end gap-2 mt-4">
+        <button className="btn" type="button" onClick={onCancel}>Cancel</button>
+        <button className="btn btn-warning" type="button" disabled={busy} onClick={onConfirm}>
+          <IconRotateClockwise2 size={17} className="me-2" />
+          {busy ? 'Queueing...' : 'Confirm Downgrade'}
+        </button>
+      </div>
+    </Modal>
+  );
 }
 
 function DeploymentControlTab() {
@@ -2250,12 +2412,23 @@ function DeploymentControlTab() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [busyCommit, setBusyCommit] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  const [selectedCommit, setSelectedCommit] = useState('');
+  const [detailsCommit, setDetailsCommit] = useState(null);
+  const [downgradeCommit, setDowngradeCommit] = useState(null);
+  const [progressOpen, setProgressOpen] = useState(false);
 
-  async function loadDeployment() {
+  async function loadDeployment(showRefresh = false) {
+    if (showRefresh) setRefreshing(true);
     try {
-      setDeployment(await request('/system-settings/deployments'));
+      const data = await request('/system-settings/deployments');
+      setDeployment(data);
+      setSelectedCommit((current) => current || data.latest?.commit || data.deployed?.commit || '');
+      setError('');
     } catch (err) {
       setError(err.message);
+    } finally {
+      if (showRefresh) setRefreshing(false);
     }
   }
 
@@ -2264,19 +2437,21 @@ function DeploymentControlTab() {
   }, []);
 
   useEffect(() => {
-    const running = deployment?.status?.state === 'running' || deployment?.pendingRequest;
-    if (!running) return undefined;
-    const timer = window.setInterval(() => loadDeployment(), 7000);
+    const active = deployment?.status?.state === 'running'
+      || deployment?.pendingRequest
+      || deployment?.pendingPreflightRequest;
+    if (!active) return undefined;
+    const timer = window.setInterval(() => loadDeployment(), 2500);
     return () => window.clearInterval(timer);
-  }, [deployment?.status?.state, deployment?.pendingRequest?.id]);
+  }, [deployment?.status?.state, deployment?.pendingRequest?.id, deployment?.pendingPreflightRequest?.id]);
 
-  async function deployCommit(commit) {
+  async function queueDeployment(commit) {
     if (!commit?.commit) return;
-    const label = `${commit.short || commit.commit.slice(0, 7)} - ${commit.subject || 'selected commit'}`;
-    if (!window.confirm(`Deploy production commit ${label}?`)) return;
     setMessage('');
     setError('');
     setBusyCommit(commit.commit);
+    setProgressOpen(true);
+    setDowngradeCommit(null);
     try {
       const data = await request('/system-settings/deployments/deploy', {
         method: 'POST',
@@ -2286,108 +2461,187 @@ function DeploymentControlTab() {
       setMessage(data.message || 'Production deploy request queued.');
     } catch (err) {
       setError(err.message);
+      setProgressOpen(false);
     } finally {
       setBusyCommit('');
     }
+  }
+
+  async function runPreflight() {
+    setMessage('');
+    setError('');
+    try {
+      const data = await request('/system-settings/deployments/preflight', {
+        method: 'POST',
+        body: JSON.stringify({})
+      });
+      setDeployment(data);
+      setMessage(data.message || 'Deployment preflight queued.');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  function chooseUpdate(commit) {
+    const relation = deploymentRelation(commits, commit, activeCommit);
+    setSelectedCommit(commit.commit);
+    if (relation === 'Downgrade') {
+      setDowngradeCommit(commit);
+      return;
+    }
+    queueDeployment(commit);
   }
 
   const commits = deployment?.commits || [];
   const status = deployment?.status || {};
   const running = status.state === 'running';
   const pending = Boolean(deployment?.pendingRequest);
+  const preflightPending = Boolean(deployment?.pendingPreflightRequest);
   const activeCommit = deployment?.deployed?.commit || deployment?.current?.commit || '';
   const latestCommit = commits[0]?.commit || '';
   const unavailable = deployment && !deployment.enabled;
 
+  if (!deployment && !error) {
+    return <div className="card card-body text-center text-muted py-5">Checking production updates...</div>;
+  }
+
   return (
-    <Card
-      title="Production Deployment"
-      icon={IconPlayerPlay}
-      actions={<button className="btn btn-sm" type="button" onClick={loadDeployment}><IconRefresh size={16} className="me-1" />Refresh</button>}
-    >
+    <div className="system-update-page">
+      <div className="alert alert-warning">
+        Production updates are manual. Review a recent <strong>master</strong> release, view its feature and workflow changes, then install the selected version. Server readiness is checked before the update begins.
+      </div>
       {message && <div className="alert alert-success">{message}</div>}
       {error && <div className="alert alert-danger">{error}</div>}
       {unavailable && (
         <div className="alert alert-warning">
-          Manual production deployment is disabled in this environment.
+          System Update is read-only in this environment. Install and downgrade actions are enabled only in production.
         </div>
       )}
-      <div className="row g-3 mb-3">
-        <div className="col-md-3">
-          <div className="text-muted small">Environment</div>
-          <div className="fw-semibold">{deployment?.environment || '-'}</div>
+
+      {status.state === 'succeeded' && (
+        <div className="alert alert-success d-flex align-items-start gap-2">
+          <IconCircleCheck size={20} className="flex-shrink-0 mt-1" />
+          <div><strong>System update completed successfully.</strong> {status.message}</div>
         </div>
-        <div className="col-md-3">
-          <div className="text-muted small">Running Commit</div>
-          <div className="fw-semibold font-monospace">{deployment?.current?.short || '-'}</div>
-        </div>
-        <div className="col-md-3">
-          <div className="text-muted small">Deployed Commit</div>
-          <div className="fw-semibold font-monospace">{deployment?.deployed?.short || '-'}</div>
-        </div>
-        <div className="col-md-3">
-          <div className="text-muted small">Status</div>
-          <span className={`badge ${deployStateClass(status.state)}`}>{status.state || 'unknown'}</span>
-        </div>
+      )}
+
+      <div className="row row-cards mb-3">
+        <KpiCard icon={IconGitCommit} label="Current version" value={deployment?.deployed?.short || deployment?.current?.short || '-'} tone="blue" />
+        <KpiCard icon={IconRocket} label="Latest master" value={deployment?.latest?.short || '-'} tone={deployment?.updateAvailable ? 'yellow' : 'green'} />
+        <KpiCard icon={IconClock} label="Release branch" value={deployment?.branch || '-'} tone="azure" />
+        <KpiCard icon={status.state === 'failed' ? IconAlertTriangle : IconCircleCheck} label="Update status" value={(status.state || 'unknown').toUpperCase()} tone={status.state === 'failed' ? 'red' : status.state === 'running' ? 'blue' : 'green'} />
       </div>
-      {status.message && <div className="text-muted small mb-3">{status.message}</div>}
-      {status.logPath && <div className="text-muted small mb-3 font-monospace">{status.logPath}</div>}
-      <div className="alert alert-info">
-        Selecting an older commit can remove UI changes added after that commit. Use the one-line production updater if a downgrade removes this screen.
-      </div>
-      <div className="table-responsive">
-        <table className="table card-table table-vcenter">
-          <thead>
-            <tr>
-              <th>Commit</th>
-              <th>Message</th>
-              <th>Author</th>
-              <th>Date</th>
-              <th>Status</th>
-              <th className="text-end">Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {commits.map((commit) => {
-              const isActive = activeCommit && commit.commit === activeCommit;
-              const isLatest = latestCommit && commit.commit === latestCommit;
-              const actionLabel = isActive ? 'Current' : isLatest ? 'Upgrade' : 'Deploy';
-              return (
-                <tr key={commit.commit}>
-                  <td className="font-monospace">{commit.short || commit.commit.slice(0, 7)}</td>
-                  <td>{commit.subject || '-'}</td>
-                  <td>{commit.author || '-'}</td>
-                  <td className="text-muted small">{formatDateTime(commit.committedAt)}</td>
-                  <td>
-                    {isActive && <span className="badge bg-green-lt text-green">CURRENT</span>}
-                    {!isActive && isLatest && <span className="badge bg-blue-lt text-blue">LATEST</span>}
-                    {!isActive && !isLatest && <span className="badge bg-yellow-lt text-yellow">OLDER</span>}
-                  </td>
-                  <td className="text-end">
-                    <button
-                      className="btn btn-sm btn-primary"
-                      type="button"
-                      disabled={!deployment?.enabled || isActive || running || pending || busyCommit === commit.commit}
-                      onClick={() => deployCommit(commit)}
-                    >
-                      <IconPlayerPlay size={16} className="me-1" />{busyCommit === commit.commit ? 'Queueing...' : actionLabel}
-                    </button>
-                  </td>
+
+      <DeploymentPreflightPanel
+        preflight={deployment?.preflight}
+        pending={preflightPending}
+        disabled={unavailable || running || pending}
+        onRun={runPreflight}
+      />
+
+      {deployment?.updateAvailable && (
+        <div className="alert alert-info mt-3">
+          A newer production update is available: <strong>{deployment?.latest?.short}</strong>. Review its changes below before updating.
+        </div>
+      )}
+
+      <div className="mt-3">
+        <Card
+          title="Recent Master Updates"
+          icon={IconGitCommit}
+          actions={(
+            <button className="btn btn-sm" type="button" disabled={refreshing || running} onClick={() => loadDeployment(true)}>
+              <IconRefresh size={16} className={`me-1 ${refreshing ? 'system-update-spin' : ''}`} />Refresh
+            </button>
+          )}
+        >
+          <div className="table-responsive system-update-table">
+            <table className="table card-table table-vcenter">
+              <thead>
+                <tr>
+                  <th>Use</th>
+                  <th>Version</th>
+                  <th>Update</th>
+                  <th>Author</th>
+                  <th>Date</th>
+                  <th className="text-end">Action</th>
                 </tr>
-              );
-            })}
-            {!commits.length && (
-              <tr>
-                <td colSpan="6" className="text-center text-muted py-4">No master commits available from the deploy worker yet.</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+              </thead>
+              <tbody>
+                {commits.map((commit) => {
+                  const isActive = activeCommit && commit.commit === activeCommit;
+                  const isLatest = latestCommit && commit.commit === latestCommit;
+                  const relation = deploymentRelation(commits, commit, activeCommit);
+                  const actionDisabled = unavailable || isActive || running || pending || busyCommit === commit.commit;
+                  return (
+                    <tr key={commit.commit} className={selectedCommit === commit.commit ? 'system-update-selected-row' : ''}>
+                      <td>
+                        <input
+                          className="form-check-input"
+                          type="radio"
+                          name="systemUpdateCommit"
+                          checked={selectedCommit === commit.commit}
+                          onChange={() => setSelectedCommit(commit.commit)}
+                        />
+                      </td>
+                      <td>
+                        <button className="btn btn-link p-0 font-monospace fw-bold" type="button" onClick={() => setDetailsCommit(commit)}>
+                          {commit.short || commit.commit.slice(0, 7)}
+                        </button>
+                        <div className="d-flex flex-wrap gap-1 mt-1">
+                          {isLatest && <span className="badge bg-blue-lt text-blue">LATEST</span>}
+                          {isActive && <span className="badge bg-green-lt text-green">CURRENT</span>}
+                        </div>
+                      </td>
+                      <td className="system-update-subject">{commit.subject || '-'}</td>
+                      <td>{commit.author || '-'}</td>
+                      <td className="text-muted small">{formatDateTime(commit.committedAt)}</td>
+                      <td className="text-end">
+                        <div className="d-flex flex-wrap justify-content-end gap-2">
+                          <button className="btn btn-sm" type="button" onClick={() => setDetailsCommit(commit)}>
+                            <IconEye size={16} className="me-1" />View
+                          </button>
+                          <button
+                            className={`btn btn-sm ${relation === 'Downgrade' ? 'btn-warning' : 'btn-primary'}`}
+                            type="button"
+                            disabled={actionDisabled}
+                            onClick={() => chooseUpdate(commit)}
+                          >
+                            {relation === 'Downgrade'
+                              ? <IconRotateClockwise2 size={16} className="me-1" />
+                              : <IconRocket size={16} className="me-1" />}
+                            {busyCommit === commit.commit ? 'Queueing...' : relation}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!commits.length && (
+                  <tr>
+                    <td colSpan="6" className="text-center text-muted py-4">No master updates are available from the production update worker yet.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="text-muted small mt-3">
+            Update list refreshed {formatDateTime(deployment?.commitListUpdatedAt)}.
+          </div>
+        </Card>
       </div>
-      <div className="text-muted small mt-3">
-        Commit list updated {formatDateTime(deployment?.commitListUpdatedAt)}.
-      </div>
-    </Card>
+
+      {detailsCommit && <UpdateDetailsModal commit={detailsCommit} onClose={() => setDetailsCommit(null)} />}
+      {downgradeCommit && (
+        <DowngradeConfirmModal
+          commit={downgradeCommit}
+          busy={busyCommit === downgradeCommit.commit}
+          onCancel={() => setDowngradeCommit(null)}
+          onConfirm={() => queueDeployment(downgradeCommit)}
+        />
+      )}
+      {progressOpen && <UpdateProgressModal deployment={deployment} onClose={() => setProgressOpen(false)} />}
+    </div>
   );
 }
 
@@ -3288,9 +3542,10 @@ function AccessTab() {
 }
 
 export default function SystemSettingsPage({ refreshShell }) {
-  const tabs = ['General', 'Location Management', 'Maps', 'Images', 'Backup', 'Avatar', 'OPENAI', 'A2P Messaging', 'Access', 'Ports', 'Runtime'];
+  const tabs = ['General', 'Location Management', 'Maps', 'Images', 'Backup', 'Avatar', 'OPENAI', 'A2P Messaging', 'Access', 'Ports', 'System Update'];
+  const normalizeRequestedTab = (requested) => (requested === 'Runtime' || requested === 'Update' ? 'System Update' : requested);
   const initialTab = () => {
-    const requested = new URLSearchParams(window.location.search).get('tab');
+    const requested = normalizeRequestedTab(new URLSearchParams(window.location.search).get('tab'));
     return tabs.includes(requested) ? requested : 'General';
   };
   const [tab, setTab] = useState(initialTab);
@@ -3313,7 +3568,7 @@ export default function SystemSettingsPage({ refreshShell }) {
 
   useEffect(() => {
     const syncTabFromUrl = () => {
-      const requested = new URLSearchParams(window.location.search).get('tab');
+      const requested = normalizeRequestedTab(new URLSearchParams(window.location.search).get('tab'));
       if (tabs.includes(requested)) setTab(requested);
     };
     syncTabFromUrl();
@@ -3386,18 +3641,7 @@ export default function SystemSettingsPage({ refreshShell }) {
           <Table rows={ports} columns={['environment', 'port', 'protocol', 'scope', 'owner', 'service', 'status', 'notes']} />
         </Card>
       )}
-      {tab === 'Runtime' && (
-        <div className="row row-cards">
-          <div className="col-12">
-            <DeploymentControlTab />
-          </div>
-          <div className="col-12">
-            <Card title="Runtime Paths" icon={IconDatabase}>
-              <Table rows={[settings.deployment]} columns={['environment', 'main_repo', 'worktrees']} />
-            </Card>
-          </div>
-        </div>
-      )}
+      {tab === 'System Update' && <DeploymentControlTab />}
     </div>
   );
 }

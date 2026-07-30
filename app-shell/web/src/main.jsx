@@ -27,6 +27,7 @@ import {
   IconNetwork,
   IconPackage,
   IconRefresh,
+  IconReceipt,
   IconRouter,
   IconSend,
   IconSettings,
@@ -41,6 +42,7 @@ import {
 } from '@tabler/icons-react';
 import AccountAccessManagementPage from '../../../features/account-access-management/web/AccountAccessManagementPage.jsx';
 import BillingPage from '../../../features/billing/web/BillingPage.jsx';
+import CollectorPage from '../../../features/collector/web/CollectorPage.jsx';
 import CustomerProfilingPage from '../../../features/customer-profiling/web/CustomerProfilingPage.jsx';
 import CustomerServiceManagementPage from '../../../features/customer-service-management/web/CustomerServiceManagementPage.jsx';
 import InventoryPage from '../../../features/inventory/web/InventoryPage.jsx';
@@ -64,6 +66,7 @@ const moduleNav = [
   { page: 'Tech Portal Ticketing', slug: 'techportal/ticketing', icon: IconTicket, tone: 'red' },
   { page: 'Customer Profiling', slug: 'customer-profiling', icon: IconUsers, tone: 'azure' },
   { page: 'Billing', slug: 'billing', icon: IconCash, tone: 'green' },
+  { page: 'Collector', slug: 'collector', icon: IconReceipt, tone: 'orange' },
   { page: 'Point of Sale', slug: 'point-of-sale', icon: IconBuildingStore, tone: 'yellow' },
   { page: 'Inventory', slug: 'inventory', icon: IconBox, tone: 'orange' },
   {
@@ -143,6 +146,10 @@ const technicianNav = [
   { page: 'Tech Portal Ticketing', label: 'Ticketing', slug: 'techportal/ticketing', icon: IconTicket, tone: 'red' }
 ];
 
+const collectorNav = [
+  { page: 'Collector', label: 'Collector Portal', slug: 'collector', icon: IconReceipt, tone: 'orange' }
+];
+
 const accountAccessManagementPages = {
   'Account Access Management': 'CUSTOMERS',
   'Customer Accounts': 'CUSTOMERS',
@@ -150,6 +157,14 @@ const accountAccessManagementPages = {
 };
 
 const TECHNICIAN_ALLOWED_PAGES = new Set(['Tech Portal', 'Tech Portal Ticketing', 'View Profile', 'Change Password']);
+const COLLECTOR_ALLOWED_PAGES = new Set(['Collector', 'View Profile', 'Change Password']);
+const COLLECTOR_PORTAL_ROLES = new Set([
+  'collector',
+  'collection_supervisor',
+  'finance_officer',
+  'cashier_treasury',
+  'finance_approver'
+]);
 const LOGIN_VARIANTS = {
   admin: {
     credentials: { username: 'admin', password: 'admin123' },
@@ -184,6 +199,23 @@ const LOGIN_VARIANTS = {
       ['Board', 'Kanban'],
       ['Scope', 'Field work']
     ]
+  },
+  collector: {
+    credentials: { username: '', password: '' },
+    icon: IconReceipt,
+    title: 'Collector Portal',
+    eyebrow: 'Field collection login',
+    subtitle: 'Mobile access for customer balances, cash or GCash collection, thermal receipts, and office remittance.',
+    cardTitle: 'Collector Login',
+    buttonText: 'Sign in to Collector',
+    hint: 'Use the collector, finance, or supervisor account issued by the office.',
+    switchText: 'Admin portal',
+    switchHref: '/dashboard',
+    stats: [
+      ['Customers', 'All due'],
+      ['Receipts', 'Reprintable'],
+      ['Scope', 'Collection']
+    ]
   }
 };
 
@@ -191,13 +223,24 @@ function isTechnicianUser(user) {
   return String(user?.role || '').toLowerCase() === 'technician';
 }
 
+function isCollectorPortalUser(user) {
+  return COLLECTOR_PORTAL_ROLES.has(String(user?.role || '').toLowerCase());
+}
+
 function isTechPortalPath(pathname) {
   const slug = String(pathname || '').replace(/^\/+|\/+$/g, '');
   return slug === 'techportal' || slug.startsWith('techportal/');
 }
 
+function isCollectorPortalPath(pathname) {
+  const slug = String(pathname || '').replace(/^\/+|\/+$/g, '');
+  return slug === 'collector' || slug.startsWith('collector/');
+}
+
 function loginVariantForPath(pathname) {
-  return isTechPortalPath(pathname) ? 'tech' : 'admin';
+  if (isTechPortalPath(pathname)) return 'tech';
+  if (isCollectorPortalPath(pathname)) return 'collector';
+  return 'admin';
 }
 
 function token() {
@@ -857,14 +900,19 @@ function App() {
   async function refresh() {
     await loadPublicShell();
     if (token()) {
-      const [nextMe, nextDashboard, nextModules] = await Promise.all([
-        request('/me'),
-        request('/dashboard'),
-        request('/modules')
-      ]);
+      const nextMe = await request('/me');
       setMe(nextMe);
-      setDashboard(nextDashboard);
-      setModules(nextModules);
+      if (isTechnicianUser(nextMe) || isCollectorPortalUser(nextMe)) {
+        setDashboard(null);
+        setModules([]);
+      } else {
+        const [nextDashboard, nextModules] = await Promise.all([
+          request('/dashboard'),
+          request('/modules')
+        ]);
+        setDashboard(nextDashboard);
+        setModules(nextModules);
+      }
     }
   }
 
@@ -876,8 +924,13 @@ function App() {
   }
 
   const technicianUser = isTechnicianUser(me);
-  const activeNavItems = technicianUser ? technicianNav : moduleNav;
-  const activePage = technicianUser && !TECHNICIAN_ALLOWED_PAGES.has(page) ? 'Tech Portal' : page;
+  const collectorPortalUser = isCollectorPortalUser(me);
+  const activeNavItems = technicianUser ? technicianNav : collectorPortalUser ? collectorNav : moduleNav;
+  const activePage = technicianUser && !TECHNICIAN_ALLOWED_PAGES.has(page)
+    ? 'Tech Portal'
+    : collectorPortalUser && !COLLECTOR_ALLOWED_PAGES.has(page)
+      ? 'Collector'
+      : page;
   const loginVariant = loginVariantForPath(window.location.pathname);
 
   const moduleByPage = useMemo(() => {
@@ -896,8 +949,10 @@ function App() {
   useEffect(() => {
     if (authed && technicianUser && !TECHNICIAN_ALLOWED_PAGES.has(page)) {
       navigate('Tech Portal', true);
+    } else if (authed && collectorPortalUser && !COLLECTOR_ALLOWED_PAGES.has(page)) {
+      navigate('Collector', true);
     }
-  }, [authed, technicianUser, page]);
+  }, [authed, technicianUser, collectorPortalUser, page]);
   useEffect(() => { document.documentElement.style.setProperty('--tblr-primary', branding.accent_color || '#206bc4'); }, [branding.accent_color]);
   useEffect(() => {
     if (!authed) return undefined;
@@ -927,6 +982,7 @@ function App() {
           setMe(user || null);
           setAuthed(true);
           if (isTechnicianUser(user)) navigate('Tech Portal', true);
+          else if (isCollectorPortalUser(user)) navigate('Collector', true);
           else if (loginVariant === 'tech') navigate('Dashboard', true);
         }}
       />
@@ -950,30 +1006,31 @@ function App() {
           <div className="container-xl">
             {activePage === 'Tech Portal' && <TechPortalPage refreshShell={refresh} currentUser={me} onNavigatePage={navigate} />}
             {activePage === 'Tech Portal Ticketing' && <TechPortalTicketingPage refreshShell={refresh} currentUser={me} onNavigatePage={navigate} />}
-            {!technicianUser && activePage === 'Dashboard' && <Dashboard data={dashboard} />}
-            {!technicianUser && activePage === 'Process Flow' && <ProcessFlowPage refreshShell={refresh} />}
-            {!technicianUser && activePage === 'Customer Profiling' && <CustomerProfilingPage refreshShell={refresh} />}
-            {!technicianUser && activePage === 'Billing' && <BillingPage refreshShell={refresh} />}
-            {!technicianUser && activePage === 'Point of Sale' && <PointOfSalePage refreshShell={refresh} />}
-            {!technicianUser && activePage === 'Inventory' && <InventoryPage refreshShell={refresh} />}
-            {!technicianUser && accountAccessManagementInitialView && <AccountAccessManagementPage initialView={accountAccessManagementInitialView} refreshShell={refresh} />}
-            {!technicianUser && activePage === 'Customer Service Management' && <CustomerServiceManagementPage refreshShell={refresh} />}
-            {!technicianUser && activePage === 'Ticketing' && <TicketingPage refreshShell={refresh} />}
-            {!technicianUser && activePage === 'Service Catalog' && <ServicePage initialSection="catalog" refreshShell={refresh} />}
-            {!technicianUser && activePage === 'Service Account' && <ServicePage initialSection="accounts" refreshShell={refresh} />}
-            {!technicianUser && activePage === 'Service Order' && <ServicePage initialSection="orders" refreshShell={refresh} />}
-            {!technicianUser && activePage === 'Network Settings' && <NetworkSettingsPage initialSection="overview" refreshShell={refresh} />}
-            {!technicianUser && activePage === 'MikroTik API' && <NetworkSettingsPage initialSection="mikrotik-settings" refreshShell={refresh} />}
-            {!technicianUser && activePage === 'PPPoE Accounts' && <NetworkSettingsPage initialSection="pppoe" refreshShell={refresh} />}
-            {!technicianUser && activePage === 'OLT SNMP' && <NetworkSettingsPage initialSection="olt-settings" refreshShell={refresh} />}
-            {!technicianUser && activePage === 'Mapping' && <NetworkSettingsPage initialSection="map" refreshShell={refresh} />}
-            {!technicianUser && activePage === 'Serviceability Check' && <NetworkSettingsPage initialSection="serviceability" refreshShell={refresh} />}
-            {!technicianUser && activePage === 'Topology' && <NetworkSettingsPage initialSection="fiber-mapping" refreshShell={refresh} />}
-            {!technicianUser && activePage === 'OLT & PON' && <NetworkSettingsPage initialSection="olts" refreshShell={refresh} />}
-            {!technicianUser && activePage === 'ONUs' && <NetworkSettingsPage initialSection="onus" refreshShell={refresh} />}
-            {!technicianUser && activePage === 'NAP Boxes' && <NetworkSettingsPage initialSection="naps" refreshShell={refresh} />}
-            {!technicianUser && activePage === 'Splitters' && <NetworkSettingsPage initialSection="fbts" refreshShell={refresh} />}
-            {!technicianUser && activePage === 'Fiber Optic' && <NetworkSettingsPage initialSection="fiber-optic-loss" refreshShell={refresh} />}
+            {activePage === 'Collector' && <CollectorPage currentUser={me} refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'Dashboard' && <Dashboard data={dashboard} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'Process Flow' && <ProcessFlowPage refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'Customer Profiling' && <CustomerProfilingPage refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'Billing' && <BillingPage refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'Point of Sale' && <PointOfSalePage refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'Inventory' && <InventoryPage refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && accountAccessManagementInitialView && <AccountAccessManagementPage initialView={accountAccessManagementInitialView} refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'Customer Service Management' && <CustomerServiceManagementPage refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'Ticketing' && <TicketingPage refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'Service Catalog' && <ServicePage initialSection="catalog" refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'Service Account' && <ServicePage initialSection="accounts" refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'Service Order' && <ServicePage initialSection="orders" refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'Network Settings' && <NetworkSettingsPage initialSection="overview" refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'MikroTik API' && <NetworkSettingsPage initialSection="mikrotik-settings" refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'PPPoE Accounts' && <NetworkSettingsPage initialSection="pppoe" refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'OLT SNMP' && <NetworkSettingsPage initialSection="olt-settings" refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'Mapping' && <NetworkSettingsPage initialSection="map" refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'Serviceability Check' && <NetworkSettingsPage initialSection="serviceability" refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'Topology' && <NetworkSettingsPage initialSection="fiber-mapping" refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'OLT & PON' && <NetworkSettingsPage initialSection="olts" refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'ONUs' && <NetworkSettingsPage initialSection="onus" refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'NAP Boxes' && <NetworkSettingsPage initialSection="naps" refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'Splitters' && <NetworkSettingsPage initialSection="fbts" refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'Fiber Optic' && <NetworkSettingsPage initialSection="fiber-optic-loss" refreshShell={refresh} />}
             {moduleNav.filter((item) => ![
               'Dashboard',
               'Process Flow',
@@ -981,6 +1038,7 @@ function App() {
               'Tech Portal Ticketing',
               'Customer Profiling',
               'Billing',
+              'Collector',
               'Point of Sale',
               'Inventory',
               'Account Access Management',
@@ -991,10 +1049,10 @@ function App() {
               'System Settings',
               'Logs'
             ].includes(item.page)).map((item) => (
-              !technicianUser && activePage === item.page ? <ModulePage key={item.page} module={moduleByPage.get(item.page)} /> : null
+              !technicianUser && !collectorPortalUser && activePage === item.page ? <ModulePage key={item.page} module={moduleByPage.get(item.page)} /> : null
             ))}
-            {!technicianUser && activePage === 'System Settings' && <SystemSettingsPage refreshShell={refresh} />}
-            {!technicianUser && activePage === 'Logs' && <LogsPage />}
+            {!technicianUser && !collectorPortalUser && activePage === 'System Settings' && <SystemSettingsPage refreshShell={refresh} />}
+            {!technicianUser && !collectorPortalUser && activePage === 'Logs' && <LogsPage />}
             {activePage === 'View Profile' && <ProfilePage mode="profile" onSaved={refresh} />}
             {activePage === 'Change Password' && <ProfilePage mode="password" onSaved={refresh} />}
           </div>

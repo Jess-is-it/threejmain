@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app-shell/api/app ./app
 COPY features/customer-profiling/api/customer_profiling ./customer_profiling
 COPY features/billing/api/billing ./billing
+COPY features/collector/api/collector ./collector
 COPY features/point-of-sale/api/point_of_sale ./point_of_sale
 COPY features/inventory/api/inventory ./inventory
 COPY features/account-access-management/api/account_access_management ./account_access_management

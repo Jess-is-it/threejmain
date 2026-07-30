@@ -3,7 +3,9 @@ import {
   IconActivity,
   IconAddressBook,
   IconAlertTriangle,
+  IconArrowLeft,
   IconCalendarEvent,
+  IconCalendarDue,
   IconCheck,
   IconChevronLeft,
   IconChevronRight,
@@ -11,23 +13,31 @@ import {
   IconClipboardList,
   IconClock,
   IconColumns,
+  IconCreditCard,
   IconCurrentLocation,
   IconDeviceFloppy,
   IconDotsVertical,
   IconEdit,
   IconEye,
+  IconExternalLink,
+  IconFileInvoice,
   IconFileSpreadsheet,
   IconFilter,
-  IconHome,
+  IconHistory,
   IconHomeSignal,
+  IconInfoCircle,
+  IconLock,
   IconMapPin,
   IconMinus,
+  IconPackage,
   IconPlus,
   IconRefresh,
+  IconRouter,
   IconSearch,
   IconSortAscending,
   IconSortDescending,
   IconArrowsSort,
+  IconTicket,
   IconTrash,
   IconUpload,
   IconUser,
@@ -45,6 +55,13 @@ import {
   mapProviderWithSession,
   normalizeMapProviderSettings
 } from '../../system-settings/web/mapProviders';
+import {
+  CUSTOMER_360_TABS,
+  buildCustomer360Data,
+  customer360SectionState,
+  emptyCustomer360Data,
+  hasCustomer360TabData
+} from './customer360ViewModel.js';
 import './customerProfiling.css';
 
 const API = '/api';
@@ -73,7 +90,11 @@ async function request(path, options = {}) {
     }
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || 'Request failed');
+  if (!res.ok) {
+    const error = new Error(data.detail || 'Request failed');
+    error.status = res.status;
+    throw error;
+  }
   return data;
 }
 
@@ -395,6 +416,54 @@ function formatDisplayDate(value) {
     day: 'numeric',
     year: 'numeric'
   }).format(parsed);
+}
+
+function formatDisplayDateTime(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '-';
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return formatDisplayDate(raw);
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'numeric',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  }).format(parsed);
+}
+
+function formatMoney(value) {
+  const amount = Number(value || 0);
+  return new Intl.NumberFormat('en-PH', {
+    style: 'currency',
+    currency: 'PHP',
+    maximumFractionDigits: 2
+  }).format(Number.isFinite(amount) ? amount : 0);
+}
+
+function formatBillingCycle(row = {}) {
+  const source = row || {};
+  return source.billingPeriodLabel || [formatDisplayDate(source.billingCycleStart), formatDisplayDate(source.billingCycleEnd)]
+    .filter((part) => part && part !== '-')
+    .join(' - ') || '-';
+}
+
+function formatPaymentAllocations(payment = {}) {
+  const allocations = Array.isArray(payment.allocations) ? payment.allocations : [];
+  if (!allocations.length) return payment.invoiceNumber || '-';
+  return allocations
+    .map((allocation) => [
+      allocation.invoiceNumber || allocation.invoiceId,
+      allocation.amount ? formatMoney(allocation.amount) : ''
+    ].filter(Boolean).join(' '))
+    .join(', ');
+}
+
+function normalizeRequestError(error) {
+  return {
+    message: error?.message || 'Unable to load this section.',
+    status: Number(error?.status) || 0
+  };
 }
 
 function formatRecommendedByCustomer(data = {}) {
@@ -725,6 +794,9 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const [customers, setCustomers] = useState({ data: [], page: 1, pageSize: 10, total: 0, totalPages: 1 });
   const [filters, setFilters] = useState(blankCustomerFilters);
   const [selected, setSelected] = useState(null);
+  const [customer360, setCustomer360] = useState(emptyCustomer360Data);
+  const [customer360Loading, setCustomer360Loading] = useState(false);
+  const [customer360Errors, setCustomer360Errors] = useState({});
   const [form, setForm] = useState(blankCustomerForm);
   const [editingId, setEditingId] = useState('');
   const [isFormModalOpen, setFormModalOpen] = useState(false);
@@ -746,7 +818,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const [expandedBulkUploadRowNumbers, setExpandedBulkUploadRowNumbers] = useState([]);
   const [isBulkUploading, setBulkUploading] = useState(false);
   const [isDetailsPanelOpen, setDetailsPanelOpen] = useState(false);
-  const [customerDetailTab, setCustomerDetailTab] = useState('basic');
+  const [customerDetailTab, setCustomerDetailTab] = useState('overview');
   const [areFiltersOpen, setFiltersOpen] = useState(false);
   const [formStage, setFormStage] = useState(0);
   const [customerDrafts, setCustomerDrafts] = useState([]);
@@ -892,10 +964,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       tone: 'secondary'
     }
   ];
-  const customerDetailTabs = [
-    { label: 'Basic Info', value: 'basic' },
-    { label: 'Location', value: 'location' }
-  ];
+  const customerDetailTabs = CUSTOMER_360_TABS;
   const activeColumnPreferenceLabel = statusTabs.find((item) => item.value === filters.status)?.label || 'All';
   const activeColumnPreferenceStorageKey = customerColumnStorageKey(columnPreferenceUserKey, filters.status);
   const columnMenuSearchQuery = columnMenuSearch.trim().toLowerCase();
@@ -943,14 +1012,81 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     try {
       const customer = await request(`/customer-profiling/customers/${id}`);
       setSelected(customer);
-      setCustomerDetailTab('basic');
+      setCustomerDetailTab('overview');
       setDetailsPanelOpen(true);
+      syncCustomerUrl(customer.id);
+      loadCustomer360(customer);
     } catch (err) {
       setError(err.message);
     }
   }
 
+  function syncCustomerUrl(customerId, { replace = false } = {}) {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if (customerId) {
+      url.searchParams.set('customerId', customerId);
+    } else {
+      url.searchParams.delete('customerId');
+    }
+    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+    if (nextUrl === `${window.location.pathname}${window.location.search}${window.location.hash}`) return;
+    window.history[replace ? 'replaceState' : 'pushState']({}, '', nextUrl);
+  }
+
+  async function loadCustomer360(customer) {
+    if (!customer?.id) return;
+    setCustomer360Loading(true);
+    setCustomer360Errors({});
+    const customerId = encodeURIComponent(customer.id);
+    const sources = [
+      ['serviceAccounts', request(`/service/accounts?customerId=${customerId}`)],
+      ['serviceOrders', request(`/service/orders?customerId=${customerId}`)],
+      ['subscriptions', request(`/billing/subscriptions?customerId=${customerId}`)],
+      ['balance', request(`/billing/customers/${customerId}/balance`)],
+      ['invoices', request(`/billing/invoices?customerId=${customerId}`)],
+      ['payments', request(`/billing/payments?customerId=${customerId}`)],
+      ['adjustments', request(`/billing/adjustments?customerId=${customerId}`)],
+      ['posSales', request('/point-of-sale/sales')],
+      ['tickets', request(`/ticketing/tickets?customerId=${customerId}`)],
+      ['inventoryAssignments', request('/inventory/assignments')],
+      ['auditLogs', request('/logs')]
+    ];
+    const settled = await Promise.allSettled(sources.map(([, promise]) => promise));
+    const nextSources = {};
+    const nextErrors = {};
+    settled.forEach((result, index) => {
+      const key = sources[index][0];
+      if (result.status === 'fulfilled') {
+        nextSources[key] = result.value;
+      } else {
+        nextErrors[key] = normalizeRequestError(result.reason);
+      }
+    });
+    setCustomer360(buildCustomer360Data(customer, nextSources));
+    setCustomer360Errors(nextErrors);
+    setCustomer360Loading(false);
+  }
+
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    const openCustomerFromUrl = () => {
+      const params = new URLSearchParams(window.location.search);
+      const customerId = params.get('customerId') || params.get('id');
+      if (customerId) {
+        loadCustomer(customerId);
+        return;
+      }
+      setDetailsPanelOpen(false);
+      setSelected(null);
+      setCustomerDetailTab('overview');
+      setCustomer360(emptyCustomer360Data());
+      setCustomer360Errors({});
+    };
+    openCustomerFromUrl();
+    window.addEventListener('popstate', openCustomerFromUrl);
+    return () => window.removeEventListener('popstate', openCustomerFromUrl);
+  }, []);
   useEffect(() => {
     let cancelled = false;
     request('/me')
@@ -1394,7 +1530,11 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   function closeDetailsPanel() {
     setDetailsPanelOpen(false);
     setSelected(null);
-    setCustomerDetailTab('basic');
+    setCustomerDetailTab('overview');
+    setCustomer360(emptyCustomer360Data());
+    setCustomer360Errors({});
+    setCustomer360Loading(false);
+    syncCustomerUrl('');
   }
 
   function viewCustomer(customer) {
@@ -2306,69 +2446,469 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     );
   }
 
-  function renderCustomerDetailsPanel({ asModal = false } = {}) {
+  function renderCustomerDetailsPanel() {
     if (!selected) return null;
-    const DetailPanelTag = asModal ? 'div' : 'aside';
     const detailsCoordinates = customerCoordinates(selected);
-    const detailsMap = detailsCoordinates
-      ? coordinateTileData(
-        detailsCoordinates.latitude,
-        detailsCoordinates.longitude,
-        detailsCoordinates.latitude,
-        detailsCoordinates.longitude,
-        COORDINATE_CAPTURE_ZOOM,
-        activeCustomerMapProvider
-      )
-      : null;
-    const basicInfoRows = [
-      { label: 'Lives in', value: formatCustomerResidence(selected), icon: IconHome },
-      { label: 'Birth Date', value: formatDisplayDate(selected.birthDate), icon: IconCalendarEvent },
-      ...(selected.recommendedByCustomer
-        ? [{ label: 'Recommended by', value: formatRecommendedByCustomer(selected), icon: IconUsers }]
-        : []),
-      ...(normalizeUpper(selected.customerType) === 'BUSINESS'
-        ? [{ label: 'Business Name', value: selected.businessName, icon: IconActivity }]
-        : [])
-    ];
-    const contactInfoRows = [
-      { label: 'Primary contact', value: selected.contactNumber, icon: IconAddressBook },
-      { label: 'Alternate mobile', value: selected.alternateMobileNumber, icon: IconAddressBook },
-      { label: 'Facebook', value: selected.facebookAccountName, icon: IconUsers },
-      { label: 'Email', value: selected.email, icon: IconAddressBook }
-    ];
-    const locationInfoRows = [
-      { label: 'Customer location', value: selected.locationName || selected.locationId, icon: IconMapPin },
-      { label: 'Landmark', value: selected.landmark, icon: IconMapPin },
-      { label: 'Address', value: formatCustomerAddress(selected), icon: IconHome },
-      { label: 'Coordinates', value: [selected.longitude, selected.latitude].filter(Boolean).join(', '), icon: IconMapPin }
-    ];
-    const renderInfoRow = ({ label, value, icon: InfoIcon }) => (
-      <div className="customer-info-row" key={label}>
-        <span className="customer-info-icon" aria-hidden="true"><InfoIcon size={17} /></span>
-        <span className="customer-info-text">
-          <span>{label}:</span>
-          <strong>{String(value || '').trim() || '-'}</strong>
-        </span>
+    const activeSubscription = customer360.subscriptions.find((row) => normalizeUpper(row.status) === 'ACTIVE') || customer360.subscriptions[0] || null;
+    const activeServiceAccount = customer360.serviceAccounts.find((row) => normalizeUpper(row.status) === 'ACTIVE') || customer360.serviceAccounts[0] || null;
+    const activeOrder = customer360.serviceOrders.find((row) => row.id && row.id === activeSubscription?.serviceOrderId)
+      || customer360.serviceOrders.find((row) => row.serviceAccountId && row.serviceAccountId === activeServiceAccount?.id)
+      || customer360.serviceOrders[0]
+      || null;
+    const balance = customer360.balance || {};
+    const accountStanding = Number(balance.overdueTotal || 0) > 0
+      ? 'OVERDUE'
+      : Number(balance.balance || 0) > 0
+        ? 'OPEN BALANCE'
+        : 'CURRENT';
+    const tabCounts = {
+      overview: '',
+      subscriptions: customer360.subscriptions.length || customer360.serviceAccounts.length,
+      billing: customer360.openInvoices.length || customer360.invoices.length,
+      payments: customer360.payments.length + customer360.posSales.length,
+      tickets: customer360.tickets.length,
+      equipment: customer360.equipment.length,
+      activity: customer360.activity.length
+    };
+    const firstTabError = (keys) => keys.map((key) => customer360Errors[key]).find(Boolean) || null;
+    const renderState = (keys, items, emptyText, fallback = null) => {
+      const error = firstTabError(Array.isArray(keys) ? keys : [keys]);
+      const state = customer360SectionState({ loading: customer360Loading, error, items, fallback });
+      if (state === 'ready') return null;
+      const icon = state === 'permission-denied' ? IconLock : state === 'error' ? IconAlertTriangle : state === 'loading' ? IconRefresh : IconInfoCircle;
+      const text = state === 'permission-denied'
+        ? 'Permission required to view this section.'
+        : state === 'error'
+          ? error?.message || 'Unable to load this section.'
+          : state === 'loading'
+            ? 'Loading customer data...'
+            : emptyText;
+      const StateIcon = icon;
+      return (
+        <div className={`customer-360-state ${state}`} role={state === 'error' ? 'alert' : 'status'}>
+          <StateIcon size={20} />
+          <span>{text}</span>
+        </div>
+      );
+    };
+    const renderSummaryFact = (label, value, meta = '') => (
+      <div className="customer-360-summary-fact" key={label}>
+        <small>{label}</small>
+        <strong>{String(value ?? '').trim() || '-'}</strong>
+        {meta ? <span>{meta}</span> : null}
       </div>
     );
+    const renderOverviewPanelHeading = (title, HeadingIcon, supportingText = '') => (
+      <div className="customer-360-panel-heading">
+        <span className="customer-360-panel-icon" aria-hidden="true"><HeadingIcon size={18} /></span>
+        <div>
+          <h4>{title}</h4>
+          {supportingText ? <small>{supportingText}</small> : null}
+        </div>
+      </div>
+    );
+    const renderModuleLink = (href, label, title) => (
+      <a className="btn btn-icon btn-sm btn-outline-secondary" href={href} title={title} aria-label={title}>
+        <IconExternalLink size={16} />
+        <span className="visually-hidden">{label}</span>
+      </a>
+    );
+    const renderOverview = () => {
+      const currentPlan = activeSubscription?.planName || activeServiceAccount?.catalogName || '-';
+      const nextBillingDate = formatDisplayDate(activeSubscription?.nextInvoiceDate);
+      const latestInvoice = customer360.invoices[0] || customer360.openInvoices[0];
+      const openInvoiceCount = customer360.openInvoices.length || Number(balance.openInvoices || 0);
+      const overdueInvoiceCount = customer360.overdueInvoices.length || Number(balance.overdueInvoices || 0);
+      return (
+        <div className="customer-360-tab-panel customer-360-overview">
+          <div className="customer-360-metrics customer-360-overview-metrics">
+            <div className="customer-360-metric">
+              <IconActivity size={20} />
+              <span>Standing</span>
+              <strong>{accountStanding}</strong>
+            </div>
+            <div className="customer-360-metric">
+              <IconCreditCard size={20} />
+              <span>Amount Due</span>
+              <strong>{formatMoney(balance.balance)}</strong>
+              <small>Credit {formatMoney(balance.credit)}</small>
+            </div>
+            <div className="customer-360-metric">
+              <IconRouter size={20} />
+              <span>Current Service</span>
+              <strong>{currentPlan}</strong>
+              <small>{activeSubscription?.status || activeServiceAccount?.status || 'No active service linked'}</small>
+            </div>
+            <div className="customer-360-metric">
+              <IconCalendarDue size={20} />
+              <span>Next Billing</span>
+              <strong>{nextBillingDate}</strong>
+              <small>{activeSubscription?.billingCycle || activeSubscription?.billingMode || 'Billing schedule unavailable'}</small>
+            </div>
+          </div>
+
+          <div className="customer-360-overview-grid">
+            <section className="customer-360-panel customer-360-overview-primary">
+              {renderOverviewPanelHeading('Service Snapshot', IconHomeSignal, 'Authoritative service data from Service and Billing')}
+              {renderState(['serviceAccounts', 'subscriptions'], [activeSubscription || activeServiceAccount].filter(Boolean), 'No subscription or service account is linked to this customer.')}
+              {(activeSubscription || activeServiceAccount) && (
+                <div className="customer-360-summary-grid">
+                  {renderSummaryFact('Service account', activeSubscription?.serviceAccountNumber || activeServiceAccount?.serviceAccountNumber)}
+                  {renderSummaryFact('Plan', currentPlan)}
+                  {renderSummaryFact('Service status', activeSubscription?.status || activeServiceAccount?.status)}
+                  {renderSummaryFact('Recurring price', formatMoney(activeSubscription?.monthlyRate ?? activeServiceAccount?.monthlyRate))}
+                  {renderSummaryFact('Billing mode', activeSubscription?.billingMode)}
+                  {renderSummaryFact('Billing cycle', formatBillingCycle(activeSubscription))}
+                  {renderSummaryFact('Activation date', formatDisplayDate(activeServiceAccount?.activationDate || activeSubscription?.startDate))}
+                  {renderSummaryFact('Service order', activeSubscription?.serviceOrderNumber || activeSubscription?.serviceOrderId || activeOrder?.orderNumber || activeOrder?.id)}
+                  {renderSummaryFact('Installation address', activeServiceAccount?.installationAddress || activeSubscription?.installationAddress || formatCustomerAddress(selected))}
+                </div>
+              )}
+            </section>
+
+            <section className="customer-360-panel customer-360-overview-secondary">
+              {renderOverviewPanelHeading('Billing Snapshot', IconFileInvoice)}
+              <div className="customer-360-summary-grid customer-360-summary-grid-single">
+                {renderSummaryFact('Current amount due', formatMoney(balance.balance))}
+                {renderSummaryFact('Available credit', formatMoney(balance.credit))}
+                {renderSummaryFact('Open invoices', openInvoiceCount)}
+                {renderSummaryFact('Overdue invoices', overdueInvoiceCount)}
+                {renderSummaryFact('Latest invoice', latestInvoice?.invoiceNumber || latestInvoice?.id, latestInvoice ? `${formatMoney(latestInvoice.balance ?? latestInvoice.totalAmount)} balance` : '')}
+                {renderSummaryFact('Latest invoice status', latestInvoice?.status)}
+              </div>
+            </section>
+
+            <section className="customer-360-panel customer-360-overview-primary">
+              {renderOverviewPanelHeading('Contact & Address', IconAddressBook)}
+              <div className="customer-360-summary-grid">
+                {renderSummaryFact('Primary contact', selected.contactNumber)}
+                {renderSummaryFact('Alternate mobile', selected.alternateMobileNumber)}
+                {renderSummaryFact('Email', selected.email)}
+                {renderSummaryFact('Facebook', selected.facebookAccountName)}
+                {renderSummaryFact('Service address', formatCustomerAddress(selected))}
+                {renderSummaryFact('Billing address', formatCustomerAddress(selected))}
+                {renderSummaryFact('Customer location', selected.locationName || selected.locationId)}
+                {renderSummaryFact('Landmark', selected.landmark)}
+              </div>
+              {detailsCoordinates && (
+                <a
+                  className="customer-360-map-link"
+                  href={googleMapsUrl(detailsCoordinates.latitude, detailsCoordinates.longitude)}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <IconMapPin size={16} /> Open map
+                </a>
+              )}
+            </section>
+
+            <section className="customer-360-panel customer-360-overview-secondary">
+              {renderOverviewPanelHeading('Key Dates', IconCalendarEvent)}
+              <div className="customer-360-summary-grid customer-360-summary-grid-single">
+                {renderSummaryFact('Customer created', formatDisplayDateTime(selected.createdAt))}
+                {renderSummaryFact('Last profile update', formatDisplayDateTime(selected.updatedAt))}
+                {renderSummaryFact('Activation date', formatDisplayDate(activeServiceAccount?.activationDate || activeSubscription?.startDate))}
+                {renderSummaryFact('Next billing date', nextBillingDate)}
+                {renderSummaryFact('Latest service order activity', formatDisplayDateTime(activeOrder?.updatedAt || activeOrder?.createdAt))}
+              </div>
+            </section>
+          </div>
+        </div>
+      );
+    };
+    const renderSubscriptions = () => (
+      <div className="customer-360-tab-panel">
+        {renderState(['subscriptions', 'serviceAccounts'], [...customer360.subscriptions, ...customer360.serviceAccounts], 'No subscriptions or service accounts found for this customer.')}
+        {!!(customer360.subscriptions.length || customer360.serviceAccounts.length) && (
+          <div className="customer-360-table-wrap">
+            <table className="table table-sm customer-360-table">
+              <thead>
+                <tr>
+                  <th>Service Account</th>
+                  <th>Plan</th>
+                  <th>Price</th>
+                  <th>Status</th>
+                  <th>Address</th>
+                  <th>Activation</th>
+                  <th>Billing</th>
+                  <th>Next Bill</th>
+                  <th>Order</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {(customer360.subscriptions.length ? customer360.subscriptions : customer360.serviceAccounts).map((row) => {
+                  const account = customer360.serviceAccounts.find((item) => item.id === row.serviceAccountId) || row;
+                  const order = customer360.serviceOrders.find((item) => item.id === row.serviceOrderId || item.serviceAccountId === account.id);
+                  return (
+                    <tr key={row.id || account.id}>
+                      <td>{row.serviceAccountNumber || account.serviceAccountNumber || '-'}</td>
+                      <td>{row.planName || account.catalogName || '-'}</td>
+                      <td>{formatMoney(row.monthlyRate ?? account.monthlyRate)}</td>
+                      <td><span className={`badge ${statusClass(row.status || account.status)}`}>{row.status || account.status || '-'}</span></td>
+                      <td>{account.serviceAddress || row.serviceAddress || formatCustomerAddress(selected)}</td>
+                      <td>{formatDisplayDate(account.activationDate || row.startDate)}</td>
+                      <td>{[row.billingMode, row.billingCycleAnchor || row.billingCycle].filter(Boolean).join(' / ') || '-'}</td>
+                      <td>{formatDisplayDate(row.nextInvoiceDate)}</td>
+                      <td>{order?.orderNumber || order?.serviceOrderNumber || row.serviceOrderId || '-'}</td>
+                      <td>{renderModuleLink(`/billing?tab=Subscriptions&subscriptionId=${encodeURIComponent(row.id || '')}`, 'Subscription detail', 'Open in Billing')}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <section className="customer-360-panel">
+          <h4>Subscription History</h4>
+          {renderState('serviceOrders', customer360.serviceOrders, 'No service order history is available for this customer.')}
+          {!!customer360.serviceOrders.length && (
+            <div className="customer-360-timeline">
+              {customer360.serviceOrders.map((order) => (
+                <div className="customer-360-event" key={order.id}>
+                  <span className={`badge ${statusClass(order.status)}`}>{order.status || '-'}</span>
+                  <strong>{order.orderNumber || order.serviceOrderNumber || order.orderType || 'Service order'}</strong>
+                  <small>{[order.orderType, order.serviceAccountNumber, formatDisplayDateTime(order.updatedAt || order.createdAt)].filter(Boolean).join(' / ')}</small>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+    );
+    const renderBilling = () => (
+      <div className="customer-360-tab-panel">
+        <div className="customer-360-metrics">
+          <div className="customer-360-metric"><IconFileInvoice size={20} /><span>Amount Due</span><strong>{formatMoney(balance.balance)}</strong></div>
+          <div className="customer-360-metric"><IconCreditCard size={20} /><span>Credit</span><strong>{formatMoney(balance.credit)}</strong></div>
+          <div className="customer-360-metric"><IconAlertTriangle size={20} /><span>Overdue</span><strong>{formatMoney(balance.overdueTotal)}</strong></div>
+          <div className="customer-360-metric"><IconClipboardList size={20} /><span>Open Invoices</span><strong>{balance.openInvoices ?? customer360.openInvoices.length}</strong></div>
+        </div>
+        {renderState('invoices', customer360.invoices, 'No invoices found for this customer.')}
+        {!!customer360.invoices.length && (
+          <div className="customer-360-table-wrap">
+            <table className="table table-sm customer-360-table">
+              <thead>
+                <tr>
+                  <th>Invoice</th>
+                  <th>Billing Period</th>
+                  <th>Total</th>
+                  <th>Balance</th>
+                  <th>Status</th>
+                  <th>Due</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {customer360.invoices.slice(0, 12).map((invoice) => (
+                  <tr key={invoice.id}>
+                    <td>{invoice.invoiceNumber || invoice.id}</td>
+                    <td>{formatBillingCycle(invoice)}</td>
+                    <td>{formatMoney(invoice.total)}</td>
+                    <td>{formatMoney(invoice.balance)}</td>
+                    <td><span className={`badge ${statusClass(invoice.status)}`}>{invoice.status || '-'}</span></td>
+                    <td>{formatDisplayDate(invoice.dueDate)}</td>
+                    <td>{renderModuleLink(`/billing?tab=Invoices&invoiceId=${encodeURIComponent(invoice.id)}`, 'Invoice detail', 'Open invoice in Billing')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <section className="customer-360-panel">
+          <h4>Rebates, Credits, Adjustments</h4>
+          {renderState('adjustments', customer360.adjustments, 'No rebates, credits, or adjustments found for this customer.')}
+          {!!customer360.adjustments.length && (
+            <div className="customer-360-table-wrap">
+              <table className="table table-sm customer-360-table">
+                <thead><tr><th>Type</th><th>Amount</th><th>Status</th><th>Reason</th><th>Posted</th></tr></thead>
+                <tbody>
+                  {customer360.adjustments.slice(0, 8).map((adjustment) => (
+                    <tr key={adjustment.id}>
+                      <td>{adjustment.adjustmentSource || adjustment.type || '-'}</td>
+                      <td>{formatMoney(adjustment.amount)}</td>
+                      <td><span className={`badge ${statusClass(adjustment.status)}`}>{adjustment.status || '-'}</span></td>
+                      <td>{adjustment.reason || adjustment.notes || '-'}</td>
+                      <td>{formatDisplayDateTime(adjustment.createdAt)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      </div>
+    );
+    const renderPayments = () => (
+      <div className="customer-360-tab-panel">
+        {renderState(['payments', 'posSales'], [...customer360.payments, ...customer360.posSales], 'No payment history found for this customer.')}
+        {!!customer360.payments.length && (
+          <div className="customer-360-table-wrap">
+            <table className="table table-sm customer-360-table">
+              <thead>
+                <tr>
+                  <th>Date / Time</th>
+                  <th>Receipt</th>
+                  <th>Amount</th>
+                  <th>Method</th>
+                  <th>Channel</th>
+                  <th>Cashier / Collector</th>
+                  <th>Allocations</th>
+                  <th>Void / Refund</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {customer360.payments.map((payment) => (
+                  <tr key={payment.id}>
+                    <td>{formatDisplayDateTime(payment.paymentDate || payment.createdAt)}</td>
+                    <td>{payment.receiptNumber || payment.referenceNumber || '-'}</td>
+                    <td>{formatMoney(payment.amount)}</td>
+                    <td>{payment.method || '-'}</td>
+                    <td>{payment.collectionChannel || 'BILLING'}</td>
+                    <td>{payment.postedByName || payment.postedByUsername || '-'}</td>
+                    <td>{formatPaymentAllocations(payment)}</td>
+                    <td>{payment.status === 'VOID' ? payment.voidReason || 'Voided' : payment.refundStatus || '-'}</td>
+                    <td><span className="customer-360-muted-action" title="Receipt document endpoint is not currently exposed">No receipt file</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {!!customer360.posSales.length && (
+          <section className="customer-360-panel">
+            <h4>POS Counter Receipts</h4>
+            <div className="customer-360-table-wrap">
+              <table className="table table-sm customer-360-table">
+                <thead><tr><th>Date / Time</th><th>Receipt</th><th>Sale</th><th>Total</th><th>Paid</th><th>Status</th><th>Cashier</th></tr></thead>
+                <tbody>
+                  {customer360.posSales.map((sale) => (
+                    <tr key={sale.id}>
+                      <td>{formatDisplayDateTime(sale.createdAt || sale.saleDate)}</td>
+                      <td>{sale.receiptNumber || '-'}</td>
+                      <td>{sale.saleNumber || sale.id}</td>
+                      <td>{formatMoney(sale.total)}</td>
+                      <td>{formatMoney(sale.paidTotal)}</td>
+                      <td><span className={`badge ${statusClass(sale.paymentStatus || sale.status)}`}>{sale.paymentStatus || sale.status || '-'}</span></td>
+                      <td>{sale.cashierName || sale.cashierUsername || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+      </div>
+    );
+    const renderTickets = () => (
+      <div className="customer-360-tab-panel">
+        {renderState('tickets', customer360.tickets, 'No tickets found for this customer.')}
+        {!!customer360.tickets.length && (
+          <div className="customer-360-table-wrap">
+            <table className="table table-sm customer-360-table">
+              <thead><tr><th>Ticket</th><th>Category</th><th>Status</th><th>Opened</th><th>Resolved</th><th>Assigned</th><th>Outage</th><th></th></tr></thead>
+              <tbody>
+                {customer360.tickets.map((ticket) => (
+                  <tr key={ticket.id}>
+                    <td>{ticket.ticketNumber || ticket.subject || ticket.id}</td>
+                    <td>{ticket.category || '-'}</td>
+                    <td><span className={`badge ${statusClass(ticket.status)}`}>{ticket.status || '-'}</span></td>
+                    <td>{formatDisplayDateTime(ticket.createdAt || ticket.openedAt)}</td>
+                    <td>{formatDisplayDateTime(ticket.resolvedAt || ticket.closedAt)}</td>
+                    <td>{ticket.assignedTo || '-'}</td>
+                    <td>{ticket.outageId || '-'}</td>
+                    <td>{renderModuleLink(`/ticketing?ticketId=${encodeURIComponent(ticket.id)}`, 'Ticket detail', 'Open in Ticketing')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
+    const renderEquipment = () => (
+      <div className="customer-360-tab-panel">
+        {renderState('inventoryAssignments', customer360.equipment, 'No installed equipment assignments found for this customer.')}
+        {!!customer360.equipment.length && (
+          <div className="customer-360-table-wrap">
+            <table className="table table-sm customer-360-table">
+              <thead><tr><th>Equipment</th><th>Serial</th><th>Model</th><th>Status</th><th>Installed</th><th>Service</th><th>Ticket</th></tr></thead>
+              <tbody>
+                {customer360.equipment.map((assignment) => (
+                  <tr key={assignment.id}>
+                    <td>{assignment.item?.name || assignment.itemId || '-'}</td>
+                    <td>{assignment.serialNumber || '-'}</td>
+                    <td>{assignment.item?.sku || assignment.item?.trackingType || '-'}</td>
+                    <td><span className={`badge ${statusClass(assignment.status)}`}>{assignment.status || '-'}</span></td>
+                    <td>{formatDisplayDate(assignment.assignedDate || assignment.createdAt)}</td>
+                    <td>{assignment.serviceId || '-'}</td>
+                    <td>{assignment.ticketId || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
+    const renderActivity = () => (
+      <div className="customer-360-tab-panel">
+        {renderState('auditLogs', customer360.activity, 'No audit activity found for this customer.')}
+        {!!customer360.activity.length && (
+          <div className="customer-360-timeline">
+            {customer360.activity.map((event) => (
+              <div className="customer-360-event" key={event.id}>
+                <span className="badge bg-blue-lt text-blue">{event.target_type || event.targetType || 'Event'}</span>
+                <strong>{String(event.action || '').replaceAll('_', ' ') || 'Activity'}</strong>
+                <small>{[formatDisplayDateTime(event.created_at || event.createdAt), event.actor, event.details?.invoiceId || event.details?.paymentId || event.details?.serviceAccountId || event.target_id].filter(Boolean).join(' / ')}</small>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+    const renderActiveCustomer360Tab = () => {
+      if (customerDetailTab === 'subscriptions') return renderSubscriptions();
+      if (customerDetailTab === 'billing') return renderBilling();
+      if (customerDetailTab === 'payments') return renderPayments();
+      if (customerDetailTab === 'tickets') return renderTickets();
+      if (customerDetailTab === 'equipment') return renderEquipment();
+      if (customerDetailTab === 'activity') return renderActivity();
+      return renderOverview();
+    };
     return (
-      <DetailPanelTag className={`customer-detail-panel ${asModal ? 'customer-detail-modal-panel' : 'customer-inline-detail-panel'}`} aria-label="Selected customer details">
-        <div className="customer-detail-panel-header">
+      <aside className="customer-detail-panel customer-inline-detail-panel customer-360-panel-root" aria-label="Customer 360 details">
+        <div className="customer-detail-panel-header customer-360-header">
+          <button type="button" className="btn btn-icon btn-sm" title="Back to customers" aria-label="Back to customers" onClick={closeDetailsPanel}><IconArrowLeft size={18} /></button>
           <div className="customer-detail-identity">
-            <CustomerEmotionAvatar customer={selected} avatarConfig={avatarConfig} size={74} className="customer-detail-avatar" />
+            <CustomerEmotionAvatar customer={selected} avatarConfig={avatarConfig} size={58} className="customer-detail-avatar" />
             <div className="customer-detail-heading">
               <h3 className="customer-modal-title">{selected.fullName}</h3>
               <div className="customer-detail-badges">
                 <span className="badge bg-secondary-lt text-secondary">{selected.accountNumber}</span>
                 <span className={`badge ${statusClass(selected.status)}`}>{selected.status}</span>
-                <span className="badge bg-blue-lt text-blue">{selected.customerType}</span>
+                <span className={`badge ${statusClass(accountStanding)}`}>{accountStanding}</span>
+              </div>
+              <div className="customer-360-compact-line">
+                {[selected.contactNumber, selected.email, formatCustomerResidence(selected)].filter(Boolean).join(' / ')}
               </div>
             </div>
           </div>
-          <button type="button" className="btn btn-icon btn-sm" title="Close" onClick={closeDetailsPanel}><IconX size={18} /></button>
+          <div className="btn-list customer-360-header-actions">
+            <button type="button" className="btn btn-outline-secondary btn-sm" onClick={() => loadCustomer360(selected)} disabled={customer360Loading}>
+              <IconRefresh size={16} className="me-1" />Refresh
+            </button>
+            <button type="button" className="btn btn-outline-primary btn-sm" onClick={() => editCustomer(selected)}>
+              <IconEdit size={16} className="me-1" />Edit
+            </button>
+            <button type="button" className="btn btn-outline-success btn-sm" onClick={() => checkCustomerServiceability(selected)}>
+              <IconHomeSignal size={16} className="me-1" />Serviceability
+            </button>
+          </div>
         </div>
         <div className="customer-detail-panel-body">
-          <div className="customer-detail">
+          <div className="customer-detail customer-360-detail">
             <div className="customer-status-tabs customer-detail-tabs" role="tablist" aria-label="Customer detail sections">
               {customerDetailTabs.map((tab) => (
                 <button
@@ -2379,58 +2919,16 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                   role="tab"
                   aria-selected={customerDetailTab === tab.value}
                 >
-                  {tab.label}
+                  <span>{tab.label}</span>
+                  {tabCounts[tab.value] ? <span className="badge bg-secondary-lt text-secondary">{tabCounts[tab.value]}</span> : null}
+                  {!hasCustomer360TabData(customer360, tab.value) && tab.value !== 'overview' && !customer360Loading ? <span className="customer-360-tab-dot" aria-hidden="true" /> : null}
                 </button>
               ))}
             </div>
-            {customerDetailTab === 'basic' && (
-              <section className="customer-info-panel">
-                <h4>Basic Info</h4>
-                <div className="customer-info-list">{basicInfoRows.map(renderInfoRow)}</div>
-                <div className="customer-secondary-section">
-                  <h4>Contact Info</h4>
-                  <div className="customer-info-list">{contactInfoRows.map(renderInfoRow)}</div>
-                </div>
-                <div className="customer-secondary-section">
-                  <h4>Secondary Contacts</h4>
-                  {selected.secondaryContacts?.length ? selected.secondaryContacts.map((contact, index) => (
-                    <div className="secondary-contact" key={`${contact.name}-${index}`}>
-                      <div>{contact.name}</div>
-                      <small>{contact.relationship || '-'} | {contact.contactNumber || '-'}</small>
-                    </div>
-                  )) : <div className="text-muted">No secondary contacts.</div>}
-                </div>
-              </section>
-            )}
-            {customerDetailTab === 'location' && (
-              <section className="customer-info-panel">
-                <h4>Location Info</h4>
-                <div className="customer-info-list">{locationInfoRows.map(renderInfoRow)}</div>
-                {detailsCoordinates && detailsMap && (
-                  <div className="customer-detail-map-panel">
-                    <a
-                      className="customer-detail-map-preview"
-                      href={googleMapsUrl(detailsCoordinates.latitude, detailsCoordinates.longitude)}
-                      target="_blank"
-                      rel="noreferrer"
-                      aria-label="Open customer coordinates in Google Maps"
-                    >
-                      <span className="customer-detail-map-preview-heading">
-                        <strong>Location Map</strong>
-                        <small>Open in Google Maps</small>
-                      </span>
-                      <span className="customer-detail-map-tiles" aria-hidden="true">
-                        {detailsMap.tiles.map((tile) => <img key={tile.key} src={tile.url} alt="" draggable="false" />)}
-                        <span className="customer-detail-map-marker" style={detailsMap.marker}><IconMapPin size={20} /></span>
-                      </span>
-                    </a>
-                  </div>
-                )}
-              </section>
-            )}
+            {renderActiveCustomer360Tab()}
           </div>
         </div>
-      </DetailPanelTag>
+      </aside>
     );
   }
 
@@ -3216,7 +3714,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
 
   return (
     <>
-    <div className={`customer-profile-workspace ${isDetailsPanelOpen && selected && !isMobileDetailsView ? 'has-detail-panel' : ''}`}>
+    <div className={`customer-profile-workspace ${isDetailsPanelOpen && selected ? 'has-detail-panel customer-360-workspace' : ''}`}>
       <div className="customer-profile-main">
         <div className="row row-cards customer-profile-page">
           {message && (
@@ -3436,15 +3934,8 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
           </div>
         </div>
       </div>
-      {isDetailsPanelOpen && selected && !isMobileDetailsView && renderCustomerDetailsPanel()}
+      {isDetailsPanelOpen && selected && renderCustomerDetailsPanel()}
     </div>
-    {isDetailsPanelOpen && selected && isMobileDetailsView && (
-      <div className="customer-modal-backdrop customer-detail-modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeDetailsPanel()}>
-        <div className="customer-modal customer-detail-modal" role="dialog" aria-modal="true" aria-label="Customer details">
-          {renderCustomerDetailsPanel({ asModal: true })}
-        </div>
-      </div>
-    )}
     {isBulkUploadModalOpen && (
       <div className="customer-modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && requestBulkUploadClose()}>
         <div className="customer-modal customer-bulk-upload-modal" role="dialog" aria-modal="true" aria-labelledby="customer-bulk-upload-title">
