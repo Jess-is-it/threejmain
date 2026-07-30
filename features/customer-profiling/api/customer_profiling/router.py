@@ -505,6 +505,39 @@ def save_customer_record(customer: dict[str, Any]) -> None:
     customers.append(customer)
 
 
+def sync_customer_lifecycle_status(
+    customer_id: str,
+    status: str,
+    details: dict[str, Any] | None = None,
+    actor: str = "system",
+) -> dict[str, Any]:
+    seed_customer_data()
+    normalized_status = normalize_upper(status)
+    if normalized_status not in CUSTOMER_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid customer status")
+    customer = find_customer(customer_id)
+    previous_status = customer.get("status") or ""
+    if previous_status == normalized_status:
+        return {**customer_summary(customer), "statusChanged": False}
+    customer["status"] = normalized_status
+    customer["updatedAt"] = now_iso()
+    customer["updatedByUserId"] = actor
+    save_customer_record(customer)
+    add_audit(
+        "customer_status_synced",
+        "Customer",
+        customer["id"],
+        {
+            "accountNumber": customer.get("accountNumber"),
+            "previousStatus": previous_status,
+            "status": normalized_status,
+            **(details or {}),
+        },
+        actor,
+    )
+    return {**customer_summary(customer), "statusChanged": True, "previousStatus": previous_status}
+
+
 def count_by(rows: list[dict[str, Any]], field: str) -> list[dict[str, Any]]:
     counts: dict[str, int] = {}
     for row in rows:

@@ -20,6 +20,7 @@ Service manages the ISP service catalog, service accounts, and service orders. T
 - Service Order CRUD with customer lookup, Service Order Type, selected catalog item, request dates, priority, install address, notes, and system-owned workflow status/service reference fields.
 - Phase 3 links Service Orders to Service Accounts through `serviceAccountId`. `NEW_INSTALLATION` can start without a Service Account and creates a `PENDING_INSTALLATION` account when approved or in progress, then activates it when completed. All other Service Order types require an existing Service Account.
 - Phase 3 blocks multiple open Service Orders for the same Service Account. Completed account-affecting orders update the account: plan upgrade/downgrade changes catalog, relocation changes service address, temporary suspension marks suspended, reconnection marks active, disconnection marks disconnected, and change ownership moves the Service Account owner to the selected Customer Profiling record.
+- Service Account lifecycle now syncs Customer Profiling lifecycle status through the app-shell-provided Customer Profiling callback. Active or pending-disconnection accounts mark the customer `ACTIVE`; suspended or pending-reconnection accounts mark the customer `SUSPENDED` when no active account exists; pending installation keeps the customer `PENDING`; disconnected/terminated/cancelled-only account history marks the customer `INACTIVE`.
 - Plan change validation compares the requested active internet catalog against the current Service Account plan. Plan Downgrade requires a lower plan and Plan Upgrade requires a higher plan, with speed used first and monthly rate as fallback when speed data is unavailable.
 - Phase 4 adds structured `orderDetails` per Service Order type. The API sanitizes detail fields by schema and exposes `orderDetailSchemas` through `/api/service/meta`.
 - Phase 5 marks required `orderDetails` in the schema, exposes `orderDetailRequiredStatuses` through `/api/service/meta`, returns `orderReadiness` in Service Order summaries, and blocks saving orders in `SUBMITTED`, `PENDING_REVIEW`, `APPROVED`, `IN_PROGRESS`, `COMPLETED`, or `ON_HOLD` when required type-specific details are missing. `DRAFT` and `PENDING_REQUIREMENT` can remain incomplete.
@@ -48,13 +49,14 @@ Service manages the ISP service catalog, service accounts, and service orders. T
 - Durable storage: `service_records` PostgreSQL table when `DATABASE_URL` is configured and `SERVICE_STORAGE` is `postgres` or unset. The router keeps `service_catalog`, `service_accounts`, and `service_orders` as the in-process working cache, loading them from PostgreSQL and flushing all Service writes back to `service_records`.
 - Readiness endpoint: `GET /api/service/readiness` reports `realDataReady=true` when Service is using PostgreSQL.
 - Customer snapshots from `/api/service/customers` include `firstName`, `lastName`, `customerType`, `barangay`, `city`, and `province` so Service Order customer selection and downstream modules can filter and display Customer Profiling identity/location metadata.
-- Configuration hook: `configure_service(current_admin, audit_logger, customer_resolver, customer_searcher, customer_seed)`
+- Configuration hook: `configure_service(current_admin, audit_logger, customer_resolver, customer_searcher, customer_seed, ticket_creator, customer_status_syncer)`
 - Metrics hook: `service_metrics()`
 - Seed hook: `seed_service_data()`
 
 ## Integration Notes
 
 - Customer Profiling is the customer identity source. Service calls customer provider hooks from `app-shell/api/app/main.py`.
+- Customer Profiling lifecycle status is system-owned after profile creation and is synchronized from Service Account state by Service through the configured `customer_status_syncer` hook. Service also backfills existing service-account customers on Service data load.
 - Customer Profiling should not create service assignments. It can display Service-owned accounts through `/api/service/accounts?customerId=...` and orders through `/api/service/orders?customerId=...`.
 - Billing subscriptions should eventually use Service Account as the subscription target. Phase 2 still keeps existing Service Order references available for compatibility.
 - Ticketing can use a Service Account plus Service Order to tag the affected line/request. New Service Orders call the Ticketing helper supplied by app-shell and store the linked ticket reference.

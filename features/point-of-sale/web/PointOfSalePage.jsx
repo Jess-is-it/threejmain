@@ -5,8 +5,12 @@ import {
   IconCash,
   IconCircleCheck,
   IconCreditCard,
+  IconDownload,
   IconFileInvoice,
+  IconLoader2,
+  IconMapPin,
   IconPackage,
+  IconPrinter,
   IconReceipt,
   IconRefresh,
   IconSearch,
@@ -17,6 +21,8 @@ import {
 import './pointOfSale.css';
 
 const API = '/api';
+const RECEIPT_BUSINESS_NAME = '3J COMPUTER AND INTERNET INSTALLATION SERVICES';
+const RECEIPT_BUSINESS_ADDRESS = 'Zone 2, Roma Norte, Enrile, Cagayan';
 
 function token() {
   return localStorage.getItem('threejmain_token');
@@ -40,6 +46,34 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function dateKey(value) {
+  if (!value) return '';
+  const text = String(value);
+  if (/^\d{4}-\d{2}-\d{2}/.test(text)) return text.slice(0, 10);
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toISOString().slice(0, 10);
+}
+
+function monthLabel(value) {
+  const key = dateKey(value);
+  if (!key) return '';
+  const date = new Date(`${key}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return key;
+  return new Intl.DateTimeFormat('en-PH', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(date);
+}
+
+function invoiceCoverageLabel(invoice) {
+  if (invoice?.billingPeriodLabel) return invoice.billingPeriodLabel;
+  if (invoice?.billingPeriodMonth) return monthLabel(`${invoice.billingPeriodMonth}-01`) || invoice.billingPeriodMonth;
+  const start = invoice?.billingCycleStart || invoice?.issueDate || '';
+  const end = invoice?.billingCycleEnd || start;
+  const startLabel = monthLabel(start);
+  const endLabel = monthLabel(end);
+  if (startLabel && endLabel && startLabel !== endLabel) return `${startLabel} - ${endLabel}`;
+  return startLabel || endLabel || '-';
+}
+
 function newIdempotencyKey(scope) {
   const randomValue = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return `${scope}:${randomValue}`;
@@ -59,10 +93,10 @@ function stockQuantity(item) {
 
 function statusClass(status) {
   const normalized = String(status || '').toLowerCase();
-  if (['active', 'open', 'completed', 'paid', 'posted'].includes(normalized)) return 'bg-green-lt text-green';
-  if (['issued', 'issue', 'partially_paid', 'unpaid', 'pending'].includes(normalized)) return 'bg-yellow-lt text-yellow';
+  if (['active', 'open', 'completed', 'paid', 'posted', 'success'].includes(normalized)) return 'bg-green-lt text-green';
+  if (['issued', 'issue', 'partially_paid', 'unpaid', 'pending', 'skipped'].includes(normalized)) return 'bg-yellow-lt text-yellow';
   if (['closed', 'inactive', 'return', 'returned'].includes(normalized)) return 'bg-blue-lt text-blue';
-  if (['overdue', 'void', 'archived', 'cancelled'].includes(normalized)) return 'bg-red-lt text-red';
+  if (['overdue', 'void', 'archived', 'cancelled', 'failed', 'error'].includes(normalized)) return 'bg-red-lt text-red';
   return 'bg-secondary-lt text-secondary';
 }
 
@@ -77,6 +111,83 @@ function customerNameOnly(customer) {
   return firstLast || customer.fullName || customer.name || customer.displayName || 'Unnamed customer';
 }
 
+function compactLocationParts(parts) {
+  return parts.map((part) => String(part || '').trim()).filter(Boolean).join(', ');
+}
+
+function customerLocationLabel(customer, fallback = '') {
+  if (!customer) return fallback;
+  const locationName = String(
+    customer.locationName
+    || customer.location_name
+    || customer.serviceLocationName
+    || customer.location
+    || ''
+  ).trim();
+  const areaLabel = compactLocationParts([
+    customer.barangay,
+    customer.city || customer.municipality,
+    customer.province
+  ]);
+  const addressLabel = String(
+    customer.address
+    || customer.serviceAddress
+    || customer.installAddress
+    || customer.installationAddress
+    || compactLocationParts([customer.addressLine1, customer.addressLine2])
+    || ''
+  ).trim();
+  return locationName || areaLabel || addressLabel || fallback;
+}
+
+function invoiceLocationLabel(invoice, fallback = '') {
+  return customerLocationLabel(invoice?.customer, '')
+    || String(invoice?.serviceAddress || invoice?.installAddress || invoice?.installationAddress || '').trim()
+    || fallback;
+}
+
+function billingGroupLocationLabel(group, fallback = '-') {
+  if (!group) return fallback;
+  return customerLocationLabel(group.customer, '')
+    || (group.invoices || []).map((invoice) => invoiceLocationLabel(invoice, '')).find(Boolean)
+    || fallback;
+}
+
+function customerSmsNumber(customer) {
+  return String(
+    customer?.contactNumber
+    || customer?.mobileNumber
+    || customer?.phoneNumber
+    || customer?.mobile
+    || customer?.phone
+    || ''
+  ).trim();
+}
+
+function paymentSmsDestination(payment, invoice) {
+  return customerSmsNumber(payment?.customer) || customerSmsNumber(invoice?.customer);
+}
+
+function smsStatusLabel(sms) {
+  return String(sms?.status || 'NOT SENT').replaceAll('_', ' ');
+}
+
+function smsStatusDetail(sms) {
+  const status = String(sms?.status || '').toUpperCase();
+  if (!sms) return 'SMS confirmation was not attempted for this receipt.';
+  if (status === 'SUCCESS') {
+    const messageId = sms.message_id || sms.messageId;
+    return `SMS confirmation sent${sms.destination ? ` to ${sms.destination}` : ''}${messageId ? ` (Message ID ${messageId})` : ''}.`;
+  }
+  if (status === 'SKIPPED') {
+    return sms.error || 'SMS confirmation skipped because the customer has no SMS number.';
+  }
+  if (status === 'FAILED') {
+    return `SMS confirmation failed: ${sms.error || sms.response_summary || 'No provider detail returned.'}`;
+  }
+  return sms.error || sms.response_summary || `SMS status: ${smsStatusLabel(sms)}.`;
+}
+
 function saleUserLabel(sale) {
   return sale.cashierName || sale.cashierUsername || 'POS user';
 }
@@ -85,9 +196,57 @@ function invoiceServiceLabel(invoice) {
   return invoice?.serviceId || invoice?.serviceAccountNumber || invoice?.catalogName || invoice?.lineItems?.[0]?.description || 'Billing invoice';
 }
 
-function paymentPromotionLabel(promotion) {
-  const code = promotion?.promoCode ? `${promotion.promoCode} - ` : '';
-  return `${code}${promotion?.name || 'Promotion'} (${currency(promotion?.discountAmountForInvoice)} off)`;
+function receiptPeriodLabel(row) {
+  if (!row) return '-';
+  if (row.billingPeriodLabel) return row.billingPeriodLabel;
+  if (row.billingPeriodMonth) return monthLabel(`${row.billingPeriodMonth}-01`) || row.billingPeriodMonth;
+  const start = row.billingCycleStart || row.issueDate || row.dueDate || row.paymentDate || '';
+  const end = row.billingCycleEnd || start;
+  const startLabel = monthLabel(start);
+  const endLabel = monthLabel(end);
+  if (startLabel && endLabel && startLabel !== endLabel) return `${startLabel} - ${endLabel}`;
+  return startLabel || endLabel || '-';
+}
+
+function paymentAllocationLabel(payment) {
+  const allocations = paymentReceiptAllocations(payment);
+  if (allocations.length > 1) return `${allocations.length} invoices`;
+  return payment?.invoiceNumber || allocations[0]?.invoiceNumber || '-';
+}
+
+function paymentAllocationDetail(payment) {
+  const allocations = paymentReceiptAllocations(payment);
+  if (allocations.length <= 1) return '';
+  const labels = allocations.slice(0, 2).map((allocation) => allocation.invoiceNumber).filter(Boolean);
+  const suffix = allocations.length > 2 ? ` +${allocations.length - 2} more` : '';
+  return `${labels.join(', ')}${suffix}`;
+}
+
+function paymentReceiptAllocations(payment) {
+  if (!payment) return [];
+  const rows = payment.allocations?.length
+    ? payment.allocations
+    : (payment.invoiceId ? [{
+      invoiceId: payment.invoiceId,
+      invoiceNumber: payment.invoiceNumber,
+      amount: payment.amount,
+      balanceBefore: payment.amount
+    }] : []);
+  return rows.map((allocation, index) => {
+    const amount = roundMoney(allocation.amount);
+    const balanceBefore = roundMoney(allocation.balanceBefore ?? allocation.balance ?? amount);
+    return {
+      id: allocation.id || `${allocation.invoiceId || payment.id}-${index}`,
+      invoiceId: allocation.invoiceId || payment.invoiceId || '',
+      invoiceNumber: allocation.invoiceNumber || payment.invoiceNumber || '-',
+      dueDate: allocation.dueDate || '',
+      billingPeriodLabel: receiptPeriodLabel(allocation),
+      service: allocation.serviceAccountNumber || allocation.catalogName || allocation.serviceId || 'Billing invoice',
+      balanceBefore,
+      amount,
+      remainingAfter: roundMoney(Math.max(0, balanceBefore - amount))
+    };
+  });
 }
 
 function isPayableInvoice(invoice) {
@@ -96,6 +255,14 @@ function isPayableInvoice(invoice) {
 
 function isInvoiceOverdue(invoice) {
   return isPayableInvoice(invoice) && invoice?.dueDate && invoice.dueDate < today();
+}
+
+function paymentRequiresReference(method) {
+  return String(method || '').toUpperCase() !== 'CASH';
+}
+
+function roundMoney(value) {
+  return Math.round(Number(value || 0) * 100) / 100;
 }
 
 const historyPageSizes = ['5', '10', '25', '50'];
@@ -112,16 +279,177 @@ function matchesHistorySearch(search, fields) {
   return fields.some((field) => String(field ?? '').toLowerCase().includes(needle));
 }
 
-function invoiceMatchesSearch(invoice, search) {
-  return matchesHistorySearch(search, [
+function invoiceCustomerKey(invoice) {
+  const customer = invoice?.customer || {};
+  return String(customer.id || invoice?.customerId || customer.accountNumber || customer.name || 'unknown-customer');
+}
+
+function invoiceDueValue(invoice) {
+  return invoice?.dueDate || '9999-12-31';
+}
+
+function compareBillingInvoices(first, second) {
+  const firstOverdue = isInvoiceOverdue(first) ? 1 : 0;
+  const secondOverdue = isInvoiceOverdue(second) ? 1 : 0;
+  if (firstOverdue !== secondOverdue) return secondOverdue - firstOverdue;
+  const dueCompare = invoiceDueValue(first).localeCompare(invoiceDueValue(second));
+  if (dueCompare !== 0) return dueCompare;
+  return String(first.invoiceNumber || '').localeCompare(String(second.invoiceNumber || ''));
+}
+
+function buildBillingCustomerGroups(invoices) {
+  const groups = new Map();
+  invoices.forEach((invoice) => {
+    const key = invoiceCustomerKey(invoice);
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        customer: invoice.customer,
+        invoices: []
+      });
+    }
+    groups.get(key).invoices.push(invoice);
+  });
+
+  return Array.from(groups.values()).map((group) => {
+    const sortedInvoices = [...group.invoices].sort(compareBillingInvoices);
+    const overdueInvoices = sortedInvoices.filter(isInvoiceOverdue);
+    const serviceLabels = Array.from(new Set(sortedInvoices.map(invoiceServiceLabel).filter(Boolean)));
+    const locationLabel = billingGroupLocationLabel({ ...group, invoices: sortedInvoices }, '');
+    return {
+      ...group,
+      invoices: sortedInvoices,
+      openInvoiceCount: sortedInvoices.length,
+      totalBalance: sortedInvoices.reduce((sum, invoice) => sum + Number(invoice.balance || 0), 0),
+      overdueInvoiceCount: overdueInvoices.length,
+      overdueBalance: overdueInvoices.reduce((sum, invoice) => sum + Number(invoice.balance || 0), 0),
+      oldestDueDate: sortedInvoices[0]?.dueDate || '',
+      locationLabel,
+      serviceLabels
+    };
+  }).sort((first, second) => {
+    if (first.overdueInvoiceCount !== second.overdueInvoiceCount) return second.overdueInvoiceCount - first.overdueInvoiceCount;
+    const dueCompare = (first.oldestDueDate || '9999-12-31').localeCompare(second.oldestDueDate || '9999-12-31');
+    if (dueCompare !== 0) return dueCompare;
+    return customerNameOnly(first.customer).localeCompare(customerNameOnly(second.customer));
+  });
+}
+
+function billingCustomerGroupMatchesSearch(group, search) {
+  const invoiceFields = group.invoices.flatMap((invoice) => [
     invoice.invoiceNumber,
     invoiceServiceLabel(invoice),
-    customerNameOnly(invoice.customer),
-    customerLabel(invoice.customer),
     invoice.status,
     invoice.balance,
     invoice.dueDate
   ]);
+  return matchesHistorySearch(search, [
+    customerNameOnly(group.customer),
+    customerLabel(group.customer),
+    group.customer?.accountNumber,
+    group.openInvoiceCount,
+    group.totalBalance,
+    group.oldestDueDate,
+    group.overdueBalance,
+    group.locationLabel,
+    billingGroupLocationLabel(group, ''),
+    group.customer?.address,
+    group.customer?.barangay,
+    group.customer?.city,
+    group.customer?.province,
+    ...group.serviceLabels,
+    ...invoiceFields
+  ]);
+}
+
+function moneyEquals(first, second) {
+  return Math.abs(roundMoney(first) - roundMoney(second)) < 0.001;
+}
+
+function promotionOptionLabel(option, invoice) {
+  if (!option && !invoice) return 'Discount';
+  const name = option?.name || invoice?.earlyBirdPromotionName || 'Early bird discount';
+  return name;
+}
+
+function invoicePromotionOptions(invoice, promotionState) {
+  const options = promotionState?.promotions || [];
+  return options
+    .map((option) => ({
+      id: option.id,
+      label: promotionOptionLabel(option, invoice),
+      amount: roundMoney(option.discountAmountForInvoice),
+      payable: roundMoney(option.discountedPayable),
+      until: option.availableUntil || invoice?.earlyBirdAvailableUntil || '',
+      source: option.paymentRule || 'PROMOTION'
+    }))
+    .filter((option) => option.id && option.amount > 0);
+}
+
+function invoicePromotionSummary(invoice, promotionState, selectedPromotionId = '') {
+  if (selectedPromotionId === 'NONE') return null;
+  const options = invoicePromotionOptions(invoice, promotionState);
+  const recommendedId = promotionState?.recommendedPromotionId || '';
+  const selected = selectedPromotionId
+    ? options.find((option) => option.id === selectedPromotionId)
+    : options.find((option) => option.id === recommendedId) || options[0];
+  return selected || null;
+}
+
+function invoiceRecommendedPromotionBundle(invoice, promotionState) {
+  const rawBundle = promotionState?.recommendedPromotionBundle;
+  const rawPromotions = rawBundle?.promotions || [];
+  const promotionIds = (
+    promotionState?.recommendedPromotionIds
+    || rawBundle?.promotionIds
+    || rawPromotions.map((promotion) => promotion.id)
+  ).filter(Boolean);
+  const discountAmount = roundMoney(rawBundle?.discountAmount);
+  const discountedPayable = roundMoney(rawBundle?.discountedPayable);
+  if (promotionIds.length && discountAmount > 0 && discountedPayable > 0) {
+    const labels = rawPromotions
+      .map((promotion) => promotionOptionLabel(promotion, invoice))
+      .filter(Boolean);
+    return {
+      id: promotionIds.length === 1 ? promotionIds[0] : '',
+      promotionIds,
+      promotions: rawPromotions,
+      label: labels.join(' + ') || `${promotionIds.length} promotions`,
+      count: promotionIds.length,
+      amount: discountAmount,
+      payable: discountedPayable,
+      source: 'PROMOTION_BUNDLE'
+    };
+  }
+  const singlePromotion = invoicePromotionSummary(invoice, promotionState);
+  if (!singlePromotion) return null;
+  return {
+    ...singlePromotion,
+    promotionIds: [singlePromotion.id],
+    promotions: [singlePromotion],
+    count: 1
+  };
+}
+
+function triggeredPromotionForAllocation(invoice, promotionState, allocationAmount) {
+  const promotion = invoiceRecommendedPromotionBundle(invoice, promotionState);
+  if (!promotion) return null;
+  return moneyEquals(allocationAmount, promotion.payable) ? promotion : null;
+}
+
+function paymentDiscountAmount(payment) {
+  return roundMoney(
+    payment?.discountAmount
+    ?? payment?.promotionDiscountAmount
+    ?? payment?.earlyBirdDiscountAmount
+    ?? 0
+  );
+}
+
+function paymentDiscountLabel(payment) {
+  return payment?.discountLabel
+    || payment?.promotionName
+    || (payment?.earlyBirdDiscountApplied ? 'Early bird discount' : 'Discount applied');
 }
 
 function uniqueOptions(values) {
@@ -132,7 +460,15 @@ function formatDateTime(value) {
   if (!value) return '-';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' });
+  return date.toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Manila' });
+}
+
+function paymentRecordedAt(payment) {
+  return payment?.postedAt || payment?.paidAt || payment?.createdAt || '';
+}
+
+function paymentRecordedDateKey(payment) {
+  return dateKey(paymentRecordedAt(payment)) || dateKey(payment?.paymentDate);
 }
 
 function pagedRows(rows, control) {
@@ -170,20 +506,20 @@ function Card({ title, icon: Icon, children, actions }) {
   );
 }
 
-function TextField({ label, value, onChange, type = 'text', required = false, min, max, step }) {
+function TextField({ label, value, onChange, type = 'text', required = false, min, max, step, disabled = false }) {
   return (
     <div>
       <label className="form-label">{label}</label>
-      <input className="form-control" type={type} value={value ?? ''} min={min} max={max} step={step} required={required} onChange={(e) => onChange(e.target.value)} />
+      <input className="form-control" type={type} value={value ?? ''} min={min} max={max} step={step} required={required} disabled={disabled} onChange={(e) => onChange(e.target.value)} />
     </div>
   );
 }
 
-function SelectField({ label, value, onChange, options = [], required = false, children }) {
+function SelectField({ label, value, onChange, options = [], required = false, disabled = false, children }) {
   return (
     <div>
       <label className="form-label">{label}</label>
-      <select className="form-select" value={value ?? ''} required={required} onChange={(e) => onChange(e.target.value)}>
+      <select className="form-select" value={value ?? ''} required={required} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
         {children || options.map((option) => <option key={option} value={option}>{option.replaceAll('_', ' ')}</option>)}
       </select>
     </div>
@@ -227,6 +563,666 @@ function HistoryPagination({ page, totalPages, start, end, total, onPage }) {
         <button type="button" className="btn btn-sm" disabled>{page} / {totalPages}</button>
         <button type="button" className="btn btn-sm" disabled={page >= totalPages} onClick={() => onPage(page + 1)}>Next</button>
       </div>
+    </div>
+  );
+}
+
+function receiptMoney(value) {
+  return `PHP ${Number(value || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function safeReceiptText(value) {
+  return String(value ?? '').replace(/[<>&"]/g, (char) => ({
+    '<': '&lt;',
+    '>': '&gt;',
+    '&': '&amp;',
+    '"': '&quot;'
+  }[char]));
+}
+
+function pdfText(value) {
+  return String(value ?? '')
+    .normalize('NFKD')
+    .replace(/[^\x20-\x7E]/g, '')
+    .replace(/[\\()]/g, '\\$&')
+    .slice(0, 120);
+}
+
+function receiptFileName(receiptNumber) {
+  const clean = String(receiptNumber || 'official-receipt').replace(/[^a-z0-9-]+/gi, '-').replace(/^-+|-+$/g, '');
+  return `${clean || 'official-receipt'}.pdf`;
+}
+
+function normalizeReceiptBalanceDetails(details) {
+  return (details || [])
+    .map((detail, index) => ({
+      id: detail.id || detail.invoiceId || `${detail.invoiceNumber || 'balance'}-${index}`,
+      invoiceId: detail.invoiceId || '',
+      invoiceNumber: detail.invoiceNumber || '',
+      periodLabel: detail.periodLabel || receiptPeriodLabel(detail),
+      amount: roundMoney(detail.amount ?? detail.balance)
+    }))
+    .filter((detail) => detail.amount > 0);
+}
+
+function receiptRemainingBalanceDetails(payment, invoiceRows = []) {
+  const explicitDetails = normalizeReceiptBalanceDetails(payment?.remainingBalanceDetails);
+  if (explicitDetails.length) return explicitDetails;
+  const customerId = payment?.customerId || payment?.customer?.id || '';
+  if (!customerId) return [];
+  return normalizeReceiptBalanceDetails(
+    invoiceRows
+      .filter((invoice) => invoice?.customerId === customerId && isPayableInvoice(invoice))
+      .map((invoice) => ({
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.invoiceNumber,
+        periodLabel: invoiceCoverageLabel(invoice),
+        amount: invoice.balance
+      }))
+  );
+}
+
+function selectedReceiptRemainingDetails(rows, selectedInvoiceIds = []) {
+  const selectedIds = new Set(selectedInvoiceIds);
+  return normalizeReceiptBalanceDetails(
+    (rows || []).map((row) => {
+      const selected = selectedIds.has(row.invoice?.id);
+      const selectedDiscount = selected ? roundMoney(row.promotion?.amount || 0) : 0;
+      const selectedPayment = selected ? roundMoney(row.amountToCollect || 0) : 0;
+      const amount = selected
+        ? roundMoney(Math.max(0, row.currentBalance - selectedPayment - selectedDiscount))
+        : roundMoney(row.currentBalance);
+      if (amount <= 0) return null;
+      return {
+        invoiceId: row.invoice?.id,
+        invoiceNumber: row.invoice?.invoiceNumber,
+        periodLabel: invoiceCoverageLabel(row.invoice),
+        amount
+      };
+    }).filter(Boolean)
+  );
+}
+
+function receiptViewModel(payment, invoiceRows = []) {
+  const allocations = paymentReceiptAllocations(payment);
+  const discountAmount = paymentDiscountAmount(payment);
+  const amountReceived = roundMoney(payment.amountReceived ?? payment.amount);
+  const appliedAmount = roundMoney(payment.appliedAmount ?? allocations.reduce((sum, allocation) => sum + allocation.amount, 0));
+  const returnedAmount = roundMoney(payment.returnedAmount || 0);
+  const advanceAmount = roundMoney(payment.advanceAmount || 0);
+  const originalInvoiceBalance = roundMoney(allocations.reduce((sum, allocation) => sum + allocation.balanceBefore, 0));
+  const remainingAccountBalance = roundMoney(payment.remainingAccountBalance ?? Math.max(0, allocations.reduce((sum, allocation) => sum + allocation.remainingAfter, 0) - discountAmount));
+  const remainingBalanceDetails = receiptRemainingBalanceDetails(payment, invoiceRows);
+  const recordedAt = paymentRecordedAt(payment);
+  return {
+    receiptNumber: payment.receiptNumber || '-',
+    customerName: customerNameOnly(payment.customer),
+    accountNumber: payment.customer?.accountNumber || '-',
+    customerLocation: customerLocationLabel(payment.customer, '-'),
+    postedAt: recordedAt ? formatDateTime(recordedAt) : (payment.paymentDate || '-'),
+    method: labelize(payment.method || '-'),
+    referenceNumber: payment.referenceNumber || '-',
+    cashier: payment.postedByName || payment.postedByUsername || '-',
+    allocations,
+    originalInvoiceBalance,
+    appliedAmount,
+    amountReceived,
+    discountAmount,
+    discountLabel: discountAmount > 0 ? paymentDiscountLabel(payment) : '',
+    returnedAmount,
+    advanceAmount,
+    remainingAccountBalance,
+    remainingBalanceDetails
+  };
+}
+
+function receiptRemainingDetailText(receipt) {
+  if (receipt.remainingAccountBalance <= 0) return '';
+  if (!receipt.remainingBalanceDetails.length) return 'Remaining unpaid customer balance.';
+  return receipt.remainingBalanceDetails
+    .map((detail) => `${detail.periodLabel}${detail.invoiceNumber ? ` (${detail.invoiceNumber})` : ''}: ${receiptMoney(detail.amount)}`)
+    .join('; ');
+}
+
+function buildReceiptPrintHtml(receipt) {
+  const allocationRows = receipt.allocations.map((allocation) => `
+    <tr>
+      <td>
+        <strong>${safeReceiptText(allocation.invoiceNumber)}</strong>
+        <span>${safeReceiptText(allocation.billingPeriodLabel || '-')}</span>
+      </td>
+      <td>${safeReceiptText(receiptMoney(allocation.amount))}</td>
+    </tr>
+  `).join('');
+  const discountRow = receipt.discountAmount > 0
+    ? `<div><span>Less ${safeReceiptText(receipt.discountLabel || 'Discount')}</span><strong>-${safeReceiptText(receiptMoney(receipt.discountAmount))}</strong></div>`
+    : '';
+  const changeRow = receipt.returnedAmount > 0
+    ? `<div><span>Change returned</span><strong>${safeReceiptText(receiptMoney(receipt.returnedAmount))}</strong></div>`
+    : '';
+  const advanceRow = receipt.advanceAmount > 0
+    ? `<div><span>Advance credit</span><strong>${safeReceiptText(receiptMoney(receipt.advanceAmount))}</strong></div>`
+    : '';
+  const remainingDetail = receiptRemainingDetailText(receipt);
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${safeReceiptText(receipt.receiptNumber)}</title>
+  <style>
+    @page { size: 80mm auto; margin: 4mm; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #111827; font-family: Arial, sans-serif; font-size: 11px; }
+    .receipt { width: 72mm; margin: 0 auto; }
+    .center { text-align: center; }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 13px; letter-spacing: 0; text-transform: uppercase; }
+    h2 { margin-top: 5px; font-size: 12px; letter-spacing: 0; text-transform: uppercase; }
+    .muted { color: #4b5563; }
+    .line { border-top: 1px dashed #111827; margin: 7px 0; }
+    .row, .total div { display: flex; justify-content: space-between; gap: 8px; margin: 3px 0; }
+    .row span:first-child, .total span { color: #4b5563; }
+    table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+    td { padding: 4px 0; vertical-align: top; border-bottom: 1px dotted #9ca3af; }
+    td:last-child { text-align: right; white-space: nowrap; }
+    td span { display: block; color: #4b5563; font-size: 10px; line-height: 1.25; }
+    .total strong { white-space: nowrap; }
+    .grand { margin-top: 5px; padding-top: 5px; border-top: 1px solid #111827; font-size: 12px; }
+    .sign { margin-top: 18px; text-align: center; }
+    .sign div { border-top: 1px solid #111827; padding-top: 3px; }
+  </style>
+</head>
+<body>
+  <main class="receipt">
+    <header class="center">
+      <h1>${safeReceiptText(RECEIPT_BUSINESS_NAME)}</h1>
+      <p class="muted">${safeReceiptText(RECEIPT_BUSINESS_ADDRESS)}</p>
+      <h2>Official Receipt</h2>
+    </header>
+    <div class="line"></div>
+    <section>
+      <div class="row"><span>OR No.</span><strong>${safeReceiptText(receipt.receiptNumber)}</strong></div>
+      <div class="row"><span>Date/Time</span><strong>${safeReceiptText(receipt.postedAt)}</strong></div>
+    </section>
+    <div class="line"></div>
+    <section>
+      <div class="row"><span>Received from</span><strong>${safeReceiptText(receipt.customerName)}</strong></div>
+      <div class="row"><span>Account</span><strong>${safeReceiptText(receipt.accountNumber)}</strong></div>
+      <div class="row"><span>Location</span><strong>${safeReceiptText(receipt.customerLocation)}</strong></div>
+    </section>
+    <div class="line"></div>
+    <table>
+      <tbody>
+        ${allocationRows || '<tr><td>No invoice lines found.</td><td>PHP 0.00</td></tr>'}
+      </tbody>
+    </table>
+    <section class="total">
+      <div><span>Invoice balance</span><strong>${safeReceiptText(receiptMoney(receipt.originalInvoiceBalance))}</strong></div>
+      ${discountRow}
+      <div class="grand"><span>Payment applied</span><strong>${safeReceiptText(receiptMoney(receipt.appliedAmount))}</strong></div>
+      <div><span>Amount received</span><strong>${safeReceiptText(receiptMoney(receipt.amountReceived))}</strong></div>
+      ${changeRow}
+      ${advanceRow}
+      <div><span>Remaining balance</span><strong>${safeReceiptText(receiptMoney(receipt.remainingAccountBalance))}</strong></div>
+      ${remainingDetail ? `<p class="muted">${safeReceiptText(remainingDetail)}</p>` : ''}
+    </section>
+    <div class="line"></div>
+    <section>
+      <div class="row"><span>Method</span><strong>${safeReceiptText(receipt.method)}</strong></div>
+      <div class="row"><span>Reference</span><strong>${safeReceiptText(receipt.referenceNumber)}</strong></div>
+      <div class="row"><span>Cashier</span><strong>${safeReceiptText(receipt.cashier)}</strong></div>
+    </section>
+    <footer class="sign">
+      <div>Authorized Signature</div>
+    </footer>
+    <p class="center muted">Thank you for your payment!</p>
+  </main>
+</body>
+</html>`;
+}
+
+function printThermalReceipt(payment, invoiceRows = []) {
+  const receipt = receiptViewModel(payment, invoiceRows);
+  const printWindow = window.open('', '_blank', 'width=380,height=720');
+  if (!printWindow) return;
+  printWindow.document.open();
+  printWindow.document.write(buildReceiptPrintHtml(receipt));
+  printWindow.document.close();
+  printWindow.focus();
+  setTimeout(() => printWindow.print(), 250);
+}
+
+function pdfPlainText(value) {
+  return String(value ?? '')
+    .normalize('NFKD')
+    .replace(/[^\x20-\x7E]/g, '')
+    .trim();
+}
+
+function pdfNumber(value) {
+  return Number(value).toFixed(2).replace(/\.?0+$/, '') || '0';
+}
+
+function pdfColor(color) {
+  return color.map((component) => pdfNumber(Number(component) / 255)).join(' ');
+}
+
+function pdfTextWidth(value, size = 10) {
+  return pdfPlainText(value).split('').reduce((sum, char) => {
+    if (char === ' ') return sum + size * 0.28;
+    if ('ilI1.,:;!|'.includes(char)) return sum + size * 0.28;
+    if ('MW@#%&'.includes(char)) return sum + size * 0.82;
+    if (/[A-Z]/.test(char)) return sum + size * 0.58;
+    if (/[0-9]/.test(char)) return sum + size * 0.54;
+    return sum + size * 0.5;
+  }, 0);
+}
+
+function pdfWrapText(value, maxWidth, size = 10) {
+  const text = pdfPlainText(value) || '-';
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines = [];
+  let current = '';
+  words.forEach((word) => {
+    const next = current ? `${current} ${word}` : word;
+    if (pdfTextWidth(next, size) <= maxWidth || !current) {
+      current = next;
+      return;
+    }
+    lines.push(current);
+    current = word;
+  });
+  if (current) lines.push(current);
+  return lines.length ? lines : ['-'];
+}
+
+function buildPdfDocument(pageStreams) {
+  const pageCount = pageStreams.length;
+  const fontRegularId = 3 + (pageCount * 2);
+  const fontBoldId = fontRegularId + 1;
+  const pageIds = pageStreams.map((_, index) => 3 + (index * 2));
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(' ')}] /Count ${pageCount} >>`
+  ];
+  pageStreams.forEach((stream, index) => {
+    const pageId = pageIds[index];
+    const contentId = pageId + 1;
+    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${fontRegularId} 0 R /F2 ${fontBoldId} 0 R >> >> /Contents ${contentId} 0 R >>`);
+    objects.push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
+  });
+  objects.push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
+  objects.push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>');
+
+  let pdf = '%PDF-1.4\n';
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(pdf.length);
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xrefOffset = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  offsets.slice(1).forEach((offset) => {
+    pdf += `${String(offset).padStart(10, '0')} 00000 n \n`;
+  });
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+  return pdf;
+}
+
+function buildReceiptPdf(receipt) {
+  const colors = {
+    ink: [31, 41, 55],
+    muted: [75, 85, 99],
+    border: [209, 213, 219],
+    panel: [249, 250, 251],
+    header: [243, 244, 246],
+    white: [255, 255, 255]
+  };
+  const pageStreams = [];
+  let commands = [];
+  let cursorY = 736;
+  const receiptX = 42;
+  const receiptW = 528;
+  const contentX = 78;
+  const contentW = 456;
+  const pageBottom = 54;
+
+  const add = (command) => commands.push(command);
+  const rect = (x, topY, width, height, options = {}) => {
+    const bottomY = topY - height;
+    if (options.fill) add(`q ${pdfColor(options.fill)} rg ${pdfNumber(x)} ${pdfNumber(bottomY)} ${pdfNumber(width)} ${pdfNumber(height)} re f Q`);
+    if (options.stroke) add(`q ${pdfColor(options.stroke)} RG ${pdfNumber(options.lineWidth || 0.75)} w ${pdfNumber(x)} ${pdfNumber(bottomY)} ${pdfNumber(width)} ${pdfNumber(height)} re S Q`);
+  };
+  const line = (x1, y1, x2, y2, options = {}) => {
+    add(`q ${pdfColor(options.color || colors.border)} RG ${pdfNumber(options.width || 0.75)} w ${pdfNumber(x1)} ${pdfNumber(y1)} m ${pdfNumber(x2)} ${pdfNumber(y2)} l S Q`);
+  };
+  const text = (value, x, y, options = {}) => {
+    const size = options.size || 10;
+    const clean = pdfPlainText(value) || '-';
+    const width = options.width || 0;
+    let drawX = x;
+    if (options.align === 'center' && width) drawX = x + ((width - pdfTextWidth(clean, size)) / 2);
+    if (options.align === 'right' && width) drawX = x + width - pdfTextWidth(clean, size);
+    add(`${pdfColor(options.color || colors.ink)} rg BT /${options.bold ? 'F2' : 'F1'} ${pdfNumber(size)} Tf ${pdfNumber(drawX)} ${pdfNumber(y)} Td (${pdfText(clean)}) Tj ET`);
+  };
+  const drawPageFrame = (continued = false) => {
+    rect(receiptX, 760, receiptW, 704, { fill: colors.white, stroke: colors.border, lineWidth: 1 });
+    if (continued) {
+      text(RECEIPT_BUSINESS_NAME, contentX, 736, { size: 10, bold: true, width: contentW, align: 'center' });
+      text(`Official Receipt ${receipt.receiptNumber} - continued`, contentX, 720, { size: 9, color: colors.muted, width: contentW, align: 'center' });
+      line(contentX, 704, contentX + contentW, 704, { color: colors.ink, width: 1 });
+      cursorY = 684;
+    }
+  };
+  const startPage = (continued = false) => {
+    if (commands.length) pageStreams.push(commands.join('\n'));
+    commands = [];
+    cursorY = 736;
+    drawPageFrame(continued);
+  };
+  const ensureSpace = (height) => {
+    if (cursorY - height < pageBottom) startPage(true);
+  };
+  const drawFieldSection = (fields) => {
+    const rows = fields.map((field) => ({
+      ...field,
+      valueLines: pdfWrapText(field.value, contentW - 124, 10)
+    }));
+    const height = rows.reduce((sum, row) => sum + Math.max(22, 8 + (row.valueLines.length * 12)), 10);
+    ensureSpace(height + 12);
+    rect(contentX, cursorY, contentW, height, { stroke: colors.border, lineWidth: 0.75 });
+    let rowTop = cursorY - 10;
+    rows.forEach((row, index) => {
+      const rowHeight = Math.max(22, 8 + (row.valueLines.length * 12));
+      text(row.label, contentX + 12, rowTop - 10, { size: 9, color: colors.muted });
+      row.valueLines.forEach((valueLine, lineIndex) => {
+        text(valueLine, contentX + 122, rowTop - 10 - (lineIndex * 12), { size: 10, bold: true });
+      });
+      if (index < rows.length - 1) line(contentX, rowTop - rowHeight + 2, contentX + contentW, rowTop - rowHeight + 2, { color: colors.border, width: 0.5 });
+      rowTop -= rowHeight;
+    });
+    cursorY -= height + 12;
+  };
+  const drawTableHeader = () => {
+    const headerH = 26;
+    rect(contentX, cursorY, contentW, headerH, { fill: colors.header, stroke: colors.border, lineWidth: 0.75 });
+    text('Particulars', contentX + 10, cursorY - 17, { size: 9, bold: true, color: colors.muted });
+    text('Invoice Balance', contentX + 286, cursorY - 17, { size: 9, bold: true, color: colors.muted, width: 82, align: 'right' });
+    text('Payment Applied', contentX + 374, cursorY - 17, { size: 9, bold: true, color: colors.muted, width: 72, align: 'right' });
+    line(contentX + 274, cursorY, contentX + 274, cursorY - headerH, { color: colors.border, width: 0.5 });
+    line(contentX + 370, cursorY, contentX + 370, cursorY - headerH, { color: colors.border, width: 0.5 });
+    cursorY -= headerH;
+  };
+  const drawParticularsTable = () => {
+    const rows = receipt.allocations.length ? receipt.allocations : [{
+      id: 'empty',
+      invoiceNumber: 'No invoice allocation lines found',
+      billingPeriodLabel: '-',
+      balanceBefore: 0,
+      amount: 0
+    }];
+    ensureSpace(60);
+    drawTableHeader();
+    rows.forEach((allocation) => {
+      const invoiceLines = pdfWrapText(allocation.invoiceNumber, 252, 10);
+      const periodLines = pdfWrapText(allocation.billingPeriodLabel || '-', 252, 9);
+      const rowH = Math.max(36, 14 + (invoiceLines.length * 12) + (periodLines.length * 11));
+      if (cursorY - rowH < pageBottom) {
+        startPage(true);
+        drawTableHeader();
+      }
+      rect(contentX, cursorY, contentW, rowH, { stroke: colors.border, lineWidth: 0.5 });
+      let textY = cursorY - 14;
+      invoiceLines.forEach((lineText, index) => text(lineText, contentX + 10, textY - (index * 12), { size: 10, bold: true }));
+      textY -= invoiceLines.length * 12;
+      periodLines.forEach((lineText, index) => text(lineText, contentX + 10, textY - (index * 11), { size: 9, color: colors.muted }));
+      text(receiptMoney(allocation.balanceBefore), contentX + 286, cursorY - 21, { size: 10, width: 82, align: 'right' });
+      text(receiptMoney(allocation.amount), contentX + 374, cursorY - 21, { size: 10, bold: true, width: 72, align: 'right' });
+      line(contentX + 274, cursorY, contentX + 274, cursorY - rowH, { color: colors.border, width: 0.5 });
+      line(contentX + 370, cursorY, contentX + 370, cursorY - rowH, { color: colors.border, width: 0.5 });
+      cursorY -= rowH;
+    });
+    cursorY -= 14;
+  };
+  const drawTotals = () => {
+    const rows = [
+      { label: 'Invoice Balance', value: receiptMoney(receipt.originalInvoiceBalance) },
+      ...(receipt.discountAmount > 0 ? [{ label: `Less ${receipt.discountLabel || 'Discount'}`, value: `-${receiptMoney(receipt.discountAmount)}`, color: [21, 128, 61] }] : []),
+      { label: 'Payment Applied', value: receiptMoney(receipt.appliedAmount), bold: true, ruleBefore: true },
+      { label: 'Amount Received', value: receiptMoney(receipt.amountReceived) },
+      ...(receipt.returnedAmount > 0 ? [{ label: 'Change Returned', value: receiptMoney(receipt.returnedAmount) }] : []),
+      ...(receipt.advanceAmount > 0 ? [{ label: 'Advance Credit', value: receiptMoney(receipt.advanceAmount) }] : []),
+      { label: 'Remaining Balance', value: receiptMoney(receipt.remainingAccountBalance), bold: true }
+    ];
+    const detailLines = receipt.remainingAccountBalance > 0
+      ? pdfWrapText(receiptRemainingDetailText(receipt), 230, 8.5)
+      : [];
+    const boxW = 268;
+    const boxX = contentX + contentW - boxW;
+    const height = 16 + (rows.length * 18) + (detailLines.length ? 8 + (detailLines.length * 11) : 0);
+    ensureSpace(height + 16);
+    rect(boxX, cursorY, boxW, height, { fill: colors.panel, stroke: colors.border, lineWidth: 0.75 });
+    let rowY = cursorY - 17;
+    rows.forEach((row) => {
+      if (row.ruleBefore) line(boxX + 12, rowY + 8, boxX + boxW - 12, rowY + 8, { color: colors.border, width: 0.75 });
+      text(row.label, boxX + 12, rowY, { size: 9.5, color: row.color || colors.muted });
+      text(row.value, boxX + 116, rowY, { size: 9.5, bold: row.bold, color: row.color || colors.ink, width: boxW - 128, align: 'right' });
+      rowY -= 18;
+    });
+    if (detailLines.length) {
+      rowY -= 2;
+      detailLines.forEach((detailLine) => {
+        text(detailLine, boxX + 12, rowY, { size: 8.5, color: colors.muted });
+        rowY -= 11;
+      });
+    }
+    cursorY -= height + 16;
+  };
+  const drawSignature = () => {
+    ensureSpace(84);
+    const centerX = contentX + (contentW / 2);
+    line(centerX - 92, cursorY - 28, centerX + 92, cursorY - 28, { color: colors.ink, width: 0.75 });
+    text('Authorized Signature', centerX - 92, cursorY - 43, { size: 9, color: colors.muted, width: 184, align: 'center' });
+    text('Thank you for your payment!', contentX, cursorY - 74, { size: 10, bold: true, color: colors.muted, width: contentW, align: 'center' });
+    cursorY -= 92;
+  };
+
+  startPage(false);
+  text(RECEIPT_BUSINESS_NAME, contentX, cursorY, { size: 13, bold: true, width: contentW, align: 'center' });
+  cursorY -= 17;
+  text(RECEIPT_BUSINESS_ADDRESS, contentX, cursorY, { size: 10, color: colors.muted, width: contentW, align: 'center' });
+  cursorY -= 26;
+  text('OFFICIAL RECEIPT', contentX, cursorY, { size: 15, bold: true, width: contentW, align: 'center' });
+  cursorY -= 18;
+  line(contentX, cursorY, contentX + contentW, cursorY, { color: colors.ink, width: 1.2 });
+  cursorY -= 18;
+
+  drawFieldSection([
+    { label: 'OR No.', value: receipt.receiptNumber },
+    { label: 'Date/Time', value: receipt.postedAt }
+  ]);
+  drawFieldSection([
+    { label: 'Received from', value: receipt.customerName },
+    { label: 'Account', value: receipt.accountNumber },
+    { label: 'Location', value: receipt.customerLocation }
+  ]);
+  drawParticularsTable();
+  drawTotals();
+  drawFieldSection([
+    { label: 'Payment Method', value: receipt.method },
+    { label: 'Reference', value: receipt.referenceNumber },
+    { label: 'Cashier', value: receipt.cashier }
+  ]);
+  drawSignature();
+
+  pageStreams.push(commands.join('\n'));
+  return buildPdfDocument(pageStreams);
+}
+
+function downloadReceiptPdf(payment, invoiceRows = []) {
+  const receipt = receiptViewModel(payment, invoiceRows);
+  const blob = new Blob([buildReceiptPdf(receipt)], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = receiptFileName(receipt.receiptNumber);
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function ReceiptDetailModal({ payment, invoiceRows = [], onClose, onVoid }) {
+  if (!payment) return null;
+  const receipt = receiptViewModel(payment, invoiceRows);
+  const canVoid = payment.status === 'POSTED';
+  return (
+    <div className="pos-modal-backdrop" onClick={onClose}>
+      <section className="pos-modal pos-receipt-modal" role="dialog" aria-modal="true" aria-labelledby="pos-receipt-title" onClick={(event) => event.stopPropagation()}>
+        <div className="pos-modal-header">
+          <div>
+            <span className="pos-modal-eyebrow">Official Receipt</span>
+            <h3 id="pos-receipt-title">{payment.receiptNumber || '-'}</h3>
+          </div>
+          <button type="button" className="btn btn-icon btn-sm" onClick={onClose} aria-label="Close receipt detail"><IconX size={18} /></button>
+        </div>
+        <div className="pos-modal-body pos-receipt-modal-body">
+          <article className="pos-official-receipt">
+            <header className="pos-official-receipt-header">
+              <strong>{RECEIPT_BUSINESS_NAME}</strong>
+              <span>{RECEIPT_BUSINESS_ADDRESS}</span>
+              <h2>Official Receipt</h2>
+            </header>
+
+            <section className="pos-official-receipt-meta">
+              <div><span>OR No.</span><strong>{receipt.receiptNumber}</strong></div>
+              <div><span>Date/Time</span><strong>{receipt.postedAt}</strong></div>
+            </section>
+
+            <section className="pos-official-receipt-party">
+              <div>
+                <span>Received from</span>
+                <strong>{receipt.customerName}</strong>
+              </div>
+              <div>
+                <span>Account</span>
+                <strong>{receipt.accountNumber}</strong>
+              </div>
+              <div>
+                <span>Location</span>
+                <strong>{receipt.customerLocation}</strong>
+              </div>
+            </section>
+
+            <div className="pos-official-receipt-table-wrap">
+              <table className="pos-official-receipt-table">
+                <thead><tr><th>Particulars</th><th>Invoice Balance</th><th>Payment Applied</th></tr></thead>
+                <tbody>
+                  {receipt.allocations.map((allocation) => (
+                    <tr key={allocation.id}>
+                      <td>
+                        <strong>{allocation.invoiceNumber}</strong>
+                        <span>{allocation.billingPeriodLabel || '-'}</span>
+                      </td>
+                      <td>{currency(allocation.balanceBefore)}</td>
+                      <td>{currency(allocation.amount)}</td>
+                    </tr>
+                  ))}
+                  {!receipt.allocations.length && <tr><td colSpan="3" className="text-muted">No invoice allocation lines found for this receipt.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+
+            <section className="pos-official-receipt-totals">
+              <div><span>Invoice Balance</span><strong>{currency(receipt.originalInvoiceBalance)}</strong></div>
+              {receipt.discountAmount > 0 && (
+                <div><span>Less {receipt.discountLabel || 'Discount'}</span><strong>-{currency(receipt.discountAmount)}</strong></div>
+              )}
+              <div className="is-total"><span>Payment Applied</span><strong>{currency(receipt.appliedAmount)}</strong></div>
+              <div><span>Amount Received</span><strong>{currency(receipt.amountReceived)}</strong></div>
+              {receipt.returnedAmount > 0 && <div><span>Change Returned</span><strong>{currency(receipt.returnedAmount)}</strong></div>}
+              {receipt.advanceAmount > 0 && <div><span>Advance Credit</span><strong>{currency(receipt.advanceAmount)}</strong></div>}
+              <div><span>Remaining Balance</span><strong>{currency(receipt.remainingAccountBalance)}</strong></div>
+              {receipt.remainingAccountBalance > 0 && (
+                <section className="pos-official-receipt-balance-detail">
+                  {receipt.remainingBalanceDetails.length ? (
+                    receipt.remainingBalanceDetails.map((detail) => (
+                      <span key={detail.id}>
+                        {detail.periodLabel}{detail.invoiceNumber ? ` (${detail.invoiceNumber})` : ''}: {currency(detail.amount)}
+                      </span>
+                    ))
+                  ) : (
+                    <span>Remaining unpaid customer balance.</span>
+                  )}
+                </section>
+              )}
+            </section>
+
+            <section className="pos-official-receipt-payment">
+              <div><span>Payment Method</span><strong>{receipt.method}</strong></div>
+              <div><span>Reference</span><strong>{receipt.referenceNumber}</strong></div>
+              <div><span>Cashier</span><strong>{receipt.cashier}</strong></div>
+            </section>
+
+            <div className="pos-official-receipt-signature">
+              <span>Authorized Signature</span>
+            </div>
+            <p className="pos-official-receipt-thanks">Thank you for your payment!</p>
+          </article>
+        </div>
+        <div className="pos-modal-footer">
+          <div className="btn-list">
+            <button type="button" className="btn" onClick={() => downloadReceiptPdf(payment, invoiceRows)}><IconDownload size={16} className="me-1" />Download PDF</button>
+            <button type="button" className="btn" onClick={() => printThermalReceipt(payment, invoiceRows)}><IconPrinter size={16} className="me-1" />Print</button>
+          </div>
+          <div className="btn-list">
+            {canVoid && <button type="button" className="btn text-danger" onClick={() => onVoid(payment)}><IconTrash size={16} className="me-1" />Void Receipt</button>}
+            <button type="button" className="btn btn-primary" onClick={onClose}>Close</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function VoidBillingReceiptModal({ payment, reason, submitting, onReasonChange, onClose, onConfirm }) {
+  if (!payment) return null;
+  const allocations = paymentReceiptAllocations(payment);
+  return (
+    <div className="pos-modal-backdrop" onClick={submitting ? undefined : onClose}>
+      <section className="pos-modal pos-void-modal" role="dialog" aria-modal="true" aria-labelledby="pos-void-title" onClick={(event) => event.stopPropagation()}>
+        <form onSubmit={onConfirm}>
+          <div className="pos-modal-header">
+            <div>
+              <span className="pos-modal-eyebrow">Void Billing Receipt</span>
+              <h3 id="pos-void-title">{payment.receiptNumber || '-'}</h3>
+            </div>
+            <button type="button" className="btn btn-icon btn-sm" disabled={submitting} onClick={onClose} aria-label="Close void receipt"><IconX size={18} /></button>
+          </div>
+          <div className="pos-modal-body">
+            <div className="alert alert-warning mb-3">
+              Voiding this receipt reverses {allocations.length || 1} invoice allocation{allocations.length === 1 ? '' : 's'} totaling {currency(payment.amount)}.
+            </div>
+            <label className="form-label">Void Reason</label>
+            <textarea
+              className="form-control"
+              rows="4"
+              value={reason}
+              required
+              disabled={submitting}
+              placeholder="Example: Wrong customer, wrong amount, duplicate posting, or payment cancelled."
+              onChange={(event) => onReasonChange(event.target.value)}
+            />
+          </div>
+          <div className="pos-modal-footer">
+            <button type="button" className="btn" disabled={submitting} onClick={onClose}>Cancel</button>
+            <button type="submit" className="btn btn-danger" disabled={submitting}>
+              {submitting ? <IconLoader2 size={16} className="me-1 pos-spin" /> : <IconTrash size={16} className="me-1" />}
+              {submitting ? 'Voiding Receipt' : 'Void Receipt'}
+            </button>
+          </div>
+        </form>
+      </section>
     </div>
   );
 }
@@ -276,9 +1272,9 @@ const blankOfficeStockForm = {
 const blankInvoicePayment = {
   invoiceId: '',
   amount: '',
+  excessAction: '',
   method: 'CASH',
   paymentDate: today(),
-  promotionId: '',
   referenceNumber: '',
   notes: ''
 };
@@ -302,6 +1298,7 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
   const [overview, setOverview] = useState({ metrics: {}, recentSales: [], lowStock: [] });
   const [items, setItems] = useState([]);
   const [sales, setSales] = useState([]);
+  const [registerPayments, setRegisterPayments] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [customerSearch, setCustomerSearch] = useState('');
   const [customerSearchOpen, setCustomerSearchOpen] = useState(false);
@@ -315,17 +1312,26 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
   const [billingMeta, setBillingMeta] = useState({ paymentMethods: [] });
   const [billingInvoices, setBillingInvoices] = useState([]);
   const [billingPayments, setBillingPayments] = useState([]);
-  const [eligibleBillingPromotions, setEligibleBillingPromotions] = useState([]);
+  const [billingInvoicePromotionsById, setBillingInvoicePromotionsById] = useState({});
   const [billingSearch, setBillingSearch] = useState('');
   const [selectedBillingInvoiceId, setSelectedBillingInvoiceId] = useState('');
+  const [selectedBillingInvoiceIds, setSelectedBillingInvoiceIds] = useState([]);
+  const [selectedBillingCustomerId, setSelectedBillingCustomerId] = useState('');
   const [invoicePaymentForm, setInvoicePaymentForm] = useState(blankInvoicePayment);
+  const [registerCheckoutIdempotencyKey, setRegisterCheckoutIdempotencyKey] = useState(() => newIdempotencyKey('pos-sale'));
   const [invoicePaymentIdempotencyKey, setInvoicePaymentIdempotencyKey] = useState(() => newIdempotencyKey('billing-payment'));
+  const [checkoutSubmitting, setCheckoutSubmitting] = useState(false);
+  const [invoicePaymentSubmitting, setInvoicePaymentSubmitting] = useState(false);
   const [itemForm, setItemForm] = useState(blankItem);
   const [saleForm, setSaleForm] = useState(blankSale);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [checkoutNotice, setCheckoutNotice] = useState(null);
   const [showLowStockPanel, setShowLowStockPanel] = useState(false);
+  const [selectedBillingReceipt, setSelectedBillingReceipt] = useState(null);
+  const [voidBillingReceipt, setVoidBillingReceipt] = useState(null);
+  const [voidBillingReason, setVoidBillingReason] = useState('');
+  const [voidBillingSubmitting, setVoidBillingSubmitting] = useState(false);
   const [salesHistoryTab, setSalesHistoryTab] = useState('Register');
   const [historyControls, setHistoryControls] = useState(historyControlDefaults);
 
@@ -334,28 +1340,105 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
   const cartLines = useMemo(() => saleForm.lineItems.filter((line) => line.itemId || line.description), [saleForm.lineItems]);
   const officeCartLines = useMemo(() => officeCart.filter((line) => line.itemId), [officeCart]);
   const payableBillingInvoices = useMemo(() => billingInvoices.filter(isPayableInvoice), [billingInvoices]);
+  const billingCustomerGroups = useMemo(() => buildBillingCustomerGroups(payableBillingInvoices), [payableBillingInvoices]);
+  const visibleBillingCustomerGroups = useMemo(() => (
+    billingCustomerGroups.filter((group) => billingCustomerGroupMatchesSearch(group, billingSearch))
+  ), [billingCustomerGroups, billingSearch]);
   const visiblePayableBillingInvoices = useMemo(() => (
-    payableBillingInvoices.filter((invoice) => invoiceMatchesSearch(invoice, billingSearch))
-  ), [payableBillingInvoices, billingSearch]);
-  const selectedBillingInvoice = useMemo(() => billingInvoices.find((invoice) => invoice.id === selectedBillingInvoiceId), [billingInvoices, selectedBillingInvoiceId]);
-  const selectedBillingPromotion = useMemo(() => (
-    eligibleBillingPromotions.find((promotion) => promotion.id === invoicePaymentForm.promotionId)
-  ), [eligibleBillingPromotions, invoicePaymentForm.promotionId]);
-  const selectedInvoiceBalance = Number(selectedBillingInvoice?.balance || 0);
-  const selectedPromotionDiscount = selectedBillingPromotion ? Number(selectedBillingPromotion.discountAmountForInvoice || 0) : 0;
-  const selectedPromotionPayable = selectedBillingPromotion ? Number(selectedBillingPromotion.discountedPayable || 0) : selectedInvoiceBalance;
-  const selectedInvoiceRemaining = Math.max(0, selectedInvoiceBalance - selectedPromotionDiscount - Number(invoicePaymentForm.amount || 0));
+    visibleBillingCustomerGroups.flatMap((group) => group.invoices)
+  ), [visibleBillingCustomerGroups]);
+  const selectedBillingInvoice = useMemo(() => (
+    billingInvoices.find((invoice) => invoice.id === selectedBillingInvoiceId)
+    || billingInvoices.find((invoice) => selectedBillingInvoiceIds.includes(invoice.id))
+  ), [billingInvoices, selectedBillingInvoiceId, selectedBillingInvoiceIds]);
+  const selectedBillingCustomerGroup = useMemo(() => {
+    const customerKey = selectedBillingCustomerId || (selectedBillingInvoice ? invoiceCustomerKey(selectedBillingInvoice) : '');
+    return customerKey ? billingCustomerGroups.find((group) => group.key === customerKey) || null : null;
+  }, [billingCustomerGroups, selectedBillingCustomerId, selectedBillingInvoice]);
+  const selectedBillingCustomerActualId = selectedBillingCustomerGroup?.customer?.id || selectedBillingCustomerGroup?.invoices?.[0]?.customerId || '';
+  const selectedCustomerInvoiceRows = useMemo(() => (
+    (selectedBillingCustomerGroup?.invoices || []).map((invoice) => {
+      const promotionState = billingInvoicePromotionsById[invoice.id];
+      const promotion = invoiceRecommendedPromotionBundle(invoice, promotionState);
+      return {
+        invoice,
+        currentBalance: roundMoney(invoice.balance),
+        promotion,
+        amountToCollect: promotion ? promotion.payable : roundMoney(invoice.balance)
+      };
+    })
+  ), [selectedBillingCustomerGroup, billingInvoicePromotionsById]);
+  const selectedPaymentInvoiceRows = useMemo(() => (
+    selectedCustomerInvoiceRows.filter((row) => selectedBillingInvoiceIds.includes(row.invoice.id))
+  ), [selectedCustomerInvoiceRows, selectedBillingInvoiceIds]);
+  const selectedCustomerBalance = selectedCustomerInvoiceRows.length
+    ? selectedCustomerInvoiceRows.reduce((sum, row) => roundMoney(sum + row.currentBalance), 0)
+    : roundMoney(selectedBillingCustomerGroup?.totalBalance || 0);
+  const selectedInvoiceTotalBeforeDiscount = selectedPaymentInvoiceRows.reduce((sum, row) => roundMoney(sum + row.currentBalance), 0);
+  const invoicePaymentAmount = roundMoney(Number(invoicePaymentForm.amount || 0));
+  const invoicePaymentAllocations = useMemo(() => (
+    selectedPaymentInvoiceRows
+      .filter((row) => row.amountToCollect > 0)
+      .map((row) => ({
+        invoiceId: row.invoice.id,
+        invoiceNumber: row.invoice.invoiceNumber,
+        dueDate: row.invoice.dueDate,
+        billingPeriodLabel: invoiceCoverageLabel(row.invoice),
+        billingPeriodMonth: row.invoice.billingPeriodMonth,
+        billingCycleStart: row.invoice.billingCycleStart,
+        billingCycleEnd: row.invoice.billingCycleEnd,
+        service: invoiceServiceLabel(row.invoice),
+        balance: row.currentBalance,
+        amount: row.amountToCollect,
+        remainingAfter: roundMoney(row.currentBalance - row.amountToCollect),
+        promotionIds: row.promotion?.promotionIds || [],
+        promotionCount: row.promotion?.count || 0,
+        promotionAmount: row.promotion?.amount || 0
+      }))
+  ), [selectedPaymentInvoiceRows]);
+  const invoicePaymentAllocatedTotal = invoicePaymentAllocations.reduce((sum, allocation) => roundMoney(sum + allocation.amount), 0);
+  const invoicePaymentAppliedAmount = invoicePaymentAllocatedTotal;
+  const invoicePaymentShortfallAmount = roundMoney(Math.max(0, invoicePaymentAppliedAmount - invoicePaymentAmount));
+  const invoicePaymentExcessAmount = roundMoney(Math.max(0, invoicePaymentAmount - invoicePaymentAppliedAmount));
+  const invoicePaymentAdvanceAmount = 0;
+  const invoicePaymentReturnedAmount = invoicePaymentExcessAmount;
+  const invoicePaymentExcessLabel = invoicePaymentExcessAmount > 0 ? 'Change / excess' : 'Change';
+  const invoicePaymentExcessDisplayAmount = invoicePaymentExcessAmount;
+  const invoicePaymentPostAmount = invoicePaymentAppliedAmount;
+  const invoicePaymentPromotionByInvoiceId = useMemo(() => {
+    const promotionRows = selectedPaymentInvoiceRows
+      .filter((row) => row.promotion && moneyEquals(row.amountToCollect, row.promotion.payable))
+      .map((row) => [row.invoice.id, row.promotion]);
+    return new Map(promotionRows);
+  }, [selectedPaymentInvoiceRows]);
+  const invoicePaymentDiscountTotal = Array.from(invoicePaymentPromotionByInvoiceId.values()).reduce((sum, promotion) => roundMoney(sum + promotion.amount), 0);
+  const invoicePaymentPromotionCount = Array.from(invoicePaymentPromotionByInvoiceId.values()).reduce((sum, promotion) => (
+    sum + Number(promotion.count || promotion.promotionIds?.length || 1)
+  ), 0);
+  const invoicePaymentDiscountLabel = invoicePaymentPromotionCount > 1
+    ? `${invoicePaymentPromotionCount} automatic promotions`
+    : (Array.from(invoicePaymentPromotionByInvoiceId.values())[0]?.label || '');
+  const selectedInvoiceRemaining = roundMoney(Math.max(0, selectedCustomerBalance - invoicePaymentAllocatedTotal - invoicePaymentDiscountTotal));
+  const invoicePaymentReferenceRequired = paymentRequiresReference(invoicePaymentForm.method);
+  const invoicePaymentIsCash = String(invoicePaymentForm.method || '').toUpperCase() === 'CASH';
   const billingPaymentMethods = useMemo(() => (
     billingMeta.paymentMethods?.length ? billingMeta.paymentMethods : (meta.paymentMethods?.length ? meta.paymentMethods : ['CASH'])
   ), [billingMeta.paymentMethods, meta.paymentMethods]);
+  useEffect(() => {
+    if (!selectedBillingCustomerGroup) return;
+    const nextAmount = invoicePaymentAppliedAmount > 0 ? String(invoicePaymentAppliedAmount) : '';
+    setInvoicePaymentForm((form) => (
+      String(form.amount || '') === nextAmount ? form : { ...form, amount: nextAmount, excessAction: '' }
+    ));
+  }, [selectedBillingCustomerGroup, invoicePaymentAppliedAmount]);
   const billingPaymentMetrics = useMemo(() => ({
-    openInvoices: visiblePayableBillingInvoices.length,
+    customerAccounts: visibleBillingCustomerGroups.length,
     outstanding: visiblePayableBillingInvoices.reduce((sum, invoice) => sum + Number(invoice.balance || 0), 0),
     overdue: visiblePayableBillingInvoices.filter(isInvoiceOverdue).length,
     collectedToday: billingPayments
-      .filter((payment) => payment.status === 'POSTED' && payment.paymentDate === today())
+      .filter((payment) => payment.status === 'POSTED' && paymentRecordedDateKey(payment) === today())
       .reduce((sum, payment) => sum + Number(payment.amount || 0), 0)
-  }), [visiblePayableBillingInvoices, billingPayments]);
+  }), [visibleBillingCustomerGroups, visiblePayableBillingInvoices, billingPayments]);
   const registerHistoryRows = useMemo(() => (
     sales.filter((sale) => {
       const control = historyControls.register;
@@ -365,6 +1448,7 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
         sale.saleNumber,
         customerLabel(sale.customer),
         saleUserLabel(sale),
+        sale.createdAt,
         sale.paymentStatus,
         sale.total,
         sale.paidTotal,
@@ -382,11 +1466,14 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
       return statusMatches && matchesHistorySearch(control.search, [
         payment.receiptNumber,
         payment.invoiceNumber,
+        ...(payment.allocations || []).flatMap((allocation) => [allocation.invoiceNumber, allocation.amount]),
         customerNameOnly(payment.customer),
         customerLabel(payment.customer),
         payment.method,
         payment.referenceNumber,
         payment.collectionChannel,
+        payment.paymentDate,
+        paymentRecordedAt(payment),
         payment.postedByName,
         payment.postedByUsername,
         payment.status,
@@ -416,31 +1503,120 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
   const registerFilterOptions = useMemo(() => uniqueOptions(sales.flatMap((sale) => [sale.paymentStatus, sale.status])), [sales]);
   const invoicePaymentFilterOptions = useMemo(() => uniqueOptions(billingPayments.flatMap((payment) => [payment.status, payment.method, payment.collectionChannel || 'BILLING'])), [billingPayments]);
   const officeMovementFilterOptions = useMemo(() => uniqueOptions(officeMovements.map((movement) => movement.type)), [officeMovements]);
+  const saleById = useMemo(() => new Map(sales.map((sale) => [sale.id, sale])), [sales]);
+  const cashierCollectionRows = useMemo(() => {
+    const rows = new Map();
+    const todayKey = today();
+    const ensureRow = (key, label) => {
+      const normalizedKey = key || label || 'pos-user';
+      if (!rows.has(normalizedKey)) {
+        rows.set(normalizedKey, {
+          key: normalizedKey,
+          cashier: label || normalizedKey || 'POS user',
+          registerCash: 0,
+          registerOther: 0,
+          invoiceCash: 0,
+          invoiceOther: 0,
+          registerReceipts: 0,
+          invoiceReceipts: 0,
+          voidedReceipts: 0,
+          voidedAmount: 0
+        });
+      }
+      return rows.get(normalizedKey);
+    };
+
+    registerPayments.forEach((payment) => {
+      if (payment.status !== 'POSTED') return;
+      const sale = saleById.get(payment.saleId);
+      if (!sale || sale.status === 'VOID' || paymentRecordedDateKey(payment) !== todayKey) return;
+      const row = ensureRow(sale.cashierUsername, saleUserLabel(sale));
+      if (String(payment.method || '').toUpperCase() === 'CASH') {
+        row.registerCash = roundMoney(row.registerCash + Number(payment.amount || 0));
+      } else {
+        row.registerOther = roundMoney(row.registerOther + Number(payment.amount || 0));
+      }
+      row.registerReceipts += 1;
+    });
+
+    registerPayments.forEach((payment) => {
+      if (payment.status !== 'VOID' || dateKey(payment.updatedAt || payment.deletedAt) !== todayKey) return;
+      const sale = saleById.get(payment.saleId);
+      const row = ensureRow(sale?.cashierUsername || payment.saleId, sale ? saleUserLabel(sale) : 'Register voids');
+      row.voidedReceipts += 1;
+      row.voidedAmount = roundMoney(row.voidedAmount + Number(payment.amount || 0));
+    });
+
+    billingPayments.forEach((payment) => {
+      if ((payment.collectionChannel || 'BILLING') !== 'POS') return;
+      if (payment.status === 'POSTED' && paymentRecordedDateKey(payment) === todayKey) {
+        const row = ensureRow(payment.postedByUsername, payment.postedByName || payment.postedByUsername || 'POS user');
+        if (String(payment.method || '').toUpperCase() === 'CASH') {
+          row.invoiceCash = roundMoney(row.invoiceCash + Number(payment.amount || 0));
+        } else {
+          row.invoiceOther = roundMoney(row.invoiceOther + Number(payment.amount || 0));
+        }
+        row.invoiceReceipts += 1;
+      }
+      if (payment.status === 'VOID' && dateKey(payment.voidedAt || payment.updatedAt) === todayKey) {
+        const row = ensureRow(payment.voidedByUsername || payment.postedByUsername, payment.voidedByName || payment.postedByName || payment.voidedByUsername || 'POS user');
+        row.voidedReceipts += 1;
+        row.voidedAmount = roundMoney(row.voidedAmount + Number(payment.amount || 0));
+      }
+    });
+
+    return Array.from(rows.values()).map((row) => ({
+      ...row,
+      totalCash: roundMoney(row.registerCash + row.invoiceCash),
+      totalOther: roundMoney(row.registerOther + row.invoiceOther),
+      totalCollected: roundMoney(row.registerCash + row.registerOther + row.invoiceCash + row.invoiceOther),
+      receiptCount: row.registerReceipts + row.invoiceReceipts
+    })).sort((first, second) => second.totalCollected - first.totalCollected || first.cashier.localeCompare(second.cashier));
+  }, [billingPayments, registerPayments, saleById]);
+  const cashierCollectionTotals = useMemo(() => cashierCollectionRows.reduce((totals, row) => ({
+    totalCash: roundMoney(totals.totalCash + row.totalCash),
+    totalOther: roundMoney(totals.totalOther + row.totalOther),
+    totalCollected: roundMoney(totals.totalCollected + row.totalCollected),
+    receiptCount: totals.receiptCount + row.receiptCount,
+    voidedReceipts: totals.voidedReceipts + row.voidedReceipts,
+    voidedAmount: roundMoney(totals.voidedAmount + row.voidedAmount)
+  }), {
+    totalCash: 0,
+    totalOther: 0,
+    totalCollected: 0,
+    receiptCount: 0,
+    voidedReceipts: 0,
+    voidedAmount: 0
+  }), [cashierCollectionRows]);
   const cartSubtotal = useMemo(() => cartLines.reduce((sum, line) => {
     const amount = Number(line.quantity || 0) * Number(line.unitPrice || 0) - Number(line.discountAmount || 0);
     return sum + Math.max(0, amount);
   }, 0), [cartLines]);
   const cartTotal = Math.max(0, cartSubtotal - Number(saleForm.discountAmount || 0));
   const paymentAmount = Number(saleForm.paymentAmount || 0);
+  const allocatedRegisterPayment = Math.min(paymentAmount, cartTotal);
   const paymentShortfall = Math.max(0, cartTotal - paymentAmount);
   const cashChange = Math.max(0, paymentAmount - cartTotal);
   const isCashPayment = String(saleForm.paymentMethod || '').toUpperCase() === 'CASH';
+  const registerReferenceRequired = paymentRequiresReference(saleForm.paymentMethod);
 
   async function load(search = customerSearch, itemTerm = itemSearch) {
     setError('');
     try {
-      const [nextMeta, nextOverview, nextCustomers, nextItems, nextSales] = await Promise.all([
+      const [nextMeta, nextOverview, nextCustomers, nextItems, nextSales, nextRegisterPayments] = await Promise.all([
         request('/point-of-sale/meta'),
         request('/point-of-sale/overview'),
         request(`/point-of-sale/customers?search=${encodeURIComponent(search)}`),
         request(`/point-of-sale/items?search=${encodeURIComponent(itemTerm)}`),
-        request('/point-of-sale/sales')
+        request('/point-of-sale/sales'),
+        request('/point-of-sale/payments')
       ]);
       setMeta(nextMeta);
       setOverview(nextOverview);
       setCustomers(nextCustomers);
       setItems(nextItems);
       setSales(nextSales);
+      setRegisterPayments(nextRegisterPayments);
     } catch (err) {
       setError(err.message);
     }
@@ -482,15 +1658,27 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
     }
   }
 
-  async function loadEligibleBillingPromotions(invoiceId, paymentDate = today()) {
-    if (!invoiceId) {
-      setEligibleBillingPromotions([]);
-      return { promotions: [], recommendedPromotionId: '' };
-    }
-    const result = await request(`/billing/invoices/${invoiceId}/eligible-promotions?paymentDate=${encodeURIComponent(paymentDate)}`);
-    const rows = result.promotions || [];
-    setEligibleBillingPromotions(rows);
-    return { promotions: rows, recommendedPromotionId: result.recommendedPromotionId || '' };
+  async function loadBillingInvoicePromotions(invoices, paymentDate = today()) {
+    const payableInvoices = invoices.filter(isPayableInvoice);
+    if (!payableInvoices.length) return;
+    const results = await Promise.all(payableInvoices.map(async (invoice) => {
+      try {
+        const result = await request(`/billing/invoices/${invoice.id}/eligible-promotions?paymentDate=${encodeURIComponent(paymentDate)}`);
+        return [invoice.id, result];
+      } catch (err) {
+        return [invoice.id, {
+          promotions: [],
+          recommendedPromotionId: '',
+          recommendedPromotionIds: [],
+          recommendedPromotionBundle: null,
+          error: err.message
+        }];
+      }
+    }));
+    setBillingInvoicePromotionsById((current) => ({
+      ...current,
+      ...Object.fromEntries(results)
+    }));
   }
 
   async function loadOfficeMovements() {
@@ -589,7 +1777,8 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
   }
 
   function resetSale() {
-    setSaleForm(blankSale);
+    setSaleForm({ ...blankSale, saleDate: today() });
+    setRegisterCheckoutIdempotencyKey(newIdempotencyKey('pos-sale'));
   }
 
   async function saveItem(e) {
@@ -704,120 +1893,276 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
     setOfficeCart((lines) => lines.filter((_, lineIndex) => lineIndex !== index));
   }
 
-  function selectBillingInvoice(invoice) {
+  function selectBillingInvoice(invoice, options = {}) {
+    if (!invoice) return;
     const paymentDate = today();
     setSelectedBillingInvoiceId(invoice.id);
+    setSelectedBillingInvoiceIds([invoice.id]);
+    setSelectedBillingCustomerId(options.customerKey || invoiceCustomerKey(invoice));
     setInvoicePaymentIdempotencyKey(newIdempotencyKey('billing-payment'));
-    setEligibleBillingPromotions([]);
     setInvoicePaymentForm({
       ...blankInvoicePayment,
       invoiceId: invoice.id,
-      amount: String(invoice.balance || ''),
+      amount: String(options.amount ?? ''),
       method: invoicePaymentForm.method || 'CASH',
-      paymentDate
+      paymentDate,
+      excessAction: ''
     });
     setError('');
-    loadEligibleBillingPromotions(invoice.id, paymentDate)
-      .then(({ promotions: rows, recommendedPromotionId }) => {
-        const recommended = rows.find((item) => item.id === recommendedPromotionId) || rows.find((item) => item.autoApply);
-        if (!recommended) return;
-        setInvoicePaymentForm((form) => (
-          form.invoiceId === invoice.id
-            ? { ...form, promotionId: recommended.id, amount: String(recommended.discountedPayable || '') }
-            : form
-        ));
-      })
-      .catch((err) => setError(err.message));
   }
 
-  function applyBillingPromotion(promotionId, promotionRows = eligibleBillingPromotions) {
-    const promotion = promotionRows.find((item) => item.id === promotionId);
-    setInvoicePaymentForm((form) => ({
-      ...form,
-      promotionId,
-      amount: promotion ? String(promotion.discountedPayable || '') : String(selectedBillingInvoice?.balance || '')
-    }));
+  async function selectBillingCustomerGroup(group) {
+    let nextGroup = group;
+    const customerId = group?.customer?.id || group?.invoices?.[0]?.customerId || '';
+    const paymentDate = today();
+    if (customerId) {
+      try {
+        const customerInvoices = await request(`/billing/invoices?customerId=${encodeURIComponent(customerId)}`);
+        const payableInvoices = customerInvoices.filter(isPayableInvoice);
+        if (payableInvoices.length) {
+          const [freshGroup] = buildBillingCustomerGroups(payableInvoices);
+          nextGroup = freshGroup || group;
+          setBillingInvoices((currentRows) => {
+            const byId = new Map(currentRows.map((invoice) => [invoice.id, invoice]));
+            customerInvoices.forEach((invoice) => byId.set(invoice.id, invoice));
+            return Array.from(byId.values());
+          });
+          await loadBillingInvoicePromotions(payableInvoices, paymentDate);
+        }
+      } catch (err) {
+        setError(err.message);
+        return;
+      }
+    }
+    const nextInvoices = nextGroup?.invoices || [];
+    if (nextInvoices.length) {
+      setSelectedBillingInvoiceId(nextInvoices[0].id);
+      setSelectedBillingInvoiceIds(nextInvoices.map((invoice) => invoice.id));
+      setSelectedBillingCustomerId(nextGroup.key);
+      setInvoicePaymentIdempotencyKey(newIdempotencyKey('billing-payment'));
+      setInvoicePaymentForm({
+        ...blankInvoicePayment,
+        invoiceId: nextInvoices[0].id,
+        amount: '',
+        method: invoicePaymentForm.method || 'CASH',
+        paymentDate,
+        excessAction: ''
+      });
+      setError('');
+    }
   }
 
   function changeInvoicePaymentDate(paymentDate) {
     setInvoicePaymentForm((form) => ({ ...form, paymentDate }));
-    if (!selectedBillingInvoice) return;
-    loadEligibleBillingPromotions(selectedBillingInvoice.id, paymentDate)
-      .then(({ promotions: rows, recommendedPromotionId }) => {
-        setInvoicePaymentForm((form) => {
-          const promotion = form.promotionId ? rows.find((item) => item.id === form.promotionId) : null;
-          if (!promotion) {
-            const recommended = rows.find((item) => item.id === recommendedPromotionId) || rows.find((item) => item.autoApply);
-            return recommended
-              ? { ...form, promotionId: recommended.id, amount: String(recommended.discountedPayable || '') }
-              : { ...form, promotionId: '', amount: String(selectedBillingInvoice.balance || '') };
-          }
-          return { ...form, amount: String(promotion.discountedPayable || '') };
-        });
-      })
-      .catch((err) => setError(err.message));
+    if (selectedBillingCustomerGroup?.invoices?.length) {
+      loadBillingInvoicePromotions(selectedBillingCustomerGroup.invoices, paymentDate).catch((err) => setError(err.message));
+    }
+  }
+
+  function toggleInvoicePaymentInvoice(invoiceId) {
+    setSelectedBillingInvoiceId(invoiceId);
+    setSelectedBillingInvoiceIds((current) => (
+      current.includes(invoiceId)
+        ? current.filter((id) => id !== invoiceId)
+        : [...current, invoiceId]
+    ));
   }
 
   function resetInvoicePayment() {
     setSelectedBillingInvoiceId('');
-    setEligibleBillingPromotions([]);
-    setInvoicePaymentForm(blankInvoicePayment);
+    setSelectedBillingInvoiceIds([]);
+    setSelectedBillingCustomerId('');
+    setInvoicePaymentForm({ ...blankInvoicePayment, paymentDate: today() });
     setInvoicePaymentIdempotencyKey(newIdempotencyKey('billing-payment'));
+  }
+
+  async function sendInvoicePaymentSms(payment, invoice, paymentSummary = {}) {
+    try {
+      return await request('/point-of-sale/invoice-payment-confirmations', {
+        method: 'POST',
+        body: JSON.stringify({
+          billingPaymentId: payment.id,
+          receiptNumber: payment.receiptNumber,
+          invoiceNumber: payment.invoiceNumber,
+          customerId: payment.customerId || payment.customer?.id || invoice?.customerId || invoice?.customer?.id || '',
+          customerName: customerNameOnly(payment.customer || invoice?.customer),
+          destination: paymentSmsDestination(payment, invoice),
+          amount: payment.amount,
+          amountReceived: paymentSummary.amountReceived ?? payment.amount,
+          appliedAmount: paymentSummary.appliedAmount ?? payment.appliedAmount,
+          returnedAmount: paymentSummary.returnedAmount || 0,
+          advanceAmount: paymentSummary.advanceAmount ?? payment.advanceAmount ?? 0,
+          method: payment.method,
+          paymentDate: payment.paymentDate,
+          postedAt: payment.postedAt || payment.createdAt || '',
+          referenceNumber: payment.referenceNumber,
+          remainingAccountBalance: paymentSummary.remainingAccountBalance,
+          accountCreditAfter: payment.accountCreditAfter || paymentSummary.accountCreditAfter || 0,
+          allocations: payment.allocations || []
+        })
+      });
+    } catch (err) {
+      return { status: 'FAILED', error: err.message || 'SMS confirmation request failed.' };
+    }
   }
 
   async function saveInvoicePayment(e) {
     e.preventDefault();
-    if (!selectedBillingInvoice) {
-      setError('Select a billing invoice first.');
+    if (invoicePaymentSubmitting) return;
+    if (!selectedBillingCustomerGroup) {
+      setError('Select a billing customer first.');
       return;
     }
-    const amount = Number(invoicePaymentForm.amount || 0);
-    if (amount <= 0) {
-      setError('Payment amount must be greater than zero.');
+    if (!selectedPaymentInvoiceRows.length) {
+      setError('Select at least one open invoice to pay.');
       return;
     }
-    if (selectedBillingPromotion && Number(amount.toFixed(2)) !== Number(selectedPromotionPayable.toFixed(2))) {
-      setError(`Payment amount must match the promo payable amount of ${currency(selectedPromotionPayable)}.`);
+    const amountReceived = invoicePaymentAmount;
+    const amountDue = invoicePaymentAppliedAmount;
+    if (amountDue <= 0) {
+      setError('Selected invoices have no collectible amount.');
       return;
     }
-    if (amount > Number(selectedBillingInvoice.balance || 0)) {
-      setError('Payment amount cannot exceed the invoice balance.');
+    if (amountReceived <= 0) {
+      setError('Amount received must be greater than zero.');
       return;
     }
+    if (amountReceived + 0.001 < amountDue) {
+      setError(`Amount received must be at least ${currency(amountDue)}.`);
+      return;
+    }
+    if (!invoicePaymentIsCash && !moneyEquals(amountReceived, amountDue)) {
+      setError('Non-cash payments must match the selected invoice total.');
+      return;
+    }
+    if (invoicePaymentReferenceRequired && !String(invoicePaymentForm.referenceNumber || '').trim()) {
+      setError('Reference number is required for non-cash invoice payments.');
+      return;
+    }
+    if (!invoicePaymentAllocations.length) {
+      setError('Select at least one open invoice to pay.');
+      return;
+    }
+    setError('');
+    setInvoicePaymentSubmitting(true);
     try {
-      await request('/billing/payments', {
+      const paymentBody = {
+        customerId: selectedBillingCustomerGroup?.customer?.id || selectedBillingInvoice?.customerId,
+        amount: invoicePaymentPostAmount,
+        allocations: invoicePaymentAllocations.map((allocation) => ({
+          invoiceId: allocation.invoiceId,
+          amount: allocation.amount,
+          ...(allocation.promotionIds?.length ? { promotionIds: allocation.promotionIds } : {})
+        })),
+        advanceAmount: invoicePaymentAdvanceAmount,
+        method: invoicePaymentForm.method,
+        paymentDate: invoicePaymentForm.paymentDate,
+        referenceNumber: invoicePaymentForm.referenceNumber,
+        collectionChannel: 'POS',
+        status: 'POSTED',
+        notes: invoicePaymentForm.notes || `Posted from POS for ${customerNameOnly(selectedBillingCustomerGroup.customer)}`
+      };
+      const postedPayment = await request('/billing/payments', {
         method: 'POST',
         headers: { 'Idempotency-Key': invoicePaymentIdempotencyKey },
-        body: JSON.stringify({
-          invoiceId: selectedBillingInvoice.id,
-          amount,
-          method: invoicePaymentForm.method,
-          paymentDate: invoicePaymentForm.paymentDate,
-          referenceNumber: invoicePaymentForm.referenceNumber,
-          promotionId: invoicePaymentForm.promotionId || null,
-          collectionChannel: 'POS',
-          status: 'POSTED',
-          notes: invoicePaymentForm.notes || `Posted from POS for ${selectedBillingInvoice.invoiceNumber}`
-        })
+        body: JSON.stringify(paymentBody)
       });
-      setMessage(`Payment posted for ${selectedBillingInvoice.invoiceNumber}.`);
+      const invoiceReceiptContextById = new Map(selectedCustomerInvoiceRows.map((row) => [
+        row.invoice.id,
+        {
+          invoiceNumber: row.invoice.invoiceNumber,
+          dueDate: row.invoice.dueDate,
+          billingPeriodLabel: invoiceCoverageLabel(row.invoice),
+          billingPeriodMonth: row.invoice.billingPeriodMonth,
+          billingCycleStart: row.invoice.billingCycleStart,
+          billingCycleEnd: row.invoice.billingCycleEnd,
+          service: invoiceServiceLabel(row.invoice),
+          balanceBefore: row.currentBalance
+        }
+      ]));
+      const postedPaymentWithPeriods = {
+        ...postedPayment,
+        allocations: (postedPayment.allocations || []).map((allocation) => ({
+          ...allocation,
+          ...(invoiceReceiptContextById.get(allocation.invoiceId) || {})
+        }))
+      };
+      const paymentSummary = {
+        amountReceived,
+        appliedAmount: invoicePaymentAllocatedTotal,
+        returnedAmount: invoicePaymentReturnedAmount,
+        advanceAmount: invoicePaymentAdvanceAmount,
+        discountAmount: paymentDiscountAmount(postedPaymentWithPeriods) || invoicePaymentDiscountTotal,
+        discountLabel: paymentDiscountAmount(postedPaymentWithPeriods) ? paymentDiscountLabel(postedPaymentWithPeriods) : invoicePaymentDiscountLabel,
+        remainingAccountBalance: selectedInvoiceRemaining,
+        remainingBalanceDetails: selectedReceiptRemainingDetails(selectedCustomerInvoiceRows, selectedBillingInvoiceIds)
+      };
+      const smsResult = await sendInvoicePaymentSms(postedPaymentWithPeriods, selectedPaymentInvoiceRows[0]?.invoice || selectedBillingInvoice, paymentSummary);
+      const postedPaymentWithSms = { ...postedPaymentWithPeriods, ...paymentSummary, sms: smsResult };
+      const successMessage = `Payment posted for ${customerNameOnly(selectedBillingCustomerGroup.customer)} across ${invoicePaymentAllocations.length} invoice${invoicePaymentAllocations.length === 1 ? '' : 's'}.`;
+      const excessDetail = invoicePaymentReturnedAmount > 0
+        ? `Returned ${currency(invoicePaymentReturnedAmount)} to the customer.`
+        : (invoicePaymentAdvanceAmount > 0 ? `Stored ${currency(invoicePaymentAdvanceAmount)} as advance credit.` : '');
+      const discountDetail = paymentSummary.discountAmount > 0
+        ? `${paymentSummary.discountLabel || 'Discount'} deducted ${currency(paymentSummary.discountAmount)}.`
+        : '';
+      const smsDetail = smsStatusDetail(smsResult);
+      setSelectedBillingReceipt(postedPaymentWithSms);
+      setMessage(`${successMessage} ${discountDetail} ${excessDetail} ${smsDetail}`.trim());
+      setCheckoutNotice({
+        type: 'success',
+        title: 'Invoice payment posted',
+        message: successMessage,
+        detail: `${discountDetail} ${excessDetail} ${smsDetail}`.trim()
+      });
       resetInvoicePayment();
       await Promise.all([loadBillingPayments(billingSearch), load(customerSearch, itemSearch)]);
       refreshShell();
     } catch (err) {
-      setError(err.message);
+      const messageText = err.message || 'Invoice payment failed. No receipt was posted.';
+      setError(messageText);
+      setCheckoutNotice({
+        type: 'error',
+        title: 'Invoice payment not posted',
+        message: messageText,
+        detail: 'No receipt was created and no SMS confirmation was sent.'
+      });
+    } finally {
+      setInvoicePaymentSubmitting(false);
     }
   }
 
-  async function voidBillingPayment(payment) {
-    if (!window.confirm(`Void receipt ${payment.receiptNumber}?`)) return;
+  function requestVoidBillingPayment(payment) {
+    setVoidBillingReceipt(payment);
+    setVoidBillingReason('');
+    setError('');
+  }
+
+  async function confirmVoidBillingPayment(event) {
+    event.preventDefault();
+    const reason = voidBillingReason.trim();
+    if (!voidBillingReceipt || voidBillingSubmitting) return;
+    if (!reason) {
+      setError('Void reason is required.');
+      return;
+    }
+    setVoidBillingSubmitting(true);
     try {
-      await request(`/billing/payments/${payment.id}`, { method: 'DELETE' });
-      setMessage(`Receipt ${payment.receiptNumber} voided.`);
+      await request(`/billing/payments/${voidBillingReceipt.id}?reason=${encodeURIComponent(reason)}`, { method: 'DELETE' });
+      setMessage(`Receipt ${voidBillingReceipt.receiptNumber} voided.`);
+      setSelectedBillingReceipt((current) => (
+        current?.id === voidBillingReceipt.id
+          ? { ...current, status: 'VOID', voidReason: reason, voidedAt: new Date().toISOString() }
+          : current
+      ));
+      setVoidBillingReceipt(null);
+      setVoidBillingReason('');
       await loadBillingPayments(billingSearch);
       refreshShell();
     } catch (err) {
       setError(err.message);
+    } finally {
+      setVoidBillingSubmitting(false);
     }
   }
 
@@ -892,6 +2237,7 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
   }
 
   function salePayload() {
+    const allocatedPaymentAmount = isCashPayment ? allocatedRegisterPayment : paymentAmount;
     return {
       customerId: saleForm.customerId || null,
       saleDate: saleForm.saleDate,
@@ -908,7 +2254,9 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
       status: saleForm.status,
       notes: saleForm.notes,
       payments: paymentAmount > 0 ? [{
-        amount: paymentAmount,
+        amount: allocatedPaymentAmount,
+        tenderedAmount: paymentAmount,
+        changeAmount: isCashPayment ? cashChange : 0,
         method: saleForm.paymentMethod,
         paymentDate: saleForm.saleDate,
         referenceNumber: saleForm.paymentReference,
@@ -919,6 +2267,7 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
 
   async function saveSale(e) {
     e?.preventDefault?.();
+    if (checkoutSubmitting) return;
     if (!cartLines.length) {
       showCheckoutFailure('Add at least one item to the cart.');
       return;
@@ -935,26 +2284,41 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
       showCheckoutFailure('Payment amount must cover the checkout total.');
       return;
     }
+    if (!isCashPayment && Math.abs(paymentAmount - cartTotal) > 0.001) {
+      showCheckoutFailure('Non-cash payment amount must match the checkout total.');
+      return;
+    }
+    if (registerReferenceRequired && !String(saleForm.paymentReference || '').trim()) {
+      showCheckoutFailure('Reference number is required for non-cash checkout payments.');
+      return;
+    }
     setError('');
     setCheckoutNotice(null);
+    setCheckoutSubmitting(true);
     let postedSale;
     try {
       postedSale = await request(saleForm.id ? `/point-of-sale/sales/${saleForm.id}` : '/point-of-sale/sales', {
         method: saleForm.id ? 'PATCH' : 'POST',
+        headers: saleForm.id ? {} : { 'Idempotency-Key': registerCheckoutIdempotencyKey },
         body: JSON.stringify(salePayload())
       });
     } catch (err) {
       showCheckoutFailure(err.message || 'Checkout failed. No sale was posted.');
       return;
+    } finally {
+      setCheckoutSubmitting(false);
     }
     const receiptNumber = postedSale.receiptNumber || postedSale.saleNumber || 'receipt';
     const successMessage = saleForm.id ? 'Sale saved.' : 'Sale posted.';
+    const successDetail = isCashPayment && cashChange > 0
+      ? `${currency(postedSale.total || cartTotal)} applied from ${currency(paymentAmount)} cash tendered; ${currency(cashChange)} change.`
+      : `${currency(postedSale.total || cartTotal)} collected by ${labelize(saleForm.paymentMethod)}.`;
     setMessage(successMessage);
     setCheckoutNotice({
       type: 'success',
       title: 'Checkout completed',
       message: `${receiptNumber} was posted successfully.`,
-      detail: `${currency(postedSale.total || cartTotal)} collected by ${labelize(saleForm.paymentMethod)}.`
+      detail: successDetail
     });
     resetSale();
     await load();
@@ -1021,7 +2385,7 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                   className="pos-product-tile"
                   key={item.id}
                   onClick={() => addCatalogItemToCart(item)}
-                  disabled={item.stockTracked && Number(item.stockOnHand || 0) <= 0}
+                  disabled={checkoutSubmitting || (item.stockTracked && Number(item.stockOnHand || 0) <= 0)}
                 >
                   <span className="pos-product-sku">{item.sku}</span>
                   <strong>{item.name}</strong>
@@ -1036,12 +2400,13 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
           <Card title="Cart" icon={IconReceipt}>
             <form onSubmit={(e) => e.preventDefault()}>
               <div className="row g-3">
-                <div className="col-md-6"><TextField label="Sale Date" type="date" value={saleForm.saleDate} onChange={(value) => setSaleForm({ ...saleForm, saleDate: value })} /></div>
+                <div className="col-md-6"><TextField label="Sale Date" type="date" value={saleForm.saleDate} disabled={checkoutSubmitting} onChange={(value) => setSaleForm({ ...saleForm, saleDate: value })} /></div>
                 <div className="col-12">
                   <div className="d-flex gap-2">
                     <select
                       className="form-select"
                       value={saleForm.customerId}
+                      disabled={checkoutSubmitting}
                       onChange={(e) => selectSaleCustomer(customers.find((customer) => customer.id === e.target.value) || null)}
                     >
                       {customerOptions()}
@@ -1056,11 +2421,12 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                         }}
                         onFocus={() => setCustomerSearchOpen(true)}
                         onBlur={() => window.setTimeout(() => setCustomerSearchOpen(false), 120)}
+                        disabled={checkoutSubmitting}
                         placeholder="Search customers"
                       />
                       {customerSearchResults()}
                     </div>
-                    <button type="button" className="btn" onClick={() => { setCustomerSearchOpen(true); loadCustomers(customerSearch); }}><IconSearch size={16} /></button>
+                    <button type="button" className="btn" disabled={checkoutSubmitting} onClick={() => { setCustomerSearchOpen(true); loadCustomers(customerSearch); }}><IconSearch size={16} /></button>
                   </div>
                 </div>
                 <div className="col-12">
@@ -1074,20 +2440,23 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                             <strong>{line.description}</strong>
                             <div className="text-muted">{cartItem?.sku || 'Manual line'}</div>
                           </div>
-                          <input className="form-control pos-qty" type="number" min="0.01" step="0.01" value={line.quantity} onChange={(e) => setSaleLine(originalIndex, { quantity: e.target.value })} />
-                          <input className="form-control pos-price" type="number" min="0" step="0.01" value={line.unitPrice} onChange={(e) => setSaleLine(originalIndex, { unitPrice: e.target.value })} />
-                          <input className="form-control pos-serial" value={line.serialNumber || ''} placeholder={cartItem?.trackingType === 'SERIALIZED' ? 'Serial required' : 'Serial'} onChange={(e) => setSaleLine(originalIndex, { serialNumber: e.target.value })} />
-                          <button type="button" className="btn btn-icon" onClick={() => removeSaleLine(originalIndex)}><IconTrash size={16} /></button>
+                          <input className="form-control pos-qty" type="number" min="0.01" step="0.01" value={line.quantity} disabled={checkoutSubmitting} onChange={(e) => setSaleLine(originalIndex, { quantity: e.target.value })} />
+                          <input className="form-control pos-price" type="number" min="0" step="0.01" value={line.unitPrice} disabled={checkoutSubmitting} onChange={(e) => setSaleLine(originalIndex, { unitPrice: e.target.value })} />
+                          <input className="form-control pos-serial" value={line.serialNumber || ''} disabled={checkoutSubmitting} placeholder={cartItem?.trackingType === 'SERIALIZED' ? 'Serial required' : 'Serial'} onChange={(e) => setSaleLine(originalIndex, { serialNumber: e.target.value })} />
+                          <button type="button" className="btn btn-icon" disabled={checkoutSubmitting} onClick={() => removeSaleLine(originalIndex)}><IconTrash size={16} /></button>
                         </div>
                       );
                     })}
                     {!cartLines.length && <div className="empty">Add items from the checkout menu.</div>}
                   </div>
                 </div>
-                <div className="col-md-4"><TextField label="Discount" type="number" min="0" step="0.01" value={saleForm.discountAmount} onChange={(value) => setSaleForm({ ...saleForm, discountAmount: value })} /></div>
-                <div className="col-md-4"><TextField label="Payment" type="number" min="0.01" step="0.01" required value={saleForm.paymentAmount} onChange={(value) => setSaleForm({ ...saleForm, paymentAmount: value })} /></div>
-                <div className="col-md-4"><SelectField label="Method" value={saleForm.paymentMethod} options={meta.paymentMethods} onChange={(value) => setSaleForm({ ...saleForm, paymentMethod: value })} /></div>
-                <div className="col-12"><TextField label="Reference" value={saleForm.paymentReference} onChange={(value) => setSaleForm({ ...saleForm, paymentReference: value })} /></div>
+                <div className="col-md-4"><TextField label="Discount" type="number" min="0" step="0.01" value={saleForm.discountAmount} disabled={checkoutSubmitting} onChange={(value) => setSaleForm({ ...saleForm, discountAmount: value })} /></div>
+                <div className="col-md-4"><TextField label={isCashPayment ? 'Cash Tendered' : 'Payment'} type="number" min="0.01" step="0.01" required value={saleForm.paymentAmount} disabled={checkoutSubmitting} onChange={(value) => setSaleForm({ ...saleForm, paymentAmount: value })} /></div>
+                <div className="col-md-4"><SelectField label="Method" value={saleForm.paymentMethod} options={meta.paymentMethods} disabled={checkoutSubmitting} onChange={(value) => setSaleForm({ ...saleForm, paymentMethod: value })} /></div>
+                <div className="col-12">
+                  <TextField label={registerReferenceRequired ? 'Reference Required' : 'Reference'} value={saleForm.paymentReference} disabled={checkoutSubmitting} onChange={(value) => setSaleForm({ ...saleForm, paymentReference: value })} />
+                  {registerReferenceRequired && <div className="pos-field-hint">Required for {labelize(saleForm.paymentMethod)} payments.</div>}
+                </div>
                 <div className="col-12">
                   <div className="pos-total-panel pos-checkout-summary">
                     <div>
@@ -1103,6 +2472,10 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                       <strong>{currency(cartTotal)}</strong>
                     </div>
                     <div>
+                      <span>Payment applied</span>
+                      <strong>{currency(isCashPayment ? allocatedRegisterPayment : paymentAmount)}</strong>
+                    </div>
+                    <div>
                       <span>{isCashPayment ? 'Change' : 'Remaining due'}</span>
                       <strong className={paymentShortfall > 0 ? 'text-danger' : 'text-green'}>
                         {currency(isCashPayment ? cashChange : paymentShortfall)}
@@ -1111,8 +2484,11 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                   </div>
                 </div>
                 <div className="col-12 d-flex justify-content-between gap-2">
-                  <button type="button" className="btn" onClick={resetSale}>Clear</button>
-                  <button type="button" className="btn btn-primary" onClick={saveSale}><IconReceipt size={18} className="me-2" />Complete Checkout</button>
+                  <button type="button" className="btn" disabled={checkoutSubmitting} onClick={resetSale}>Clear</button>
+                  <button type="button" className="btn btn-primary" disabled={checkoutSubmitting} onClick={saveSale}>
+                    {checkoutSubmitting ? <IconLoader2 size={18} className="me-2 pos-spin" /> : <IconReceipt size={18} className="me-2" />}
+                    {checkoutSubmitting ? 'Posting Checkout' : 'Complete Checkout'}
+                  </button>
                 </div>
               </div>
             </form>
@@ -1127,8 +2503,8 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
               <div className="pos-invoice-metric">
                 <span className="badge bg-yellow-lt text-yellow"><IconFileInvoice size={18} /></span>
                 <div>
-                  <strong>{billingPaymentMetrics.openInvoices}</strong>
-                  <span>Open invoices</span>
+                  <strong>{billingPaymentMetrics.customerAccounts}</strong>
+                  <span>Customers with balance</span>
                 </div>
               </div>
               <div className="pos-invoice-metric">
@@ -1162,111 +2538,190 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                 icon={IconFileInvoice}
                 actions={
                   <form className="d-flex gap-2" onSubmit={(e) => { e.preventDefault(); loadBillingPayments(billingSearch); }}>
-                    <input className="form-control form-control-sm" value={billingSearch} onChange={(e) => setBillingSearch(e.target.value)} placeholder="Search invoice, customer, or service" />
+                    <input className="form-control form-control-sm" value={billingSearch} onChange={(e) => setBillingSearch(e.target.value)} placeholder="Search customer, location, invoice, or service" />
                     <button className="btn btn-sm"><IconSearch size={16} /></button>
                   </form>
                 }
               >
                 <div className="table-responsive">
                   <table className="table card-table table-vcenter pos-invoice-table">
-                    <thead><tr><th>Invoice</th><th>Customer</th><th>Due</th><th>Balance</th><th>Status</th><th /></tr></thead>
+                    <thead><tr><th>Customer</th><th>Location</th><th>Open Invoices</th><th>Oldest Due</th><th>Overdue</th><th>Total Balance</th><th /></tr></thead>
                     <tbody>
-                      {visiblePayableBillingInvoices.map((invoice) => (
-                        <tr key={invoice.id} className={selectedBillingInvoiceId === invoice.id ? 'is-selected' : ''}>
+                      {visibleBillingCustomerGroups.map((group) => (
+                        <tr key={group.key} className={selectedBillingCustomerGroup?.key === group.key ? 'is-selected' : ''}>
                           <td>
-                            <strong>{invoice.invoiceNumber}</strong>
-                            <div className="text-muted small">{invoiceServiceLabel(invoice)}</div>
+                            <strong>{customerNameOnly(group.customer)}</strong>
+                            <div className="text-muted small">
+                              {group.customer?.accountNumber || group.serviceLabels.slice(0, 2).join(', ') || 'Billing customer'}
+                            </div>
                           </td>
-                          <td>{customerNameOnly(invoice.customer)}</td>
-                          <td className={isInvoiceOverdue(invoice) ? 'text-danger' : ''}>{invoice.dueDate}</td>
-                          <td>{currency(invoice.balance)}</td>
-                          <td><span className={`badge ${statusClass(invoice.status)}`}>{invoice.status?.replaceAll('_', ' ')}</span></td>
+                          <td className="pos-invoice-location-cell">
+                            <span>{group.locationLabel || billingGroupLocationLabel(group)}</span>
+                          </td>
+                          <td>
+                            <strong>{group.openInvoiceCount}</strong>
+                            <div className="text-muted small">{group.openInvoiceCount === 1 ? 'invoice' : 'invoices'}</div>
+                          </td>
+                          <td className={group.overdueInvoiceCount ? 'text-danger' : ''}>{group.oldestDueDate || '-'}</td>
+                          <td>
+                            {group.overdueInvoiceCount ? (
+                              <>
+                                <span className="badge bg-red-lt text-red">{group.overdueInvoiceCount} overdue</span>
+                                <div className="text-muted small">{currency(group.overdueBalance)}</div>
+                              </>
+                            ) : (
+                              <span className="text-muted">-</span>
+                            )}
+                          </td>
+                          <td>{currency(group.totalBalance)}</td>
                           <td className="text-end">
-                            <button type="button" className="btn btn-sm btn-primary" onClick={() => selectBillingInvoice(invoice)}>Take Payment</button>
+                            <button type="button" className="btn btn-sm btn-primary" disabled={invoicePaymentSubmitting} onClick={() => selectBillingCustomerGroup(group)}>Take Payment</button>
                           </td>
                         </tr>
                       ))}
-                      {!visiblePayableBillingInvoices.length && <tr><td colSpan="6" className="text-muted">No payable invoices.</td></tr>}
+                      {!visibleBillingCustomerGroups.length && <tr><td colSpan="7" className="text-muted">No customers with payable invoices.</td></tr>}
                     </tbody>
                   </table>
                 </div>
               </Card>
 
-              <Card title="Payment Desk" icon={IconCreditCard}>
-                {selectedBillingInvoice ? (
-                  <form onSubmit={saveInvoicePayment}>
-                    <div className="pos-payment-summary">
+            </div>
+
+            {selectedBillingCustomerGroup && (
+              <div className="pos-modal-backdrop" onClick={invoicePaymentSubmitting ? undefined : resetInvoicePayment}>
+                <section className="pos-modal pos-payment-modal" role="dialog" aria-modal="true" aria-labelledby="pos-payment-title" onClick={(event) => event.stopPropagation()}>
+                  <form className="pos-payment-modal-form" onSubmit={saveInvoicePayment}>
+                    <div className="pos-modal-header">
                       <div>
-                        <span>Invoice</span>
-                        <strong>{selectedBillingInvoice.invoiceNumber}</strong>
+                        <span className="pos-modal-eyebrow">Customer Invoice Payment</span>
+                        <div className="pos-modal-title-row">
+                          <h3 id="pos-payment-title">{customerNameOnly(selectedBillingCustomerGroup.customer)}</h3>
+                          <span className="pos-modal-location">
+                            <IconMapPin size={15} />
+                            <span>{billingGroupLocationLabel(selectedBillingCustomerGroup)}</span>
+                          </span>
+                        </div>
                       </div>
-                      <div>
-                        <span>Customer</span>
-                        <strong>{customerNameOnly(selectedBillingInvoice.customer)}</strong>
-                      </div>
-                      <div>
-                        <span>Service</span>
-                        <strong>{invoiceServiceLabel(selectedBillingInvoice)}</strong>
-                      </div>
-                      <div>
-                        <span>Balance</span>
-                        <strong>{currency(selectedBillingInvoice.balance)}</strong>
-                      </div>
+                      <button type="button" className="btn btn-icon btn-sm" disabled={invoicePaymentSubmitting} onClick={resetInvoicePayment} aria-label="Close payment desk"><IconX size={18} /></button>
                     </div>
-                    <div className="row g-3 mt-1">
-                      <div className="col-md-6"><TextField label="Payment Date" type="date" value={invoicePaymentForm.paymentDate} required onChange={changeInvoicePaymentDate} /></div>
-                      <div className="col-md-6"><SelectField label="Method" value={invoicePaymentForm.method} options={billingPaymentMethods} onChange={(method) => setInvoicePaymentForm({ ...invoicePaymentForm, method })} /></div>
-                      <div className="col-md-6">
-                        <SelectField label="Promotion" value={invoicePaymentForm.promotionId} onChange={applyBillingPromotion}>
-                          <option value="">No promotion</option>
-                          {eligibleBillingPromotions.map((promotion) => (
-                            <option key={promotion.id} value={promotion.id}>{paymentPromotionLabel(promotion)}</option>
-                          ))}
-                        </SelectField>
-                      </div>
-                      <div className="col-md-6"><TextField label={selectedBillingPromotion ? 'Amount to Collect' : 'Amount'} type="number" min="0.01" max={selectedPromotionPayable || selectedBillingInvoice.balance} step="0.01" value={invoicePaymentForm.amount} required onChange={(amount) => setInvoicePaymentForm({ ...invoicePaymentForm, amount })} /></div>
-                      <div className="col-md-6"><TextField label="Reference" value={invoicePaymentForm.referenceNumber} onChange={(referenceNumber) => setInvoicePaymentForm({ ...invoicePaymentForm, referenceNumber })} /></div>
-                      {selectedBillingPromotion && (
-                        <div className="col-12">
-                          <div className="pos-promo-note">
-                            <strong>{selectedBillingPromotion.name}</strong>
-                            <span>{currency(selectedPromotionDiscount)} discount applied to this payment.</span>
+                    <div className="pos-modal-body pos-payment-modal-body">
+                      <section className="pos-payment-section pos-payment-selection-section">
+                        <div className="pos-payment-section-header">
+                          <div>
+                            <span>Open Invoices</span>
+                            <strong>{selectedPaymentInvoiceRows.length} selected</strong>
+                          </div>
+                          <strong>{currency(invoicePaymentAppliedAmount)}</strong>
+                        </div>
+                        <div className="pos-payment-invoice-list">
+                          {selectedCustomerInvoiceRows.map(({ invoice, currentBalance, promotion, amountToCollect }) => {
+                            const selected = selectedBillingInvoiceIds.includes(invoice.id);
+                            return (
+                              <label key={invoice.id} className={`pos-payment-invoice-row ${selected ? 'is-selected' : ''}`}>
+                                <input
+                                  type="checkbox"
+                                  checked={selected}
+                                  disabled={invoicePaymentSubmitting}
+                                  onChange={() => toggleInvoicePaymentInvoice(invoice.id)}
+                                />
+                                <span className="pos-payment-invoice-main">
+                                  <strong>{invoice.invoiceNumber}</strong>
+                                  <span>{invoiceCoverageLabel(invoice)}</span>
+                                </span>
+                                <span className="pos-payment-invoice-total">
+                                  <strong>{currency(currentBalance)}</strong>
+                                  <span>Total</span>
+                                </span>
+                                <span className="pos-payment-invoice-due">
+                                  {promotion && (
+                                    <span className="badge bg-green-lt text-green">
+                                      {promotion.count > 1 ? `${promotion.count} promotions` : promotion.label} -{currency(promotion.amount)}
+                                    </span>
+                                  )}
+                                  <strong>{currency(amountToCollect)}</strong>
+                                </span>
+                              </label>
+                            );
+                          })}
+                          {!selectedCustomerInvoiceRows.length && <div className="text-muted">No payable invoices found for this customer.</div>}
+                        </div>
+                      </section>
+                      <section className="pos-payment-section">
+                        <div className="pos-payment-section-header">
+                          <div>
+                            <span>Payment Details</span>
+                            <strong>{currency(invoicePaymentAppliedAmount)}</strong>
                           </div>
                         </div>
-                      )}
-                      <div className="col-12">
-                        <label className="form-label">Notes</label>
-                        <textarea className="form-control" rows="3" value={invoicePaymentForm.notes} onChange={(e) => setInvoicePaymentForm({ ...invoicePaymentForm, notes: e.target.value })} />
-                      </div>
-                      <div className="col-12">
-                        <div className="pos-total-panel pos-payment-totals">
-                          <div>
-                            <span>Invoice balance</span>
-                            <strong>{currency(selectedInvoiceBalance)}</strong>
+                        <div className="row g-3">
+                          <div className="col-md-6"><TextField label="Payment Date" type="date" value={invoicePaymentForm.paymentDate} required disabled={invoicePaymentSubmitting} onChange={changeInvoicePaymentDate} /></div>
+                          <div className="col-md-6"><SelectField label="Method" value={invoicePaymentForm.method} options={billingPaymentMethods} disabled={invoicePaymentSubmitting} onChange={(method) => setInvoicePaymentForm({ ...invoicePaymentForm, method })} /></div>
+                          <div className="col-md-6"><TextField label="Amount Received" type="number" min="0.01" step="0.01" value={invoicePaymentForm.amount} required disabled={invoicePaymentSubmitting} onChange={(amount) => setInvoicePaymentForm({ ...invoicePaymentForm, amount })} /></div>
+                          <div className="col-md-6">
+                            <TextField label={invoicePaymentReferenceRequired ? 'Reference Required' : 'Reference'} value={invoicePaymentForm.referenceNumber} disabled={invoicePaymentSubmitting} onChange={(referenceNumber) => setInvoicePaymentForm({ ...invoicePaymentForm, referenceNumber })} />
+                            {invoicePaymentReferenceRequired && <div className="pos-field-hint">Required for {labelize(invoicePaymentForm.method)} payments.</div>}
                           </div>
-                          {selectedBillingPromotion && (
-                            <div>
-                              <span>Promo discount</span>
-                              <strong>-{currency(selectedPromotionDiscount)}</strong>
+                          {invoicePaymentExcessAmount > 0 && invoicePaymentIsCash && (
+                            <div className="col-12">
+                              <div className="pos-excess-note">
+                                <div>
+                                  <strong>{invoicePaymentExcessLabel}</strong>
+                                  <span>{currency(invoicePaymentExcessAmount)} will be returned to the customer.</span>
+                                </div>
+                              </div>
                             </div>
                           )}
-                          <div>
-                            <span>Remaining after payment</span>
-                            <strong>{currency(selectedInvoiceRemaining)}</strong>
+                          <div className="col-12">
+                            <details className="pos-payment-disclosure">
+                              <summary>
+                                <span>Notes</span>
+                                <strong>{invoicePaymentForm.notes ? 'Added' : 'Optional'}</strong>
+                              </summary>
+                              <div>
+                                <textarea className="form-control" rows="3" value={invoicePaymentForm.notes} disabled={invoicePaymentSubmitting} onChange={(e) => setInvoicePaymentForm({ ...invoicePaymentForm, notes: e.target.value })} />
+                              </div>
+                            </details>
                           </div>
                         </div>
-                      </div>
-                      <div className="col-12 d-flex justify-content-between gap-2">
-                        <button type="button" className="btn" onClick={resetInvoicePayment}>Clear</button>
-                        <button className="btn btn-primary"><IconCreditCard size={18} className="me-2" />Post Invoice Payment</button>
+                      </section>
+                      <div className="pos-total-panel pos-payment-totals pos-payment-totals-compact">
+                        <div>
+                          <span>Invoice total</span>
+                          <strong>{currency(selectedInvoiceTotalBeforeDiscount)}</strong>
+                        </div>
+                        <div>
+                          <span>Less discount</span>
+                          <strong className={invoicePaymentDiscountTotal > 0 ? 'text-green' : ''}>{invoicePaymentDiscountTotal > 0 ? `-${currency(invoicePaymentDiscountTotal)}` : currency(0)}</strong>
+                        </div>
+                        <div>
+                          <span>Amount due</span>
+                          <strong>{currency(invoicePaymentAppliedAmount)}</strong>
+                        </div>
+                        <div>
+                          <span>Received</span>
+                          <strong>{currency(invoicePaymentAmount)}</strong>
+                        </div>
+                        <div>
+                          <span>{invoicePaymentShortfallAmount > 0 ? 'Short' : invoicePaymentExcessLabel}</span>
+                          <strong className={invoicePaymentShortfallAmount > 0 ? 'text-danger' : ''}>{currency(invoicePaymentShortfallAmount || invoicePaymentExcessDisplayAmount)}</strong>
+                        </div>
+                        <div>
+                          <span>Remaining balance</span>
+                          <strong>{currency(selectedInvoiceRemaining)}</strong>
+                        </div>
                       </div>
                     </div>
+                    <div className="pos-modal-footer">
+                      <button type="button" className="btn" disabled={invoicePaymentSubmitting} onClick={resetInvoicePayment}>Cancel</button>
+                      <button type="submit" className="btn btn-primary" disabled={invoicePaymentSubmitting || !selectedPaymentInvoiceRows.length || invoicePaymentAppliedAmount <= 0}>
+                        {invoicePaymentSubmitting ? <IconLoader2 size={18} className="me-2 pos-spin" /> : <IconCreditCard size={18} className="me-2" />}
+                        {invoicePaymentSubmitting ? 'Posting Payment' : 'Post Payment'}
+                      </button>
+                    </div>
                   </form>
-                ) : (
-                  <div className="empty">Select an invoice from the queue.</div>
-                )}
-              </Card>
-            </div>
+                </section>
+              </div>
+            )}
           </div>
 
         </div>
@@ -1427,6 +2882,67 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
             </div>
           ))}
           <div className="col-12">
+            <Card title="Today Cashier Collections" icon={IconCash}>
+              <div className="pos-collection-summary">
+                <div className="pos-collection-totals">
+                  <div>
+                    <span>Total Collected</span>
+                    <strong>{currency(cashierCollectionTotals.totalCollected)}</strong>
+                  </div>
+                  <div>
+                    <span>Cash</span>
+                    <strong>{currency(cashierCollectionTotals.totalCash)}</strong>
+                  </div>
+                  <div>
+                    <span>Non-Cash</span>
+                    <strong>{currency(cashierCollectionTotals.totalOther)}</strong>
+                  </div>
+                  <div>
+                    <span>Receipts</span>
+                    <strong>{cashierCollectionTotals.receiptCount}</strong>
+                  </div>
+                  <div>
+                    <span>Voids</span>
+                    <strong>{cashierCollectionTotals.voidedReceipts}</strong>
+                  </div>
+                  <div>
+                    <span>Void Amount</span>
+                    <strong>{currency(cashierCollectionTotals.voidedAmount)}</strong>
+                  </div>
+                </div>
+                <div className="table-responsive">
+                  <table className="table card-table table-vcenter pos-collection-table">
+                    <thead><tr><th>Cashier</th><th>Register Cash</th><th>Register Non-Cash</th><th>Invoice Cash</th><th>Invoice Non-Cash</th><th>Total</th><th>Receipts</th><th>Voids</th></tr></thead>
+                    <tbody>
+                      {cashierCollectionRows.map((row) => (
+                        <tr key={row.key}>
+                          <td><strong>{row.cashier}</strong></td>
+                          <td>{currency(row.registerCash)}</td>
+                          <td>{currency(row.registerOther)}</td>
+                          <td>{currency(row.invoiceCash)}</td>
+                          <td>{currency(row.invoiceOther)}</td>
+                          <td><strong>{currency(row.totalCollected)}</strong></td>
+                          <td>{row.receiptCount}</td>
+                          <td>
+                            {row.voidedReceipts ? (
+                              <>
+                                <span className="badge bg-red-lt text-red">{row.voidedReceipts}</span>
+                                <div className="text-muted small">{currency(row.voidedAmount)}</div>
+                              </>
+                            ) : (
+                              <span className="text-muted">-</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                      {!cashierCollectionRows.length && <tr><td colSpan="8" className="text-muted">No cashier collections posted today.</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </Card>
+          </div>
+          <div className="col-12">
             <Card
               title="Sales"
               icon={IconReceipt}
@@ -1467,18 +2983,18 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                   />
                   <div className="table-responsive">
                     <table className="table card-table table-vcenter">
-                      <thead><tr><th>Receipt</th><th>Customer</th><th>User</th><th>Total</th><th>Paid</th><th>Balance</th><th>Status</th><th /></tr></thead>
+                      <thead><tr><th>Receipt</th><th>Posted At</th><th>Customer</th><th>User</th><th>Total</th><th>Paid</th><th>Balance</th><th>Status</th><th /></tr></thead>
                       <tbody>
                         {registerHistory.rows.map((sale) => (
                           <tr key={sale.id}>
-                            <td>{sale.receiptNumber}</td><td>{customerLabel(sale.customer)}</td><td>{saleUserLabel(sale)}</td><td>{currency(sale.total)}</td><td>{currency(sale.paidTotal)}</td><td>{currency(sale.balance)}</td>
+                            <td>{sale.receiptNumber}</td><td>{formatDateTime(sale.createdAt)}</td><td>{customerLabel(sale.customer)}</td><td>{saleUserLabel(sale)}</td><td>{currency(sale.total)}</td><td>{currency(sale.paidTotal)}</td><td>{currency(sale.balance)}</td>
                             <td><span className={`badge ${statusClass(sale.paymentStatus)}`}>{sale.paymentStatus?.replaceAll('_', ' ')}</span></td>
                             <td className="text-end">
                               <button className="btn btn-sm text-danger" onClick={() => voidSale(sale)}>Void</button>
                             </td>
                           </tr>
                         ))}
-                        {!registerHistory.rows.length && <tr><td colSpan="8" className="text-muted">No matching register sales.</td></tr>}
+                        {!registerHistory.rows.length && <tr><td colSpan="9" className="text-muted">No matching register sales.</td></tr>}
                       </tbody>
                     </table>
                   </div>
@@ -1503,26 +3019,33 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                   />
                   <div className="table-responsive">
                     <table className="table card-table table-vcenter">
-                      <thead><tr><th>Receipt</th><th>Customer</th><th>Invoice</th><th>Method</th><th>Channel</th><th>Amount</th><th>User</th><th>Status</th><th /></tr></thead>
+                      <thead><tr><th>Receipt</th><th>Posted At</th><th>Customer</th><th>Invoice</th><th>Method</th><th>Channel</th><th>Amount</th><th>User</th><th>Status</th><th /></tr></thead>
                       <tbody>
                         {invoicePaymentHistory.rows.map((payment) => (
                           <tr key={payment.id}>
                             <td>{payment.receiptNumber}</td>
+                            <td>{paymentRecordedAt(payment) ? formatDateTime(paymentRecordedAt(payment)) : (payment.paymentDate || '-')}</td>
                             <td>{customerNameOnly(payment.customer)}</td>
-                            <td>{payment.invoiceNumber || '-'}</td>
+                            <td>
+                              <strong>{paymentAllocationLabel(payment)}</strong>
+                              {paymentAllocationDetail(payment) && <div className="text-muted small">{paymentAllocationDetail(payment)}</div>}
+                            </td>
                             <td>{labelize(payment.method)}</td>
                             <td>{labelize(payment.collectionChannel || 'Billing')}</td>
                             <td>{currency(payment.amount)}</td>
                             <td>{payment.postedByName || payment.postedByUsername || '-'}</td>
                             <td><span className={`badge ${statusClass(payment.status)}`}>{labelize(payment.status)}</span></td>
                             <td className="text-end">
-                              {payment.status === 'POSTED' && (
-                                <button type="button" className="btn btn-sm text-danger" onClick={() => voidBillingPayment(payment)}>Void</button>
-                              )}
+                              <div className="btn-list justify-content-end flex-nowrap">
+                                <button type="button" className="btn btn-sm" onClick={() => setSelectedBillingReceipt(payment)}>View</button>
+                                {payment.status === 'POSTED' && (
+                                  <button type="button" className="btn btn-sm text-danger" onClick={() => requestVoidBillingPayment(payment)}>Void</button>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         ))}
-                        {!invoicePaymentHistory.rows.length && <tr><td colSpan="9" className="text-muted">No matching invoice payment receipts.</td></tr>}
+                        {!invoicePaymentHistory.rows.length && <tr><td colSpan="10" className="text-muted">No matching invoice payment receipts.</td></tr>}
                       </tbody>
                     </table>
                   </div>
@@ -1617,6 +3140,26 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
           </aside>
         </div>
       )}
+
+      <ReceiptDetailModal
+        payment={selectedBillingReceipt}
+        invoiceRows={billingInvoices}
+        onClose={() => setSelectedBillingReceipt(null)}
+        onVoid={requestVoidBillingPayment}
+      />
+
+      <VoidBillingReceiptModal
+        payment={voidBillingReceipt}
+        reason={voidBillingReason}
+        submitting={voidBillingSubmitting}
+        onReasonChange={setVoidBillingReason}
+        onClose={() => {
+          if (voidBillingSubmitting) return;
+          setVoidBillingReceipt(null);
+          setVoidBillingReason('');
+        }}
+        onConfirm={confirmVoidBillingPayment}
+      />
 
     </div>
   );

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-System Settings manages shell configuration pages for branding, business profile, runtime paths, reusable location records, and the system port registry.
+System Settings manages shell configuration pages for branding, business profile, production system updates, reusable location records, and the system port registry.
 
 ## Current Status
 
@@ -15,6 +15,7 @@ System Settings manages shell configuration pages for branding, business profile
 ## Current Scope
 
 - View and update branding/business/deployment settings.
+- Review and manually install production releases under System Update, including readiness checks, update/downgrade confirmation, progress feedback, and plain-language feature/function change summaries.
 - Manage Network Settings image assets for OLT, NAP, PLC Splitter 1x8, and PLC Splitter 1x16 under Images.
 - Manage shared map tile providers under Maps. Operators can enable/disable providers, choose the default provider, edit XYZ-style URL templates, set provider type/attribution/min-max zoom, store optional public API key/token values, and add/remove custom providers.
 - Manage backup downloads and restore uploads under Backup:
@@ -61,8 +62,11 @@ System Settings manages shell configuration pages for branding, business profile
 - A2P Messaging endpoints are `GET/PATCH /api/system-settings/a2p-messaging`, `POST /api/system-settings/a2p-messaging/check-credits`, `POST /api/system-settings/a2p-messaging/test-send`, and `GET /api/system-settings/a2p-messaging/messages`. A2P API keys/passwords are never returned in full to the frontend. Test sends append local message logs and refresh the app-shell notification bell.
 - App-shell notification endpoints are exposed by this module at `/api/admin/notifications`, `/api/admin/notifications/read-all`, and `/api/admin/notifications/{notification_id}/read`. The shared top-nav bell uses these generated A2P success/failure notifications.
 - Access endpoints are under `/api/system-settings/access`. System-login administration was moved here from the old Account Admin area to match the old `/home/threejmon` System Settings -> Access pattern.
-- Access data persists to `SYSTEM_SETTINGS_DATA_PATH` in this first shell. App-shell login now accepts System Settings -> Access users while keeping the legacy `admin` fallback. Access seeds Tech Portal permission codes, a built-in `technician` role, and a temporary active test user `tech` / `tech12345` for Tech Portal testing. Full per-module permission enforcement beyond the technician UI restriction is still future work.
+- Access data persists to `SYSTEM_SETTINGS_DATA_PATH` in this first shell. App-shell login now accepts System Settings -> Access users while keeping the legacy `admin` fallback. Access seeds Tech Portal permissions and the built-in `technician` role plus Collector permissions and built-in `collector`, `collection_supervisor`, and `finance_officer` roles. Only the temporary `tech` / `tech12345` user is seeded; Collector/Finance users must be issued in Access. The Collector API and restricted app-shell portal enforce their role/permission boundary; full enforcement across older modules remains future work.
+- The reusable `send_a2p_sms_message` provider is exported for module integration. Collector uses it for post-payment confirmations with purpose `COLLECTOR_PAYMENT_CONFIRMATION`; send failure is logged and returned to Collector without rolling back the posted Billing receipt.
 - Location endpoints are module-owned under `/api/system-settings/locations` with `/api/locations` compatibility routes for workflows copied from 3JCentralPisowifi. Create, edit, delete, bulk delete, and customer-created minimal location records are persisted.
 - `PATCH /api/system-settings/locations/{location_id}` updates saved location metadata.
 - `POST /api/system-settings/locations/bulk-delete` removes selected location ids and has `/api/locations/bulk-delete` compatibility.
 - Customer Profiling uses the exported `ensure_location_record` helper to link or create minimal location records during customer create/update.
+- System Update replaces the previous Runtime tab. `GET /api/system-settings/deployments` returns installed/latest release status, preflight results, recent `master` releases, and deployment progress. `POST /api/system-settings/deployments/preflight` queues a host readiness check; `POST /api/system-settings/deployments/deploy` queues the selected release; `GET /api/system-settings/deployments/commits/{selected_commit}` returns one release summary.
+- `scripts/production_deploy_control_worker.sh` generates feature/workflow summaries without exposing filenames or code diffs, checks the source, release history, container service, application builder, updater, production settings, and free storage, and automatically blocks a deployment when required preflight checks fail.

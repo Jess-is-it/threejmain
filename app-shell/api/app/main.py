@@ -18,6 +18,7 @@ from .db_migrations import database_migration_status, run_database_migrations
 MODULE_API_PATHS = [
     ("customer-profiling", "api"),
     ("billing", "api"),
+    ("collector", "api"),
     ("point-of-sale", "api"),
     ("inventory", "api"),
     ("account-access-management", "api"),
@@ -42,8 +43,18 @@ for parent in Path(__file__).resolve().parents:
                 sys.path.insert(0, str(local_module_api_root))
 
 from account_access_management import account_access_management_metrics, configure_account_access_management, router as account_access_management_router, seed_account_access_management_data
-from billing import billing_metrics, configure_billing, router as billing_router, seed_billing_data
-from customer_profiling import configure_customer_profiling, customer_metrics, router as customer_profiling_router, seed_customer_data
+from billing import (
+    billing_metrics,
+    collector_aging_accounts,
+    configure_billing,
+    post_collector_payment,
+    router as billing_router,
+    seed_billing_data,
+    start_billing_scheduler,
+    stop_billing_scheduler,
+)
+from collector import collector_metrics, configure_collector, router as collector_router, seed_collector_data
+from customer_profiling import configure_customer_profiling, customer_metrics, router as customer_profiling_router, seed_customer_data, sync_customer_lifecycle_status
 from customer_profiling.router import find_customer, list_customers
 from customer_service_management import (
     configure_customer_service_management,
@@ -69,6 +80,7 @@ from system_settings import (
     change_access_session_password,
     configure_system_settings,
     router as system_settings_router,
+    send_a2p_sms_message,
     update_access_session_user,
 )
 from techportal import configure_techportal, router as techportal_router, seed_techportal_data, techportal_metrics
@@ -147,6 +159,22 @@ modules = [
         "status": "functional-shell",
         "description": "ISP subscriptions, invoices, payments, adjustments, balances, billing cycles, and collections.",
         "metrics": {"open_invoices": 0, "overdue": 0, "collections": 0},
+    },
+    {
+        "slug": "collector",
+        "name": "Collector",
+        "folder": "features/collector",
+        "status": "functional-portal",
+        "description": "Mobile customer collections, Billing receipts, cash/GCash custody, remittance, and finance reconciliation.",
+        "metrics": {
+            "activeClaims": 0,
+            "collections": 0,
+            "amountCollected": 0,
+            "cashInCustody": 0,
+            "gcashInCustody": 0,
+            "openRemittances": 0,
+            "unresolvedVariances": 0,
+        },
     },
     {
         "slug": "point-of-sale",
@@ -353,6 +381,7 @@ def search_customers_for_modules(search: str = "") -> list[dict[str, Any]]:
 def seed_module_data() -> None:
     seed_customer_data()
     seed_billing_data()
+    seed_collector_data()
     seed_point_of_sale_data()
     seed_inventory_data()
     seed_account_access_management_data()
@@ -367,6 +396,7 @@ def sync_module_metrics() -> None:
     metric_loaders = {
         "customer-profiling": customer_metrics,
         "billing": billing_metrics,
+        "collector": collector_metrics,
         "point-of-sale": point_of_sale_metrics,
         "inventory": inventory_metrics,
         "account-access-management": account_access_management_metrics,
@@ -525,7 +555,14 @@ def port_registry() -> list[dict[str, Any]]:
 
 configure_customer_profiling(current_admin, add_audit)
 configure_billing(current_admin, add_audit, resolve_customer_for_modules, search_customers_for_modules, seed_customer_data)
-configure_point_of_sale(current_admin, add_audit, resolve_customer_for_modules, search_customers_for_modules, seed_customer_data)
+configure_point_of_sale(
+    current_admin,
+    add_audit,
+    resolve_customer_for_modules,
+    search_customers_for_modules,
+    seed_customer_data,
+    send_a2p_sms_message,
+)
 configure_inventory(current_admin, add_audit)
 configure_account_access_management(current_admin, add_audit)
 configure_customer_service_management(current_admin, add_audit, resolve_customer_for_modules, search_customers_for_modules, seed_customer_data)
@@ -544,10 +581,20 @@ configure_service(
     search_customers_for_modules,
     seed_customer_data,
     create_ticket_from_service_order,
+    sync_customer_lifecycle_status,
 )
 configure_process_flow(current_admin)
 configure_network_settings(current_admin, add_audit)
 configure_system_settings(current_admin, add_audit, settings, port_registry)
+configure_collector(
+    current_admin,
+    add_audit,
+    resolve_customer_for_modules,
+    search_customers_for_modules,
+    collector_aging_accounts,
+    post_collector_payment,
+    send_a2p_sms_message,
+)
 configure_logs(current_admin, audit_logs)
 configure_techportal(
     current_admin,
@@ -560,6 +607,7 @@ configure_techportal(
 
 app.include_router(customer_profiling_router)
 app.include_router(billing_router)
+app.include_router(collector_router)
 app.include_router(point_of_sale_router)
 app.include_router(inventory_router)
 app.include_router(account_access_management_router)
@@ -580,11 +628,13 @@ def seed_logs():
     sync_module_metrics()
     if not audit_logs:
         add_audit("system_started", "app", "app-shell", {"message": "ISP management shell started"})
+    start_billing_scheduler()
     start_network_settings_poller()
 
 
 @app.on_event("shutdown")
 def stop_module_workers():
+    stop_billing_scheduler()
     stop_network_settings_poller()
 
 

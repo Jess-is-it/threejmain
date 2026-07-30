@@ -5,6 +5,7 @@ from .router import (
     ensure_location_record,
     router,
     seed_default_locations,
+    send_a2p_sms_message,
     update_access_session_user,
 )
 
@@ -15,5 +16,6 @@ __all__ = [
     "ensure_location_record",
     "router",
     "seed_default_locations",
+    "send_a2p_sms_message",
     "update_access_session_user",
 ]

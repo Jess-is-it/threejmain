@@ -31,6 +31,8 @@ Service Account now represents the customer's actual internet line/subscription.
 
 Current service account statuses are Pending Installation, Active, Suspended, Pending Disconnection, Disconnected, Pending Reconnection, Terminated, and Cancelled.
 
+Service Account lifecycle syncs Customer Profiling status through the app-shell Customer Profiling hook. Active or pending-disconnection accounts mark the customer Active, suspended or pending-reconnection accounts mark the customer Suspended when no active account exists, pending installation keeps the customer Pending, and disconnected/terminated/cancelled-only account history marks the customer Inactive.
+
 ## Service Order Phase 3 Account Link
 
 Service Orders now support `serviceAccountId`. New Installation orders may start without an existing account and create a Pending Installation Service Account when approved or in progress. The Service Account becomes Active when installation is completed. Other order types require an existing Service Account so the request is tied to the exact internet line/subscription.

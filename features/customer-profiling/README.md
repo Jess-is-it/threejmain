@@ -27,11 +27,12 @@ Restored workflows from the previous standalone Customer Profiling module:
 - Customer overview KPIs for total, active, pending, suspended, Enrile count, municipalities, and barangays
 - Customer create, edit, view, and soft archive actions
 - Account number support with auto-generation when blank
-- Customer type and status tracking
+- Customer type tracking and system-owned lifecycle status. New profiles start as `PENDING`; Service Account lifecycle syncs customer status to `ACTIVE`, `SUSPENDED`, `PENDING`, or `INACTIVE`.
 - Customer gender tracking for System Settings male/female avatar selection
 - Primary contact, alternate mobile, Facebook account/link, email, service address, and GPS fields
 - Service location selector connected to System Settings -> Location Management, with manual customer locations added to Location Management when no saved record matches
 - Customer table and detail drawer display System Settings emotion avatars using the reusable `CustomerEmotionAvatar` component
+- Customer 360 replaces the old compact detail drawer as the canonical customer inspection experience. Opening a customer from the list, or opening `/customer-profiling?customerId=<id>`, shows a full module-owned detail workspace with a compact identity header and tabs for Overview, Subscriptions, Billing, Payments, Tickets, Equipment, and Activity.
 - Customer coordinate capture and detail map preview consume System Settings -> Maps provider settings, including Google Map Tiles session providers when configured, with Google Maps open-link and Street View retained as external helpers
 - Customer table actions include Check Serviceability, which opens Network Settings -> Serviceability Check filtered to the selected customer
 - Secondary contact fields
@@ -42,6 +43,45 @@ Current shell API route prefix:
 ```text
 /api/customer-profiling
 ```
+
+## Customer 360
+
+Customer Profiling owns the Customer 360 interface and customer identity fields only. It does not persist copies of records owned by other modules. The frontend reads current data from existing module APIs using stable identifiers such as `customerId`, `serviceAccountId`, `invoiceId`, and `paymentId`.
+
+Customer 360 tabs:
+
+- Overview: identity, account number, contact details, service/billing address, account status/standing, current subscription summary, current balance summary, and important customer/service/billing dates.
+- Subscriptions: Service Account and Billing subscription summaries with plan, recurring price, status, service address, activation, billing mode/cycle, next billing date, and service order history.
+- Billing: authoritative Billing balance, account credit, open/overdue invoices, recent invoices, rebates, credits, and adjustments.
+- Payments: Billing payment history plus POS counter receipts filtered by customer id. Sensitive payment details are not displayed.
+- Tickets: Ticketing open and historical tickets, including outage reference, category, status, assigned team/user, opened date, and resolution date.
+- Equipment: Inventory asset assignments filtered to the customer, including serial number, item/model reference, status, assigned date, and service/ticket reference.
+- Activity: read-only audit log events filtered by customer id/account number from Logs.
+
+Read dependencies used by Customer 360:
+
+```text
+GET /api/customer-profiling/customers/{customerId}
+GET /api/service/accounts?customerId={customerId}
+GET /api/service/orders?customerId={customerId}
+GET /api/billing/subscriptions?customerId={customerId}
+GET /api/billing/customers/{customerId}/balance
+GET /api/billing/invoices?customerId={customerId}
+GET /api/billing/payments?customerId={customerId}
+GET /api/billing/adjustments?customerId={customerId}
+GET /api/point-of-sale/sales
+GET /api/ticketing/tickets?customerId={customerId}
+GET /api/inventory/assignments
+GET /api/logs
+```
+
+Remaining integration contracts:
+
+- POS should expose a customer-filtered receipt/sales endpoint, such as `GET /api/point-of-sale/sales?customerId={customerId}`, plus receipt view/download when supported.
+- Inventory should expose `GET /api/inventory/assignments?customerId={customerId}` instead of requiring Customer 360 to filter the full assignment list client-side.
+- Billing should expose a payment receipt view/download endpoint if official receipt documents become downloadable outside Billing/POS.
+- Billing should support a query-link contract for opening invoice/subscription detail directly from Customer 360, such as `/billing?tab=Invoices&invoiceId=<invoiceId>`.
+- Ticketing should support a query-link contract for opening a specific ticket detail directly from Customer 360, such as `/ticketing?ticketId=<ticketId>`.
 
 ## Real-Data Readiness
 

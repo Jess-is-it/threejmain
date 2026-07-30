@@ -1,3 +1,6 @@
+import hashlib
+import json
+import logging
 from datetime import date, datetime, timezone
 from typing import Any, Callable
 from uuid import uuid4
@@ -15,17 +18,21 @@ except ImportError:  # Allows module-local checks before app-shell adds features
 
 
 router = APIRouter(prefix="/api/point-of-sale", tags=["point-of-sale"])
+logger = logging.getLogger(__name__)
+POS_INVOICE_SMS_SENDER_ID = "3J BILL"
 
 items: list[dict[str, Any]] = []
 cashier_sessions: list[dict[str, Any]] = []
 sales: list[dict[str, Any]] = []
 payments: list[dict[str, Any]] = []
+invoice_payment_sms_results: dict[str, dict[str, Any]] = {}
 
 _current_admin: Callable[[str | None], dict[str, Any]] | None = None
 _audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None] | None = None
 _customer_resolver: Callable[[str], dict[str, Any]] | None = None
 _customer_searcher: Callable[[str], list[dict[str, Any]]] | None = None
 _customer_seed: Callable[[], None] | None = None
+_sms_sender: Callable[..., dict[str, Any]] | None = None
 
 ITEM_STATUSES = ["ACTIVE", "INACTIVE", "ARCHIVED"]
 SESSION_STATUSES = ["OPEN", "CLOSED", "CANCELLED"]
@@ -97,11 +104,34 @@ class SalePayload(BaseModel):
 class PaymentPayload(BaseModel):
     saleId: str | None = None
     amount: float | None = Field(default=None, gt=0)
+    tenderedAmount: float | None = Field(default=None, ge=0)
+    changeAmount: float | None = Field(default=None, ge=0)
     method: str | None = None
     paymentDate: str | None = None
     referenceNumber: str | None = None
     status: str | None = None
     notes: str | None = None
+
+
+class InvoicePaymentConfirmationPayload(BaseModel):
+    billingPaymentId: str | None = None
+    receiptNumber: str | None = None
+    invoiceNumber: str | None = None
+    customerId: str | None = None
+    customerName: str | None = None
+    destination: str | None = None
+    amount: float | None = Field(default=None, ge=0)
+    amountReceived: float | None = Field(default=None, ge=0)
+    appliedAmount: float | None = Field(default=None, ge=0)
+    returnedAmount: float | None = Field(default=None, ge=0)
+    advanceAmount: float | None = Field(default=None, ge=0)
+    method: str | None = None
+    paymentDate: str | None = None
+    postedAt: str | None = None
+    referenceNumber: str | None = None
+    remainingAccountBalance: float | None = Field(default=None, ge=0)
+    accountCreditAfter: float | None = Field(default=None, ge=0)
+    allocations: list[dict[str, Any]] | None = None
 
 
 def configure_point_of_sale(
@@ -110,13 +140,15 @@ def configure_point_of_sale(
     customer_resolver: Callable[[str], dict[str, Any]] | None = None,
     customer_searcher: Callable[[str], list[dict[str, Any]]] | None = None,
     customer_seed: Callable[[], None] | None = None,
+    sms_sender: Callable[..., dict[str, Any]] | None = None,
 ) -> None:
-    global _current_admin, _audit_logger, _customer_resolver, _customer_searcher, _customer_seed
+    global _current_admin, _audit_logger, _customer_resolver, _customer_searcher, _customer_seed, _sms_sender
     _current_admin = current_admin
     _audit_logger = audit_logger
     _customer_resolver = customer_resolver
     _customer_searcher = customer_searcher
     _customer_seed = customer_seed
+    _sms_sender = sms_sender
 
 
 def require_admin(authorization: str | None = Header(default=None)):
@@ -159,6 +191,43 @@ def admin_display_name(admin: dict[str, Any]) -> str:
 
 def money(value: Any) -> float:
     return round(float(value or 0), 2)
+
+
+def clean_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def limited_text(value: Any, max_length: int = 500) -> str:
+    return clean_text(value)[:max_length]
+
+
+def normalize_idempotency_key(value: Any, *, required: bool = True) -> str:
+    key = clean_text(value)
+    if required and not key:
+        raise HTTPException(status_code=400, detail="Idempotency-Key header is required")
+    if len(key) > 128:
+        raise HTTPException(status_code=400, detail="Idempotency-Key header cannot exceed 128 characters")
+    return key
+
+
+def posting_fingerprint(record_type: str, payload: BaseModel | dict[str, Any]) -> str:
+    payload_data = payload.model_dump(exclude_unset=True) if isinstance(payload, BaseModel) else payload
+    serialized = json.dumps(
+        {"recordType": record_type, "payload": payload_data},
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def idempotent_sale_replay(idempotency_key: str, fingerprint: str) -> dict[str, Any] | None:
+    existing = next((sale for sale in visible(sales) if sale.get("idempotencyKey") == idempotency_key), None)
+    if existing is None:
+        return None
+    if existing.get("idempotencyFingerprint") != fingerprint:
+        raise HTTPException(status_code=409, detail="Idempotency-Key was already used with a different checkout request")
+    return {**sale_summary(existing), "idempotentReplay": True}
 
 
 def parse_day(value: str | None, field_name: str) -> date:
@@ -245,6 +314,97 @@ def search_customers(search: str = "") -> list[dict[str, Any]]:
     if _customer_searcher is None:
         return []
     return [customer_snapshot(customer) for customer in _customer_searcher(search)]
+
+
+def sms_method_label(method: Any) -> str:
+    normalized = normalize_upper(method)
+    if normalized == "GCASH":
+        return "GCash"
+    if normalized == "BANK_TRANSFER":
+        return "bank transfer"
+    return normalized.replace("_", " ").lower() or "payment"
+
+
+def invoice_payment_sms_key(record: dict[str, Any]) -> str:
+    return clean_text(record.get("billingPaymentId")) or clean_text(record.get("receiptNumber"))
+
+
+def invoice_payment_remaining_balance(record: dict[str, Any]) -> float:
+    if record.get("remainingAccountBalance") is not None:
+        return money(record.get("remainingAccountBalance"))
+    if record.get("balanceAfter") is not None:
+        return money(record.get("balanceAfter"))
+    remaining = 0.0
+    for allocation in record.get("allocations") or []:
+        if not isinstance(allocation, dict):
+            continue
+        remaining = money(remaining + max(0, money(allocation.get("balanceBefore")) - money(allocation.get("amount"))))
+    return remaining
+
+
+def invoice_payment_sms_message(record: dict[str, Any]) -> str:
+    allocations = [allocation for allocation in record.get("allocations") or [] if isinstance(allocation, dict)]
+    invoice_count = len(allocations)
+    if invoice_count == 1:
+        invoice_label = clean_text(allocations[0].get("invoiceNumber")) or clean_text(record.get("invoiceNumber")) or "invoice"
+    elif invoice_count > 1:
+        invoice_label = f"{invoice_count} invoices"
+    else:
+        invoice_label = clean_text(record.get("invoiceNumber")) or "invoice"
+    amount_received = money(record.get("amountReceived") if record.get("amountReceived") is not None else record.get("amount"))
+    applied_amount = money(record.get("appliedAmount") if record.get("appliedAmount") is not None else record.get("amount"))
+    returned_amount = money(record.get("returnedAmount"))
+    advance_amount = money(record.get("advanceAmount"))
+    remaining_balance = invoice_payment_remaining_balance(record)
+    message = (
+        f"3J Internet received PHP {amount_received:,.2f} via {sms_method_label(record.get('method'))}. "
+        f"Applied PHP {applied_amount:,.2f} to {invoice_label}. "
+        f"Remaining balance PHP {remaining_balance:,.2f}."
+    )
+    if advance_amount > 0:
+        message = f"{message} Advance credit added PHP {advance_amount:,.2f}."
+    if money(record.get("accountCreditAfter")) > 0:
+        message = f"{message} Account credit PHP {money(record.get('accountCreditAfter')):,.2f}."
+    if returned_amount > 0:
+        return_label = "change returned" if normalize_upper(record.get("method")) == "CASH" else "excess returned"
+        message = f"{message} PHP {returned_amount:,.2f} {return_label} to customer."
+    return limited_text(f"{message} Thank you.", 500)
+
+
+def send_invoice_payment_sms(record: dict[str, Any], actor: dict[str, Any]) -> dict[str, Any]:
+    destination = clean_text(record.get("destination"))
+    sms_key = invoice_payment_sms_key(record)
+    if sms_key and sms_key in invoice_payment_sms_results:
+        return {**invoice_payment_sms_results[sms_key], "idempotentReplay": True}
+    if not destination:
+        return {"status": "SKIPPED", "senderId": POS_INVOICE_SMS_SENDER_ID, "error": "Customer has no SMS destination"}
+    if _sms_sender is None:
+        return {"status": "FAILED", "senderId": POS_INVOICE_SMS_SENDER_ID, "error": "A2P Messaging provider is not configured"}
+    try:
+        result = _sms_sender(
+            destination=destination,
+            message_text=invoice_payment_sms_message(record),
+            source=POS_INVOICE_SMS_SENDER_ID,
+            purpose="POS_INVOICE_PAYMENT_CONFIRMATION",
+            request_context={
+                "billingPaymentId": clean_text(record.get("billingPaymentId")),
+                "receiptNumber": clean_text(record.get("receiptNumber")),
+                "invoiceNumber": clean_text(record.get("invoiceNumber")),
+                "customerId": clean_text(record.get("customerId")),
+                "postedAt": clean_text(record.get("postedAt")),
+            },
+            created_by_admin_id=actor.get("id") or admin_username(actor),
+        )
+        sms_result = {"status": result.get("status") or "SUCCESS", **result}
+        sms_result.setdefault("senderId", POS_INVOICE_SMS_SENDER_ID)
+        if sms_key and sms_result.get("status") == "SUCCESS":
+            invoice_payment_sms_results[sms_key] = sms_result
+        return sms_result
+    except HTTPException as exc:
+        return {"status": "FAILED", "error": limited_text(exc.detail, 500)}
+    except Exception as exc:  # pragma: no cover - defensive provider boundary.
+        logger.exception("POS invoice payment confirmation SMS failed")
+        return {"status": "FAILED", "error": limited_text(exc, 500)}
 
 
 def inventory_connected() -> bool:
@@ -420,6 +580,13 @@ def sale_payments(sale_id: str) -> list[dict[str, Any]]:
     return [payment for payment in visible(payments) if payment["saleId"] == sale_id and payment["status"] == "POSTED"]
 
 
+def sale_total_amount(sale: dict[str, Any]) -> float:
+    subtotal = money(sum(line.get("amount", line_total(line)) for line in sale.get("lineItems", [])))
+    discount = money(sale.get("discountAmount", 0))
+    tax = money(sale.get("taxAmount", 0))
+    return money(max(0, subtotal - discount + tax))
+
+
 def sale_summary(sale: dict[str, Any]) -> dict[str, Any]:
     if not sale.get("cashierName"):
         session = find_session_or_none(sale.get("sessionId"))
@@ -428,7 +595,7 @@ def sale_summary(sale: dict[str, Any]) -> dict[str, Any]:
     subtotal = money(sum(line.get("amount", line_total(line)) for line in sale.get("lineItems", [])))
     discount = money(sale.get("discountAmount", 0))
     tax = money(sale.get("taxAmount", 0))
-    total = money(max(0, subtotal - discount + tax))
+    total = sale_total_amount(sale)
     paid = money(sum(payment["amount"] for payment in sale_payments(sale["id"])))
     balance = money(max(0, total - paid))
     if sale.get("status") == "VOID":
@@ -466,13 +633,22 @@ def session_summary(session: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def normalize_payment_payload(payload: PaymentPayload, current: dict[str, Any] | None = None) -> dict[str, Any]:
+def payment_requires_reference(method: str) -> bool:
+    return method != "CASH"
+
+
+def normalize_payment_payload(
+    payload: PaymentPayload,
+    current: dict[str, Any] | None = None,
+    sale_override: dict[str, Any] | None = None,
+    available_balance: float | None = None,
+) -> dict[str, Any]:
     data = payload.model_dump(exclude_unset=True)
     record = dict(current or {})
     record.update({key: value for key, value in data.items() if value is not None})
     if not record.get("saleId"):
         raise HTTPException(status_code=400, detail="saleId is required")
-    sale = find_sale(record["saleId"])
+    sale = sale_override or find_sale(record["saleId"])
     if sale["status"] == "VOID":
         raise HTTPException(status_code=400, detail="Cannot post payment to a void sale")
     method = normalize_upper(record.get("method") or "CASH")
@@ -484,9 +660,29 @@ def normalize_payment_payload(payload: PaymentPayload, current: dict[str, Any] |
     record["amount"] = money(record.get("amount", 0))
     if record["amount"] <= 0:
         raise HTTPException(status_code=400, detail="Payment amount must be greater than zero")
+    reference_number = clean_text(record.get("referenceNumber"))
+    if payment_requires_reference(method) and not reference_number:
+        raise HTTPException(status_code=400, detail="Reference number is required for non-cash payments")
+    if status == "POSTED":
+        if available_balance is None:
+            available_balance = sale_summary(sale)["balance"]
+            if current and current.get("status") == "POSTED" and current.get("saleId") == sale["id"]:
+                available_balance = money(available_balance + money(current.get("amount", 0)))
+        if record["amount"] > money(available_balance) + 0.001:
+            raise HTTPException(status_code=400, detail="Payment amount cannot exceed the remaining sale balance")
+    tendered_amount = money(record.get("tenderedAmount", record["amount"]))
+    if method == "CASH":
+        if tendered_amount + 0.001 < record["amount"]:
+            raise HTTPException(status_code=400, detail="Tendered cash cannot be less than the allocated payment")
+        change_amount = money(max(0, tendered_amount - record["amount"]))
+    else:
+        tendered_amount = record["amount"]
+        change_amount = 0
     record["method"] = method
     record["paymentDate"] = parse_day(record.get("paymentDate"), "paymentDate").isoformat()
-    record["referenceNumber"] = record.get("referenceNumber") or ""
+    record["referenceNumber"] = reference_number
+    record["tenderedAmount"] = tendered_amount
+    record["changeAmount"] = change_amount
     record["status"] = status
     record["notes"] = record.get("notes") or ""
     return record
@@ -583,6 +779,26 @@ def pos_overview(admin=Depends(require_admin)):
         "recentSales": sorted(sale_rows, key=lambda sale: sale["createdAt"], reverse=True)[:5],
         "lowStock": [item for item in catalog_items if item.get("stockTracked") and item["stockOnHand"] <= item["reorderPoint"]][:5],
     }
+
+
+@router.post("/invoice-payment-confirmations")
+def send_invoice_payment_confirmation(payload: InvoicePaymentConfirmationPayload, admin=Depends(require_admin)):
+    record = payload.model_dump()
+    result = send_invoice_payment_sms(record, admin)
+    add_audit(
+        "pos_invoice_payment_sms_processed",
+        "BillingPayment",
+        clean_text(record.get("billingPaymentId")) or clean_text(record.get("receiptNumber")) or "unknown",
+        {
+            "receiptNumber": clean_text(record.get("receiptNumber")),
+            "invoiceNumber": clean_text(record.get("invoiceNumber")),
+            "customerId": clean_text(record.get("customerId")),
+            "smsStatus": result.get("status"),
+            "idempotentReplay": bool(result.get("idempotentReplay")),
+        },
+        admin_username(admin),
+    )
+    return result
 
 
 @router.get("/items")
@@ -699,8 +915,25 @@ def list_sales(search: str = "", status: str = "", admin=Depends(require_admin))
 
 
 @router.post("/sales")
-def create_sale(payload: SalePayload, admin=Depends(require_admin)):
+def create_sale(
+    payload: SalePayload,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    admin=Depends(require_admin),
+):
     seed_point_of_sale_data()
+    posting_key = normalize_idempotency_key(idempotency_key)
+    fingerprint = posting_fingerprint("sale", payload)
+    replay = idempotent_sale_replay(posting_key, fingerprint)
+    actor_username = admin_username(admin)
+    if replay is not None:
+        add_audit(
+            "pos_sale_idempotent_replay",
+            "POSSale",
+            replay["id"],
+            {"saleNumber": replay.get("saleNumber"), "receiptNumber": replay.get("receiptNumber")},
+            actor_username,
+        )
+        return replay
     session = find_session(payload.sessionId) if payload.sessionId else user_register_session(admin)
     if session["status"] != "OPEN":
         raise HTTPException(status_code=400, detail="Sales can only be posted to an open cashier session")
@@ -716,13 +949,13 @@ def create_sale(payload: SalePayload, admin=Depends(require_admin)):
     sale_id = str(uuid4())
     sale_number = next_number("SALE", sales)
     receipt_number = next_number("OR", sales)
-    actor_username = admin_username(admin)
     actor_name = admin_display_name(admin)
-    movement_records = post_sale_inventory_movements(line_items, sale_number, receipt_number, actor_username)
     sale = {
         "id": sale_id,
         "saleNumber": sale_number,
         "receiptNumber": receipt_number,
+        "idempotencyKey": posting_key,
+        "idempotencyFingerprint": fingerprint,
         "sessionId": session["id"],
         "sessionNumber": session["sessionNumber"],
         "cashierUsername": actor_username,
@@ -732,7 +965,7 @@ def create_sale(payload: SalePayload, admin=Depends(require_admin)):
         "customer": customer,
         "saleDate": parse_day(payload.saleDate, "saleDate").isoformat(),
         "lineItems": line_items,
-        "inventoryMovementIds": [movement["id"] for movement in movement_records],
+        "inventoryMovementIds": [],
         "discountAmount": money(payload.discountAmount),
         "taxAmount": money(payload.taxAmount),
         "status": status,
@@ -741,21 +974,53 @@ def create_sale(payload: SalePayload, admin=Depends(require_admin)):
         "updatedAt": timestamp,
         "deletedAt": None,
     }
-    sales.append(sale)
+    pending_payments: list[dict[str, Any]] = []
+    remaining_balance = sale_total_amount(sale)
     for payment_payload in payload.payments or []:
         if money(payment_payload.get("amount", 0)) > 0:
-            payment_record = normalize_payment_payload(PaymentPayload(**{**payment_payload, "saleId": sale["id"]}))
-            payments.append(
-                {
-                    "id": str(uuid4()),
-                    "paymentNumber": next_number("PAY", payments),
-                    "createdAt": timestamp,
-                    "updatedAt": timestamp,
-                    "deletedAt": None,
-                    **payment_record,
-                }
+            payment_record = normalize_payment_payload(
+                PaymentPayload(**{**payment_payload, "saleId": sale["id"]}),
+                sale_override=sale,
+                available_balance=remaining_balance,
             )
-    add_audit("pos_sale_created", "POSSale", sale["id"], {"saleNumber": sale["saleNumber"]}, actor_username)
+            if payment_record["status"] == "POSTED":
+                remaining_balance = money(remaining_balance - payment_record["amount"])
+            pending_payments.append(payment_record)
+    movement_records = post_sale_inventory_movements(line_items, sale_number, receipt_number, actor_username)
+    sale["inventoryMovementIds"] = [movement["id"] for movement in movement_records]
+    sales.append(sale)
+    for payment_record in pending_payments:
+        payment = {
+            "id": str(uuid4()),
+            "paymentNumber": next_number("PAY", payments),
+            "postedAt": timestamp if payment_record["status"] == "POSTED" else None,
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+            "deletedAt": None,
+            **payment_record,
+        }
+        payments.append(payment)
+        add_audit(
+            "pos_payment_posted",
+            "POSPayment",
+            payment["id"],
+            {
+                "saleId": sale["id"],
+                "saleNumber": sale["saleNumber"],
+                "receiptNumber": sale["receiptNumber"],
+                "method": payment["method"],
+                "amount": payment["amount"],
+                "postedAt": payment.get("postedAt"),
+            },
+            actor_username,
+        )
+    add_audit(
+        "pos_sale_created",
+        "POSSale",
+        sale["id"],
+        {"saleNumber": sale["saleNumber"], "receiptNumber": sale["receiptNumber"], "total": sale_total_amount(sale)},
+        actor_username,
+    )
     return sale_summary(sale)
 
 
@@ -834,9 +1099,23 @@ def list_payments(search: str = "", status: str = "", admin=Depends(require_admi
 def create_payment(payload: PaymentPayload, admin=Depends(require_admin)):
     record = normalize_payment_payload(payload)
     timestamp = now_iso()
-    payment = {"id": str(uuid4()), "paymentNumber": next_number("PAY", payments), "createdAt": timestamp, "updatedAt": timestamp, "deletedAt": None, **record}
+    payment = {
+        "id": str(uuid4()),
+        "paymentNumber": next_number("PAY", payments),
+        "postedAt": timestamp if record["status"] == "POSTED" else None,
+        "createdAt": timestamp,
+        "updatedAt": timestamp,
+        "deletedAt": None,
+        **record,
+    }
     payments.append(payment)
-    add_audit("pos_payment_posted", "POSPayment", payment["id"], {"saleId": payment["saleId"]}, admin["username"])
+    add_audit(
+        "pos_payment_posted",
+        "POSPayment",
+        payment["id"],
+        {"saleId": payment["saleId"], "method": payment["method"], "amount": payment["amount"], "postedAt": payment.get("postedAt")},
+        admin["username"],
+    )
     return payment
 
 

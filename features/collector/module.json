@@ -1,0 +1,37 @@
+{
+  "slug": "collector",
+  "name": "Collector",
+  "status": "functional-portal",
+  "owner": "threejmain",
+  "description": "Mobile customer collections, Billing receipts, cash and personal-GCash custody, remittance, and Finance reconciliation.",
+  "app_shell_route": "/collector",
+  "api_prefix": "/api/collector",
+  "frontend_entry": "features/collector/web/CollectorPage.jsx",
+  "api_entry": "features/collector/api/collector/router.py",
+  "features": [
+    "all_customer_mobile_worklist",
+    "automatic_collection_reservation",
+    "cash_and_gcash_collection",
+    "automatic_oldest_first_allocation",
+    "excess_advance_or_return_confirmation",
+    "advance_account_credit",
+    "immediate_billing_payment_posting",
+    "sms_payment_confirmation",
+    "thermal_receipt_printing",
+    "audited_receipt_reprinting",
+    "cash_custody",
+    "personal_gcash_custody",
+    "remittance_reconciliation",
+    "finance_confirmation",
+    "variance_resolution",
+    "audit_history"
+  ],
+  "deferred_features": [
+    "offline_sync",
+    "gps_and_evidence_capture",
+    "promise_to_pay",
+    "collection_runs_and_permanent_assignments",
+    "payment_void_reconciliation",
+    "advanced_collection_reports"
+  ]
+}

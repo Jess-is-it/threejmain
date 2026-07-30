@@ -11,7 +11,11 @@
 }
 
 .customer-profile-workspace.has-detail-panel {
-  grid-template-columns: minmax(0, 3fr) minmax(17rem, 1fr);
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.customer-profile-workspace.has-detail-panel .customer-profile-main {
+  display: none;
 }
 
 .customer-profile-main {
@@ -2143,6 +2147,382 @@
   box-shadow: 0 16px 48px rgba(15, 23, 42, 0.12);
 }
 
+.customer-360-panel-root {
+  position: static;
+  max-height: none;
+  min-height: calc(100vh - 9rem);
+  overflow: visible;
+}
+
+.customer-360-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.85rem;
+  align-items: center;
+}
+
+.customer-360-header-actions {
+  justify-content: flex-end;
+}
+
+.customer-360-compact-line {
+  max-width: 64rem;
+  color: #64748b;
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.customer-360-detail {
+  gap: 1rem;
+}
+
+.customer-360-detail .customer-detail-tabs {
+  align-items: center;
+  gap: 0.45rem;
+  overflow-x: auto;
+  padding-bottom: 0.25rem;
+}
+
+.customer-360-detail .customer-detail-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex: 0 0 auto;
+  min-height: 2rem;
+  padding: 0.15rem 0.1rem 0.45rem;
+  white-space: nowrap;
+}
+
+.customer-360-tab-dot {
+  width: 0.38rem;
+  height: 0.38rem;
+  border-radius: 999px;
+  background: #cbd5e1;
+}
+
+.customer-360-tab-panel {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.customer-360-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.customer-360-metric {
+  display: grid;
+  gap: 0.22rem;
+  min-width: 0;
+  padding: 0.9rem;
+  border: 1px solid var(--admin-border);
+  border-radius: 0.5rem;
+  background: #fff;
+}
+
+.customer-360-metric svg {
+  color: #206bc4;
+}
+
+.customer-360-metric span,
+.customer-360-metric small {
+  color: #64748b;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.customer-360-metric strong {
+  min-width: 0;
+  color: #0f172a;
+  font-size: 1.08rem;
+  overflow-wrap: anywhere;
+}
+
+.customer-360-overview-metrics .customer-360-metric {
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.12rem 0.65rem;
+  align-items: center;
+  padding: 0.85rem 0.95rem;
+}
+
+.customer-360-overview-metrics .customer-360-metric svg {
+  grid-row: 1 / span 3;
+  align-self: start;
+  margin-top: 0.1rem;
+}
+
+.customer-360-overview-metrics .customer-360-metric strong {
+  font-size: 0.98rem;
+}
+
+.customer-360-overview-metrics .customer-360-metric small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.customer-360-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.customer-360-overview-primary {
+  grid-column: span 7;
+}
+
+.customer-360-overview-secondary {
+  grid-column: span 5;
+}
+
+.customer-360-panel-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.customer-360-panel {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--admin-border);
+  border-radius: 0.5rem;
+  background: #fff;
+}
+
+.customer-360-panel h4 {
+  margin: 0;
+  color: #1e293b;
+  font-size: 0.9rem;
+}
+
+.customer-360-panel-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.customer-360-panel-heading h4 {
+  line-height: 1.25;
+}
+
+.customer-360-panel-heading small {
+  display: block;
+  margin-top: 0.12rem;
+  color: #64748b;
+  font-size: 0.73rem;
+  line-height: 1.35;
+}
+
+.customer-360-panel-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 0.45rem;
+  color: #206bc4;
+  background: #edf5ff;
+}
+
+.customer-360-fact-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.customer-360-fact {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.55rem;
+  align-items: start;
+  min-width: 0;
+}
+
+.customer-360-fact-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  color: #64748b;
+}
+
+.customer-360-fact span:last-child {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.customer-360-fact small {
+  color: #64748b;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.customer-360-fact strong {
+  min-width: 0;
+  color: #0f172a;
+  font-size: 0.84rem;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.customer-360-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem 1rem;
+  min-width: 0;
+}
+
+.customer-360-summary-grid-single {
+  grid-template-columns: 1fr;
+}
+
+.customer-360-summary-fact {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+  padding-bottom: 0.58rem;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.customer-360-summary-fact small {
+  color: #64748b;
+  font-size: 0.7rem;
+  font-weight: 750;
+  line-height: 1.25;
+  text-transform: uppercase;
+}
+
+.customer-360-summary-fact strong {
+  min-width: 0;
+  color: #0f172a;
+  font-size: 0.88rem;
+  font-weight: 650;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.customer-360-summary-fact span {
+  min-width: 0;
+  color: #64748b;
+  font-size: 0.74rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.customer-360-map-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: fit-content;
+  color: #206bc4;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.customer-360-map-link:hover {
+  text-decoration: underline;
+}
+
+.customer-360-state {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 3.25rem;
+  padding: 0.85rem;
+  border: 1px dashed #cbd5e1;
+  border-radius: 0.5rem;
+  color: #475569;
+  background: #f8fafc;
+  font-weight: 650;
+}
+
+.customer-360-state.error,
+.customer-360-state.permission-denied {
+  border-color: #fecaca;
+  color: #b91c1c;
+  background: #fff1f2;
+}
+
+.customer-360-state.loading {
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+  background: #eff6ff;
+}
+
+.customer-360-table-wrap {
+  min-width: 0;
+  overflow-x: auto;
+  border: 1px solid var(--admin-border);
+  border-radius: 0.5rem;
+  background: #fff;
+}
+
+.customer-360-table {
+  min-width: 760px;
+  margin-bottom: 0;
+}
+
+.customer-360-table th {
+  color: #64748b;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.customer-360-table td {
+  max-width: 16rem;
+  overflow-wrap: anywhere;
+  vertical-align: middle;
+}
+
+.customer-360-muted-action {
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  color: #94a3b8;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.customer-360-timeline {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.customer-360-event {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.2rem 0.55rem;
+  align-items: center;
+  min-width: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--admin-border);
+  border-radius: 0.5rem;
+  background: #fff;
+}
+
+.customer-360-event strong,
+.customer-360-event small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.customer-360-event small {
+  grid-column: 2;
+  color: #64748b;
+  font-size: 0.75rem;
+}
+
 .customer-inline-detail-panel .customer-detail-panel-header {
   align-items: center;
   background: #fff;
@@ -2305,6 +2685,29 @@
 }
 
 @media (max-width: 991.98px) {
+  .customer-360-metrics,
+  .customer-360-panel-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .customer-360-overview-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .customer-360-overview-primary,
+  .customer-360-overview-secondary {
+    grid-column: 1;
+  }
+
+  .customer-360-header {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .customer-360-header-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
   .bulk-stage-tracker,
   .bulk-review-kpis {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2334,6 +2737,19 @@
 }
 
 @media (max-width: 767.98px) {
+  .customer-360-fact-grid,
+  .customer-360-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .customer-360-compact-line {
+    white-space: normal;
+  }
+
+  .customer-360-table {
+    min-width: 700px;
+  }
+
   .bulk-review-page-header,
   .bulk-upload-review-note {
     align-items: stretch;
@@ -2383,6 +2799,28 @@
 }
 
 @media (max-width: 575.98px) {
+  .customer-360-metrics,
+  .customer-360-panel-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .customer-360-overview-metrics .customer-360-metric {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .customer-360-header {
+    align-items: start;
+  }
+
+  .customer-360-header-actions .btn {
+    flex: 1 1 auto;
+  }
+
+  .customer-360-panel-root {
+    min-height: auto;
+    border-radius: 0;
+  }
+
   .bulk-stage-tracker,
   .bulk-guide-grid,
   .bulk-review-kpis,

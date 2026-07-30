@@ -730,6 +730,36 @@ ACCESS_PERMISSION_SEEDS = [
         "category": "Account Access Management",
     },
     {
+        "code": "collector.portal.view",
+        "label": "Collector Portal View",
+        "description": "View the mobile Collector customer worklist and own collection history.",
+        "category": "Collector",
+    },
+    {
+        "code": "collector.payment.collect",
+        "label": "Collector Payment Collection",
+        "description": "Claim customers and post cash or GCash collections into Billing.",
+        "category": "Collector",
+    },
+    {
+        "code": "collector.remittance.submit",
+        "label": "Collector Remittance Submit",
+        "description": "Submit held cash and GCash collections to Finance.",
+        "category": "Collector",
+    },
+    {
+        "code": "collector.finance.view",
+        "label": "Collector Finance View",
+        "description": "View all Collector remittance batches and custody totals.",
+        "category": "Collector",
+    },
+    {
+        "code": "collector.finance.confirm",
+        "label": "Collector Finance Confirmation",
+        "description": "Confirm cash and company GCash receipt and resolve remittance variances.",
+        "category": "Collector",
+    },
+    {
         "code": "techportal.dashboard.view",
         "label": "Tech Portal Dashboard View",
         "description": "View the technician portal dashboard.",
@@ -774,9 +804,28 @@ ACCESS_PERMISSION_DEPENDENCIES = {
     "customer-service-management.edit": ["customer-service-management.view"],
     "network-settings.edit": ["network-settings.view"],
     "account-access-management.customer.edit": ["account-access-management.customer.view"],
+    "collector.payment.collect": ["collector.portal.view"],
+    "collector.remittance.submit": ["collector.portal.view"],
+    "collector.finance.view": ["collector.portal.view"],
+    "collector.finance.confirm": ["collector.finance.view"],
     "techportal.ticketing.update": ["techportal.ticketing.view", "techportal.dashboard.view"],
 }
 
+COLLECTOR_PERMISSION_CODES = [
+    "collector.portal.view",
+    "collector.payment.collect",
+    "collector.remittance.submit",
+]
+COLLECTION_SUPERVISOR_PERMISSION_CODES = [
+    *COLLECTOR_PERMISSION_CODES,
+    "collector.finance.view",
+    "collector.finance.confirm",
+]
+FINANCE_OFFICER_PERMISSION_CODES = [
+    "collector.portal.view",
+    "collector.finance.view",
+    "collector.finance.confirm",
+]
 TECHNICIAN_TEST_USERNAME = "tech"
 TECHNICIAN_TEST_PASSWORD = "tech12345"
 TECHNICIAN_PERMISSION_CODES = [
@@ -1460,13 +1509,23 @@ def deployment_commit_list() -> tuple[list[dict[str, Any]], dict[str, Any]]:
         full_hash = normalize_access_text(commit.get("commit")).lower()
         if not re.fullmatch(r"[0-9a-f]{40}", full_hash):
             continue
+        subject = normalize_access_text(commit.get("subject"))
+        raw_summary = commit.get("summary") if isinstance(commit.get("summary"), list) else []
+        summary = [
+            normalize_access_text(line)[:500]
+            for line in raw_summary
+            if normalize_access_text(line)
+        ][:8]
+        if not summary and subject:
+            summary = [f"This update includes: {subject.rstrip('.')}."]
         normalized.append(
             {
                 "commit": full_hash,
                 "short": normalize_access_text(commit.get("short")) or full_hash[:7],
                 "committedAt": normalize_access_text(commit.get("committedAt")),
                 "author": normalize_access_text(commit.get("author")),
-                "subject": normalize_access_text(commit.get("subject")),
+                "subject": subject,
+                "summary": summary,
             }
         )
     return normalized, data
@@ -1476,8 +1535,11 @@ def public_deployment_control_status() -> dict[str, Any]:
     commits, commit_data = deployment_commit_list()
     status = read_deployment_control_json("status.json")
     pending = read_deployment_control_json("request.json")
+    preflight = read_deployment_control_json("preflight.json")
+    pending_preflight = read_deployment_control_json("preflight-request.json")
     current_commit = os.getenv("APP_COMMIT", "").strip()
     deployed_commit = normalize_access_text(status.get("deployedCommit")) or current_commit
+    latest_commit = commits[0] if commits else {}
     return {
         "enabled": deployment_control_enabled(),
         "environment": os.getenv("APP_ENV", "").strip() or "unknown",
@@ -1498,9 +1560,17 @@ def public_deployment_control_status() -> dict[str, Any]:
             "message": "Manual deploy worker status is not available yet.",
         },
         "pendingRequest": pending or None,
+        "preflight": preflight or None,
+        "pendingPreflightRequest": pending_preflight or None,
         "remote": commit_data.get("remote") or "origin",
         "branch": commit_data.get("branch") or "master",
         "commitListUpdatedAt": commit_data.get("updatedAt"),
+        "latest": latest_commit or None,
+        "updateAvailable": bool(
+            latest_commit.get("commit")
+            and deployed_commit
+            and latest_commit.get("commit") != deployed_commit
+        ),
         "commits": commits,
     }
 
@@ -1541,6 +1611,27 @@ def write_deployment_request(commit: dict[str, Any], admin: dict[str, Any]) -> d
         "requestedAt": now_iso(),
     }
     tmp = control_path / f".request.{request_payload['id']}.json"
+    tmp.write_text(json.dumps(request_payload, indent=2))
+    tmp.replace(request_file)
+    return request_payload
+
+
+def write_deployment_preflight_request(admin: dict[str, Any]) -> dict[str, Any]:
+    control_path = deployment_control_path()
+    control_path.mkdir(parents=True, exist_ok=True)
+    request_file = control_path / "preflight-request.json"
+    if request_file.exists():
+        pending = read_deployment_control_json("preflight-request.json")
+        if pending:
+            return pending
+        raise HTTPException(status_code=409, detail="A deployment preflight is already queued")
+
+    request_payload = {
+        "id": f"preflight-{int(time.time())}-{str(uuid4())[:8]}",
+        "requestedBy": admin.get("username", "unknown"),
+        "requestedAt": now_iso(),
+    }
+    tmp = control_path / f".preflight-request.{request_payload['id']}.json"
     tmp.write_text(json.dumps(request_payload, indent=2))
     tmp.replace(request_file)
     return request_payload
@@ -1686,6 +1777,30 @@ def normalize_access_store(raw: dict[str, Any] | None) -> dict[str, Any]:
             "isBuiltin": True,
             "isLocked": False,
             "permissionCodes": expand_access_permission_codes(TECHNICIAN_PERMISSION_CODES)[0],
+        },
+        {
+            "id": "role-collector",
+            "name": "collector",
+            "description": "Mobile field collector access for customer payments and remittance submission.",
+            "isBuiltin": True,
+            "isLocked": False,
+            "permissionCodes": expand_access_permission_codes(COLLECTOR_PERMISSION_CODES)[0],
+        },
+        {
+            "id": "role-collection-supervisor",
+            "name": "collection_supervisor",
+            "description": "Collector operations supervision, remittance review, and variance resolution.",
+            "isBuiltin": True,
+            "isLocked": False,
+            "permissionCodes": expand_access_permission_codes(COLLECTION_SUPERVISOR_PERMISSION_CODES)[0],
+        },
+        {
+            "id": "role-finance-officer",
+            "name": "finance_officer",
+            "description": "Finance receipt and reconciliation access for Collector remittances.",
+            "isBuiltin": True,
+            "isLocked": False,
+            "permissionCodes": expand_access_permission_codes(FINANCE_OFFICER_PERMISSION_CODES)[0],
         },
     ]
     for role in default_roles:
@@ -3224,10 +3339,32 @@ def get_deployments(admin=Depends(require_admin)):
     return public_deployment_control_status()
 
 
+@router.get("/api/system-settings/deployments/commits/{selected_commit}")
+def get_deployment_commit(selected_commit: str, admin=Depends(require_admin)):
+    return resolve_deployment_commit(selected_commit)
+
+
+@router.post("/api/system-settings/deployments/preflight")
+def request_deployment_preflight(admin=Depends(require_admin)):
+    if not deployment_control_enabled():
+        raise HTTPException(status_code=400, detail="System Update is only enabled in production.")
+    request_payload = write_deployment_preflight_request(admin)
+    add_audit(
+        "production_deploy_preflight_requested",
+        "ProductionDeployment",
+        request_payload["id"],
+        {"requestedAt": request_payload["requestedAt"]},
+        admin["username"],
+    )
+    status = public_deployment_control_status()
+    status["message"] = "Deployment preflight queued."
+    return status
+
+
 @router.post("/api/system-settings/deployments/deploy")
 def request_deployment(payload: DeploymentRequestPayload, admin=Depends(require_admin)):
     if not deployment_control_enabled():
-        raise HTTPException(status_code=400, detail="Manual production deployment is only enabled in production.")
+        raise HTTPException(status_code=400, detail="System Update is only enabled in production.")
     commit = resolve_deployment_commit(payload.commit)
     request_payload = write_deployment_request(commit, admin)
     add_audit(

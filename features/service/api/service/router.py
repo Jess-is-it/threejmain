@@ -35,6 +35,7 @@ _customer_resolver: Callable[[str], dict[str, Any]] | None = None
 _customer_searcher: Callable[[str], list[dict[str, Any]]] | None = None
 _customer_seed: Callable[[], None] | None = None
 _ticket_creator: Callable[[dict[str, Any], str], dict[str, Any]] | None = None
+_customer_status_syncer: Callable[[str, str, dict[str, Any] | None, str], dict[str, Any]] | None = None
 
 SERVICE_STORAGE_MODE = os.getenv("SERVICE_STORAGE") or ("postgres" if os.getenv("DATABASE_URL") else "memory")
 SERVICE_SEED_CATALOG = os.getenv("SERVICE_SEED_CATALOG", "true").strip().lower() in {"1", "true", "yes", "on"}
@@ -232,14 +233,16 @@ def configure_service(
     customer_searcher: Callable[[str], list[dict[str, Any]]] | None = None,
     customer_seed: Callable[[], None] | None = None,
     ticket_creator: Callable[[dict[str, Any], str], dict[str, Any]] | None = None,
+    customer_status_syncer: Callable[[str, str, dict[str, Any] | None, str], dict[str, Any]] | None = None,
 ) -> None:
-    global _current_admin, _audit_logger, _customer_resolver, _customer_searcher, _customer_seed, _ticket_creator
+    global _current_admin, _audit_logger, _customer_resolver, _customer_searcher, _customer_seed, _ticket_creator, _customer_status_syncer
     _current_admin = current_admin
     _audit_logger = audit_logger
     _customer_resolver = customer_resolver
     _customer_searcher = customer_searcher
     _customer_seed = customer_seed
     _ticket_creator = ticket_creator
+    _customer_status_syncer = customer_status_syncer
 
 
 def require_admin(authorization: str | None = Header(default=None)):
@@ -647,6 +650,56 @@ def visible_orders() -> list[dict[str, Any]]:
 
 def visible_accounts() -> list[dict[str, Any]]:
     return [account for account in service_accounts if not account.get("deletedAt")]
+
+
+def customer_accounts(customer_id: str) -> list[dict[str, Any]]:
+    return [account for account in service_accounts if account.get("customerId") == customer_id]
+
+
+def customer_profile_status_from_accounts(customer_id: str, empty_status: str = "") -> str:
+    rows = customer_accounts(customer_id)
+    if not rows:
+        return empty_status
+    active_rows = [account for account in rows if not account.get("deletedAt")]
+    active_statuses = {account.get("status") for account in active_rows}
+    if active_statuses.intersection({"ACTIVE", "PENDING_DISCONNECTION"}):
+        return "ACTIVE"
+    if active_statuses.intersection({"SUSPENDED", "PENDING_RECONNECTION"}):
+        return "SUSPENDED"
+    if active_statuses.intersection({"PENDING_INSTALLATION"}):
+        return "PENDING"
+    return "INACTIVE"
+
+
+def sync_customer_profile_status(
+    customer_id: str,
+    actor: str,
+    details: dict[str, Any] | None = None,
+    empty_status: str = "",
+) -> None:
+    if _customer_status_syncer is None or not customer_id:
+        return
+    status = customer_profile_status_from_accounts(customer_id, empty_status)
+    if not status:
+        return
+    try:
+        _customer_status_syncer(customer_id, status, details, actor)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        logger.warning("Skipping Customer Profiling status sync for missing customer %s", customer_id)
+    except Exception:
+        logger.exception("Customer Profiling status sync failed for customer %s", customer_id)
+
+
+def sync_all_customer_profile_statuses(actor: str = "system") -> None:
+    customer_ids = sorted({account.get("customerId") for account in service_accounts if account.get("customerId")})
+    for customer_id in customer_ids:
+        sync_customer_profile_status(
+            customer_id,
+            actor,
+            {"source": "service_account_backfill", "serviceAccountCount": len(customer_accounts(customer_id))},
+        )
 
 
 def find_catalog(catalog_id: str) -> dict[str, Any]:
@@ -1085,6 +1138,11 @@ def create_or_activate_service_account_from_order(order: dict[str, Any], actor: 
     else:
         if account.get("status") == "ACTIVE" and not is_active:
             attach_service_account(order, account)
+            sync_customer_profile_status(
+                account.get("customerId", ""),
+                actor,
+                {"source": "service_account_lifecycle", "serviceAccountId": account["id"], "orderId": order["id"]},
+            )
             return account
         record = account_payload_to_record(payload, account)
         account.update(record)
@@ -1092,6 +1150,11 @@ def create_or_activate_service_account_from_order(order: dict[str, Any], actor: 
         account["updatedAt"] = timestamp
         add_audit("service_account_activated_from_order", "ServiceAccount", account["id"], {"orderId": order["id"], "status": status}, actor)
     attach_service_account(order, account)
+    sync_customer_profile_status(
+        account.get("customerId", ""),
+        actor,
+        {"source": "service_account_lifecycle", "serviceAccountId": account["id"], "orderId": order["id"]},
+    )
     return account
 
 
@@ -1137,6 +1200,7 @@ def apply_order_lifecycle_effects(order: dict[str, Any], actor: str) -> None:
     if not order.get("serviceAccountId"):
         return
     account = find_account(order["serviceAccountId"])
+    previous_customer_id = account.get("customerId", "")
     changed = False
     if order_type == "DISCONNECTION" and status in ["APPROVED", "IN_PROGRESS"]:
         mark_account_status(account, "PENDING_DISCONNECTION", actor, order)
@@ -1147,6 +1211,11 @@ def apply_order_lifecycle_effects(order: dict[str, Any], actor: str) -> None:
     if status != "COMPLETED":
         if changed:
             add_audit("service_account_updated_from_order", "ServiceAccount", account["id"], {"orderId": order["id"], "orderType": order_type}, actor)
+            sync_customer_profile_status(
+                account.get("customerId", ""),
+                actor,
+                {"source": "service_order_lifecycle", "serviceAccountId": account["id"], "orderId": order["id"], "orderType": order_type},
+            )
         attach_service_account(order, account)
         return
     if order_type in ["PLAN_UPGRADE", "PLAN_DOWNGRADE"]:
@@ -1177,6 +1246,18 @@ def apply_order_lifecycle_effects(order: dict[str, Any], actor: str) -> None:
     if changed:
         account["updatedAt"] = now_iso()
         add_audit("service_account_updated_from_order", "ServiceAccount", account["id"], {"orderId": order["id"], "orderType": order_type}, actor)
+        sync_customer_profile_status(
+            account.get("customerId", ""),
+            actor,
+            {"source": "service_order_lifecycle", "serviceAccountId": account["id"], "orderId": order["id"], "orderType": order_type},
+        )
+        if previous_customer_id and previous_customer_id != account.get("customerId"):
+            sync_customer_profile_status(
+            previous_customer_id,
+            actor,
+            {"source": "service_order_lifecycle", "serviceAccountId": account["id"], "orderId": order["id"], "orderType": order_type, "ownershipTransferred": True},
+            empty_status="INACTIVE",
+        )
     attach_service_account(order, account)
 
 
@@ -1287,6 +1368,7 @@ def seed_service_data() -> None:
     ensure_service_data_loaded()
     seed_service_catalog()
     seed_service_accounts()
+    sync_all_customer_profile_statuses()
 
 
 def seed_service_accounts() -> bool:
@@ -1435,12 +1517,25 @@ def create_service_account(payload: ServiceAccountPayload, admin=Depends(require
 def update_service_account(account_id: str, payload: ServiceAccountPayload, admin=Depends(require_admin)):
     seed_service_data()
     current = find_account(account_id)
+    previous_customer_id = current.get("customerId", "")
     record = account_payload_to_record(payload, current)
     if any(account.get("serviceReference") == record["serviceReference"] and account["id"] != account_id and not account.get("deletedAt") for account in service_accounts):
         raise HTTPException(status_code=409, detail="Service reference already exists")
     current.update(record)
     current["updatedAt"] = now_iso()
     add_audit("service_account_updated", "ServiceAccount", current["id"], {"customerId": current["customerId"]}, admin["username"])
+    sync_customer_profile_status(
+        current.get("customerId", ""),
+        admin["username"],
+        {"source": "service_account_update", "serviceAccountId": current["id"]},
+    )
+    if previous_customer_id and previous_customer_id != current.get("customerId"):
+        sync_customer_profile_status(
+            previous_customer_id,
+            admin["username"],
+            {"source": "service_account_update", "serviceAccountId": current["id"], "ownershipTransferred": True},
+            empty_status="INACTIVE",
+        )
     persist_service_state()
     return account_summary(current)
 
@@ -1453,6 +1548,11 @@ def archive_service_account(account_id: str, admin=Depends(require_admin)):
     current["deletedAt"] = now_iso()
     current["updatedAt"] = current["deletedAt"]
     add_audit("service_account_archived", "ServiceAccount", current["id"], {"customerId": current["customerId"]}, admin["username"])
+    sync_customer_profile_status(
+        current.get("customerId", ""),
+        admin["username"],
+        {"source": "service_account_archive", "serviceAccountId": current["id"]},
+    )
     persist_service_state()
     return {"status": "ok"}
 
