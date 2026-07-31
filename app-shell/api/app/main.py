@@ -1,8 +1,9 @@
+import json
 import os
 import shutil
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -122,6 +123,7 @@ admin_user = {
 }
 
 active_tokens: dict[str, dict[str, Any]] = {}
+active_session_metadata: dict[str, dict[str, Any]] = {}
 audit_logs: list[dict[str, Any]] = []
 
 settings = {
@@ -301,6 +303,139 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def parse_iso_datetime(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value or ""))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def auth_session_store_path() -> Path | None:
+    configured = os.getenv("AUTH_SESSION_STORE_PATH", "").strip()
+    if configured:
+        return Path(configured)
+    data_dir = Path("/app/data")
+    if data_dir.is_dir():
+        return data_dir / "auth_sessions.json"
+    return None
+
+
+def auth_session_ttl_seconds() -> int:
+    try:
+        hours = float(os.getenv("AUTH_SESSION_TTL_HOURS", "24"))
+    except ValueError:
+        hours = 24
+    hours = min(max(hours, 1), 168)
+    return int(hours * 3600)
+
+
+def persistable_session_user(user: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in user.items()
+        if key not in {"password", "passwordHash"}
+    }
+
+
+def hydrate_session_user(user: dict[str, Any]) -> dict[str, Any]:
+    safe_user = persistable_session_user(user)
+    if safe_user.get("auth_source") == "default_admin" or safe_user.get("id") == admin_user["id"]:
+        return {**admin_user, **safe_user}
+    return safe_user
+
+
+def auth_session_expired(metadata: dict[str, Any]) -> bool:
+    expires_at = parse_iso_datetime(metadata.get("expiresAt"))
+    return not expires_at or expires_at <= datetime.now(timezone.utc)
+
+
+def prune_expired_auth_sessions() -> bool:
+    expired_tokens = [
+        token
+        for token, metadata in active_session_metadata.items()
+        if auth_session_expired(metadata)
+    ]
+    for token in expired_tokens:
+        active_session_metadata.pop(token, None)
+        active_tokens.pop(token, None)
+    return bool(expired_tokens)
+
+
+def save_persisted_auth_sessions() -> None:
+    path = auth_session_store_path()
+    if not path:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "updatedAt": now_iso(),
+            "sessions": {
+                token: {
+                    **active_session_metadata.get(token, {}),
+                    "user": persistable_session_user(user),
+                }
+                for token, user in active_tokens.items()
+                if token in active_session_metadata
+            },
+        }
+        tmp = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        tmp.write_text(json.dumps(payload, indent=2))
+        try:
+            tmp.chmod(0o600)
+        except OSError:
+            pass
+        tmp.replace(path)
+    except OSError:
+        return
+
+
+def load_persisted_auth_sessions() -> None:
+    path = auth_session_store_path()
+    if not path or not path.exists():
+        return
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, ValueError, TypeError):
+        return
+    sessions = payload.get("sessions") if isinstance(payload, dict) else None
+    if not isinstance(sessions, dict):
+        return
+    changed = False
+    for token, record in sessions.items():
+        if not isinstance(token, str) or not token:
+            continue
+        if not isinstance(record, dict) or not isinstance(record.get("user"), dict):
+            changed = True
+            continue
+        metadata = {
+            "issuedAt": str(record.get("issuedAt") or ""),
+            "expiresAt": str(record.get("expiresAt") or ""),
+        }
+        if auth_session_expired(metadata):
+            changed = True
+            continue
+        active_tokens[token] = hydrate_session_user(record["user"])
+        active_session_metadata[token] = metadata
+    if prune_expired_auth_sessions() or changed:
+        save_persisted_auth_sessions()
+
+
+def issue_auth_token(user: dict[str, Any]) -> str:
+    issued_at = datetime.now(timezone.utc)
+    expires_at = issued_at + timedelta(seconds=auth_session_ttl_seconds())
+    token = str(uuid4())
+    active_tokens[token] = hydrate_session_user(user)
+    active_session_metadata[token] = {
+        "issuedAt": issued_at.isoformat(),
+        "expiresAt": expires_at.isoformat(),
+    }
+    save_persisted_auth_sessions()
+    return token
+
+
 def environment_label(environment: str) -> str:
     normalized = (environment or "local").strip().lower()
     labels = {
@@ -361,6 +496,8 @@ def current_admin(authorization: str | None = Header(default=None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Authentication required")
     token = authorization.removeprefix("Bearer ").strip()
+    if prune_expired_auth_sessions():
+        save_persisted_auth_sessions()
     session_user = active_tokens.get(token)
     if not session_user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
@@ -626,6 +763,7 @@ app.include_router(techportal_router)
 
 @app.on_event("startup")
 def seed_logs():
+    load_persisted_auth_sessions()
     run_database_migrations()
     seed_module_data()
     sync_module_metrics()
@@ -655,8 +793,7 @@ def system_version():
 def login(payload: LoginPayload, request: Request):
     access_user = authenticate_access_user(payload.username, payload.password)
     if access_user:
-        token = str(uuid4())
-        active_tokens[token] = access_user
+        token = issue_auth_token(access_user)
         add_audit(
             "login_success",
             "system_access_user",
@@ -669,8 +806,7 @@ def login(payload: LoginPayload, request: Request):
     if payload.username != admin_user["username"] or payload.password != admin_user["password"]:
         add_audit("login_failed", "admin", payload.username, {"client": request.client.host if request.client else None})
         raise HTTPException(status_code=401, detail="Invalid username or password")
-    token = str(uuid4())
-    active_tokens[token] = admin_user
+    token = issue_auth_token(admin_user)
     add_audit("login_success", "admin", admin_user["id"], {"username": admin_user["username"]}, admin_user["username"])
     return {"access_token": token, "token_type": "bearer", "user": public_user(admin_user)}
 
@@ -678,7 +814,10 @@ def login(payload: LoginPayload, request: Request):
 @app.post("/api/auth/logout")
 def logout(authorization: str | None = Header(default=None)):
     if authorization and authorization.startswith("Bearer "):
-        active_tokens.pop(authorization.removeprefix("Bearer ").strip(), None)
+        token = authorization.removeprefix("Bearer ").strip()
+        active_tokens.pop(token, None)
+        active_session_metadata.pop(token, None)
+        save_persisted_auth_sessions()
     return {"status": "ok"}
 
 

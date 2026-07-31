@@ -247,6 +247,13 @@ function token() {
   return localStorage.getItem('threejmain_token');
 }
 
+function notifyAuthExpired() {
+  localStorage.removeItem('threejmain_token');
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('threejmain:auth-expired'));
+  }
+}
+
 async function request(path, options = {}) {
   const res = await fetch(`${API}${path}`, {
     ...options,
@@ -257,7 +264,12 @@ async function request(path, options = {}) {
     }
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || 'Request failed');
+  if (!res.ok) {
+    const error = new Error(data.detail || 'Request failed');
+    error.status = res.status;
+    if (res.status === 401) notifyAuthExpired();
+    throw error;
+  }
   return data;
 }
 
@@ -958,11 +970,29 @@ function App() {
 
   useEffect(() => { loadPublicShell().catch(() => {}); }, []);
   useEffect(() => {
+    const onAuthExpired = () => {
+      localStorage.removeItem('threejmain_token');
+      setMe(null);
+      setDashboard(null);
+      setModules([]);
+      setAuthed(false);
+    };
+    window.addEventListener('threejmain:auth-expired', onAuthExpired);
+    return () => window.removeEventListener('threejmain:auth-expired', onAuthExpired);
+  }, []);
+  useEffect(() => {
     const onPopState = () => setPage(pageFromLocation());
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
-  useEffect(() => { if (authed) refresh().catch(() => setAuthed(false)); }, [authed]);
+  useEffect(() => {
+    if (authed) {
+      refresh().catch((err) => {
+        if (err?.status === 401) localStorage.removeItem('threejmain_token');
+        setAuthed(false);
+      });
+    }
+  }, [authed]);
   useEffect(() => {
     if (authed && technicianUser && !TECHNICIAN_ALLOWED_PAGES.has(page)) {
       navigate('Tech Portal', true);
