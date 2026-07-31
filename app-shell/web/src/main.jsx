@@ -268,6 +268,23 @@ async function publicRequest(path) {
   return data;
 }
 
+function applyDocumentBranding(branding) {
+  const displayName = branding?.display_name || '3J ISP Management';
+  document.title = displayName;
+  const existing = document.querySelector('link[data-threejmain-favicon="true"]');
+  if (!branding?.browser_logo_url) {
+    existing?.remove();
+    return;
+  }
+  const favicon = existing || document.createElement('link');
+  favicon.setAttribute('data-threejmain-favicon', 'true');
+  favicon.rel = 'icon';
+  favicon.href = branding.browser_logo_url;
+  if (branding.browser_logo_type) favicon.type = branding.browser_logo_type;
+  else favicon.removeAttribute('type');
+  if (!existing) document.head.appendChild(favicon);
+}
+
 function navItems() {
   const flatten = (items) => items.flatMap((item) => [item, ...flatten(item.children || [])]);
   return flatten(moduleNav);
@@ -954,6 +971,7 @@ function App() {
     }
   }, [authed, technicianUser, collectorPortalUser, page]);
   useEffect(() => { document.documentElement.style.setProperty('--tblr-primary', branding.accent_color || '#206bc4'); }, [branding.accent_color]);
+  useEffect(() => { applyDocumentBranding(branding); }, [branding.display_name, branding.browser_logo_url, branding.browser_logo_type]);
   useEffect(() => {
     if (!authed) return undefined;
     let mounted = true;

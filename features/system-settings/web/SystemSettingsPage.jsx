@@ -191,6 +191,28 @@ function hasCoordinates(location) {
 
 const AVATAR_UPLOAD_ACCEPT = 'image/png,image/jpeg,image/webp,image/gif';
 const DEFAULT_AVATAR_MAX_BYTES = 1048576;
+const BRANDING_UPLOADS = {
+  company_logo: {
+    label: 'Company Logo',
+    endpoint: '/system-settings/branding/company-logo',
+    accept: 'image/png,image/jpeg,image/webp,image/gif',
+    maxBytes: 5 * 1024 * 1024,
+    help: 'Displayed in the left navigation header.',
+    recommendation: 'Recommended: transparent PNG, height 32-40px.',
+    empty: 'No logo uploaded yet.',
+    button: 'Upload Company Logo'
+  },
+  browser_logo: {
+    label: 'Browser Page Logo',
+    endpoint: '/system-settings/branding/browser-logo',
+    accept: 'image/png,image/jpeg,image/webp,image/gif,image/x-icon,image/vnd.microsoft.icon,.ico',
+    maxBytes: 2 * 1024 * 1024,
+    help: 'Used as the browser tab icon.',
+    recommendation: 'Recommended: square icon such as 64 x 64 or 128 x 128 PNG.',
+    empty: 'No browser logo uploaded yet.',
+    button: 'Upload Browser Logo'
+  }
+};
 
 function formatBytes(bytes) {
   if (!bytes && bytes !== 0) return '-';
@@ -229,6 +251,30 @@ function readFileAsText(file) {
     reader.onerror = () => reject(new Error('Unable to read backup file.'));
     reader.readAsText(file);
   });
+}
+
+function normalizeUploadMime(type) {
+  const normalized = String(type || '').trim().toLowerCase();
+  if (normalized === 'image/jpg') return 'image/jpeg';
+  if (normalized === 'image/vnd.microsoft.icon') return 'image/x-icon';
+  return normalized;
+}
+
+function browserIcoFile(file) {
+  return String(file?.name || '').toLowerCase().endsWith('.ico');
+}
+
+function brandingFileMime(assetId, file) {
+  const normalized = normalizeUploadMime(file?.type);
+  if (normalized) return normalized;
+  return assetId === 'browser_logo' && browserIcoFile(file) ? 'image/x-icon' : '';
+}
+
+function brandingFileAccepted(assetId, file) {
+  const config = BRANDING_UPLOADS[assetId];
+  const accepted = config.accept.split(',').map((item) => normalizeUploadMime(item)).filter((item) => item && !item.startsWith('.'));
+  const mime = brandingFileMime(assetId, file);
+  return accepted.includes(mime) || (assetId === 'browser_logo' && browserIcoFile(file));
 }
 
 function LocationManagementTab() {
@@ -3746,6 +3792,7 @@ export default function SystemSettingsPage({ refreshShell }) {
   const [settings, setSettings] = useState(null);
   const [ports, setPorts] = useState([]);
   const [message, setMessage] = useState('');
+  const [brandingUploadBusy, setBrandingUploadBusy] = useState('');
 
   async function load() {
     const [nextSettings, nextPorts] = await Promise.all([
@@ -3778,7 +3825,51 @@ export default function SystemSettingsPage({ refreshShell }) {
     refreshShell?.();
   }
 
+  async function uploadBrandingImage(assetId, file, input) {
+    if (!file) return;
+    const config = BRANDING_UPLOADS[assetId];
+    setMessage('');
+    if (!brandingFileAccepted(assetId, file)) {
+      setMessage(assetId === 'browser_logo'
+        ? 'Accepted browser logo formats are PNG, JPG/JPEG, WebP, GIF, and ICO.'
+        : 'Accepted company logo formats are PNG, JPG/JPEG, WebP, and GIF.');
+      input.value = '';
+      return;
+    }
+    if (file.size > config.maxBytes) {
+      setMessage(`${config.label} must be ${formatBytes(config.maxBytes)} or smaller.`);
+      input.value = '';
+      return;
+    }
+    setBrandingUploadBusy(assetId);
+    try {
+      const mimeType = brandingFileMime(assetId, file);
+      let dataUrl = await readFileAsDataUrl(file);
+      if (mimeType && /^data:[^;]*;base64,/.test(dataUrl) && dataUrl.startsWith('data:;base64,')) {
+        dataUrl = dataUrl.replace(/^data:[^;]*/, `data:${mimeType}`);
+      }
+      const saved = await request(config.endpoint, {
+        method: 'PUT',
+        body: JSON.stringify({
+          data_url: dataUrl,
+          file_name: file.name,
+          mime_type: mimeType
+        })
+      });
+      setSettings(saved);
+      setMessage(`${config.label} updated.`);
+      refreshShell?.();
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setBrandingUploadBusy('');
+      input.value = '';
+    }
+  }
+
   if (!settings) return <div className="empty">Loading settings...</div>;
+  const branding = settings.branding || {};
+  const business = settings.business || {};
 
   return (
     <div className="system-settings-module">
@@ -3794,25 +3885,72 @@ export default function SystemSettingsPage({ refreshShell }) {
         <Card title="Branding and Business Profile" icon={IconSettings}>
           <form onSubmit={save}>
             <div className="row g-3">
+              {[
+                { id: 'company_logo', previewClass: 'company', url: branding.company_logo_url, alt: 'Company Logo' },
+                { id: 'browser_logo', previewClass: 'browser', url: branding.browser_logo_url, alt: 'Browser Page Logo' }
+              ].map((asset) => {
+                const config = BRANDING_UPLOADS[asset.id];
+                const record = branding[asset.id] || {};
+                const busy = brandingUploadBusy === asset.id;
+                return (
+                  <div className="col-12 col-lg-6" key={asset.id}>
+                    <div className="system-settings-logo-upload">
+                      <div className="d-flex align-items-start justify-content-between gap-3">
+                        <div>
+                          <label className="form-label mb-1">{config.label}</label>
+                          <div className="text-muted small">{config.help}</div>
+                        </div>
+                        <span className="badge bg-blue-lt text-blue"><IconPhoto size={16} className="me-1" />Logo</span>
+                      </div>
+                      <input
+                        className="form-control mt-3"
+                        type="file"
+                        accept={config.accept}
+                        disabled={busy}
+                        onChange={(e) => uploadBrandingImage(asset.id, e.target.files?.[0], e.target)}
+                      />
+                      <div className="text-muted small mt-1">{config.recommendation} Max {formatBytes(config.maxBytes)}.</div>
+                      <div className="system-settings-logo-preview-row">
+                        {asset.url ? (
+                          <div className={`system-settings-logo-preview ${asset.previewClass}`}>
+                            <img src={asset.url} alt={asset.alt} />
+                          </div>
+                        ) : (
+                          <div className="system-settings-logo-empty">{config.empty}</div>
+                        )}
+                        <div className="small text-muted">
+                          {busy ? (
+                            <span><IconUpload size={15} className="me-1" />Uploading...</span>
+                          ) : record?.updated_at ? (
+                            <span>Updated {formatDateTime(record.updated_at)}</span>
+                          ) : (
+                            <span>Select an image to upload.</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
               <div className="col-md-6">
                 <label className="form-label">System Display Name</label>
-                <input className="form-control" value={settings.branding.display_name || ''} onChange={(e) => setSettings({ ...settings, branding: { ...settings.branding, display_name: e.target.value } })} />
+                <input className="form-control" value={branding.display_name || ''} onChange={(e) => setSettings({ ...settings, branding: { ...branding, display_name: e.target.value } })} />
               </div>
               <div className="col-md-6">
                 <label className="form-label">Subtitle</label>
-                <input className="form-control" value={settings.branding.portal_subtitle || ''} onChange={(e) => setSettings({ ...settings, branding: { ...settings.branding, portal_subtitle: e.target.value } })} />
+                <input className="form-control" value={branding.portal_subtitle || ''} onChange={(e) => setSettings({ ...settings, branding: { ...branding, portal_subtitle: e.target.value } })} />
               </div>
               <div className="col-md-6">
                 <label className="form-label">Business Name</label>
-                <input className="form-control" value={settings.business.name || ''} onChange={(e) => setSettings({ ...settings, business: { ...settings.business, name: e.target.value } })} />
+                <input className="form-control" value={business.name || ''} onChange={(e) => setSettings({ ...settings, business: { ...business, name: e.target.value } })} />
               </div>
               <div className="col-md-3">
                 <label className="form-label">Currency</label>
-                <input className="form-control" value={settings.business.billing_currency || ''} onChange={(e) => setSettings({ ...settings, business: { ...settings.business, billing_currency: e.target.value } })} />
+                <input className="form-control" value={business.billing_currency || ''} onChange={(e) => setSettings({ ...settings, business: { ...business, billing_currency: e.target.value } })} />
               </div>
               <div className="col-md-3">
                 <label className="form-label">Accent Color</label>
-                <input className="form-control form-control-color" type="color" value={settings.branding.accent_color || '#206bc4'} onChange={(e) => setSettings({ ...settings, branding: { ...settings.branding, accent_color: e.target.value } })} />
+                <input className="form-control form-control-color" type="color" value={branding.accent_color || '#206bc4'} onChange={(e) => setSettings({ ...settings, branding: { ...branding, accent_color: e.target.value } })} />
               </div>
               <div className="col-12 text-end">
                 <button className="btn btn-primary"><IconDeviceFloppy size={18} className="me-2" />Save Settings</button>

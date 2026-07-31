@@ -4,7 +4,7 @@ System Settings owns operator-facing configuration for the ISP management shell.
 
 ## Scope
 
-- Branding and business profile fields
+- Branding and business profile fields, including company logo and browser page logo uploads copied from the old System Settings -> General flow
 - Location Management for reusable site addresses, municipality/barangay details, coordinates, and geocoder autofill
 - Avatar mood uploads for customer-information screens, separated by Male/Female customer avatar slots
 - Avatar emotion scoring guide for customer-facing module behavior badges
@@ -34,6 +34,12 @@ system-settings/
 ## API
 
 - Prefix: `/api/system-settings`
+- Branding endpoints:
+  - `GET /api/system-settings/settings`
+  - `PATCH /api/system-settings/settings`
+  - `PUT /api/system-settings/branding/company-logo`
+  - `PUT /api/system-settings/branding/browser-logo`
+  - Public shell routes: `GET /api/public/branding`, `GET /api/public/branding/company-logo`, `GET /api/public/branding/browser-logo`
 - Avatar endpoints:
   - `GET /api/system-settings/avatars`
   - `PATCH /api/system-settings/avatar-emotion-settings`
@@ -105,7 +111,7 @@ system-settings/
 
 The app-shell configures this module with shared auth, audit logging, the shared settings store, and the port registry provider. The Ports tab lists threejmain Production ports (`8180` web, `8100` API), threejmain Staging ports (`8280` web, `8200` API), their internal PostgreSQL container ports, and existing 3JCentralPisowifi reservations.
 Location Management preloads the existing Customer Profiling service-area barangays and exposes edit actions so incomplete customer-created locations can be completed later. The table includes a switch-driven multiple select mode for bulk deleting selected locations; edit/add actions are hidden while selection mode is active. Deleted preloaded locations are suppressed from automatic reseeding and persisted.
-Branding/business/deployment settings, Location records, deleted preload markers, Network Settings image assets, shared map provider settings, avatar images, avatar emotion guide settings, OPENAI settings, and A2P Messaging settings/logs are written to `SYSTEM_SETTINGS_DATA_PATH` (`/app/data/system_settings.json` in Docker Compose) so they survive API container restarts and rebuilds through the `threejmain_api_data` named volume. Accepted image asset formats are PNG, JPG/JPEG, and WebP, with a 512 KB maximum per image; accepted avatar formats are PNG, JPG/JPEG, WebP, and GIF, with a 1 MB maximum per image. Long-term production storage should still move to shared PostgreSQL and file/object storage before production use.
+Branding/business/deployment settings, uploaded company/browser logo assets, Location records, deleted preload markers, Network Settings image assets, shared map provider settings, avatar images, avatar emotion guide settings, OPENAI settings, and A2P Messaging settings/logs are written to `SYSTEM_SETTINGS_DATA_PATH` (`/app/data/system_settings.json` in Docker Compose) so they survive API container restarts and rebuilds through the `threejmain_api_data` named volume. Company logo uploads accept PNG, JPG/JPEG, WebP, and GIF up to 5 MB; browser page logo uploads accept PNG, JPG/JPEG, WebP, GIF, and ICO up to 2 MB. Network Settings image assets accept PNG, JPG/JPEG, and WebP with a 512 KB maximum per image; avatar formats are PNG, JPG/JPEG, WebP, and GIF with a 1 MB maximum per image. Long-term production storage should still move to shared PostgreSQL and file/object storage before production use.
 Reusable frontend avatar behavior code lives in `web/avatarEmotion.js` and `web/CustomerEmotionAvatar.jsx`. Customer-facing modules can import the component or resolver to display the current avatar, gender slot, mood score, and emotion label from the shared Avatar settings.
 OPENAI settings are stored in the same `SYSTEM_SETTINGS_DATA_PATH` file. The API returns only masked key metadata to the frontend, stores the selected model, selected reasoning effort, and optional organization/project ids, exposes current model pricing metadata, and tests connectivity through the OpenAI Responses API.
 A2P Messaging settings are stored in the same `SYSTEM_SETTINGS_DATA_PATH` file. The API returns only masked API key/password metadata to the frontend, sends Smart Messaging Suite test SMS requests through the saved configuration, stores local message logs, and exposes generated success/failure notifications to the shared top-nav bell through `/api/admin/notifications`.

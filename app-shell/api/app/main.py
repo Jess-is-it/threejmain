@@ -79,6 +79,8 @@ from system_settings import (
     authenticate_access_user,
     change_access_session_password,
     configure_system_settings,
+    public_branding_asset_response,
+    public_branding_payload,
     router as system_settings_router,
     send_a2p_sms_message,
     update_access_session_user,
@@ -129,6 +131,7 @@ settings = {
         "accent_color": "#206bc4",
         "company_logo_url": None,
         "browser_logo_url": None,
+        "browser_logo_type": "",
     },
     "business": {
         "name": "3J Internet Services",
@@ -681,7 +684,17 @@ def logout(authorization: str | None = Header(default=None)):
 
 @app.get("/api/public/branding")
 def public_branding():
-    return settings["branding"]
+    return public_branding_payload()
+
+
+@app.get("/api/public/branding/company-logo")
+def public_company_logo():
+    return public_branding_asset_response("company_logo")
+
+
+@app.get("/api/public/branding/browser-logo")
+def public_browser_logo():
+    return public_branding_asset_response("browser_logo")
 
 
 @app.get("/api/me")
