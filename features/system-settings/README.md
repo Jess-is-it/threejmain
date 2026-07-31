@@ -12,6 +12,7 @@ System Settings owns operator-facing configuration for the ISP management shell.
 - A2P Messaging settings for Smart Messaging Suite API credentials, endpoint paths, sender IDs, credit checks, test SMS, and local message logs
 - Backup tab for configuration backup/restore and full system backup/restore of supported persistent app data
 - Access tab for system-login Auth Settings, Permissions, Roles, and Users
+- Graphify tab for viewing the host-generated development knowledge graph, architecture report, graph freshness, and AI workflow commands
 - Maps tab for shared map tile providers grouped by vendor/type tabs, default provider selection, provider max zoom, attribution, optional public API key/token values, and Google Map Tiles session metadata used by Network Settings and Customer Profiling map surfaces
 - Images tab for Network Settings OLT, NAP, PLC Splitter 1x8, and PLC Splitter 1x16 image assets
 - System port registry viewer with separate Production and Staging labels for threejmain web/API ports
@@ -82,6 +83,11 @@ system-settings/
   - `GET /api/system-settings/deployments/commits/{selected_commit}`
   - `POST /api/system-settings/deployments/preflight`
   - `POST /api/system-settings/deployments/deploy`
+- Graphify endpoints:
+  - `GET /api/system-settings/graphify`
+  - `POST /api/system-settings/graphify/artifact-tickets/{kind}`
+  - `GET /api/system-settings/graphify/graph`
+  - `GET /api/system-settings/graphify/report`
 - Map provider endpoints:
   - `GET /api/system-settings/map-providers`
   - `PATCH /api/system-settings/map-providers`
@@ -104,5 +110,6 @@ Reusable frontend avatar behavior code lives in `web/avatarEmotion.js` and `web/
 OPENAI settings are stored in the same `SYSTEM_SETTINGS_DATA_PATH` file. The API returns only masked key metadata to the frontend, stores the selected model, selected reasoning effort, and optional organization/project ids, exposes current model pricing metadata, and tests connectivity through the OpenAI Responses API.
 A2P Messaging settings are stored in the same `SYSTEM_SETTINGS_DATA_PATH` file. The API returns only masked API key/password metadata to the frontend, sends Smart Messaging Suite test SMS requests through the saved configuration, stores local message logs, and exposes generated success/failure notifications to the shared top-nav bell through `/api/admin/notifications`.
 Access settings are also stored in `SYSTEM_SETTINGS_DATA_PATH` for this shell. The Access tab mirrors the old `/home/threejmon` System Settings -> Access surface: Auth Settings, Permissions, Roles, and Users. Role and user records are in-memory/persisted JSON for now, and app-shell login now accepts Access users while keeping the legacy admin fallback. The first Tech Portal pass seeds Tech Portal permissions, a built-in `technician` role, and temporary test user `tech` / `tech12345`.
+Graphify is copied from the old `/opt/threejnotif` System Settings -> Graphify pattern but adapted for this React/FastAPI app. The API reads `THREEJMAIN_GRAPHIFY_OUT_DIR` (Docker Compose sets `/graphify-out`) and serves only allowlisted `graph.html` and `GRAPH_REPORT.md` artifacts through authenticated routes. The frontend requests a short-lived artifact ticket before opening those routes because this app uses bearer tokens instead of session cookies. The app never runs Graphify commands; refresh from the host with `graphify extract . --code-only --max-workers 2`, `graphify cluster-only . --no-label`, or `graphify update .`.
 Backup downloads are JSON files. Configuration backups include app-shell branding/business/deployment settings plus persisted System Settings and Network Settings data, including MikroTik API routers and SNMP OLT credentials for restore. Full backups add supported PostgreSQL application tables such as Customer Profiling. Backup files can contain secrets and should be stored securely.
 System Update replaces the old Runtime tab. It shows the installed and latest production versions, deployment readiness, recent `master` releases, update/downgrade actions, and deployment progress. Each release has a View action containing only plain-language feature and workflow summaries; technical filenames, diffs, and code statistics are not exposed. `scripts/production_deploy_control_worker.sh` refreshes release summaries, performs host-level preflight checks, and reruns preflight automatically before every deployment.

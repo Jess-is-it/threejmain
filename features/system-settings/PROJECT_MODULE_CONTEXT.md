@@ -35,6 +35,10 @@ System Settings manages shell configuration pages for branding, business profile
   - Permissions catalog with system-managed permission codes grouped by feature.
   - Roles CRUD with permission assignment and automatic required view-permission dependencies.
   - Users CRUD with role assignment, active/inactive status, force password change, password reset, email reset, and owner lockouts.
+- View the host-generated Graphify development knowledge graph under Graphify:
+  - Artifact statistics for nodes, relationships, communities, confidence counts, freshness, and graph/report availability.
+  - Short-lived ticket opening of `graph.html` and `GRAPH_REPORT.md` through the API because the frontend uses bearer tokens.
+  - AI workflow command examples and safety limits copied from the old `/opt/threejnotif` System Settings -> Graphify pattern.
 - Manage reusable Location Management records with address, municipality, barangay, province, region, coordinates, geocoder source, and notes.
 - Preload known Customer Profiling service-area barangays into Location Management.
 - Suppress deleted preloaded Location Management rows from automatic reseeding across API restarts.
@@ -63,6 +67,9 @@ System Settings manages shell configuration pages for branding, business profile
 - App-shell notification endpoints are exposed by this module at `/api/admin/notifications`, `/api/admin/notifications/read-all`, and `/api/admin/notifications/{notification_id}/read`. The shared top-nav bell uses these generated A2P success/failure notifications.
 - Access endpoints are under `/api/system-settings/access`. System-login administration was moved here from the old Account Admin area to match the old `/home/threejmon` System Settings -> Access pattern.
 - Access data persists to `SYSTEM_SETTINGS_DATA_PATH` in this first shell. App-shell login now accepts System Settings -> Access users while keeping the legacy `admin` fallback. Access seeds Tech Portal permissions and the built-in `technician` role plus Collector permissions and built-in `collector`, `collection_supervisor`, and `finance_officer` roles. Only the temporary `tech` / `tech12345` user is seeded; Collector/Finance users must be issued in Access. The Collector API and restricted app-shell portal enforce their role/permission boundary; full enforcement across older modules remains future work.
+- Access now seeds `system.graphify.view` for the Graphify tab and artifact routes. Owner/admin/viewer built-in roles receive it through the normal permission seed behavior; custom Access roles can remove it if source-architecture visibility should be restricted.
+- Graphify endpoints are under `/api/system-settings/graphify`: `GET /api/system-settings/graphify` returns metadata and command guidance, `POST /artifact-tickets/{kind}` issues a short-lived route ticket, and `/graph` plus `/report` serve only allowlisted `graph.html` and `GRAPH_REPORT.md` from `THREEJMAIN_GRAPHIFY_OUT_DIR`.
+- Docker Compose sets `THREEJMAIN_GRAPHIFY_OUT_DIR=/graphify-out` and mounts `./graphify-out:/graphify-out:ro`. Graphify generation stays host-only and is intentionally not part of the API image or runtime services.
 - The reusable `send_a2p_sms_message` provider is exported for module integration. Collector uses it for post-payment confirmations with purpose `COLLECTOR_PAYMENT_CONFIRMATION`; send failure is logged and returned to Collector without rolling back the posted Billing receipt.
 - Location endpoints are module-owned under `/api/system-settings/locations` with `/api/locations` compatibility routes for workflows copied from 3JCentralPisowifi. Create, edit, delete, bulk delete, and customer-created minimal location records are persisted.
 - `PATCH /api/system-settings/locations/{location_id}` updates saved location metadata.

@@ -799,3 +799,40 @@ Every Codex must:
 - Post updates during work.
 - Notify others when done.
 - Check files back in after finishing.
+
+---
+
+# Graphify Knowledge Graph Rules
+
+This project uses Graphify as host-only development tooling. Graphify helps Codex understand the modular ISP management codebase through `graphify-out/graph.json`, `graphify-out/GRAPH_REPORT.md`, and the System Settings -> Graphify viewer.
+
+When the user types `/graphify`, use the installed Graphify skill or project-local `.codex/skills/graphify` instructions before doing anything else.
+
+Use Graphify before broad source exploration when `graphify-out/graph.json` exists:
+
+```bash
+graphify query "<question>" --graph graphify-out/graph.json
+graphify explain "<concept>" --graph graphify-out/graph.json
+graphify path "<A>" "<B>" --graph graphify-out/graph.json
+```
+
+Graphify is required for:
+
+- Codebase architecture questions.
+- Cross-module impact analysis.
+- New feature or module planning after reading `Project_Context.md` and relevant module contexts.
+- Questions about how Customer Profiling, Service, Billing, Collector, Ticketing, Network Settings, System Settings, Logs, Tech Portal, or other ISP workflows connect.
+
+Graphify is optional for narrow, exact-file edits when the relevant file is already known.
+
+Rules:
+
+- Use `graphify query`, `graphify path`, or `graphify explain` before broad `rg`, raw file crawling, or architecture summaries.
+- Read `graphify-out/GRAPH_REPORT.md` only for broad architecture review or when query/path/explain does not surface enough context.
+- Treat Graphify edges marked `INFERRED` or `AMBIGUOUS` as leads only. Verify them against source before editing or explaining behavior as fact.
+- Dirty or locally refreshed `graphify-out/` files are expected and are not a reason to skip Graphify.
+- Generated `graphify-out/` artifacts stay local and Git-ignored; do not stage them unless the user explicitly asks.
+- After modifying source code or durable project documentation, run `graphify update .` when a graph already exists. If no graph exists yet, build it from the host with `graphify extract . --code-only --max-workers 2` and `graphify cluster-only . --no-label`.
+- Never point Graphify at runtime data, database files, backups, logs, credentials, `.env` files, private keys, or generated Graphify output. Keep `.graphifyignore` aligned with that boundary.
+- Do not enable Graphify Git hooks, HTTP MCP serving, live PostgreSQL introspection, or production runtime automation without explicit user approval.
+- Do not add Graphify as an application dependency, Docker image package, or Compose service. The app may mount `graphify-out/` read-only only to display reviewed artifacts in System Settings -> Graphify.

@@ -3541,9 +3541,203 @@ function AccessTab() {
   );
 }
 
+function GraphifyTab() {
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState('');
+
+  async function loadGraphifyStatus() {
+    setLoading(true);
+    setError('');
+    try {
+      setStatus(await request('/system-settings/graphify'));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadGraphifyStatus();
+  }, []);
+
+  async function openArtifact(kind) {
+    const route = status?.artifactRoutes?.[kind];
+    if (!route) return;
+    setBusy(kind);
+    setError('');
+    setMessage('');
+    try {
+      const ticket = await request(`/system-settings/graphify/artifact-tickets/${kind}`, { method: 'POST' });
+      const opened = window.open(ticket.url || route, '_blank', 'noopener,noreferrer');
+      if (!opened) {
+        setMessage('The browser blocked the new tab. Allow popups for this site and try again.');
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function copyCommands(commands = []) {
+    const text = commands.join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      setMessage('Commands copied.');
+    } catch {
+      setMessage(text);
+    }
+  }
+
+  if (loading) return <div className="empty">Loading Graphify status...</div>;
+  if (!status && error) return <div className="alert alert-danger">{error}</div>;
+
+  const commitBadge = status.commitState === 'match'
+    ? <span className="badge bg-green-lt text-green">Matches installed commit</span>
+    : status.commitState === 'different'
+      ? <span className="badge bg-yellow-lt text-yellow">Refresh recommended</span>
+      : <span className="badge bg-secondary-lt text-secondary">Commit freshness unknown</span>;
+  const commandGroups = [
+    { title: 'Initial code-only build', commands: status.commands?.initialBuild || [] },
+    { title: 'Refresh after development changes', commands: status.commands?.refresh || [] },
+    { title: 'Query the graph before broad searches', commands: status.commands?.query || [] }
+  ];
+
+  return (
+    <div className="system-settings-graphify">
+      {error && <div className="alert alert-danger">{error}</div>}
+      {message && <div className="alert alert-info">{message}</div>}
+      <div className="alert alert-info">
+        <div className="d-flex align-items-start">
+          <IconInfoCircle size={20} className="me-2 mt-1" />
+          <div>
+            <div className="fw-semibold">Development knowledge graph</div>
+            <div className="small text-muted mt-1">
+              Graphify maps source files, functions, classes, and relationships so Codex sessions can orient before changing this ISP management system. It is development tooling, not production monitoring.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="row g-3 mb-4">
+        <KpiCard icon={IconNetwork} label="Nodes" value={status.nodes || 0} tone="blue" />
+        <KpiCard icon={IconListDetails} label="Relationships" value={status.relationships || 0} tone="green" />
+        <KpiCard icon={IconGitCommit} label="Communities" value={status.communities || 0} tone="purple" />
+        <KpiCard icon={status.available ? IconCircleCheck : IconAlertTriangle} label="Interactive Graph" value={status.available ? 'Ready' : 'Missing'} tone={status.available ? 'teal' : 'yellow'} />
+      </div>
+
+      {status.metadataError && <div className="alert alert-warning">{status.metadataError}</div>}
+
+      <div className="row g-4">
+        <div className="col-12 col-xl-7">
+          <Card
+            title="Interactive Project Graph"
+            icon={IconNetwork}
+            actions={<button className="btn btn-sm" type="button" onClick={loadGraphifyStatus}><IconRefresh size={16} className="me-1" />Refresh</button>}
+          >
+            {status.available || status.reportAvailable ? (
+              <div className="d-flex flex-column flex-sm-row gap-2 mb-4">
+                {status.available && (
+                  <button className="btn btn-primary" type="button" onClick={() => openArtifact('graph')} disabled={busy === 'graph'}>
+                    <IconEye size={18} className="me-2" />{busy === 'graph' ? 'Opening...' : 'Open Interactive Graph'}
+                  </button>
+                )}
+                {status.reportAvailable && (
+                  <button className="btn btn-outline-secondary" type="button" onClick={() => openArtifact('report')} disabled={busy === 'report'}>
+                    <IconListDetails size={18} className="me-2" />{busy === 'report' ? 'Opening...' : 'View Architecture Report'}
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="alert alert-warning">
+                Graphify artifacts are unavailable inside the API container. Run the initial build commands on the server host, then reload this tab.
+              </div>
+            )}
+
+            <div className="system-settings-graphify-meta-grid">
+              <div className="system-settings-graphify-meta">
+                <div className="text-muted small">Last artifact update</div>
+                <div className="fw-semibold mt-1">{formatDateTime(status.updatedAt)}</div>
+              </div>
+              <div className="system-settings-graphify-meta">
+                <div className="text-muted small">Built at commit</div>
+                <div className="fw-semibold font-monospace text-break mt-1">{status.builtAtCommitShort || '-'}</div>
+                <div className="mt-2">{commitBadge}</div>
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <div className="fw-semibold mb-2">Relationship confidence</div>
+              <div className="d-flex gap-2 flex-wrap">
+                <span className="badge bg-blue-lt text-blue">{status.extractedRelationships || 0} extracted</span>
+                <span className="badge bg-yellow-lt text-yellow">{status.inferredRelationships || 0} inferred</span>
+                <span className="badge bg-red-lt text-red">{status.ambiguousRelationships || 0} ambiguous</span>
+              </div>
+              <div className="text-muted small mt-2">Verify inferred or ambiguous connections against source code before using them for implementation decisions.</div>
+            </div>
+
+            <div className="alert alert-secondary mt-4 mb-0">
+              Interactive rendering may require browser access to the graph viewer library. The API only serves reviewed graph artifacts and never executes Graphify.
+            </div>
+          </Card>
+        </div>
+
+        <div className="col-12 col-xl-5">
+          <Card title="AI Workflow Guide" icon={IconRobot}>
+            <ol className="system-settings-graphify-steps">
+              <li>Read AGENTS.md and Project_Context.md before project work.</li>
+              <li>Use Graphify before broad source searches or architecture explanations.</li>
+              <li>Verify graph findings in the referenced source files.</li>
+              <li>Refresh the graph after code or project-documentation changes.</li>
+            </ol>
+
+            {commandGroups.map((group) => (
+              <div className="system-settings-command-group" key={group.title}>
+                <div className="d-flex align-items-center justify-content-between gap-2 mb-2">
+                  <div className="fw-semibold">{group.title}</div>
+                  <button className="btn btn-sm" type="button" onClick={() => copyCommands(group.commands)}>
+                    <IconCopy size={16} className="me-1" />Copy
+                  </button>
+                </div>
+                <pre className="system-settings-command-block"><code>{group.commands.join('\n')}</code></pre>
+              </div>
+            ))}
+          </Card>
+        </div>
+
+        <div className="col-12">
+          <Card title="Scope, Safety, and Limitations" icon={IconShieldLock}>
+            <div className="system-settings-graphify-scope">
+              {(status.notes || []).map((note) => (
+                <div className="system-settings-graphify-scope-item" key={note}>
+                  <IconCircleCheck size={18} className="text-green" />
+                  <span>{note}</span>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 text-muted small">
+              Host CLI version: <span className="font-monospace">{status.version || 'detected on host'}</span>
+              {' '}<a href="https://graphify.net/" target="_blank" rel="noopener noreferrer">Graphify website</a>
+            </div>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function SystemSettingsPage({ refreshShell }) {
-  const tabs = ['General', 'Location Management', 'Maps', 'Images', 'Backup', 'Avatar', 'OPENAI', 'A2P Messaging', 'Access', 'Ports', 'System Update'];
-  const normalizeRequestedTab = (requested) => (requested === 'Runtime' || requested === 'Update' ? 'System Update' : requested);
+  const tabs = ['General', 'Location Management', 'Maps', 'Images', 'Backup', 'Avatar', 'OPENAI', 'A2P Messaging', 'Access', 'Graphify', 'Ports', 'System Update'];
+  const normalizeRequestedTab = (requested) => {
+    const normalized = String(requested || '').trim();
+    if (['runtime', 'update', 'system-update'].includes(normalized.toLowerCase())) return 'System Update';
+    const canonical = tabs.find((item) => item.toLowerCase() === normalized.toLowerCase());
+    return canonical || normalized;
+  };
   const initialTab = () => {
     const requested = normalizeRequestedTab(new URLSearchParams(window.location.search).get('tab'));
     return tabs.includes(requested) ? requested : 'General';
@@ -3635,6 +3829,7 @@ export default function SystemSettingsPage({ refreshShell }) {
       {tab === 'OPENAI' && <OpenAISettingsTab />}
       {tab === 'A2P Messaging' && <A2PMessagingSettingsTab />}
       {tab === 'Access' && <AccessTab />}
+      {tab === 'Graphify' && <GraphifyTab />}
       {tab === 'Ports' && (
         <Card title="System Port Registry" icon={IconNetwork} actions={<button className="btn btn-sm" onClick={load}><IconRefresh size={16} className="me-1" />Refresh</button>}>
           <div className="alert alert-info">Use this page to avoid port collisions with 3JCentralPisowifi and other services on the server.</div>

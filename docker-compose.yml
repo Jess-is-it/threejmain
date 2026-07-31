@@ -34,6 +34,7 @@ services:
       CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:8180,http://127.0.0.1:8180}
       SYSTEM_SETTINGS_DATA_PATH: /app/data/system_settings.json
       ACCOUNT_ADMIN_HOTSPOT_STATE_PATH: ${ACCOUNT_ADMIN_HOTSPOT_STATE_PATH:-/app/data/account_admin_hotspot.json}
+      THREEJMAIN_GRAPHIFY_OUT_DIR: /graphify-out
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -41,6 +42,7 @@ services:
         condition: service_healthy
     volumes:
       - threejmain_api_data:/app/data
+      - ./graphify-out:/graphify-out:ro
     ports:
       - "${API_PORT:-8100}:8100"
 

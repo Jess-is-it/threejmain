@@ -10,7 +10,7 @@ The shared working shell lives in `app-shell/` and provides the common Tabler ad
 - `features/billing`
 - `features/point-of-sale`
 - `features/inventory`
-- `features/account-admin`
+- `features/account-access-management`
 - `features/customer-service-management`
 - `features/ticketing`
 - `features/service`
@@ -31,6 +31,19 @@ Each module owns its own folder under `features/`. New modules should follow the
 - API port: `8100`
 
 These ports intentionally avoid the existing `3JCentralPisowifi` ports such as `8080`, `1812`, `1813`, `11812`, and `11813`.
+
+## Optional Graphify Knowledge Graph
+
+Graphify is installed as host-only development tooling for Codex and engineering review. It is not an application dependency or Docker service.
+
+```bash
+pip install --user graphifyy
+graphify install --project --platform codex
+graphify extract . --code-only --max-workers 2
+graphify cluster-only . --no-label
+```
+
+The app mounts `./graphify-out` read-only into the API container and exposes reviewed artifacts in `System Settings -> Graphify`. Generated `graphify-out/` files stay local and Git-ignored.
 
 ## Run With Docker Compose
 
@@ -69,6 +82,6 @@ API: http://SERVER_IP:8100/
 
 The owner login and generated database password are stored in `/home/threejmain/.env`. Later runs preserve this file and reuse the same production data volumes.
 
-Production owners can also update or roll back from `System Settings -> Runtime -> Production Deployment`, which lists the latest 10 commits from `master`.
+Production owners can also update or roll back from `System Settings -> System Update`, which lists the latest 10 commits from `master`.
 
 Read `Project_Context.md` before making project changes.

@@ -19,7 +19,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 try:
@@ -624,6 +624,20 @@ A2P_DEFAULT_SETTINGS = {
 }
 A2P_MAX_MESSAGE_LOGS = 500
 
+GRAPHIFY_OUT_DIR = Path(
+    os.getenv("THREEJMAIN_GRAPHIFY_OUT_DIR")
+    or os.getenv("THREEJ_GRAPHIFY_OUT_DIR")
+    or "/graphify-out"
+)
+GRAPHIFY_ARTIFACT_NAMES = {"graph.html", "graph.json", "GRAPH_REPORT.md"}
+GRAPHIFY_NO_STORE_HEADERS = {
+    "Cache-Control": "no-store",
+    "Pragma": "no-cache",
+    "X-Content-Type-Options": "nosniff",
+}
+GRAPHIFY_ARTIFACT_TICKET_SECONDS = 60
+_graphify_artifact_tickets: dict[str, dict[str, Any]] = {}
+
 ACCESS_PASSWORD_MIN_LENGTH = 8
 ACCESS_PERMISSION_SEEDS = [
     {
@@ -636,6 +650,12 @@ ACCESS_PERMISSION_SEEDS = [
         "code": "system.settings.edit",
         "label": "System Settings Edit",
         "description": "Edit branding, business profile, runtime, and related system settings.",
+        "category": "System Settings",
+    },
+    {
+        "code": "system.graphify.view",
+        "label": "Graphify Knowledge Graph View",
+        "description": "View the Graphify development knowledge graph, report, and usage guide.",
         "category": "System Settings",
     },
     {
@@ -792,6 +812,7 @@ ACCESS_PERMISSION_SEEDS = [
 ]
 ACCESS_PERMISSION_DEPENDENCIES = {
     "system.settings.edit": ["system.settings.view"],
+    "system.graphify.view": ["system.settings.view"],
     "system.access.auth.edit": ["system.access.auth.view"],
     "system.access.roles.edit": ["system.access.roles.view", "system.access.permissions.view"],
     "system.access.users.edit": ["system.access.users.view", "system.access.roles.view"],
@@ -932,6 +953,20 @@ def require_admin(authorization: str | None = Header(default=None)):
     if _current_admin is None:
         raise HTTPException(status_code=500, detail="System Settings module is not configured")
     return _current_admin(authorization)
+
+
+def require_permission(admin: dict[str, Any], permission_code: str) -> dict[str, Any]:
+    permissions = admin.get("permissions")
+    if permissions is None:
+        return admin
+    permission_set = {str(code).strip() for code in permissions if str(code).strip()}
+    if "*" in permission_set or permission_code in permission_set:
+        return admin
+    raise HTTPException(status_code=403, detail="Permission required")
+
+
+def require_graphify_view(admin=Depends(require_admin)):
+    return require_permission(admin, "system.graphify.view")
 
 
 def settings_store() -> dict[str, Any]:
@@ -1573,6 +1608,180 @@ def public_deployment_control_status() -> dict[str, Any]:
         ),
         "commits": commits,
     }
+
+
+def graphify_artifact_path(filename: str) -> Path | None:
+    if filename not in GRAPHIFY_ARTIFACT_NAMES:
+        return None
+    try:
+        root = GRAPHIFY_OUT_DIR.resolve(strict=True)
+        candidate = (root / filename).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if candidate.parent != root or not candidate.is_file():
+        return None
+    return candidate
+
+
+def graphify_missing_response() -> Response:
+    return Response(
+        "Graphify artifact is unavailable. Refresh the project graph on the server host and try again.",
+        status_code=404,
+        media_type="text/plain; charset=utf-8",
+        headers=GRAPHIFY_NO_STORE_HEADERS,
+    )
+
+
+def prune_graphify_artifact_tickets() -> None:
+    now = time.time()
+    expired = [
+        ticket
+        for ticket, record in _graphify_artifact_tickets.items()
+        if float(record.get("expiresAt") or 0) <= now
+    ]
+    for ticket in expired:
+        _graphify_artifact_tickets.pop(ticket, None)
+
+
+def create_graphify_artifact_ticket(kind: str, admin: dict[str, Any]) -> dict[str, Any]:
+    normalized_kind = normalize_access_text(kind).lower()
+    if normalized_kind not in {"graph", "report"}:
+        raise HTTPException(status_code=404, detail="Graphify artifact route not found")
+    prune_graphify_artifact_tickets()
+    ticket = secrets.token_urlsafe(24)
+    _graphify_artifact_tickets[ticket] = {
+        "kind": normalized_kind,
+        "expiresAt": time.time() + GRAPHIFY_ARTIFACT_TICKET_SECONDS,
+        "actor": normalize_access_text(admin.get("username")),
+    }
+    return {
+        "ticket": ticket,
+        "kind": normalized_kind,
+        "expiresInSeconds": GRAPHIFY_ARTIFACT_TICKET_SECONDS,
+        "url": f"/api/system-settings/graphify/{normalized_kind}?ticket={ticket}",
+    }
+
+
+def require_graphify_artifact_access(kind: str, ticket: str | None, authorization: str | None) -> dict[str, Any]:
+    normalized_kind = normalize_access_text(kind).lower()
+    normalized_ticket = normalize_access_text(ticket)
+    if normalized_ticket:
+        prune_graphify_artifact_tickets()
+        record = _graphify_artifact_tickets.pop(normalized_ticket, None)
+        if record and record.get("kind") == normalized_kind and float(record.get("expiresAt") or 0) > time.time():
+            return {"username": record.get("actor") or "graphify-ticket"}
+        raise HTTPException(status_code=401, detail="Graphify artifact ticket is invalid or expired")
+    return require_graphify_view(require_admin(authorization))
+
+
+def public_graphify_status() -> dict[str, Any]:
+    graph_html_path = graphify_artifact_path("graph.html")
+    graph_json_path = graphify_artifact_path("graph.json")
+    report_path = graphify_artifact_path("GRAPH_REPORT.md")
+    status = {
+        "version": os.getenv("THREEJMAIN_GRAPHIFY_VERSION") or os.getenv("GRAPHIFY_VERSION") or "",
+        "artifactRootConfigured": bool(str(GRAPHIFY_OUT_DIR)),
+        "available": bool(graph_html_path),
+        "reportAvailable": bool(report_path),
+        "metadataAvailable": bool(graph_json_path),
+        "nodes": 0,
+        "relationships": 0,
+        "communities": 0,
+        "extractedRelationships": 0,
+        "inferredRelationships": 0,
+        "ambiguousRelationships": 0,
+        "builtAtCommit": "",
+        "builtAtCommitShort": "",
+        "commitState": "unknown",
+        "updatedAt": "",
+        "metadataError": "",
+        "artifactRoutes": {
+            "graph": "/api/system-settings/graphify/graph",
+            "report": "/api/system-settings/graphify/report",
+        },
+        "commands": {
+            "initialBuild": [
+                "cd /home/threejmain",
+                "graphify extract . --code-only --max-workers 2",
+                "graphify cluster-only . --no-label",
+            ],
+            "refresh": [
+                "cd /home/threejmain",
+                "graphify update .",
+                "graphify cluster-only . --no-label",
+            ],
+            "query": [
+                'graphify query "how does Billing connect to Collector?" --graph graphify-out/graph.json',
+                'graphify explain "SystemSettingsPage" --graph graphify-out/graph.json',
+                'graphify path "SystemSettingsPage" "router.py" --graph graphify-out/graph.json',
+            ],
+        },
+        "notes": [
+            "Graphify is host-only development tooling. The application never runs graphify commands.",
+            "Only graph.html and GRAPH_REPORT.md are exposed through authenticated allowlisted routes.",
+            "Verify INFERRED or AMBIGUOUS relationships against source before editing.",
+            "Runtime data, credentials, backups, logs, and generated Graphify output are excluded by .graphifyignore.",
+        ],
+    }
+
+    if graph_json_path:
+        try:
+            graph_data = json.loads(graph_json_path.read_text(encoding="utf-8"))
+            nodes = graph_data.get("nodes") if isinstance(graph_data.get("nodes"), list) else []
+            links = graph_data.get("links")
+            if not isinstance(links, list):
+                links = graph_data.get("edges") if isinstance(graph_data.get("edges"), list) else []
+            communities = {
+                node.get("community")
+                for node in nodes
+                if isinstance(node, dict) and node.get("community") is not None
+            }
+            confidence_counts: dict[str, int] = {}
+            for link in links:
+                if not isinstance(link, dict):
+                    continue
+                confidence = normalize_access_text(link.get("confidence")).upper()
+                if confidence:
+                    confidence_counts[confidence] = int(confidence_counts.get(confidence) or 0) + 1
+            built_at_commit = normalize_access_text(
+                graph_data.get("built_at_commit")
+                or graph_data.get("builtAtCommit")
+                or graph_data.get("commit")
+            )
+            if not re.fullmatch(r"[0-9a-fA-F]{7,64}", built_at_commit):
+                built_at_commit = ""
+            graphify_version = normalize_access_text(
+                graph_data.get("graphify_version")
+                or graph_data.get("graphifyVersion")
+                or graph_data.get("version")
+            )
+            installed_commit = normalize_access_text(os.getenv("APP_COMMIT", ""))
+            status.update(
+                {
+                    "version": graphify_version or status["version"],
+                    "nodes": len(nodes),
+                    "relationships": len(links),
+                    "communities": len(communities),
+                    "extractedRelationships": int(confidence_counts.get("EXTRACTED") or 0),
+                    "inferredRelationships": int(confidence_counts.get("INFERRED") or 0),
+                    "ambiguousRelationships": int(confidence_counts.get("AMBIGUOUS") or 0),
+                    "builtAtCommit": built_at_commit,
+                    "builtAtCommitShort": built_at_commit[:7],
+                }
+            )
+            if built_at_commit and installed_commit and installed_commit != "unknown":
+                status["commitState"] = "match" if built_at_commit == installed_commit else "different"
+        except (OSError, ValueError, TypeError):
+            status["metadataError"] = "Graph metadata could not be read. Refresh the Graphify artifacts on the host."
+
+    artifact_paths = [path for path in (graph_html_path, graph_json_path, report_path) if path]
+    if artifact_paths:
+        try:
+            modified_at = max(path.stat().st_mtime for path in artifact_paths)
+            status["updatedAt"] = datetime.fromtimestamp(modified_at, tz=timezone.utc).isoformat()
+        except OSError:
+            pass
+    return status
 
 
 def resolve_deployment_commit(selected_commit: str) -> dict[str, Any]:
@@ -3381,6 +3590,58 @@ def request_deployment(payload: DeploymentRequestPayload, admin=Depends(require_
     status = public_deployment_control_status()
     status["message"] = "Production deploy request queued."
     return status
+
+
+@router.get("/api/system-settings/graphify")
+def get_graphify_status(admin=Depends(require_graphify_view)):
+    return public_graphify_status()
+
+
+@router.post("/api/system-settings/graphify/artifact-tickets/{kind}")
+def create_graphify_ticket(kind: str, admin=Depends(require_graphify_view)):
+    return create_graphify_artifact_ticket(kind, admin)
+
+
+@router.get("/api/system-settings/graphify/graph")
+def get_graphify_graph(ticket: str | None = None, authorization: str | None = Header(default=None)):
+    require_graphify_artifact_access("graph", ticket, authorization)
+    graph_path = graphify_artifact_path("graph.html")
+    if not graph_path:
+        return graphify_missing_response()
+    return FileResponse(
+        str(graph_path),
+        media_type="text/html",
+        headers={
+            **GRAPHIFY_NO_STORE_HEADERS,
+            "Content-Disposition": 'inline; filename="graphify-knowledge-graph.html"',
+            "Referrer-Policy": "no-referrer",
+            "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+            "Content-Security-Policy": (
+                "sandbox allow-scripts; default-src 'none'; "
+                "script-src 'unsafe-inline' https://unpkg.com; style-src 'unsafe-inline'; "
+                "img-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; "
+                "form-action 'none'; frame-ancestors 'self'"
+            ),
+        },
+    )
+
+
+@router.get("/api/system-settings/graphify/report")
+def get_graphify_report(ticket: str | None = None, authorization: str | None = Header(default=None)):
+    require_graphify_artifact_access("report", ticket, authorization)
+    report_path = graphify_artifact_path("GRAPH_REPORT.md")
+    if not report_path:
+        return graphify_missing_response()
+    return FileResponse(
+        str(report_path),
+        media_type="text/plain; charset=utf-8",
+        headers={
+            **GRAPHIFY_NO_STORE_HEADERS,
+            "Content-Disposition": 'inline; filename="GRAPH_REPORT.md"',
+            "Referrer-Policy": "no-referrer",
+            "Content-Security-Policy": "sandbox; default-src 'none'; frame-ancestors 'self'",
+        },
+    )
 
 
 @router.get("/api/system-settings/access")
