@@ -362,6 +362,8 @@ vite ...
 It also applies to any command that binds or frees shared project ports, especially:
 
 ```text
+8280/tcp
+8200/tcp
 8180/tcp
 8100/tcp
 5432/tcp
@@ -394,8 +396,8 @@ Read-only runtime checks do not require the runtime lock. Examples:
 
 ```bash
 docker compose ps
-curl http://127.0.0.1:8100/health
-curl http://127.0.0.1:8180/
+curl http://127.0.0.1:8200/health
+curl http://127.0.0.1:8280/
 ```
 
 Release `runtime/server` as soon as the build/start/restart operation and immediate verification are complete. Do not keep the runtime lock while doing normal coding.
@@ -404,9 +406,9 @@ Release `runtime/server` as soon as the build/start/restart operation and immedi
 
 # Single Shared Test Server Workflow
 
-This project uses one shared local working tree and one shared test server for normal Codex development.
+This project uses one shared local working tree and one shared staging/test server for normal Codex development.
 
-Production now also uses this host when enabled. The live production stack deploys from `origin/master` into `/home/threejmain-production` as Docker Compose project `threejmain-production`, and it owns ports `8180` and `8100`. Staging runs from `/home/threejmain` as Docker Compose project `threejmain-staging`, and it owns ports `8280` and `8200`. Production and staging data are separate because they use separate Compose projects and Docker volumes.
+Production has moved to another Ubuntu server. The old local production stack on `192.168.50.70` was stopped on 2026-07-31, and `threejmain-production-auto-deploy.service` was disabled so it does not restart from `origin/master`. Do not restart `/home/threejmain-production`, Docker Compose project `threejmain-production`, or ports `8180/8100` on this host unless the user explicitly asks to restore local production here. Staging runs from `/home/threejmain` as Docker Compose project `threejmain-staging`, and it owns ports `8280` and `8200`.
 
 Normal Codex work happens in:
 
@@ -414,7 +416,7 @@ Normal Codex work happens in:
 /home/threejmain
 ```
 
-The production URLs are:
+The old disabled local production URLs are:
 
 ```text
 Web: http://192.168.50.70:8180/
@@ -428,7 +430,7 @@ Web: http://192.168.50.70:8280/
 API: http://192.168.50.70:8200/
 ```
 
-When production is running, `8180/8100` are production URLs, not staging preview URLs. Do not rebuild, restart, or replace the staging Compose stack on those ports unless the user explicitly asks to take over the live runtime. Use `scripts/staging_deploy.sh` for staging so it stays on `8280/8200`.
+Do not use `8180/8100` for staging preview work. Use `scripts/staging_deploy.sh` for staging so it stays on `8280/8200`.
 
 Do not create per-Codex preview servers for normal work. Do not use per-Codex ports such as `8303`, `8314`, `8203`, or `8214`.
 
@@ -471,7 +473,7 @@ runtime/server
 
 Release `runtime/server` immediately after restart/build and basic verification. Other Codex sessions should keep coding on unlocked files while one Codex briefly owns the runtime lock.
 
-All visual review happens on the shared server at `http://192.168.50.70:8180/`; confirm whether the user expects production or staging before changing the runtime.
+All visual review for this shared host happens on staging at `http://192.168.50.70:8280/`; production review should use the separate production Ubuntu server URL provided by the user.
 
 When the user asks to check screenshots in `3jmain_ss`, use the Windows-mounted screenshot directory:
 

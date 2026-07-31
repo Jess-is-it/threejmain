@@ -214,12 +214,14 @@ Account Access Management is not the system-login admin area. It is reserved for
 
 ## Ports
 
-- `8180/tcp`: threejmain web/admin entry point
-- `8100/tcp`: threejmain FastAPI API
+- `8280/tcp`: threejmain staging web/admin entry point on this shared host
+- `8200/tcp`: threejmain staging FastAPI API on this shared host
+- `8180/tcp`: old local production web/admin entry point, intentionally stopped on this host after production moved to another Ubuntu server on 2026-07-31
+- `8100/tcp`: old local production FastAPI API, intentionally stopped on this host after production moved to another Ubuntu server on 2026-07-31
 - `5432/tcp`: PostgreSQL container-only default
 - Avoid using `3JCentralPisowifi` ports: `8080/tcp`, `80/tcp`, `1812/udp`, `1813/udp`, `11812/udp`, and `11813/udp`
 
-The app exposes a System Settings -> Ports page backed by `/api/system/ports` so operators can view reserved and in-use ports. The registry explicitly labels threejmain Production ports (`8180` web, `8100` API), threejmain Staging ports (`8280` web, `8200` API), internal PostgreSQL container ports for both Compose projects, and existing 3JCentralPisowifi reservations.
+The app exposes a System Settings -> Ports page backed by `/api/system/ports` so operators can view reserved and in-use ports. The registry explicitly labels old local threejmain Production ports (`8180` web, `8100` API, disabled on this host), threejmain Staging ports (`8280` web, `8200` API), internal PostgreSQL container ports for both Compose projects, and existing 3JCentralPisowifi reservations.
 
 System Settings now lives in the `features/system-settings/` module folder. Logs now lives in the `features/logs/` module folder. App-shell imports their pages and API routers while retaining compatibility endpoints:
 
@@ -272,11 +274,11 @@ Release `runtime/server` after the build/start/restart and immediate health chec
 
 ## Shared Test Server Workflow
 
-The project is back to one shared working tree and one shared test server for normal Codex development.
+The project uses one shared working tree and one shared staging/test server for normal Codex development.
 
-Production is deployed on the same host from `origin/master` through the local systemd watcher `threejmain-production-auto-deploy.service`. The watcher runs `scripts/production_auto_deploy.sh`, polls `origin/master`, and calls `scripts/production_deploy.sh` when the branch changes. Production uses a detached checkout at `/home/threejmain-production` and Docker Compose project `threejmain-production`.
+Production has moved to another Ubuntu server. The old local production stack on `192.168.50.70` was stopped on 2026-07-31, and `threejmain-production-auto-deploy.service` was disabled so it does not restart from `origin/master`. Do not restart `/home/threejmain-production`, Docker Compose project `threejmain-production`, or ports `8180/8100` on this host unless the user explicitly asks to restore local production here.
 
-Production URLs:
+Old disabled local production URLs:
 
 ```text
 Web: http://192.168.50.70:8180/
@@ -290,9 +292,9 @@ Web: http://192.168.50.70:8280/
 API: http://192.168.50.70:8200/
 ```
 
-Production, staging, and the old stopped `threejmain` Compose project do not share data. Each Compose project has its own named Docker volumes. Do not restart the old `threejmain` Compose project on ports `8180` and `8100`; use `scripts/staging_deploy.sh` for staging so it stays beside production.
+Staging, the disabled old local production project, and the old stopped `threejmain` Compose project do not share data. Each Compose project has its own named Docker volumes. Use `scripts/staging_deploy.sh` for this shared host so staging stays on `8280/8200`.
 
-Production deployment commands:
+Production deployment commands for the production Ubuntu server:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Jess-is-it/threejmain/master/scripts/production_bootstrap.sh | sudo bash
