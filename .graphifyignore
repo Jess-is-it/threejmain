@@ -1,0 +1,42 @@
+# Runtime data, databases, backups, and credentials must never enter the graph.
+/data/
+/app-shell/api/data/
+/deploy/backups/
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+*.backup
+*.bak
+*.sql
+*.sql.gz
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+
+# Runtime/update artifacts and logs are operational data, not source context.
+*.log
+.ota.*
+/logs/
+**/__pycache__/
+.pytest_cache/
+
+# Third-party/generated frontend and local AI state add noise without explaining behavior.
+/app-shell/web/node_modules/
+/app-shell/web/dist/
+/app-shell/web/.vite/
+/app-shell/web/coverage/
+/node_modules/
+/dist/
+/build/
+/.cache/
+/.ai_coord/
+/.agents/
+
+# Never recursively ingest Graphify's own generated output.
+/graphify-out/

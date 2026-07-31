@@ -32,6 +32,8 @@ python3 scripts/ai_coord.py update <agent> "<task-name>" "<what changed>" --file
 - Common shell features: side navigation, top header with page name, system metrics, A2P SMS notification bell, profile, and change password
 - The shell displays runtime version metadata in the sidebar. `/api/system/version` returns the system name, environment label, version, branch, commit, and build time.
 - Shared app pages use aligned content gutters in `app-shell`: page body containers and top headers share the same desktop/tablet horizontal spacing so module pages line up with the sidebar consistently.
+- Public shell branding comes from System Settings -> General after the user clicks Save Settings. Logo upload controls first stage a pending preview in the General tab; `/api/public/branding` returns safe display fields and cache-busted URLs for saved company logo and browser page logo assets; `/api/public/branding/company-logo` and `/api/public/branding/browser-logo` serve those saved assets publicly. The web shell applies the company logo in the sidebar and the browser page logo as the document favicon.
+- Host-only development knowledge graph: Graphify CLI/project skill with local generated artifacts under `graphify-out/`. The app may display reviewed artifacts through System Settings -> Graphify, but Graphify is not an application dependency, image package, or Compose service.
 
 ## Architecture Pattern
 
@@ -212,12 +214,14 @@ Account Access Management is not the system-login admin area. It is reserved for
 
 ## Ports
 
-- `8180/tcp`: threejmain web/admin entry point
-- `8100/tcp`: threejmain FastAPI API
+- `8280/tcp`: threejmain staging web/admin entry point on this shared host
+- `8200/tcp`: threejmain staging FastAPI API on this shared host
+- `8180/tcp`: old local production web/admin entry point, intentionally stopped on this host after production moved to another Ubuntu server on 2026-07-31
+- `8100/tcp`: old local production FastAPI API, intentionally stopped on this host after production moved to another Ubuntu server on 2026-07-31
 - `5432/tcp`: PostgreSQL container-only default
 - Avoid using `3JCentralPisowifi` ports: `8080/tcp`, `80/tcp`, `1812/udp`, `1813/udp`, `11812/udp`, and `11813/udp`
 
-The app exposes a System Settings -> Ports page backed by `/api/system/ports` so operators can view reserved and in-use ports. The registry explicitly labels threejmain Production ports (`8180` web, `8100` API), threejmain Staging ports (`8280` web, `8200` API), internal PostgreSQL container ports for both Compose projects, and existing 3JCentralPisowifi reservations.
+The app exposes a System Settings -> Ports page backed by `/api/system/ports` so operators can view reserved and in-use ports. The registry explicitly labels old local threejmain Production ports (`8180` web, `8100` API, disabled on this host), threejmain Staging ports (`8280` web, `8200` API), internal PostgreSQL container ports for both Compose projects, and existing 3JCentralPisowifi reservations.
 
 System Settings now lives in the `features/system-settings/` module folder. Logs now lives in the `features/logs/` module folder. App-shell imports their pages and API routers while retaining compatibility endpoints:
 
@@ -236,7 +240,11 @@ System Settings includes a Maps tab backed by `/api/system-settings/map-provider
 
 System Settings -> Access now owns the system-login access UI copied from the old `/home/threejmon` System Settings -> Access flow: Auth Settings, Permissions, Roles, and Users. API routes live under `/api/system-settings/access`. Access data persists to `SYSTEM_SETTINGS_DATA_PATH`, and app-shell login now accepts Access users while keeping the legacy `admin` fallback. Access seeds Tech Portal permission codes and the built-in `technician` role, plus Collector permissions and built-in `collector`, `collection_supervisor`, and `finance_officer` roles. Only the temporary test user `tech` / `tech12345` is seeded; Collector/Finance accounts must be issued by an administrator. Collector has module-specific API enforcement and a restricted app-shell portal; full permission enforcement across older modules remains future work.
 
-System Settings branding/business/deployment settings, Location Management records, deleted preloaded-location markers, Network Settings image assets, shared map provider settings, Avatar uploads, avatar emotion guide settings, OPENAI settings, A2P Messaging settings/logs, and Access settings persist to `SYSTEM_SETTINGS_DATA_PATH`, which Docker Compose sets to `/app/data/system_settings.json` in the `threejmain_api_data` named volume. This keeps app-shell identity settings, reusable locations, uploaded NAP/OLT Mapping marker images, PLC Splitter 1x8/1x16 image assets, configurable map tile providers/defaults, uploaded avatar images, AI integration configuration, A2P Messaging API credentials/logs, and first-shell access configuration across API container restarts/rebuilds. OPENAI stores the selected model, optional organization/project ids, and server-side API key; API responses expose only masked key metadata to the frontend. A2P Messaging stores Smart Messaging Suite API ID/API key, optional username/password, endpoint paths, Sender IDs, credit/test status, and local SMS logs; API responses expose only masked secret metadata.
+System Settings -> Graphify exposes a protected development-knowledge-graph view copied from the old `/opt/threejnotif` pattern. API routes live under `/api/system-settings/graphify`: `GET /api/system-settings/graphify` returns artifact metadata/statistics, `POST /api/system-settings/graphify/artifact-tickets/{kind}` issues short-lived graph/report open tickets, and `GET /api/system-settings/graphify/graph` plus `/report` serve only allowlisted `graph.html` and `GRAPH_REPORT.md` artifacts. The API reads from `THREEJMAIN_GRAPHIFY_OUT_DIR`, set by Docker Compose to `/graphify-out`, with `./graphify-out` mounted read-only. The web app never executes Graphify commands. Access includes `system.graphify.view`, and legacy admin sessions remain compatible while Access-role users can be controlled by permission assignment.
+
+Graphify workflow for Codex: after reading `AGENTS.md` and `Project_Context.md`, use `graphify query`, `graphify path`, or `graphify explain` before broad source searches for architecture, cross-module impact, or new-feature planning. Verify `INFERRED` and `AMBIGUOUS` graph edges against source before editing. Generated `graphify-out/` artifacts are local and Git-ignored. `.graphifyignore` excludes runtime data, database files, backups, logs, credentials, `.env` files, private keys, generated output, `.ai_coord/`, `.agents/`, frontend build/dependency folders, and the project-local Graphify skill. Build/refresh from the host with `graphify extract . --code-only --max-workers 2`, `graphify cluster-only . --no-label`, and then `graphify update .` after source changes when a graph exists. Do not enable Graphify Git hooks, MCP serving, live PostgreSQL introspection, or runtime automation without explicit user approval.
+
+System Settings branding/business/deployment settings, uploaded company/browser logo assets, Location Management records, deleted preloaded-location markers, Network Settings image assets, shared map provider settings, Avatar uploads, avatar emotion guide settings, OPENAI settings, A2P Messaging settings/logs, and Access settings persist to `SYSTEM_SETTINGS_DATA_PATH`, which Docker Compose sets to `/app/data/system_settings.json` in the `threejmain_api_data` named volume. This keeps app-shell identity settings, public sidebar/favicon branding, reusable locations, uploaded NAP/OLT Mapping marker images, PLC Splitter 1x8/1x16 image assets, configurable map tile providers/defaults, uploaded avatar images, AI integration configuration, A2P Messaging API credentials/logs, and first-shell access configuration across API container restarts/rebuilds. OPENAI stores the selected model, optional organization/project ids, and server-side API key; API responses expose only masked key metadata to the frontend. A2P Messaging stores Smart Messaging Suite API ID/API key, optional username/password, endpoint paths, Sender IDs, credit/test status, and local SMS logs; API responses expose only masked secret metadata.
 
 The app-shell top-nav notification bell reads generated A2P success/failure notifications from System Settings endpoints `/api/admin/notifications`, `/api/admin/notifications/read-all`, and `/api/admin/notifications/{notification_id}/read`. Notification clicks route to `/system-settings?tab=A2P%20Messaging&subtab=Messages`.
 
@@ -266,11 +274,11 @@ Release `runtime/server` after the build/start/restart and immediate health chec
 
 ## Shared Test Server Workflow
 
-The project is back to one shared working tree and one shared test server for normal Codex development.
+The project uses one shared working tree and one shared staging/test server for normal Codex development.
 
-Production is deployed on the same host from `origin/master` through the local systemd watcher `threejmain-production-auto-deploy.service`. The watcher runs `scripts/production_auto_deploy.sh`, polls `origin/master`, and calls `scripts/production_deploy.sh` when the branch changes. Production uses a detached checkout at `/home/threejmain-production` and Docker Compose project `threejmain-production`.
+Production has moved to another Ubuntu server. The old local production stack on `192.168.50.70` was stopped on 2026-07-31, and `threejmain-production-auto-deploy.service` was disabled so it does not restart from `origin/master`. Do not restart `/home/threejmain-production`, Docker Compose project `threejmain-production`, or ports `8180/8100` on this host unless the user explicitly asks to restore local production here.
 
-Production URLs:
+Old disabled local production URLs:
 
 ```text
 Web: http://192.168.50.70:8180/
@@ -284,9 +292,9 @@ Web: http://192.168.50.70:8280/
 API: http://192.168.50.70:8200/
 ```
 
-Production, staging, and the old stopped `threejmain` Compose project do not share data. Each Compose project has its own named Docker volumes. Do not restart the old `threejmain` Compose project on ports `8180` and `8100`; use `scripts/staging_deploy.sh` for staging so it stays beside production.
+Staging, the disabled old local production project, and the old stopped `threejmain` Compose project do not share data. Each Compose project has its own named Docker volumes. Use `scripts/staging_deploy.sh` for this shared host so staging stays on `8280/8200`.
 
-Production deployment commands:
+Production deployment commands for the production Ubuntu server:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Jess-is-it/threejmain/master/scripts/production_bootstrap.sh | sudo bash

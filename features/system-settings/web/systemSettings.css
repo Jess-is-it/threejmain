@@ -247,6 +247,65 @@
   white-space: pre-wrap;
 }
 
+.system-settings-graphify-meta-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+}
+
+.system-settings-graphify-meta {
+  border: 1px solid var(--tblr-border-color, #dadfe5);
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.system-settings-graphify-steps {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0 0 1.25rem;
+  padding-left: 1.2rem;
+}
+
+.system-settings-command-group {
+  margin-top: 1rem;
+}
+
+.system-settings-command-block {
+  background: #101827;
+  border-radius: 8px;
+  color: #e5edf6;
+  font-size: 0.82rem;
+  margin: 0;
+  overflow-x: auto;
+  padding: 0.9rem;
+  white-space: pre;
+}
+
+.system-settings-command-block code {
+  color: inherit;
+}
+
+.system-settings-graphify-scope {
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+}
+
+.system-settings-graphify-scope-item {
+  align-items: flex-start;
+  background: var(--tblr-bg-surface-secondary, #f6f8fb);
+  border: 1px solid var(--tblr-border-color, #dadfe5);
+  border-radius: 8px;
+  display: flex;
+  gap: 0.6rem;
+  padding: 0.9rem;
+}
+
+.system-settings-graphify-scope-item svg {
+  flex: 0 0 auto;
+  margin-top: 0.1rem;
+}
+
 .system-settings-avatar-meta {
   align-items: center;
   display: flex;
@@ -365,6 +424,64 @@
 .system-settings-locations .table th,
 .system-settings-locations .table td {
   vertical-align: middle;
+}
+
+.system-settings-logo-upload {
+  background: var(--tblr-bg-surface-secondary, #f6f8fb);
+  border: 1px solid var(--tblr-border-color, #dadfe5);
+  border-radius: 8px;
+  height: 100%;
+  padding: 1rem;
+}
+
+.system-settings-logo-preview-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+  margin-top: 1rem;
+  min-height: 4rem;
+}
+
+.system-settings-logo-preview,
+.system-settings-logo-empty {
+  align-items: center;
+  background: #fff;
+  border: 1px solid var(--tblr-border-color, #dadfe5);
+  border-radius: 8px;
+  display: inline-flex;
+  justify-content: center;
+}
+
+.system-settings-logo-preview.company {
+  height: 3.5rem;
+  min-width: 8rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.system-settings-logo-preview.browser {
+  height: 3.5rem;
+  width: 3.5rem;
+}
+
+.system-settings-logo-preview img {
+  display: block;
+  max-height: 100%;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+.system-settings-logo-preview.browser img {
+  height: 2rem;
+  width: 2rem;
+}
+
+.system-settings-logo-empty {
+  color: var(--tblr-muted, #667382);
+  font-size: 0.85rem;
+  min-height: 3.5rem;
+  min-width: 8rem;
+  padding: 0.65rem 0.9rem;
 }
 
 @media (max-width: 575.98px) {

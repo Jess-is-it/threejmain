@@ -362,6 +362,8 @@ vite ...
 It also applies to any command that binds or frees shared project ports, especially:
 
 ```text
+8280/tcp
+8200/tcp
 8180/tcp
 8100/tcp
 5432/tcp
@@ -394,8 +396,8 @@ Read-only runtime checks do not require the runtime lock. Examples:
 
 ```bash
 docker compose ps
-curl http://127.0.0.1:8100/health
-curl http://127.0.0.1:8180/
+curl http://127.0.0.1:8200/health
+curl http://127.0.0.1:8280/
 ```
 
 Release `runtime/server` as soon as the build/start/restart operation and immediate verification are complete. Do not keep the runtime lock while doing normal coding.
@@ -404,9 +406,9 @@ Release `runtime/server` as soon as the build/start/restart operation and immedi
 
 # Single Shared Test Server Workflow
 
-This project uses one shared local working tree and one shared test server for normal Codex development.
+This project uses one shared local working tree and one shared staging/test server for normal Codex development.
 
-Production now also uses this host when enabled. The live production stack deploys from `origin/master` into `/home/threejmain-production` as Docker Compose project `threejmain-production`, and it owns ports `8180` and `8100`. Staging runs from `/home/threejmain` as Docker Compose project `threejmain-staging`, and it owns ports `8280` and `8200`. Production and staging data are separate because they use separate Compose projects and Docker volumes.
+Production has moved to another Ubuntu server. The old local production stack on `192.168.50.70` was stopped on 2026-07-31, and `threejmain-production-auto-deploy.service` was disabled so it does not restart from `origin/master`. Do not restart `/home/threejmain-production`, Docker Compose project `threejmain-production`, or ports `8180/8100` on this host unless the user explicitly asks to restore local production here. Staging runs from `/home/threejmain` as Docker Compose project `threejmain-staging`, and it owns ports `8280` and `8200`.
 
 Normal Codex work happens in:
 
@@ -414,7 +416,7 @@ Normal Codex work happens in:
 /home/threejmain
 ```
 
-The production URLs are:
+The old disabled local production URLs are:
 
 ```text
 Web: http://192.168.50.70:8180/
@@ -428,7 +430,7 @@ Web: http://192.168.50.70:8280/
 API: http://192.168.50.70:8200/
 ```
 
-When production is running, `8180/8100` are production URLs, not staging preview URLs. Do not rebuild, restart, or replace the staging Compose stack on those ports unless the user explicitly asks to take over the live runtime. Use `scripts/staging_deploy.sh` for staging so it stays on `8280/8200`.
+Do not use `8180/8100` for staging preview work. Use `scripts/staging_deploy.sh` for staging so it stays on `8280/8200`.
 
 Do not create per-Codex preview servers for normal work. Do not use per-Codex ports such as `8303`, `8314`, `8203`, or `8214`.
 
@@ -471,7 +473,7 @@ runtime/server
 
 Release `runtime/server` immediately after restart/build and basic verification. Other Codex sessions should keep coding on unlocked files while one Codex briefly owns the runtime lock.
 
-All visual review happens on the shared server at `http://192.168.50.70:8180/`; confirm whether the user expects production or staging before changing the runtime.
+All visual review for this shared host happens on staging at `http://192.168.50.70:8280/`; production review should use the separate production Ubuntu server URL provided by the user.
 
 When the user asks to check screenshots in `3jmain_ss`, use the Windows-mounted screenshot directory:
 
@@ -799,3 +801,40 @@ Every Codex must:
 - Post updates during work.
 - Notify others when done.
 - Check files back in after finishing.
+
+---
+
+# Graphify Knowledge Graph Rules
+
+This project uses Graphify as host-only development tooling. Graphify helps Codex understand the modular ISP management codebase through `graphify-out/graph.json`, `graphify-out/GRAPH_REPORT.md`, and the System Settings -> Graphify viewer.
+
+When the user types `/graphify`, use the installed Graphify skill or project-local `.codex/skills/graphify` instructions before doing anything else.
+
+Use Graphify before broad source exploration when `graphify-out/graph.json` exists:
+
+```bash
+graphify query "<question>" --graph graphify-out/graph.json
+graphify explain "<concept>" --graph graphify-out/graph.json
+graphify path "<A>" "<B>" --graph graphify-out/graph.json
+```
+
+Graphify is required for:
+
+- Codebase architecture questions.
+- Cross-module impact analysis.
+- New feature or module planning after reading `Project_Context.md` and relevant module contexts.
+- Questions about how Customer Profiling, Service, Billing, Collector, Ticketing, Network Settings, System Settings, Logs, Tech Portal, or other ISP workflows connect.
+
+Graphify is optional for narrow, exact-file edits when the relevant file is already known.
+
+Rules:
+
+- Use `graphify query`, `graphify path`, or `graphify explain` before broad `rg`, raw file crawling, or architecture summaries.
+- Read `graphify-out/GRAPH_REPORT.md` only for broad architecture review or when query/path/explain does not surface enough context.
+- Treat Graphify edges marked `INFERRED` or `AMBIGUOUS` as leads only. Verify them against source before editing or explaining behavior as fact.
+- Dirty or locally refreshed `graphify-out/` files are expected and are not a reason to skip Graphify.
+- Generated `graphify-out/` artifacts stay local and Git-ignored; do not stage them unless the user explicitly asks.
+- After modifying source code or durable project documentation, run `graphify update .` when a graph already exists. If no graph exists yet, build it from the host with `graphify extract . --code-only --max-workers 2` and `graphify cluster-only . --no-label`.
+- Never point Graphify at runtime data, database files, backups, logs, credentials, `.env` files, private keys, or generated Graphify output. Keep `.graphifyignore` aligned with that boundary.
+- Do not enable Graphify Git hooks, HTTP MCP serving, live PostgreSQL introspection, or production runtime automation without explicit user approval.
+- Do not add Graphify as an application dependency, Docker image package, or Compose service. The app may mount `graphify-out/` read-only only to display reviewed artifacts in System Settings -> Graphify.

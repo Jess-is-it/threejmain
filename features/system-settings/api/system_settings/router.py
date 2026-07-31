@@ -1,5 +1,6 @@
 import base64
 import binascii
+import copy
 import hashlib
 import hmac
 import json
@@ -19,7 +20,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 try:
@@ -91,6 +92,12 @@ class AvatarUploadPayload(BaseModel):
 
 class MapImageUploadPayload(BaseModel):
     data_url: str = Field(..., max_length=800_000)
+    file_name: str | None = None
+    mime_type: str | None = None
+
+
+class BrandingImageUploadPayload(BaseModel):
+    data_url: str = Field(..., max_length=7_000_000)
     file_name: str | None = None
     mime_type: str | None = None
 
@@ -220,6 +227,24 @@ ALLOWED_MAP_IMAGE_MIME_TYPES = {
     "image/webp": "WebP",
 }
 MAX_MAP_IMAGE_BYTES = 524_288
+BRANDING_ASSETS = {
+    "company_logo": {
+        "label": "Company logo",
+        "route": "/api/public/branding/company-logo",
+        "max_bytes": 5 * 1024 * 1024,
+        "accepted_mime_types": {"image/png", "image/jpeg", "image/webp", "image/gif"},
+        "accepted_label": "PNG, JPG/JPEG, WebP, or GIF",
+        "default_file_name": "company-logo",
+    },
+    "browser_logo": {
+        "label": "Browser page logo",
+        "route": "/api/public/branding/browser-logo",
+        "max_bytes": 2 * 1024 * 1024,
+        "accepted_mime_types": {"image/png", "image/jpeg", "image/webp", "image/gif", "image/x-icon", "image/vnd.microsoft.icon"},
+        "accepted_label": "PNG, JPG/JPEG, WebP, GIF, or ICO",
+        "default_file_name": "browser-logo",
+    },
+}
 MAP_IMAGE_TARGETS = [
     {
         "id": "nap",
@@ -624,6 +649,20 @@ A2P_DEFAULT_SETTINGS = {
 }
 A2P_MAX_MESSAGE_LOGS = 500
 
+GRAPHIFY_OUT_DIR = Path(
+    os.getenv("THREEJMAIN_GRAPHIFY_OUT_DIR")
+    or os.getenv("THREEJ_GRAPHIFY_OUT_DIR")
+    or "/graphify-out"
+)
+GRAPHIFY_ARTIFACT_NAMES = {"graph.html", "graph.json", "GRAPH_REPORT.md"}
+GRAPHIFY_NO_STORE_HEADERS = {
+    "Cache-Control": "no-store",
+    "Pragma": "no-cache",
+    "X-Content-Type-Options": "nosniff",
+}
+GRAPHIFY_ARTIFACT_TICKET_SECONDS = 60
+_graphify_artifact_tickets: dict[str, dict[str, Any]] = {}
+
 ACCESS_PASSWORD_MIN_LENGTH = 8
 ACCESS_PERMISSION_SEEDS = [
     {
@@ -636,6 +675,12 @@ ACCESS_PERMISSION_SEEDS = [
         "code": "system.settings.edit",
         "label": "System Settings Edit",
         "description": "Edit branding, business profile, runtime, and related system settings.",
+        "category": "System Settings",
+    },
+    {
+        "code": "system.graphify.view",
+        "label": "Graphify Knowledge Graph View",
+        "description": "View the Graphify development knowledge graph, report, and usage guide.",
         "category": "System Settings",
     },
     {
@@ -792,6 +837,7 @@ ACCESS_PERMISSION_SEEDS = [
 ]
 ACCESS_PERMISSION_DEPENDENCIES = {
     "system.settings.edit": ["system.settings.view"],
+    "system.graphify.view": ["system.settings.view"],
     "system.access.auth.edit": ["system.access.auth.view"],
     "system.access.roles.edit": ["system.access.roles.view", "system.access.permissions.view"],
     "system.access.users.edit": ["system.access.users.view", "system.access.roles.view"],
@@ -932,6 +978,20 @@ def require_admin(authorization: str | None = Header(default=None)):
     if _current_admin is None:
         raise HTTPException(status_code=500, detail="System Settings module is not configured")
     return _current_admin(authorization)
+
+
+def require_permission(admin: dict[str, Any], permission_code: str) -> dict[str, Any]:
+    permissions = admin.get("permissions")
+    if permissions is None:
+        return admin
+    permission_set = {str(code).strip() for code in permissions if str(code).strip()}
+    if "*" in permission_set or permission_code in permission_set:
+        return admin
+    raise HTTPException(status_code=403, detail="Permission required")
+
+
+def require_graphify_view(admin=Depends(require_admin)):
+    return require_permission(admin, "system.graphify.view")
 
 
 def settings_store() -> dict[str, Any]:
@@ -1575,6 +1635,180 @@ def public_deployment_control_status() -> dict[str, Any]:
     }
 
 
+def graphify_artifact_path(filename: str) -> Path | None:
+    if filename not in GRAPHIFY_ARTIFACT_NAMES:
+        return None
+    try:
+        root = GRAPHIFY_OUT_DIR.resolve(strict=True)
+        candidate = (root / filename).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if candidate.parent != root or not candidate.is_file():
+        return None
+    return candidate
+
+
+def graphify_missing_response() -> Response:
+    return Response(
+        "Graphify artifact is unavailable. Refresh the project graph on the server host and try again.",
+        status_code=404,
+        media_type="text/plain; charset=utf-8",
+        headers=GRAPHIFY_NO_STORE_HEADERS,
+    )
+
+
+def prune_graphify_artifact_tickets() -> None:
+    now = time.time()
+    expired = [
+        ticket
+        for ticket, record in _graphify_artifact_tickets.items()
+        if float(record.get("expiresAt") or 0) <= now
+    ]
+    for ticket in expired:
+        _graphify_artifact_tickets.pop(ticket, None)
+
+
+def create_graphify_artifact_ticket(kind: str, admin: dict[str, Any]) -> dict[str, Any]:
+    normalized_kind = normalize_access_text(kind).lower()
+    if normalized_kind not in {"graph", "report"}:
+        raise HTTPException(status_code=404, detail="Graphify artifact route not found")
+    prune_graphify_artifact_tickets()
+    ticket = secrets.token_urlsafe(24)
+    _graphify_artifact_tickets[ticket] = {
+        "kind": normalized_kind,
+        "expiresAt": time.time() + GRAPHIFY_ARTIFACT_TICKET_SECONDS,
+        "actor": normalize_access_text(admin.get("username")),
+    }
+    return {
+        "ticket": ticket,
+        "kind": normalized_kind,
+        "expiresInSeconds": GRAPHIFY_ARTIFACT_TICKET_SECONDS,
+        "url": f"/api/system-settings/graphify/{normalized_kind}?ticket={ticket}",
+    }
+
+
+def require_graphify_artifact_access(kind: str, ticket: str | None, authorization: str | None) -> dict[str, Any]:
+    normalized_kind = normalize_access_text(kind).lower()
+    normalized_ticket = normalize_access_text(ticket)
+    if normalized_ticket:
+        prune_graphify_artifact_tickets()
+        record = _graphify_artifact_tickets.pop(normalized_ticket, None)
+        if record and record.get("kind") == normalized_kind and float(record.get("expiresAt") or 0) > time.time():
+            return {"username": record.get("actor") or "graphify-ticket"}
+        raise HTTPException(status_code=401, detail="Graphify artifact ticket is invalid or expired")
+    return require_graphify_view(require_admin(authorization))
+
+
+def public_graphify_status() -> dict[str, Any]:
+    graph_html_path = graphify_artifact_path("graph.html")
+    graph_json_path = graphify_artifact_path("graph.json")
+    report_path = graphify_artifact_path("GRAPH_REPORT.md")
+    status = {
+        "version": os.getenv("THREEJMAIN_GRAPHIFY_VERSION") or os.getenv("GRAPHIFY_VERSION") or "",
+        "artifactRootConfigured": bool(str(GRAPHIFY_OUT_DIR)),
+        "available": bool(graph_html_path),
+        "reportAvailable": bool(report_path),
+        "metadataAvailable": bool(graph_json_path),
+        "nodes": 0,
+        "relationships": 0,
+        "communities": 0,
+        "extractedRelationships": 0,
+        "inferredRelationships": 0,
+        "ambiguousRelationships": 0,
+        "builtAtCommit": "",
+        "builtAtCommitShort": "",
+        "commitState": "unknown",
+        "updatedAt": "",
+        "metadataError": "",
+        "artifactRoutes": {
+            "graph": "/api/system-settings/graphify/graph",
+            "report": "/api/system-settings/graphify/report",
+        },
+        "commands": {
+            "initialBuild": [
+                "cd /home/threejmain",
+                "graphify extract . --code-only --max-workers 2",
+                "graphify cluster-only . --no-label",
+            ],
+            "refresh": [
+                "cd /home/threejmain",
+                "graphify update .",
+                "graphify cluster-only . --no-label",
+            ],
+            "query": [
+                'graphify query "how does Billing connect to Collector?" --graph graphify-out/graph.json',
+                'graphify explain "SystemSettingsPage" --graph graphify-out/graph.json',
+                'graphify path "SystemSettingsPage" "router.py" --graph graphify-out/graph.json',
+            ],
+        },
+        "notes": [
+            "Graphify is host-only development tooling. The application never runs graphify commands.",
+            "Only graph.html and GRAPH_REPORT.md are exposed through authenticated allowlisted routes.",
+            "Verify INFERRED or AMBIGUOUS relationships against source before editing.",
+            "Runtime data, credentials, backups, logs, and generated Graphify output are excluded by .graphifyignore.",
+        ],
+    }
+
+    if graph_json_path:
+        try:
+            graph_data = json.loads(graph_json_path.read_text(encoding="utf-8"))
+            nodes = graph_data.get("nodes") if isinstance(graph_data.get("nodes"), list) else []
+            links = graph_data.get("links")
+            if not isinstance(links, list):
+                links = graph_data.get("edges") if isinstance(graph_data.get("edges"), list) else []
+            communities = {
+                node.get("community")
+                for node in nodes
+                if isinstance(node, dict) and node.get("community") is not None
+            }
+            confidence_counts: dict[str, int] = {}
+            for link in links:
+                if not isinstance(link, dict):
+                    continue
+                confidence = normalize_access_text(link.get("confidence")).upper()
+                if confidence:
+                    confidence_counts[confidence] = int(confidence_counts.get(confidence) or 0) + 1
+            built_at_commit = normalize_access_text(
+                graph_data.get("built_at_commit")
+                or graph_data.get("builtAtCommit")
+                or graph_data.get("commit")
+            )
+            if not re.fullmatch(r"[0-9a-fA-F]{7,64}", built_at_commit):
+                built_at_commit = ""
+            graphify_version = normalize_access_text(
+                graph_data.get("graphify_version")
+                or graph_data.get("graphifyVersion")
+                or graph_data.get("version")
+            )
+            installed_commit = normalize_access_text(os.getenv("APP_COMMIT", ""))
+            status.update(
+                {
+                    "version": graphify_version or status["version"],
+                    "nodes": len(nodes),
+                    "relationships": len(links),
+                    "communities": len(communities),
+                    "extractedRelationships": int(confidence_counts.get("EXTRACTED") or 0),
+                    "inferredRelationships": int(confidence_counts.get("INFERRED") or 0),
+                    "ambiguousRelationships": int(confidence_counts.get("AMBIGUOUS") or 0),
+                    "builtAtCommit": built_at_commit,
+                    "builtAtCommitShort": built_at_commit[:7],
+                }
+            )
+            if built_at_commit and installed_commit and installed_commit != "unknown":
+                status["commitState"] = "match" if built_at_commit == installed_commit else "different"
+        except (OSError, ValueError, TypeError):
+            status["metadataError"] = "Graph metadata could not be read. Refresh the Graphify artifacts on the host."
+
+    artifact_paths = [path for path in (graph_html_path, graph_json_path, report_path) if path]
+    if artifact_paths:
+        try:
+            modified_at = max(path.stat().st_mtime for path in artifact_paths)
+            status["updatedAt"] = datetime.fromtimestamp(modified_at, tz=timezone.utc).isoformat()
+        except OSError:
+            pass
+    return status
+
+
 def resolve_deployment_commit(selected_commit: str) -> dict[str, Any]:
     normalized = normalize_access_text(selected_commit).lower()
     if not re.fullmatch(r"[0-9a-f]{7,40}", normalized):
@@ -2096,6 +2330,211 @@ def send_access_email(auth_settings: dict[str, Any], to_email: str, subject: str
         client.send_message(message)
     finally:
         client.quit()
+
+
+def branding_asset_config(asset_id: str) -> dict[str, Any]:
+    normalized = normalize_location_text(asset_id).lower().replace("-", "_")
+    config = BRANDING_ASSETS.get(normalized)
+    if config is None:
+        raise HTTPException(status_code=404, detail="Branding asset not found")
+    return {"id": normalized, **config}
+
+
+def normalize_branding_mime_type(value: str | None) -> str:
+    normalized = normalize_location_text(value).lower()
+    if normalized == "image/jpg":
+        return "image/jpeg"
+    if normalized == "image/vnd.microsoft.icon":
+        return "image/x-icon"
+    return normalized
+
+
+def detect_branding_image_mime(raw: bytes) -> str | None:
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    if raw[:4] == b"\x00\x00\x01\x00":
+        return "image/x-icon"
+    return None
+
+
+def branding_asset_url(asset_id: str, record: dict[str, Any]) -> str:
+    config = branding_asset_config(asset_id)
+    version = normalize_location_text(record.get("updated_at")) or str(record.get("byte_size") or "")
+    suffix = f"?v={urllib.parse.quote(version)}" if version else ""
+    return f"{config['route']}{suffix}"
+
+
+def normalize_branding_asset_record(asset_id: str, record: Any) -> dict[str, Any] | None:
+    if not isinstance(record, dict):
+        return None
+    config = branding_asset_config(asset_id)
+    data_url = normalize_location_text(record.get("data_url"))
+    mime_type = normalize_branding_mime_type(record.get("mime_type"))
+    if not data_url or mime_type not in config["accepted_mime_types"]:
+        return None
+    try:
+        byte_size = int(record.get("byte_size") or 0)
+    except (TypeError, ValueError):
+        byte_size = 0
+    return {
+        "file_name": normalize_location_text(record.get("file_name"))[:180] or config["default_file_name"],
+        "mime_type": mime_type,
+        "byte_size": max(byte_size, 0),
+        "data_url": data_url,
+        "updated_at": normalize_location_text(record.get("updated_at")),
+        "updated_by_admin_id": normalize_location_text(record.get("updated_by_admin_id")),
+        "updated_by_username": normalize_location_text(record.get("updated_by_username")),
+    }
+
+
+def refresh_branding_public_urls(branding: dict[str, Any] | None = None) -> dict[str, Any]:
+    store = settings_store()
+    branding = branding if isinstance(branding, dict) else store.setdefault("branding", {})
+    for asset_id in BRANDING_ASSETS:
+        record = normalize_branding_asset_record(asset_id, branding.get(asset_id))
+        url_key = f"{asset_id}_url"
+        if record:
+            branding[asset_id] = record
+            branding[url_key] = branding_asset_url(asset_id, record)
+            if asset_id == "browser_logo":
+                branding["browser_logo_type"] = record["mime_type"]
+        else:
+            branding.pop(asset_id, None)
+            branding[url_key] = normalize_location_text(branding.get(url_key)) or None
+            if asset_id == "browser_logo" and not branding.get(url_key):
+                branding["browser_logo_type"] = ""
+    return branding
+
+
+def public_branding_payload() -> dict[str, Any]:
+    load_persisted_system_settings()
+    branding = refresh_branding_public_urls()
+    payload = dict(branding)
+    payload.pop("company_logo", None)
+    payload.pop("browser_logo", None)
+    return payload
+
+
+def decode_branding_image_data_url(asset_id: str, payload: BrandingImageUploadPayload) -> tuple[str, bytes]:
+    config = branding_asset_config(asset_id)
+    data_url = payload.data_url.strip()
+    if not data_url.startswith("data:") or ";base64," not in data_url:
+        raise HTTPException(status_code=400, detail=f"{config['label']} must be uploaded as a base64 data URL")
+    header, encoded = data_url.split(",", 1)
+    declared_mime = normalize_branding_mime_type(header[5:].split(";", 1)[0])
+    payload_mime = normalize_branding_mime_type(payload.mime_type)
+    if payload_mime and payload_mime != declared_mime and {payload_mime, declared_mime} != {"image/x-icon", "application/octet-stream"}:
+        raise HTTPException(status_code=400, detail=f"{config['label']} MIME type does not match the uploaded image")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"{config['label']} image data is not valid base64") from exc
+    if not raw:
+        raise HTTPException(status_code=400, detail=f"{config['label']} image is empty")
+    if len(raw) > config["max_bytes"]:
+        raise HTTPException(status_code=400, detail=f"{config['label']} must be {config['max_bytes'] // (1024 * 1024)} MB or smaller")
+    detected_mime = detect_branding_image_mime(raw)
+    if not detected_mime:
+        raise HTTPException(status_code=400, detail=f"Invalid image. Upload {config['accepted_label']}.")
+    if detected_mime == "image/x-icon":
+        declared_ok = declared_mime in {"image/x-icon", "application/octet-stream"}
+    else:
+        declared_ok = declared_mime == detected_mime
+    if not declared_ok:
+        raise HTTPException(status_code=400, detail=f"{config['label']} MIME type does not match the uploaded image")
+    if detected_mime not in config["accepted_mime_types"]:
+        raise HTTPException(status_code=400, detail=f"Invalid image. Upload {config['accepted_label']}.")
+    return detected_mime, raw
+
+
+def prepare_branding_asset_record(asset_id: str, payload: BrandingImageUploadPayload, admin: dict[str, Any]) -> dict[str, Any]:
+    config = branding_asset_config(asset_id)
+    mime_type, raw = decode_branding_image_data_url(asset_id, payload)
+    file_name = normalize_location_text(payload.file_name) or config["default_file_name"]
+    return {
+        "file_name": file_name[:180],
+        "mime_type": mime_type,
+        "byte_size": len(raw),
+        "data_url": payload.data_url.strip(),
+        "updated_at": now_iso(),
+        "updated_by_admin_id": admin.get("id"),
+        "updated_by_username": admin.get("username"),
+    }
+
+
+def validate_branding_asset_record(asset_id: str, record: Any, admin: dict[str, Any]) -> dict[str, Any] | None:
+    if record is None:
+        return None
+    if not isinstance(record, dict):
+        raise HTTPException(status_code=400, detail="Branding logo data is invalid")
+    payload = BrandingImageUploadPayload(
+        data_url=normalize_location_text(record.get("data_url")),
+        file_name=normalize_location_text(record.get("file_name")) or None,
+        mime_type=normalize_branding_mime_type(record.get("mime_type")) or None,
+    )
+    normalized = prepare_branding_asset_record(asset_id, payload, admin)
+    normalized["updated_at"] = normalize_location_text(record.get("updated_at")) or normalized["updated_at"]
+    normalized["updated_by_admin_id"] = normalize_location_text(record.get("updated_by_admin_id")) or normalized["updated_by_admin_id"]
+    normalized["updated_by_username"] = normalize_location_text(record.get("updated_by_username")) or normalized["updated_by_username"]
+    return normalized
+
+
+def staged_branding_asset_settings(asset_id: str, payload: BrandingImageUploadPayload, admin: dict[str, Any]) -> dict[str, Any]:
+    record = prepare_branding_asset_record(asset_id, payload, admin)
+    load_persisted_system_settings()
+    staged = copy.deepcopy(settings_store())
+    branding = staged.setdefault("branding", {})
+    branding[asset_id] = record
+    branding[f"{asset_id}_url"] = record["data_url"]
+    if asset_id == "browser_logo":
+        branding["browser_logo_type"] = record["mime_type"]
+    return staged
+
+
+def save_branding_asset(asset_id: str, payload: BrandingImageUploadPayload, admin: dict[str, Any]) -> dict[str, Any]:
+    record = prepare_branding_asset_record(asset_id, payload, admin)
+    load_persisted_system_settings()
+    store = settings_store()
+    branding = store.setdefault("branding", {})
+    branding[asset_id] = record
+    refresh_branding_public_urls(branding)
+    save_persisted_system_settings("branding")
+    add_audit(
+        "system_branding_asset_uploaded",
+        "SystemBranding",
+        asset_id,
+        {"asset": asset_id, "file_name": record["file_name"], "mime_type": record["mime_type"], "byte_size": record["byte_size"]},
+        admin["username"],
+    )
+    return store
+
+
+def public_branding_asset_response(asset_id: str) -> Response:
+    config = branding_asset_config(asset_id)
+    load_persisted_system_settings()
+    branding = refresh_branding_public_urls()
+    record = normalize_branding_asset_record(asset_id, branding.get(asset_id))
+    if record is None:
+        return Response(status_code=404)
+    data_url = record["data_url"]
+    try:
+        _, encoded = data_url.split(",", 1)
+        raw = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error):
+        return Response(status_code=404)
+    if not raw or len(raw) > config["max_bytes"]:
+        return Response(status_code=404)
+    return Response(
+        content=raw,
+        media_type=record["mime_type"],
+        headers={"Cache-Control": "public, max-age=86400, immutable"},
+    )
 
 
 def avatar_store() -> dict[str, Any]:
@@ -3383,6 +3822,58 @@ def request_deployment(payload: DeploymentRequestPayload, admin=Depends(require_
     return status
 
 
+@router.get("/api/system-settings/graphify")
+def get_graphify_status(admin=Depends(require_graphify_view)):
+    return public_graphify_status()
+
+
+@router.post("/api/system-settings/graphify/artifact-tickets/{kind}")
+def create_graphify_ticket(kind: str, admin=Depends(require_graphify_view)):
+    return create_graphify_artifact_ticket(kind, admin)
+
+
+@router.get("/api/system-settings/graphify/graph")
+def get_graphify_graph(ticket: str | None = None, authorization: str | None = Header(default=None)):
+    require_graphify_artifact_access("graph", ticket, authorization)
+    graph_path = graphify_artifact_path("graph.html")
+    if not graph_path:
+        return graphify_missing_response()
+    return FileResponse(
+        str(graph_path),
+        media_type="text/html",
+        headers={
+            **GRAPHIFY_NO_STORE_HEADERS,
+            "Content-Disposition": 'inline; filename="graphify-knowledge-graph.html"',
+            "Referrer-Policy": "no-referrer",
+            "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+            "Content-Security-Policy": (
+                "sandbox allow-scripts; default-src 'none'; "
+                "script-src 'unsafe-inline' https://unpkg.com; style-src 'unsafe-inline'; "
+                "img-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; "
+                "form-action 'none'; frame-ancestors 'self'"
+            ),
+        },
+    )
+
+
+@router.get("/api/system-settings/graphify/report")
+def get_graphify_report(ticket: str | None = None, authorization: str | None = Header(default=None)):
+    require_graphify_artifact_access("report", ticket, authorization)
+    report_path = graphify_artifact_path("GRAPH_REPORT.md")
+    if not report_path:
+        return graphify_missing_response()
+    return FileResponse(
+        str(report_path),
+        media_type="text/plain; charset=utf-8",
+        headers={
+            **GRAPHIFY_NO_STORE_HEADERS,
+            "Content-Disposition": 'inline; filename="GRAPH_REPORT.md"',
+            "Referrer-Policy": "no-referrer",
+            "Content-Security-Policy": "sandbox; default-src 'none'; frame-ancestors 'self'",
+        },
+    )
+
+
 @router.get("/api/system-settings/access")
 def get_access(admin=Depends(require_admin)):
     return public_access_store(access_store())
@@ -3622,21 +4113,41 @@ def delete_access_user(user_id: str, admin=Depends(require_admin)):
 @router.get("/api/system-settings/settings")
 @router.get("/api/system/settings")
 def get_settings(admin=Depends(require_admin)):
+    load_persisted_system_settings()
+    refresh_branding_public_urls()
     return settings_store()
 
 
 @router.patch("/api/system-settings/settings")
 @router.patch("/api/system/settings")
 def update_settings(payload: SettingsPayload, admin=Depends(require_admin)):
+    load_persisted_system_settings()
     store = settings_store()
     changed = payload.model_dump(exclude_none=True)
     for section in ["branding", "business", "deployment"]:
         value = changed.get(section)
         if value is not None:
+            if section == "branding":
+                value = dict(value)
+                for asset_id in BRANDING_ASSETS:
+                    if asset_id in value:
+                        value[asset_id] = validate_branding_asset_record(asset_id, value.get(asset_id), admin)
             store.setdefault(section, {}).update(value)
+    if "branding" in changed:
+        refresh_branding_public_urls(store.get("branding"))
     save_persisted_system_settings(*[section for section in ["branding", "business", "deployment"] if section in changed])
     add_audit("settings_updated", "system", "settings", {"sections": list(changed.keys())}, admin["username"])
     return store
+
+
+@router.put("/api/system-settings/branding/company-logo")
+def upload_company_logo(payload: BrandingImageUploadPayload, admin=Depends(require_admin)):
+    return staged_branding_asset_settings("company_logo", payload, admin)
+
+
+@router.put("/api/system-settings/branding/browser-logo")
+def upload_browser_logo(payload: BrandingImageUploadPayload, admin=Depends(require_admin)):
+    return staged_branding_asset_settings("browser_logo", payload, admin)
 
 
 @router.get("/api/system-settings/ports")

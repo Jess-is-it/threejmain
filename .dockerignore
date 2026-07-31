@@ -1,6 +1,9 @@
 .git
 .ai_coord
+.agents
+.codex
 .codex_session_prompt.txt
+graphify-out
 
 **/node_modules
 **/dist
@@ -15,6 +18,10 @@
 .env.*
 *.log
 *.swp
+data
+backups
+backup
+logs
 
 customer-profiling-git-backup
 **/customer-profiling-git-backup

@@ -15,6 +15,11 @@ System Settings manages shell configuration pages for branding, business profile
 ## Current Scope
 
 - View and update branding/business/deployment settings.
+- Manage General tab company logo and browser page logo uploads copied from the old `/opt/threejnotif` System Settings -> General pattern:
+  - Company logo accepts PNG, JPG/JPEG, WebP, and GIF up to 5 MB and is shown in the shared sidebar.
+  - Browser page logo accepts PNG, JPG/JPEG, WebP, GIF, and ICO up to 2 MB and is applied as the web document favicon.
+  - Upload controls stage a pending preview; the public sidebar/favicon branding changes only after the operator clicks Save Settings.
+  - Public branding responses expose cache-busted asset URLs only; raw uploaded data stays in authenticated System Settings storage/backups.
 - Review and manually install production releases under System Update, including readiness checks, update/downgrade confirmation, progress feedback, and plain-language feature/function change summaries.
 - Manage Network Settings image assets for OLT, NAP, PLC Splitter 1x8, and PLC Splitter 1x16 under Images.
 - Manage shared map tile providers under Maps. Operators can enable/disable providers, choose the default provider, edit XYZ-style URL templates, set provider type/attribution/min-max zoom, store optional public API key/token values, and add/remove custom providers.
@@ -35,6 +40,10 @@ System Settings manages shell configuration pages for branding, business profile
   - Permissions catalog with system-managed permission codes grouped by feature.
   - Roles CRUD with permission assignment and automatic required view-permission dependencies.
   - Users CRUD with role assignment, active/inactive status, force password change, password reset, email reset, and owner lockouts.
+- View the host-generated Graphify development knowledge graph under Graphify:
+  - Artifact statistics for nodes, relationships, communities, confidence counts, freshness, and graph/report availability.
+  - Short-lived ticket opening of `graph.html` and `GRAPH_REPORT.md` through the API because the frontend uses bearer tokens.
+  - AI workflow command examples and safety limits copied from the old `/opt/threejnotif` System Settings -> Graphify pattern.
 - Manage reusable Location Management records with address, municipality, barangay, province, region, coordinates, geocoder source, and notes.
 - Preload known Customer Profiling service-area barangays into Location Management.
 - Suppress deleted preloaded Location Management rows from automatic reseeding across API restarts.
@@ -49,7 +58,8 @@ System Settings manages shell configuration pages for branding, business profile
 - App-shell imports `SystemSettingsPage` and passes `refreshShell`.
 - App-shell calls `configure_system_settings(current_admin, add_audit, settings, port_registry)`.
 - The port registry provider includes threejmain Production (`8180` web, `8100` API), threejmain Staging (`8280` web, `8200` API), internal PostgreSQL container ports for both Compose projects, and existing 3JCentralPisowifi reserved/in-use ports.
-- Branding/business/deployment settings persist to `SYSTEM_SETTINGS_DATA_PATH` and are included in Backup exports/restores.
+- Branding/business/deployment settings and uploaded company/browser logo assets persist to `SYSTEM_SETTINGS_DATA_PATH` and are included in Backup exports/restores.
+- Branding asset upload endpoints are `PUT /api/system-settings/branding/company-logo` and `PUT /api/system-settings/branding/browser-logo`; they validate and return staged settings for the General tab preview only. `PATCH /api/system-settings/settings` persists the staged asset and publishes cache-busted public URLs. Public asset routes are `/api/public/branding/company-logo` and `/api/public/branding/browser-logo`, while `/api/public/branding` returns sanitized display fields and saved asset URLs for the app shell.
 - Location Management records, deleted preload markers, Network Settings image assets, shared map provider settings, avatar images, avatar emotion guide settings, OPENAI settings, and A2P Messaging settings/logs persist to `SYSTEM_SETTINGS_DATA_PATH` (`/app/data/system_settings.json` in Docker Compose) through the `threejmain_api_data` named volume.
 - Map/image asset endpoints are module-owned under `/api/system-settings/map-images`; accepted uploads are PNG, JPG/JPEG, and WebP images up to 512 KB. `GET /api/system-settings/map-images` returns upload guidelines, target metadata, and any saved image data URLs. `PUT/DELETE /api/system-settings/map-images/{target_id}` manages `nap`, `olt`, `plc-splitter-1x8`, and `plc-splitter-1x16` image assets for Network Settings.
 - Map provider endpoints are module-owned under `/api/system-settings/map-providers` with compatibility routes at `/api/system/map-providers`. `GET` returns normalized provider settings; `PATCH` saves the default provider id and provider rows. Built-in defaults include enabled Esri Street, Esri Satellite, and OpenStreetMap plus disabled key-based templates for Google Roadmap/Satellite, TomTom Basic, MapTiler streets/satellite, and Mapbox streets/satellite. Google providers use the official Google Map Tiles API session-token flow and require a Google API key with Map Tiles API enabled. The System Settings -> Maps UI groups provider cards by vendor tabs such as Google/Esri/Mapbox and nested map-type tabs such as Street/Satellite. `features/system-settings/web/mapProviders.js` is the shared frontend helper used by Network Settings and Customer Profiling to normalize provider settings, create provider sessions when needed, and expand tile URLs.
@@ -63,6 +73,9 @@ System Settings manages shell configuration pages for branding, business profile
 - App-shell notification endpoints are exposed by this module at `/api/admin/notifications`, `/api/admin/notifications/read-all`, and `/api/admin/notifications/{notification_id}/read`. The shared top-nav bell uses these generated A2P success/failure notifications.
 - Access endpoints are under `/api/system-settings/access`. System-login administration was moved here from the old Account Admin area to match the old `/home/threejmon` System Settings -> Access pattern.
 - Access data persists to `SYSTEM_SETTINGS_DATA_PATH` in this first shell. App-shell login now accepts System Settings -> Access users while keeping the legacy `admin` fallback. Access seeds Tech Portal permissions and the built-in `technician` role plus Collector permissions and built-in `collector`, `collection_supervisor`, and `finance_officer` roles. Only the temporary `tech` / `tech12345` user is seeded; Collector/Finance users must be issued in Access. The Collector API and restricted app-shell portal enforce their role/permission boundary; full enforcement across older modules remains future work.
+- Access now seeds `system.graphify.view` for the Graphify tab and artifact routes. Owner/admin/viewer built-in roles receive it through the normal permission seed behavior; custom Access roles can remove it if source-architecture visibility should be restricted.
+- Graphify endpoints are under `/api/system-settings/graphify`: `GET /api/system-settings/graphify` returns metadata and command guidance, `POST /artifact-tickets/{kind}` issues a short-lived route ticket, and `/graph` plus `/report` serve only allowlisted `graph.html` and `GRAPH_REPORT.md` from `THREEJMAIN_GRAPHIFY_OUT_DIR`.
+- Docker Compose sets `THREEJMAIN_GRAPHIFY_OUT_DIR=/graphify-out` and mounts `./graphify-out:/graphify-out:ro`. Graphify generation stays host-only and is intentionally not part of the API image or runtime services.
 - The reusable `send_a2p_sms_message` provider is exported for module integration. Collector uses it for post-payment confirmations with purpose `COLLECTOR_PAYMENT_CONFIRMATION`; send failure is logged and returned to Collector without rolling back the posted Billing receipt.
 - Location endpoints are module-owned under `/api/system-settings/locations` with `/api/locations` compatibility routes for workflows copied from 3JCentralPisowifi. Create, edit, delete, bulk delete, and customer-created minimal location records are persisted.
 - `PATCH /api/system-settings/locations/{location_id}` updates saved location metadata.
