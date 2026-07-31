@@ -1,5 +1,6 @@
 import base64
 import binascii
+import copy
 import hashlib
 import hmac
 import json
@@ -2428,7 +2429,7 @@ def decode_branding_image_data_url(asset_id: str, payload: BrandingImageUploadPa
     header, encoded = data_url.split(",", 1)
     declared_mime = normalize_branding_mime_type(header[5:].split(";", 1)[0])
     payload_mime = normalize_branding_mime_type(payload.mime_type)
-    if payload_mime and payload_mime != declared_mime:
+    if payload_mime and payload_mime != declared_mime and {payload_mime, declared_mime} != {"image/x-icon", "application/octet-stream"}:
         raise HTTPException(status_code=400, detail=f"{config['label']} MIME type does not match the uploaded image")
     try:
         raw = base64.b64decode(encoded, validate=True)
@@ -2452,14 +2453,11 @@ def decode_branding_image_data_url(asset_id: str, payload: BrandingImageUploadPa
     return detected_mime, raw
 
 
-def save_branding_asset(asset_id: str, payload: BrandingImageUploadPayload, admin: dict[str, Any]) -> dict[str, Any]:
+def prepare_branding_asset_record(asset_id: str, payload: BrandingImageUploadPayload, admin: dict[str, Any]) -> dict[str, Any]:
     config = branding_asset_config(asset_id)
     mime_type, raw = decode_branding_image_data_url(asset_id, payload)
     file_name = normalize_location_text(payload.file_name) or config["default_file_name"]
-    load_persisted_system_settings()
-    store = settings_store()
-    branding = store.setdefault("branding", {})
-    branding[asset_id] = {
+    return {
         "file_name": file_name[:180],
         "mime_type": mime_type,
         "byte_size": len(raw),
@@ -2468,13 +2466,50 @@ def save_branding_asset(asset_id: str, payload: BrandingImageUploadPayload, admi
         "updated_by_admin_id": admin.get("id"),
         "updated_by_username": admin.get("username"),
     }
+
+
+def validate_branding_asset_record(asset_id: str, record: Any, admin: dict[str, Any]) -> dict[str, Any] | None:
+    if record is None:
+        return None
+    if not isinstance(record, dict):
+        raise HTTPException(status_code=400, detail="Branding logo data is invalid")
+    payload = BrandingImageUploadPayload(
+        data_url=normalize_location_text(record.get("data_url")),
+        file_name=normalize_location_text(record.get("file_name")) or None,
+        mime_type=normalize_branding_mime_type(record.get("mime_type")) or None,
+    )
+    normalized = prepare_branding_asset_record(asset_id, payload, admin)
+    normalized["updated_at"] = normalize_location_text(record.get("updated_at")) or normalized["updated_at"]
+    normalized["updated_by_admin_id"] = normalize_location_text(record.get("updated_by_admin_id")) or normalized["updated_by_admin_id"]
+    normalized["updated_by_username"] = normalize_location_text(record.get("updated_by_username")) or normalized["updated_by_username"]
+    return normalized
+
+
+def staged_branding_asset_settings(asset_id: str, payload: BrandingImageUploadPayload, admin: dict[str, Any]) -> dict[str, Any]:
+    record = prepare_branding_asset_record(asset_id, payload, admin)
+    load_persisted_system_settings()
+    staged = copy.deepcopy(settings_store())
+    branding = staged.setdefault("branding", {})
+    branding[asset_id] = record
+    branding[f"{asset_id}_url"] = record["data_url"]
+    if asset_id == "browser_logo":
+        branding["browser_logo_type"] = record["mime_type"]
+    return staged
+
+
+def save_branding_asset(asset_id: str, payload: BrandingImageUploadPayload, admin: dict[str, Any]) -> dict[str, Any]:
+    record = prepare_branding_asset_record(asset_id, payload, admin)
+    load_persisted_system_settings()
+    store = settings_store()
+    branding = store.setdefault("branding", {})
+    branding[asset_id] = record
     refresh_branding_public_urls(branding)
     save_persisted_system_settings("branding")
     add_audit(
         "system_branding_asset_uploaded",
         "SystemBranding",
         asset_id,
-        {"asset": asset_id, "file_name": file_name[:180], "mime_type": mime_type, "byte_size": len(raw)},
+        {"asset": asset_id, "file_name": record["file_name"], "mime_type": record["mime_type"], "byte_size": record["byte_size"]},
         admin["username"],
     )
     return store
@@ -4092,6 +4127,11 @@ def update_settings(payload: SettingsPayload, admin=Depends(require_admin)):
     for section in ["branding", "business", "deployment"]:
         value = changed.get(section)
         if value is not None:
+            if section == "branding":
+                value = dict(value)
+                for asset_id in BRANDING_ASSETS:
+                    if asset_id in value:
+                        value[asset_id] = validate_branding_asset_record(asset_id, value.get(asset_id), admin)
             store.setdefault(section, {}).update(value)
     if "branding" in changed:
         refresh_branding_public_urls(store.get("branding"))
@@ -4102,12 +4142,12 @@ def update_settings(payload: SettingsPayload, admin=Depends(require_admin)):
 
 @router.put("/api/system-settings/branding/company-logo")
 def upload_company_logo(payload: BrandingImageUploadPayload, admin=Depends(require_admin)):
-    return save_branding_asset("company_logo", payload, admin)
+    return staged_branding_asset_settings("company_logo", payload, admin)
 
 
 @router.put("/api/system-settings/branding/browser-logo")
 def upload_browser_logo(payload: BrandingImageUploadPayload, admin=Depends(require_admin)):
-    return save_branding_asset("browser_logo", payload, admin)
+    return staged_branding_asset_settings("browser_logo", payload, admin)
 
 
 @router.get("/api/system-settings/ports")

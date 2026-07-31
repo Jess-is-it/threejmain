@@ -48,7 +48,7 @@ class BrandingLogoTests(unittest.TestCase):
             system_settings.os.environ["SYSTEM_SETTINGS_DATA_PATH"] = self.previous_data_path
         shutil.rmtree(self.temp_dir)
 
-    def test_company_logo_upload_creates_public_url_without_exposing_raw_data(self):
+    def test_company_logo_upload_is_pending_until_settings_are_saved(self):
         raw = b"\x89PNG\r\n\x1a\ncompany-logo"
         payload = system_settings.BrandingImageUploadPayload(
             data_url=data_url("image/png", raw),
@@ -56,7 +56,19 @@ class BrandingLogoTests(unittest.TestCase):
             mime_type="image/png",
         )
 
-        saved = system_settings.save_branding_asset("company_logo", payload, self.admin)
+        staged = system_settings.upload_company_logo(payload, self.admin)
+        staged_branding = staged["branding"]
+
+        self.assertEqual("image/png", staged_branding["company_logo"]["mime_type"])
+        self.assertTrue(staged_branding["company_logo_url"].startswith("data:image/png;base64,"))
+        public_before_save = system_settings.public_branding_payload()
+        self.assertNotIn("company_logo", public_before_save)
+        self.assertIsNone(public_before_save.get("company_logo_url"))
+
+        saved = system_settings.update_settings(
+            system_settings.SettingsPayload(branding=staged_branding),
+            self.admin,
+        )
         branding = saved["branding"]
 
         self.assertEqual("image/png", branding["company_logo"]["mime_type"])
@@ -69,7 +81,7 @@ class BrandingLogoTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual("image/png", response.media_type)
         self.assertEqual(raw, response.body)
-        self.assertEqual("system_branding_asset_uploaded", self.audit_events[-1][0])
+        self.assertEqual("settings_updated", self.audit_events[-1][0])
 
     def test_browser_logo_accepts_ico_for_favicon(self):
         raw = b"\x00\x00\x01\x00browser-logo"
@@ -79,7 +91,13 @@ class BrandingLogoTests(unittest.TestCase):
             mime_type="application/octet-stream",
         )
 
-        saved = system_settings.save_branding_asset("browser_logo", payload, self.admin)
+        staged = system_settings.upload_browser_logo(payload, self.admin)
+        self.assertTrue(staged["branding"]["browser_logo_url"].startswith("data:application/octet-stream;base64,"))
+
+        saved = system_settings.update_settings(
+            system_settings.SettingsPayload(branding=staged["branding"]),
+            self.admin,
+        )
         branding = saved["branding"]
 
         self.assertEqual("image/x-icon", branding["browser_logo"]["mime_type"])

@@ -3857,8 +3857,7 @@ export default function SystemSettingsPage({ refreshShell }) {
         })
       });
       setSettings(saved);
-      setMessage(`${config.label} updated.`);
-      refreshShell?.();
+      setMessage(`${config.label} ready. Click Save Settings to apply it to the system.`);
     } catch (err) {
       setMessage(err.message);
     } finally {
@@ -3886,12 +3885,13 @@ export default function SystemSettingsPage({ refreshShell }) {
           <form onSubmit={save}>
             <div className="row g-3">
               {[
-                { id: 'company_logo', previewClass: 'company', url: branding.company_logo_url, alt: 'Company Logo' },
-                { id: 'browser_logo', previewClass: 'browser', url: branding.browser_logo_url, alt: 'Browser Page Logo' }
+                { id: 'company_logo', previewClass: 'company', url: branding.company_logo_url || branding.company_logo?.data_url, alt: 'Company Logo' },
+                { id: 'browser_logo', previewClass: 'browser', url: branding.browser_logo_url || branding.browser_logo?.data_url, alt: 'Browser Page Logo' }
               ].map((asset) => {
                 const config = BRANDING_UPLOADS[asset.id];
                 const record = branding[asset.id] || {};
                 const busy = brandingUploadBusy === asset.id;
+                const pending = Boolean(record?.data_url && String(asset.url || '').startsWith('data:'));
                 return (
                   <div className="col-12 col-lg-6" key={asset.id}>
                     <div className="system-settings-logo-upload">
@@ -3921,6 +3921,8 @@ export default function SystemSettingsPage({ refreshShell }) {
                         <div className="small text-muted">
                           {busy ? (
                             <span><IconUpload size={15} className="me-1" />Uploading...</span>
+                          ) : pending ? (
+                            <span>Pending Save Settings</span>
                           ) : record?.updated_at ? (
                             <span>Updated {formatDateTime(record.updated_at)}</span>
                           ) : (

@@ -62,15 +62,18 @@ button {
 
 .navbar-vertical .navbar-brand {
   min-height: 4rem;
-  justify-content: flex-start;
-  padding-inline: 1.4rem;
+  display: flex;
+  justify-content: center;
+  padding-left: 24px;
+  padding-right: 24px;
   flex: 0 0 auto;
+  margin: 0;
 }
 
 .brand-button {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: center;
   width: 100%;
   border: 0;
   background: transparent;
@@ -78,6 +81,8 @@ button {
   font: inherit;
   font-weight: 800;
   letter-spacing: 0;
+  margin: 0;
+  padding: 0;
 }
 
 .brand-compact {
@@ -94,9 +99,11 @@ button {
 }
 
 .navbar-brand-logo {
-  width: auto;
-  max-width: calc(15.5rem - 24px);
-  height: 2.7rem;
+  display: block;
+  width: auto !important;
+  max-width: 100% !important;
+  height: 56px !important;
+  max-height: 56px !important;
   object-fit: contain;
 }
 
