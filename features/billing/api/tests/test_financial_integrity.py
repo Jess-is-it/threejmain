@@ -33,9 +33,11 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
             "accountNumber": "ACC-0001",
             "firstName": "Ada",
             "lastName": "Lovelace",
+            "contactNumber": "09171234567",
             "status": "ACTIVE",
         }
         self.audit_events = []
+        self.sms_messages = []
         billing.configure_billing(
             lambda authorization: self.admin,
             lambda action, target_type, target_id, details, actor: self.audit_events.append(
@@ -49,7 +51,16 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
             ),
             lambda customer_id: self.customer if customer_id == self.customer["id"] else None,
             lambda search: [self.customer],
+            sms_sender=lambda **kwargs: self._send_sms(**kwargs),
         )
+
+    def _send_sms(self, **kwargs):
+        self.sms_messages.append(kwargs)
+        return {
+            "status": "SUCCESS",
+            "destination": "+63917***4567",
+            "message_id": f"sms-{len(self.sms_messages)}",
+        }
 
     def add_invoice(self, amount=100.0, status="ISSUED", invoice_id="invoice-1"):
         timestamp = billing.now_iso()
@@ -459,6 +470,38 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
         self.assertIsInstance(datetime.fromisoformat(first["postedAt"]), datetime)
         self.assertEqual(1, len(billing.payments))
         self.assertEqual(1, sum(event["action"] == "billing_payment_posted" for event in self.audit_events))
+
+    def test_posted_payment_and_promotion_quote_reject_future_payment_date(self):
+        invoice = self.add_invoice(amount=100)
+        payload = billing.PaymentPayload(
+            invoiceId=invoice["id"],
+            amount=100,
+            method="CASH",
+            paymentDate="2026-07-15",
+            collectionChannel="POS",
+            status="POSTED",
+        )
+
+        with patch.object(billing, "billing_business_date", return_value=date(2026, 7, 14)):
+            with self.assertRaises(HTTPException) as payment_error:
+                billing.create_payment(
+                    payload,
+                    idempotency_key="payment:future-date",
+                    admin=self.admin,
+                )
+            with self.assertRaises(HTTPException) as quote_error:
+                billing.invoice_eligible_promotions(
+                    invoice["id"],
+                    paymentDate="2026-07-15",
+                    admin=self.admin,
+                )
+
+        self.assertEqual(400, payment_error.exception.status_code)
+        self.assertEqual("Payment date cannot be in the future", payment_error.exception.detail)
+        self.assertEqual(400, quote_error.exception.status_code)
+        self.assertEqual("Payment date cannot be in the future", quote_error.exception.detail)
+        self.assertEqual([], billing.payments)
+        self.assertEqual(100.0, billing.invoice_summary(invoice)["balance"])
 
     def test_idempotency_key_rejects_different_payment_payload(self):
         self.add_invoice(amount=200)
@@ -1075,6 +1118,155 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
         self.assertEqual([older_customer["id"], self.customer["id"]], [row["customerId"] for row in rows])
         self.assertEqual([29, 19], [row["daysOverdue"] for row in rows])
 
+    def test_collection_worklist_keeps_prior_month_arrears_in_default_all_period_scope(self):
+        july_invoice = self.add_invoice(amount=300, invoice_id="invoice-july")
+        july_invoice.update(
+            {
+                "invoiceType": "MONTHLY",
+                "billingCycleStart": "2026-07-01",
+                "billingCycleEnd": "2026-07-31",
+                "issueDate": "2026-07-01",
+                "dueDate": "2026-07-31",
+                "createdAt": "2026-07-01T00:00:00+00:00",
+            }
+        )
+        august_invoice = self.add_invoice(amount=500, invoice_id="invoice-august")
+        august_invoice.update(
+            {
+                "invoiceType": "MONTHLY",
+                "billingCycleStart": "2026-08-01",
+                "billingCycleEnd": "2026-08-31",
+                "issueDate": "2026-08-01",
+                "dueDate": "2026-08-31",
+                "createdAt": "2026-08-01T00:00:00+00:00",
+            }
+        )
+
+        with patch.object(billing, "billing_business_date", return_value=date(2026, 8, 15)):
+            all_periods = billing.collection_worklist_report(
+                as_of=date(2026, 8, 15),
+                status="ACTION_REQUIRED",
+            )
+            august_only = billing.collection_worklist_report(
+                as_of=date(2026, 8, 15),
+                billing_period="2026-08",
+                status="ACTION_REQUIRED",
+            )
+            account = billing.collection_account_detail(
+                self.customer["id"],
+                as_of=date(2026, 8, 15),
+            )
+
+        self.assertEqual("ALL", all_periods["billingPeriod"])
+        self.assertEqual(["2026-08", "2026-07"], all_periods["availableBillingPeriods"])
+        self.assertEqual(1, all_periods["pagination"]["totalRows"])
+        self.assertEqual(800.0, all_periods["summary"]["openAmount"])
+        self.assertEqual(300.0, all_periods["summary"]["overdueAmount"])
+        self.assertEqual(15, all_periods["summary"]["oldestDaysOverdue"])
+        self.assertEqual(self.customer["id"], all_periods["rows"][0]["customerId"])
+        self.assertEqual(2, all_periods["rows"][0]["openInvoiceCount"])
+        self.assertEqual(0, august_only["pagination"]["totalRows"])
+        self.assertEqual(
+            ["invoice-july", "invoice-august"],
+            [item["id"] for item in account["openInvoices"]],
+        )
+
+    def test_collection_needs_follow_up_excludes_current_partially_paid_account(self):
+        invoice = self.add_invoice(amount=500, invoice_id="invoice-future-due")
+        invoice.update(
+            {
+                "invoiceType": "MONTHLY",
+                "billingCycleStart": "2026-09-01",
+                "billingCycleEnd": "2026-09-30",
+                "issueDate": "2026-08-01",
+                "dueDate": "2026-09-30",
+                "createdAt": "2026-08-01T00:00:00+00:00",
+            }
+        )
+        with patch.object(billing, "billing_business_date", return_value=date(2026, 8, 15)):
+            billing.create_payment(
+                billing.PaymentPayload(
+                    invoiceId=invoice["id"],
+                    amount=100,
+                    method="CASH",
+                    paymentDate="2026-08-14",
+                    collectionChannel="POS",
+                    status="POSTED",
+                ),
+                idempotency_key="payment:current-partial",
+                admin=self.admin,
+            )
+            needs_follow_up = billing.collection_worklist_report(
+                as_of=date(2026, 8, 15),
+                status="ACTION_REQUIRED",
+            )
+            partially_paid = billing.collection_worklist_report(
+                as_of=date(2026, 8, 15),
+                status="PARTIALLY_PAID",
+            )
+            all_open = billing.collection_worklist_report(
+                as_of=date(2026, 8, 15),
+                status="ALL_OPEN",
+            )
+
+        self.assertEqual(0, needs_follow_up["pagination"]["totalRows"])
+        self.assertEqual(0, needs_follow_up["summary"]["actionRequiredCustomerCount"])
+        self.assertEqual(1, partially_paid["pagination"]["totalRows"])
+        self.assertEqual(1, all_open["pagination"]["totalRows"])
+        current_row = partially_paid["rows"][0]
+        self.assertFalse(current_row["actionRequired"])
+        self.assertEqual("PARTIALLY_PAID", current_row["collectionStatus"])
+        self.assertEqual(0.0, current_row["overdueBalance"])
+
+        with patch.object(billing, "billing_business_date", return_value=date(2026, 10, 1)):
+            overdue_follow_up = billing.collection_worklist_report(
+                as_of=date(2026, 10, 1),
+                status="ACTION_REQUIRED",
+            )
+
+        self.assertEqual(1, overdue_follow_up["pagination"]["totalRows"])
+        self.assertTrue(overdue_follow_up["rows"][0]["actionRequired"])
+        self.assertEqual("OVERDUE", overdue_follow_up["rows"][0]["collectionStatus"])
+
+    def test_collection_follow_up_sms_uses_saved_customer_mobile_and_a2p_audit_context(self):
+        invoice = self.add_invoice(amount=300, invoice_id="invoice-overdue")
+        invoice.update(
+            {
+                "invoiceType": "MONTHLY",
+                "billingCycleStart": "2026-07-01",
+                "billingCycleEnd": "2026-07-31",
+                "issueDate": "2026-07-01",
+                "dueDate": "2026-07-31",
+                "createdAt": "2026-07-01T00:00:00+00:00",
+            }
+        )
+        payload = billing.CollectionFollowUpSmsPayload(
+            messageText="Good day Ada. Your overdue account balance is PHP 300.00.",
+            asOf="2026-08-15",
+        )
+
+        with patch.object(billing, "billing_business_date", return_value=date(2026, 8, 15)):
+            result = billing.send_collection_follow_up_sms(
+                self.customer["id"],
+                payload,
+                admin=self.admin,
+            )
+
+        self.assertEqual("SUCCESS", result["status"])
+        self.assertEqual("3J BILL", result["senderId"])
+        self.assertEqual("sms-1", result["messageId"])
+        self.assertEqual(1, len(self.sms_messages))
+        sent = self.sms_messages[0]
+        self.assertEqual(self.customer["contactNumber"], sent["destination"])
+        self.assertEqual("3J BILL", sent["source"])
+        self.assertEqual("BILLING_COLLECTION_FOLLOW_UP", sent["purpose"])
+        self.assertEqual(self.customer["id"], sent["request_context"]["customerId"])
+        self.assertEqual(300.0, sent["request_context"]["overdueBalance"])
+        self.assertEqual(["invoice-overdue"], sent["request_context"]["invoiceIds"])
+        self.assertTrue(
+            any(event["action"] == "billing_collection_follow_up_sms_sent" for event in self.audit_events)
+        )
+
     def test_monthly_collection_performance_counts_unique_billed_customers(self):
         grace = {
             "id": "customer-2",
@@ -1141,6 +1333,13 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
             ),
             idempotency_key="payment:monthly-performance",
             admin=self.admin,
+        )
+        billing.payments[-1].update(
+            {
+                "createdAt": "2026-07-14T00:00:00+00:00",
+                "postedAt": "2026-07-14T00:00:00+00:00",
+                "updatedAt": "2026-07-14T00:00:00+00:00",
+            }
         )
         billing.adjustments.append(
             {

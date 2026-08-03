@@ -2043,6 +2043,10 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
       setError('Select at least one open invoice to pay.');
       return;
     }
+    if (invoicePaymentForm.paymentDate > today()) {
+      setError('Payment date cannot be in the future.');
+      return;
+    }
     setError('');
     setInvoicePaymentSubmitting(true);
     try {
@@ -2654,7 +2658,7 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                           </div>
                         </div>
                         <div className="row g-3">
-                          <div className="col-md-6"><TextField label="Payment Date" type="date" value={invoicePaymentForm.paymentDate} required disabled={invoicePaymentSubmitting} onChange={changeInvoicePaymentDate} /></div>
+                          <div className="col-md-6"><TextField label="Payment Date" type="date" max={today()} value={invoicePaymentForm.paymentDate} required disabled={invoicePaymentSubmitting} onChange={changeInvoicePaymentDate} /></div>
                           <div className="col-md-6"><SelectField label="Method" value={invoicePaymentForm.method} options={billingPaymentMethods} disabled={invoicePaymentSubmitting} onChange={(method) => setInvoicePaymentForm({ ...invoicePaymentForm, method })} /></div>
                           <div className="col-md-6"><TextField label="Amount Received" type="number" min="0.01" step="0.01" value={invoicePaymentForm.amount} required disabled={invoicePaymentSubmitting} onChange={(amount) => setInvoicePaymentForm({ ...invoicePaymentForm, amount })} /></div>
                           <div className="col-md-6">

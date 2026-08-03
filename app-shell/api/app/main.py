@@ -694,7 +694,14 @@ def port_registry() -> list[dict[str, Any]]:
 
 
 configure_customer_profiling(current_admin, add_audit)
-configure_billing(current_admin, add_audit, resolve_customer_for_modules, search_customers_for_modules, seed_customer_data)
+configure_billing(
+    current_admin,
+    add_audit,
+    resolve_customer_for_modules,
+    search_customers_for_modules,
+    seed_customer_data,
+    send_a2p_sms_message,
+)
 configure_point_of_sale(
     current_admin,
     add_audit,

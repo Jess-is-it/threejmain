@@ -10,6 +10,7 @@ import {
   IconEdit,
   IconEye,
   IconFileInvoice,
+  IconMessage,
   IconPlayerPlay,
   IconPlus,
   IconReceipt,
@@ -141,6 +142,22 @@ function currency(value) {
   return new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP' }).format(Number(value || 0));
 }
 
+function smsCurrency(value) {
+  return `PHP ${new Intl.NumberFormat('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(value || 0))}`;
+}
+
+function collectionFollowUpMessage(account, asOf) {
+  const customer = account?.customer || {};
+  const firstName = String(customer.firstName || customer.name || 'Customer').trim().split(/\s+/)[0];
+  const accountReference = customer.accountNumber ? ` for account ${customer.accountNumber}` : '';
+  const overdue = Number(account?.overdueBalance || 0);
+  const balance = Number(account?.outstandingBalance || 0);
+  const balanceText = overdue > 0
+    ? `an overdue balance of ${smsCurrency(overdue)} and a total open balance of ${smsCurrency(balance)}`
+    : `an open balance of ${smsCurrency(balance)}`;
+  return `Good day, ${firstName}. This is 3J Computer and Internet Installation Services. As of ${formatDate(asOf)}, you have ${balanceText}${accountReference}. Please settle your account or contact our office if payment has already been made. Thank you.`;
+}
+
 function percent(value, applicable = true) {
   if (!applicable) return '-';
   return `${new Intl.NumberFormat('en-PH', { maximumFractionDigits: 1 }).format(Number(value || 0))}%`;
@@ -155,6 +172,25 @@ function collectionPerformancePath({ billingMonth, asOf, status, search, page, p
   params.set('page', String(page || 1));
   params.set('pageSize', String(pageSize || 20));
   return `/billing/collection-performance?${params.toString()}`;
+}
+
+function collectionWorklistPath({ asOf, billingPeriod, status, search, page, pageSize }) {
+  const params = new URLSearchParams();
+  if (asOf) params.set('asOf', asOf);
+  if (billingPeriod && billingPeriod !== 'ALL') params.set('billingPeriod', billingPeriod);
+  if (status) params.set('status', status);
+  if (search) params.set('search', search);
+  params.set('page', String(page || 1));
+  params.set('pageSize', String(pageSize || 20));
+  return `/billing/collections/worklist?${params.toString()}`;
+}
+
+function collectionAccountPath(customerId, { asOf, billingPeriod = 'ALL' } = {}) {
+  const params = new URLSearchParams();
+  if (asOf) params.set('asOf', asOf);
+  if (billingPeriod && billingPeriod !== 'ALL') params.set('billingPeriod', billingPeriod);
+  const query = params.toString();
+  return `/billing/collections/accounts/${customerId}${query ? `?${query}` : ''}`;
 }
 
 function adjustmentEntryLabel(adjustment) {
@@ -714,13 +750,26 @@ export default function BillingPage({ refreshShell = () => {} }) {
   });
   const [collectionMonth, setCollectionMonth] = useState(today().slice(0, 7));
   const [collectionAsOf, setCollectionAsOf] = useState(today());
+  const [collectionWorklist, setCollectionWorklist] = useState({
+    scope: 'ALL_OPEN_RECEIVABLES',
+    billingPeriod: 'ALL',
+    availableBillingPeriods: [],
+    summary: {},
+    rows: [],
+    pagination: { page: 1, pageSize: 20, totalRows: 0, totalPages: 1 }
+  });
+  const [collectionWorklistAsOf, setCollectionWorklistAsOf] = useState(today());
+  const [collectionBillingPeriod, setCollectionBillingPeriod] = useState('ALL');
   const [collectionStatus, setCollectionStatus] = useState('ACTION_REQUIRED');
   const [collectionSearch, setCollectionSearch] = useState('');
   const [collectionPage, setCollectionPage] = useState(1);
   const [collectionPageSize, setCollectionPageSize] = useState(20);
   const [collectionPerformanceBusy, setCollectionPerformanceBusy] = useState(false);
-  const collectionFiltersReady = useRef(false);
+  const [collectionWorklistBusy, setCollectionWorklistBusy] = useState(false);
+  const collectionPerformanceFiltersReady = useRef(false);
+  const collectionWorklistFiltersReady = useRef(false);
   const collectionRequestSequence = useRef(0);
+  const collectionWorklistRequestSequence = useRef(0);
   const [customers, setCustomers] = useState([]);
   const [avatarConfig, setAvatarConfig] = useState(null);
   const [serviceOrders, setServiceOrders] = useState([]);
@@ -752,6 +801,10 @@ export default function BillingPage({ refreshShell = () => {} }) {
   });
   const [selectedBillingRun, setSelectedBillingRun] = useState(null);
   const [selectedInvoice, setSelectedInvoice] = useState(null);
+  const [selectedCollectionAccount, setSelectedCollectionAccount] = useState(null);
+  const [collectionAccountBusy, setCollectionAccountBusy] = useState(false);
+  const [collectionSmsForm, setCollectionSmsForm] = useState(null);
+  const [collectionSmsBusy, setCollectionSmsBusy] = useState(false);
   const [invoiceDetailBusy, setInvoiceDetailBusy] = useState(false);
   const [invoicePdfBusyId, setInvoicePdfBusyId] = useState('');
   const [billingRunBusy, setBillingRunBusy] = useState(false);
@@ -1012,14 +1065,25 @@ export default function BillingPage({ refreshShell = () => {} }) {
   async function load(search = customerSearch) {
     const collectionRequestId = collectionRequestSequence.current + 1;
     collectionRequestSequence.current = collectionRequestId;
+    const worklistRequestId = collectionWorklistRequestSequence.current + 1;
+    collectionWorklistRequestSequence.current = worklistRequestId;
     setCollectionPerformanceBusy(true);
+    setCollectionWorklistBusy(true);
     setError('');
     try {
-      const [nextMeta, nextCollectionPerformance, nextCustomers, nextServiceOrders, nextServiceCatalog, nextServiceAccounts, nextSubscriptions, nextInstallationCharges, nextPromotions, nextInvoices, nextAdjustments, nextBalances, nextBillingRuns, nextBillingRunPreview, nextAvatarConfig] = await Promise.all([
+      const [nextMeta, nextCollectionPerformance, nextCollectionWorklist, nextCustomers, nextServiceOrders, nextServiceCatalog, nextServiceAccounts, nextSubscriptions, nextInstallationCharges, nextPromotions, nextInvoices, nextAdjustments, nextBalances, nextBillingRuns, nextBillingRunPreview, nextAvatarConfig] = await Promise.all([
         request('/billing/meta'),
         request(collectionPerformancePath({
           billingMonth: collectionMonth,
           asOf: collectionAsOf,
+          status: 'ALL',
+          search: '',
+          page: 1,
+          pageSize: 10
+        })),
+        request(collectionWorklistPath({
+          asOf: collectionWorklistAsOf,
+          billingPeriod: collectionBillingPeriod,
           status: collectionStatus,
           search: collectionSearch,
           page: collectionPage,
@@ -1044,7 +1108,13 @@ export default function BillingPage({ refreshShell = () => {} }) {
         setCollectionPerformance(nextCollectionPerformance);
         setCollectionMonth(nextCollectionPerformance.billingMonth);
         setCollectionAsOf(nextCollectionPerformance.asOfDate);
-        setCollectionPage(nextCollectionPerformance.pagination?.page || 1);
+      }
+      if (worklistRequestId === collectionWorklistRequestSequence.current) {
+        setCollectionWorklist(nextCollectionWorklist);
+        setCollectionWorklistAsOf(nextCollectionWorklist.asOfDate);
+        setCollectionBillingPeriod(nextCollectionWorklist.billingPeriod || 'ALL');
+        setCollectionStatus(nextCollectionWorklist.selectedStatus || 'ACTION_REQUIRED');
+        setCollectionPage(nextCollectionWorklist.pagination?.page || 1);
       }
       setCustomers(nextCustomers);
       setServiceOrders(nextServiceOrders);
@@ -1065,6 +1135,9 @@ export default function BillingPage({ refreshShell = () => {} }) {
       if (collectionRequestId === collectionRequestSequence.current) {
         setCollectionPerformanceBusy(false);
       }
+      if (worklistRequestId === collectionWorklistRequestSequence.current) {
+        setCollectionWorklistBusy(false);
+      }
     }
   }
 
@@ -1076,16 +1149,15 @@ export default function BillingPage({ refreshShell = () => {} }) {
       const report = await request(collectionPerformancePath({
         billingMonth: collectionMonth,
         asOf: collectionAsOf,
-        status: collectionStatus,
-        search: collectionSearch,
-        page: collectionPage,
-        pageSize: collectionPageSize
+        status: 'ALL',
+        search: '',
+        page: 1,
+        pageSize: 10
       }));
       if (collectionRequestId !== collectionRequestSequence.current) return;
       setCollectionPerformance(report);
       setCollectionMonth(report.billingMonth);
       setCollectionAsOf(report.asOfDate);
-      setCollectionPage(report.pagination?.page || 1);
     } catch (err) {
       if (collectionRequestId === collectionRequestSequence.current) {
         showError(err.message);
@@ -1097,26 +1169,71 @@ export default function BillingPage({ refreshShell = () => {} }) {
     }
   }
 
-  function openCollectionWorklist(status) {
+  async function loadCollectionWorklist() {
+    const requestId = collectionWorklistRequestSequence.current + 1;
+    collectionWorklistRequestSequence.current = requestId;
+    setCollectionWorklistBusy(true);
+    try {
+      const report = await request(collectionWorklistPath({
+        asOf: collectionWorklistAsOf,
+        billingPeriod: collectionBillingPeriod,
+        status: collectionStatus,
+        search: collectionSearch,
+        page: collectionPage,
+        pageSize: collectionPageSize
+      }));
+      if (requestId !== collectionWorklistRequestSequence.current) return;
+      setCollectionWorklist(report);
+      setCollectionWorklistAsOf(report.asOfDate);
+      setCollectionBillingPeriod(report.billingPeriod || 'ALL');
+      setCollectionStatus(report.selectedStatus || 'ACTION_REQUIRED');
+      setCollectionPage(report.pagination?.page || 1);
+    } catch (err) {
+      if (requestId === collectionWorklistRequestSequence.current) {
+        showError(err.message);
+      }
+    } finally {
+      if (requestId === collectionWorklistRequestSequence.current) {
+        setCollectionWorklistBusy(false);
+      }
+    }
+  }
+
+  function openCollectionWorklist(status = 'ACTION_REQUIRED', billingPeriod = 'ALL') {
     setCollectionPage(1);
     setCollectionStatus(status);
+    setCollectionBillingPeriod(billingPeriod || 'ALL');
     setActiveTab('Collections');
   }
 
   useEffect(() => { load(); }, []);
 
   useEffect(() => {
-    if (!collectionFiltersReady.current) {
-      collectionFiltersReady.current = true;
+    if (!collectionPerformanceFiltersReady.current) {
+      collectionPerformanceFiltersReady.current = true;
       return undefined;
     }
     const timer = window.setTimeout(() => {
       loadCollectionPerformance();
-    }, collectionSearch ? 250 : 0);
+    }, 0);
     return () => window.clearTimeout(timer);
   }, [
     collectionMonth,
-    collectionAsOf,
+    collectionAsOf
+  ]);
+
+  useEffect(() => {
+    if (!collectionWorklistFiltersReady.current) {
+      collectionWorklistFiltersReady.current = true;
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      loadCollectionWorklist();
+    }, collectionSearch ? 250 : 0);
+    return () => window.clearTimeout(timer);
+  }, [
+    collectionWorklistAsOf,
+    collectionBillingPeriod,
     collectionStatus,
     collectionSearch,
     collectionPage,
@@ -1406,7 +1523,11 @@ export default function BillingPage({ refreshShell = () => {} }) {
     setModal(null);
     setSelectedBillingRun(null);
     setSelectedInvoice(null);
+    setSelectedCollectionAccount(null);
+    setCollectionSmsForm(null);
     setInvoiceDetailBusy(false);
+    setCollectionAccountBusy(false);
+    setCollectionSmsBusy(false);
     setAdjustmentPreview(null);
     setAdjustmentPreviewBusy(false);
     setAdjustmentPreviewError('');
@@ -1458,6 +1579,66 @@ export default function BillingPage({ refreshShell = () => {} }) {
       showError(err.message);
     } finally {
       setInvoicePdfBusyId('');
+    }
+  }
+
+  async function fetchCollectionAccount(customerId, billingPeriod = collectionBillingPeriod) {
+    return request(collectionAccountPath(customerId, {
+      asOf: collectionWorklistAsOf,
+      billingPeriod
+    }));
+  }
+
+  async function openCollectionAccount(account) {
+    setSelectedCollectionAccount(account);
+    setCollectionAccountBusy(true);
+    setModal('collection-account');
+    try {
+      const detail = await fetchCollectionAccount(account.customerId);
+      setSelectedCollectionAccount(detail);
+    } catch (err) {
+      showError(err.message);
+    } finally {
+      setCollectionAccountBusy(false);
+    }
+  }
+
+  async function openCollectionSms(account) {
+    setCollectionAccountBusy(true);
+    try {
+      const detail = await fetchCollectionAccount(account.customerId, 'ALL');
+      setCollectionSmsForm({
+        account: detail,
+        messageText: collectionFollowUpMessage(detail, collectionWorklistAsOf).slice(0, 500)
+      });
+      setModal('collection-sms');
+    } catch (err) {
+      showError(err.message);
+    } finally {
+      setCollectionAccountBusy(false);
+    }
+  }
+
+  async function submitCollectionSms(event) {
+    event.preventDefault();
+    if (!collectionSmsForm?.account?.customerId || !collectionSmsForm.messageText.trim()) return;
+    setCollectionSmsBusy(true);
+    try {
+      const result = await request(
+        `/billing/collections/accounts/${collectionSmsForm.account.customerId}/follow-up-sms`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            messageText: collectionSmsForm.messageText.trim(),
+            asOf: collectionWorklistAsOf
+          })
+        }
+      );
+      closeModal();
+      showMessage(`Collection follow-up SMS accepted for ${customerLabel(collectionSmsForm.account.customer)}${result.messageId ? ` (${result.messageId})` : ''}.`);
+    } catch (err) {
+      showError(err.message);
+      setCollectionSmsBusy(false);
     }
   }
 
@@ -1943,7 +2124,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
                 report={collectionPerformance}
                 busy={collectionPerformanceBusy}
                 selectedStatus={collectionStatus}
-                onWorklistStatus={openCollectionWorklist}
+                onWorklistStatus={(status) => openCollectionWorklist(status, collectionMonth)}
               />
             </Card>
           </div>
@@ -2219,29 +2400,30 @@ export default function BillingPage({ refreshShell = () => {} }) {
               )}
             >
               <div className="billing-collection-workspace">
-                <CollectionPeriodControls
-                  report={collectionPerformance}
-                  busy={collectionPerformanceBusy}
-                  billingMonth={collectionMonth}
-                  asOf={collectionAsOf}
-                  onBillingMonth={(value) => {
+                <CollectionWorklistControls
+                  report={collectionWorklist}
+                  busy={collectionWorklistBusy}
+                  billingPeriod={collectionBillingPeriod}
+                  asOf={collectionWorklistAsOf}
+                  onBillingPeriod={(value) => {
                     setCollectionPage(1);
-                    setCollectionMonth(value);
+                    setCollectionBillingPeriod(value);
                   }}
                   onAsOf={(value) => {
                     setCollectionPage(1);
-                    setCollectionAsOf(value);
+                    setCollectionWorklistAsOf(value);
                   }}
-                  onRefresh={loadCollectionPerformance}
+                  onRefresh={loadCollectionWorklist}
                 />
-                <CollectionWorkspaceSummary report={collectionPerformance} />
+                <CollectionWorkspaceSummary report={collectionWorklist} />
                 <CollectionWorklist
-                  report={collectionPerformance}
-                  busy={collectionPerformanceBusy}
+                  report={collectionWorklist}
+                  busy={collectionWorklistBusy}
                   selectedStatus={collectionStatus}
                   search={collectionSearch}
                   pageSize={collectionPageSize}
                   avatarConfig={avatarConfig}
+                  actionBusy={collectionAccountBusy}
                   onStatus={(value) => {
                     setCollectionPage(1);
                     setCollectionStatus(value);
@@ -2255,6 +2437,8 @@ export default function BillingPage({ refreshShell = () => {} }) {
                     setCollectionPage(1);
                     setCollectionPageSize(value);
                   }}
+                  onViewAccount={openCollectionAccount}
+                  onSms={openCollectionSms}
                 />
               </div>
             </Card>
@@ -2503,6 +2687,41 @@ export default function BillingPage({ refreshShell = () => {} }) {
             <button className="btn btn-primary"><IconDeviceFloppy size={16} className="me-1" />Save Promotion</button>
           </div>
         </form>
+      </Modal>
+
+      <Modal
+        title={selectedCollectionAccount ? `Collections · ${customerLabel(selectedCollectionAccount.customer)}` : 'Collection Account'}
+        icon={IconReceipt}
+        open={modal === 'collection-account'}
+        onClose={closeModal}
+        size="wide"
+      >
+        <CollectionAccountDetail
+          account={selectedCollectionAccount}
+          busy={collectionAccountBusy}
+          pdfBusyId={invoicePdfBusyId}
+          onViewInvoice={openInvoiceDetail}
+          onDownloadInvoice={downloadInvoicePdf}
+          onSms={openCollectionSms}
+          onClose={closeModal}
+        />
+      </Modal>
+
+      <Modal
+        title="Send Collection Follow-up"
+        icon={IconMessage}
+        open={modal === 'collection-sms'}
+        onClose={closeModal}
+      >
+        {collectionSmsForm && (
+          <CollectionSmsEditor
+            form={collectionSmsForm}
+            busy={collectionSmsBusy}
+            onChange={(messageText) => setCollectionSmsForm({ ...collectionSmsForm, messageText })}
+            onSubmit={submitCollectionSms}
+            onClose={closeModal}
+          />
+        )}
       </Modal>
 
       <Modal
@@ -3050,6 +3269,64 @@ function CollectionPeriodControls({
   );
 }
 
+function CollectionWorklistControls({
+  report,
+  busy,
+  billingPeriod,
+  asOf,
+  onBillingPeriod,
+  onAsOf,
+  onRefresh
+}) {
+  const availablePeriods = [...new Set([
+    ...(report?.availableBillingPeriods || []),
+    ...(billingPeriod && billingPeriod !== 'ALL' ? [billingPeriod] : [])
+  ])].sort().reverse();
+  return (
+    <div className="billing-reporting-period" aria-busy={busy}>
+      <div className="billing-reporting-period-copy">
+        <span>Collection Scope</span>
+        <strong>{report?.billingPeriodLabel || 'All Open Billing Periods'}</strong>
+        <small>Open receivables as of {formatDate(report?.asOfDate || asOf)} · {report?.timeZone || 'Asia/Manila'}</small>
+      </div>
+      <div className="billing-reporting-period-controls">
+        <label>
+          <span>Billing Period</span>
+          <select
+            className="form-select form-select-sm"
+            value={billingPeriod}
+            onChange={(event) => onBillingPeriod(event.target.value)}
+          >
+            <option value="ALL">All Open Periods</option>
+            {availablePeriods.map((period) => (
+              <option value={period} key={period}>{formatMonth(period)}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>As Of</span>
+          <input
+            className="form-control form-control-sm"
+            type="date"
+            value={asOf}
+            onChange={(event) => onAsOf(event.target.value)}
+          />
+        </label>
+        <button
+          className="btn btn-sm btn-icon"
+          type="button"
+          title="Refresh collection worklist"
+          aria-label="Refresh collection worklist"
+          disabled={busy}
+          onClick={onRefresh}
+        >
+          <IconRefresh size={17} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function MonthlyCollectionPerformance({
   report,
   busy,
@@ -3254,12 +3531,12 @@ function BillingControlCenter({
 }
 
 function CollectionWorkspaceSummary({ report }) {
-  const receivables = report?.receivables || {};
+  const summary = report?.summary || {};
   const rows = [
-    ['Needs Follow-up', report?.subscriberOutstandingCount || 0],
-    ['Selected-Month Balance', currency(report?.outstandingAmount)],
-    ['Overdue A/R', currency(receivables.overdueAmount)],
-    ['Oldest Overdue', receivables.oldestDaysOverdue ? `${receivables.oldestDaysOverdue} days` : 'Current']
+    ['Needs Follow-up', summary.actionRequiredCustomerCount || 0],
+    ['Total Open A/R', currency(summary.openAmount)],
+    ['Overdue A/R', currency(summary.overdueAmount)],
+    ['Oldest Overdue', summary.oldestDaysOverdue ? `${summary.oldestDaysOverdue} days` : 'Current']
   ];
   return (
     <div className="billing-collection-workspace-summary" aria-label="Collection worklist summary">
@@ -3280,10 +3557,13 @@ function CollectionWorklist({
   search,
   pageSize,
   avatarConfig,
+  actionBusy,
   onStatus,
   onSearch,
   onPage,
-  onPageSize
+  onPageSize,
+  onViewAccount,
+  onSms
 }) {
   const rows = report?.rows || [];
   const pagination = report?.pagination || { page: 1, pageSize, totalRows: 0, totalPages: 1 };
@@ -3295,7 +3575,8 @@ function CollectionWorklist({
   const statusOptions = [
     { value: 'ACTION_REQUIRED', label: 'Needs Follow-up' },
     { value: 'PARTIALLY_PAID', label: 'Partially Paid' },
-    { value: 'UNPAID', label: 'Unpaid' }
+    { value: 'UNPAID', label: 'Unpaid' },
+    { value: 'ALL_OPEN', label: 'All Open' }
   ];
 
   return (
@@ -3341,7 +3622,7 @@ function CollectionWorklist({
       <div className="billing-collection-worklist-updating text-muted small" role="status" aria-live="polite">
         {busy
           ? 'Updating collection worklist...'
-          : `${rangeStart}-${rangeEnd} of ${totalRows} accounts for ${report?.billingPeriodLabel || 'the selected month'}`}
+          : `${rangeStart}-${rangeEnd} of ${totalRows} accounts · ${report?.billingPeriodLabel || 'All Open Billing Periods'}`}
       </div>
 
       {rows.length ? (
@@ -3350,17 +3631,18 @@ function CollectionWorklist({
             <thead>
               <tr>
                 <th>Customer</th>
-                <th>Status</th>
-                <th>Due</th>
-                <th>Monthly Bills</th>
-                <th>Settled</th>
+                <th>Collection State</th>
+                <th>Aging</th>
+                <th>Open Invoices</th>
                 <th>Balance</th>
+                <th>Last Payment</th>
+                <th aria-label="Actions" />
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => {
-                const accountCredits = Number(row.accountCreditsApplied || 0);
-                const settledAmount = Number(row.cashCollected || 0) + accountCredits;
+                const periodLabels = (row.billingPeriods || []).slice(0, 2).map(formatMonth);
+                const remainingPeriods = Math.max(0, Number(row.billingPeriods?.length || 0) - periodLabels.length);
                 return (
                   <tr key={row.customerId}>
                     <td data-label="Customer">
@@ -3370,9 +3652,9 @@ function CollectionWorklist({
                           avatarConfig={avatarConfig}
                           context={{
                             balance: {
-                              balance: row.outstandingAmount,
-                              overdueTotal: row.overdueAmount,
-                              openInvoices: row.invoiceCount
+                              balance: row.outstandingBalance,
+                              overdueTotal: row.overdueBalance,
+                              openInvoices: row.openInvoiceCount
                             }
                           }}
                           size={34}
@@ -3383,10 +3665,13 @@ function CollectionWorklist({
                         </div>
                       </div>
                     </td>
-                    <td data-label="Status">
-                      <span className={`badge ${statusClass(row.status)}`}>{String(row.status || '').replaceAll('_', ' ')}</span>
+                    <td data-label="Collection State">
+                      <span className={`badge ${statusClass(row.collectionStatus)}`}>{String(row.collectionStatus || '').replaceAll('_', ' ')}</span>
+                      {Number(row.partiallyPaidInvoiceCount || 0) > 0 && row.collectionStatus !== 'PARTIALLY_PAID' && (
+                        <div className="text-muted small mt-1">Includes partial payment</div>
+                      )}
                     </td>
-                    <td data-label="Due">
+                    <td data-label="Aging">
                       {Number(row.daysOverdue || 0) > 0 ? (
                         <>
                           <div className="billing-collection-worklist-amount text-danger">{row.daysOverdue} days overdue</div>
@@ -3394,30 +3679,58 @@ function CollectionWorklist({
                         </>
                       ) : (
                         <>
-                          <div>{formatDate(row.oldestDueDate)}</div>
-                          <div className="text-muted small">Not overdue</div>
+                          <div>Current</div>
+                          <div className="text-muted small">Next due {formatDate(row.oldestDueDate)}</div>
                         </>
                       )}
                     </td>
-                    <td data-label="Monthly Bills">
-                      <div>{row.invoiceCount || 0} invoice{Number(row.invoiceCount || 0) === 1 ? '' : 's'}</div>
+                    <td data-label="Open Invoices">
+                      <div>{row.openInvoiceCount || 0} invoice{Number(row.openInvoiceCount || 0) === 1 ? '' : 's'}</div>
                       <div className="text-muted small billing-collection-worklist-references">
-                        {currency(row.billedAmount)} net billed
+                        {periodLabels.join(', ')}{remainingPeriods ? ` +${remainingPeriods}` : ''}
                       </div>
-                    </td>
-                    <td data-label="Settled">
-                      <div className="billing-collection-worklist-amount">{currency(settledAmount)}</div>
-                      <div className="text-muted small">{currency(row.cashCollected)} cash</div>
-                      <div className="text-muted small">{currency(accountCredits)} credits</div>
-                      {Number(row.rebatesApplied || 0) > 0 && (
-                        <div className="text-muted small">{currency(row.rebatesApplied)} rebate included</div>
-                      )}
                     </td>
                     <td
                       data-label="Balance"
-                      className={`billing-collection-worklist-amount ${Number(row.outstandingAmount || 0) > 0 ? 'text-danger' : 'text-green'}`}
+                      className="billing-collection-worklist-amount"
                     >
-                      {currency(row.outstandingAmount)}
+                      <div>{currency(row.outstandingBalance)}</div>
+                      <div className={`small ${Number(row.overdueBalance || 0) > 0 ? 'text-danger' : 'text-muted'}`}>
+                        {currency(row.overdueBalance)} overdue
+                      </div>
+                    </td>
+                    <td data-label="Last Payment">
+                      {row.lastPaymentDate ? (
+                        <>
+                          <div>{currency(row.lastPaymentAmount)}</div>
+                          <div className="text-muted small">{formatDate(row.lastPaymentDate)}</div>
+                          {row.lastPaymentChannel && <div className="text-muted small">{String(row.lastPaymentChannel).replaceAll('_', ' ')}</div>}
+                        </>
+                      ) : <span className="text-muted">None recorded</span>}
+                    </td>
+                    <td data-label="Actions">
+                      <div className="billing-collection-worklist-actions">
+                        <button
+                          className="btn btn-sm btn-icon"
+                          type="button"
+                          title="View collection account"
+                          aria-label={`View collection account for ${customerLabel(row.customer)}`}
+                          disabled={actionBusy}
+                          onClick={() => onViewAccount(row)}
+                        >
+                          <IconEye size={16} />
+                        </button>
+                        <button
+                          className="btn btn-sm btn-icon"
+                          type="button"
+                          title={row.customer?.contactNumber ? 'Send collection follow-up SMS' : 'Customer has no saved mobile number'}
+                          aria-label={`Send collection follow-up SMS to ${customerLabel(row.customer)}`}
+                          disabled={actionBusy || !row.customer?.contactNumber}
+                          onClick={() => onSms(row)}
+                        >
+                          <IconMessage size={16} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -3426,7 +3739,7 @@ function CollectionWorklist({
           </table>
         </div>
       ) : (
-        <Empty message={search ? 'No accounts match this collection search.' : 'No accounts require follow-up for this status and month.'} />
+        <Empty message={search ? 'No accounts match this collection search.' : 'No open accounts match this collection state and billing-period filter.'} />
       )}
 
       {totalRows > 0 && (
@@ -3468,6 +3781,200 @@ function CollectionWorklist({
         </div>
       )}
     </div>
+  );
+}
+
+function CollectionAccountDetail({
+  account,
+  busy,
+  pdfBusyId,
+  onViewInvoice,
+  onDownloadInvoice,
+  onSms,
+  onClose
+}) {
+  if (busy) {
+    return (
+      <div className="billing-invoice-detail-loading" role="status">
+        <IconRefresh size={18} />
+        Loading collection account
+      </div>
+    );
+  }
+  if (!account) return null;
+  const customer = account.customer || {};
+  const openInvoices = account.openInvoices || [];
+  const summary = [
+    ['Total Open', currency(account.outstandingBalance)],
+    ['Overdue', currency(account.overdueBalance)],
+    ['Current', currency(account.currentBalance)],
+    ['Oldest Overdue', account.daysOverdue ? `${account.daysOverdue} days` : 'Current']
+  ];
+  return (
+    <div className="billing-collection-account-detail">
+      <div className="billing-collection-account-heading">
+        <div>
+          <strong>{customerLabel(customer)}</strong>
+          <span>{customer.accountNumber || 'No account number'}</span>
+          <small>{customer.contactNumber || 'No saved mobile number'}{customer.address ? ` · ${customer.address}` : ''}</small>
+        </div>
+        <button
+          className="btn btn-sm btn-primary"
+          type="button"
+          disabled={!customer.contactNumber}
+          title={customer.contactNumber ? 'Send collection follow-up SMS' : 'Customer has no saved mobile number'}
+          onClick={() => onSms(account)}
+        >
+          <IconMessage size={16} className="me-1" />Send SMS
+        </button>
+      </div>
+
+      <div className="billing-collection-account-summary" aria-label="Collection account balance summary">
+        {summary.map(([label, value]) => (
+          <div key={label}>
+            <span>{label}</span>
+            <strong>{value}</strong>
+          </div>
+        ))}
+      </div>
+
+      <div className="billing-collection-account-context">
+        <div>
+          <span>Scope</span>
+          <strong>{account.billingPeriod === 'ALL' ? 'All Open Periods' : formatMonth(account.billingPeriod)}</strong>
+        </div>
+        <div>
+          <span>As Of</span>
+          <strong>{formatDate(account.asOfDate)}</strong>
+        </div>
+        <div>
+          <span>Last Payment</span>
+          <strong>{account.lastPaymentDate ? `${currency(account.lastPaymentAmount)} · ${formatDate(account.lastPaymentDate)}` : 'None recorded'}</strong>
+        </div>
+      </div>
+
+      <div className="table-responsive">
+        <table className="table table-vcenter billing-collection-account-invoices">
+          <thead>
+            <tr>
+              <th>Invoice</th>
+              <th>Billing Period</th>
+              <th>Aging</th>
+              <th>Net Billed</th>
+              <th>Settled</th>
+              <th>Balance</th>
+              <th aria-label="Actions" />
+            </tr>
+          </thead>
+          <tbody>
+            {openInvoices.map((invoice) => (
+              <tr key={invoice.id}>
+                <td data-label="Invoice">
+                  <div className="billing-service-main">{invoice.invoiceNumber}</div>
+                  <div className="text-muted small">{String(invoice.invoiceType || 'INVOICE').replaceAll('_', ' ')}</div>
+                </td>
+                <td data-label="Billing Period">
+                  <div>{invoice.billingPeriodLabel}</div>
+                  <div className="text-muted small">{invoice.serviceAccountNumber || invoice.serviceId || 'No service reference'}</div>
+                </td>
+                <td data-label="Aging">
+                  <span className={`badge ${statusClass(invoice.collectionState)}`}>{String(invoice.collectionState || '').replaceAll('_', ' ')}</span>
+                  <div className="text-muted small mt-1">Due {formatDate(invoice.dueDate)}</div>
+                  {invoice.daysOverdue > 0 && <div className="text-danger small">{invoice.daysOverdue} days overdue</div>}
+                </td>
+                <td data-label="Net Billed" className="billing-collection-worklist-amount">{currency(invoice.netBilledAmount)}</td>
+                <td data-label="Settled">
+                  <div className="billing-collection-worklist-amount">{currency(invoice.settledAmount)}</div>
+                  <div className="text-muted small">{currency(invoice.cashCollected)} cash</div>
+                  <div className="text-muted small">{currency(invoice.accountCreditsApplied)} credits</div>
+                </td>
+                <td data-label="Balance" className="billing-collection-worklist-amount text-danger">{currency(invoice.balance)}</td>
+                <td data-label="Actions">
+                  <div className="billing-collection-worklist-actions">
+                    <button
+                      className="btn btn-sm btn-icon"
+                      type="button"
+                      title="View invoice"
+                      aria-label={`View ${invoice.invoiceNumber}`}
+                      onClick={() => onViewInvoice(invoice)}
+                    >
+                      <IconEye size={16} />
+                    </button>
+                    <button
+                      className="btn btn-sm btn-icon"
+                      type="button"
+                      title="Download invoice PDF"
+                      aria-label={`Download ${invoice.invoiceNumber} PDF`}
+                      disabled={pdfBusyId === invoice.id}
+                      onClick={() => onDownloadInvoice(invoice)}
+                    >
+                      {pdfBusyId === invoice.id ? <IconRefresh size={16} /> : <IconDownload size={16} />}
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="billing-form-actions">
+        <button className="btn" type="button" onClick={onClose}>Close</button>
+      </div>
+    </div>
+  );
+}
+
+function CollectionSmsEditor({ form, busy, onChange, onSubmit, onClose }) {
+  const account = form.account || {};
+  const customer = account.customer || {};
+  return (
+    <form className="billing-form billing-collection-sms" onSubmit={onSubmit}>
+      <div className="billing-collection-sms-recipient">
+        <div>
+          <span>Recipient</span>
+          <strong>{customerLabel(customer)}</strong>
+          <small>{customer.contactNumber || 'No saved mobile number'}</small>
+        </div>
+        <div>
+          <span>Sender ID</span>
+          <strong>3J BILL</strong>
+          <small>A2P Messaging</small>
+        </div>
+      </div>
+      <div className="billing-collection-sms-balance">
+        <div>
+          <span>Total Open</span>
+          <strong>{currency(account.outstandingBalance)}</strong>
+        </div>
+        <div>
+          <span>Overdue</span>
+          <strong>{currency(account.overdueBalance)}</strong>
+        </div>
+        <div>
+          <span>Open Invoices</span>
+          <strong>{account.openInvoiceCount || 0}</strong>
+        </div>
+      </div>
+      <label>
+        <span className="form-label">Message</span>
+        <textarea
+          className="form-control billing-collection-sms-message"
+          value={form.messageText}
+          maxLength={500}
+          rows={7}
+          required
+          onChange={(event) => onChange(event.target.value)}
+        />
+      </label>
+      <div className="billing-collection-sms-count text-muted small">{form.messageText.length} / 500 characters</div>
+      <div className="billing-form-actions">
+        <button className="btn" type="button" disabled={busy} onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" type="submit" disabled={busy || !form.messageText.trim() || !customer.contactNumber}>
+          <IconMessage size={16} className="me-1" />{busy ? 'Sending...' : 'Send SMS'}
+        </button>
+      </div>
+    </form>
   );
 }
 

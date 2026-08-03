@@ -1602,30 +1602,37 @@
 }
 
 .billing-collection-worklist-table {
-  min-width: 54rem;
+  min-width: 68rem;
   margin-bottom: 0;
   table-layout: fixed;
 }
 
 .billing-collection-worklist-table th:nth-child(1) {
-  width: 22%;
+  width: 18%;
 }
 
 .billing-collection-worklist-table th:nth-child(2) {
-  width: 14%;
+  width: 12%;
 }
 
 .billing-collection-worklist-table th:nth-child(3) {
-  width: 14%;
+  width: 13%;
 }
 
 .billing-collection-worklist-table th:nth-child(4) {
-  width: 16%;
+  width: 13%;
 }
 
-.billing-collection-worklist-table th:nth-child(5),
+.billing-collection-worklist-table th:nth-child(5) {
+  width: 14%;
+}
+
 .billing-collection-worklist-table th:nth-child(6) {
-  width: 17%;
+  width: 20%;
+}
+
+.billing-collection-worklist-table th:nth-child(7) {
+  width: 10%;
 }
 
 .billing-collection-worklist-references {
@@ -1683,6 +1690,157 @@
   overflow-wrap: anywhere;
 }
 
+.billing-collection-worklist-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+}
+
+.billing-collection-account-detail {
+  display: grid;
+  min-width: 0;
+  gap: 1rem;
+}
+
+.billing-collection-account-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.billing-collection-account-heading > div {
+  display: grid;
+  min-width: 0;
+  gap: 0.15rem;
+}
+
+.billing-collection-account-heading strong {
+  color: #111827;
+  font-size: 1rem;
+}
+
+.billing-collection-account-heading span,
+.billing-collection-account-heading small {
+  color: #64748b;
+  overflow-wrap: anywhere;
+}
+
+.billing-collection-account-heading span {
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.billing-collection-account-heading small {
+  font-size: 0.72rem;
+}
+
+.billing-collection-account-summary,
+.billing-collection-account-context,
+.billing-collection-sms-recipient,
+.billing-collection-sms-balance {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid #dbe2ea;
+  border-radius: 0.375rem;
+}
+
+.billing-collection-account-summary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.billing-collection-account-context,
+.billing-collection-sms-balance {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.billing-collection-sms-recipient {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.billing-collection-account-summary > div,
+.billing-collection-account-context > div,
+.billing-collection-sms-recipient > div,
+.billing-collection-sms-balance > div {
+  display: grid;
+  min-width: 0;
+  gap: 0.25rem;
+  border-right: 1px solid #e5e7eb;
+  padding: 0.75rem;
+}
+
+.billing-collection-account-summary > div:last-child,
+.billing-collection-account-context > div:last-child,
+.billing-collection-sms-recipient > div:last-child,
+.billing-collection-sms-balance > div:last-child {
+  border-right: 0;
+}
+
+.billing-collection-account-summary span,
+.billing-collection-account-context span,
+.billing-collection-sms-recipient span,
+.billing-collection-sms-balance span {
+  color: #64748b;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.billing-collection-account-summary strong,
+.billing-collection-account-context strong,
+.billing-collection-sms-recipient strong,
+.billing-collection-sms-balance strong {
+  color: #111827;
+  font-size: 0.86rem;
+  overflow-wrap: anywhere;
+}
+
+.billing-collection-sms-recipient small {
+  color: #64748b;
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+.billing-collection-account-invoices {
+  min-width: 66rem;
+  margin-bottom: 0;
+  table-layout: fixed;
+}
+
+.billing-collection-account-invoices th:nth-child(1) {
+  width: 15%;
+}
+
+.billing-collection-account-invoices th:nth-child(2) {
+  width: 18%;
+}
+
+.billing-collection-account-invoices th:nth-child(3) {
+  width: 15%;
+}
+
+.billing-collection-account-invoices th:nth-child(4),
+.billing-collection-account-invoices th:nth-child(5),
+.billing-collection-account-invoices th:nth-child(6) {
+  width: 14%;
+}
+
+.billing-collection-account-invoices th:nth-child(7) {
+  width: 10%;
+}
+
+.billing-collection-sms-message {
+  min-height: 8.5rem;
+  resize: vertical;
+}
+
+.billing-collection-sms-count {
+  margin-top: -0.5rem;
+  text-align: right;
+}
+
 @media (max-width: 1199.98px) {
   .billing-metrics {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1713,6 +1871,18 @@
 
   .billing-collection-financials {
     grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .billing-collection-account-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .billing-collection-account-summary > div:nth-child(2) {
+    border-right: 0;
+  }
+
+  .billing-collection-account-summary > div:nth-child(-n + 2) {
+    border-bottom: 1px solid #e5e7eb;
   }
 }
 
@@ -1940,6 +2110,81 @@
   .billing-collection-worklist-page-size,
   .billing-collection-worklist-page-controls {
     justify-content: space-between;
+  }
+
+  .billing-collection-account-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .billing-collection-account-heading .btn {
+    align-self: flex-start;
+  }
+
+  .billing-collection-account-context,
+  .billing-collection-sms-recipient,
+  .billing-collection-sms-balance {
+    grid-template-columns: 1fr;
+  }
+
+  .billing-collection-account-context > div,
+  .billing-collection-sms-recipient > div,
+  .billing-collection-sms-balance > div {
+    border-right: 0;
+    border-bottom: 1px solid #e5e7eb;
+  }
+
+  .billing-collection-account-context > div:last-child,
+  .billing-collection-sms-recipient > div:last-child,
+  .billing-collection-sms-balance > div:last-child {
+    border-bottom: 0;
+  }
+
+  .billing-collection-account-invoices {
+    display: block;
+    min-width: 0;
+  }
+
+  .billing-collection-account-invoices thead {
+    display: none;
+  }
+
+  .billing-collection-account-invoices tbody {
+    display: block;
+  }
+
+  .billing-collection-account-invoices tbody tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem 1rem;
+    border-bottom: 1px solid #e5e7eb;
+    padding: 0.85rem 0;
+  }
+
+  .billing-collection-account-invoices tbody td {
+    display: block;
+    width: auto;
+    border: 0;
+    padding: 0;
+    white-space: normal;
+  }
+
+  .billing-collection-account-invoices tbody td::before {
+    display: block;
+    margin-bottom: 0.2rem;
+    color: #64748b;
+    content: attr(data-label);
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+
+  .billing-collection-account-invoices tbody td:nth-child(3) {
+    grid-column: 1 / -1;
+  }
+
+  .billing-collection-worklist-actions {
+    justify-content: flex-start;
   }
 
   .billing-run-stats {

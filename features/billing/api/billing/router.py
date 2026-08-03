@@ -55,6 +55,7 @@ _audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None] | Non
 _customer_resolver: Callable[[str], dict[str, Any]] | None = None
 _customer_searcher: Callable[[str], list[dict[str, Any]]] | None = None
 _customer_seed: Callable[[], None] | None = None
+_sms_sender: Callable[..., dict[str, Any]] | None = None
 
 BILLING_MODES = ["PREPAID", "POSTPAID"]
 PRICING_SOURCES = ["MANUAL", "SERVICE_CATALOG", "PRICE_OVERRIDE"]
@@ -79,6 +80,14 @@ COLLECTION_PERFORMANCE_STATUSES = {
     "PARTIALLY_PAID",
     "UNPAID",
 }
+COLLECTION_WORKLIST_STATUSES = {
+    "ALL_OPEN",
+    "ACTION_REQUIRED",
+    "OVERDUE",
+    "PARTIALLY_PAID",
+    "UNPAID",
+}
+COLLECTION_FOLLOW_UP_SMS_SENDER_ID = "3J BILL"
 BILLING_RECORD_COLLECTIONS = {
     "subscription": subscriptions,
     "invoice": invoices,
@@ -206,6 +215,11 @@ class OutageRebatePreviewPayload(BaseModel):
 
 class OutageRebateBatchPayload(OutageRebatePreviewPayload):
     previewFingerprint: str
+
+
+class CollectionFollowUpSmsPayload(BaseModel):
+    messageText: str = Field(..., min_length=1, max_length=500)
+    asOf: str | None = None
 
 
 class InstallationChargePayload(BaseModel):
@@ -732,13 +746,15 @@ def configure_billing(
     customer_resolver: Callable[[str], dict[str, Any]] | None = None,
     customer_searcher: Callable[[str], list[dict[str, Any]]] | None = None,
     customer_seed: Callable[[], None] | None = None,
+    sms_sender: Callable[..., dict[str, Any]] | None = None,
 ) -> None:
-    global _current_admin, _audit_logger, _customer_resolver, _customer_searcher, _customer_seed
+    global _current_admin, _audit_logger, _customer_resolver, _customer_searcher, _customer_seed, _sms_sender
     _current_admin = current_admin
     _audit_logger = audit_logger
     _customer_resolver = customer_resolver
     _customer_searcher = customer_searcher
     _customer_seed = customer_seed
+    _sms_sender = sms_sender
 
 
 def require_admin(authorization: str | None = Header(default=None)):
@@ -831,6 +847,14 @@ def parse_day(value: str | None, field_name: str) -> date:
         return date.fromisoformat(value or today_iso())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"{field_name} must be YYYY-MM-DD") from exc
+
+
+def posted_payment_day(value: str | None) -> date:
+    business_day = billing_business_date()
+    payment_day = parse_day(value or business_day.isoformat(), "paymentDate")
+    if payment_day > business_day:
+        raise HTTPException(status_code=400, detail="Payment date cannot be in the future")
+    return payment_day
 
 
 def add_months(source: date, months: int = 1) -> date:
@@ -3418,11 +3442,17 @@ def customer_balance(customer_id: str) -> dict[str, Any]:
     }
 
 
-def latest_posted_customer_payments() -> dict[str, dict[str, Any]]:
+def latest_posted_customer_payments(as_of: date | None = None) -> dict[str, dict[str, Any]]:
     latest_by_customer: dict[str, dict[str, Any]] = {}
     for payment in visible_payments():
         customer_id = clean_text(payment.get("customerId"))
         if not customer_id or payment.get("status") != "POSTED":
+            continue
+        if as_of is not None and not posting_active_as_of(
+            payment,
+            as_of,
+            ("paymentDate", "postedAt", "createdAt"),
+        ):
             continue
         current = latest_by_customer.get(customer_id)
         recency = (
@@ -3497,6 +3527,56 @@ def parse_billing_month(value: str | None, default_day: date) -> date:
     if parsed.strftime("%Y-%m") != month_value:
         raise HTTPException(status_code=400, detail="billingMonth must be YYYY-MM")
     return parsed
+
+
+def collection_postings_as_of(report_day: date) -> dict[str, Any]:
+    adjustments_by_invoice: dict[str, list[dict[str, Any]]] = {}
+    source_adjustments: dict[str, dict[str, Any]] = {}
+    for adjustment in visible_adjustments():
+        adjustment_id = clean_text(adjustment.get("id"))
+        if adjustment_id:
+            source_adjustments[adjustment_id] = adjustment
+        invoice_id = clean_text(adjustment.get("invoiceId"))
+        if not invoice_id or not posting_active_as_of(adjustment, report_day, ("createdAt",)):
+            continue
+        adjustments_by_invoice.setdefault(invoice_id, []).append(adjustment)
+
+    cash_by_invoice: dict[str, float] = {}
+    for payment in visible_payments():
+        if not posting_active_as_of(payment, report_day, ("paymentDate", "postedAt", "createdAt")):
+            continue
+        for allocation in payment_allocations(payment):
+            invoice_id = clean_text(allocation.get("invoiceId"))
+            if not invoice_id:
+                continue
+            cash_by_invoice[invoice_id] = money(
+                cash_by_invoice.get(invoice_id, 0) + money(allocation.get("amount"))
+            )
+
+    account_credit_by_invoice: dict[str, float] = {}
+    rebate_credit_by_invoice: dict[str, float] = {}
+    for application in visible_credit_applications():
+        if not posting_active_as_of(application, report_day, ("appliedAt", "createdAt")):
+            continue
+        invoice_id = clean_text(application.get("invoiceId"))
+        if not invoice_id:
+            continue
+        application_amount = money(application.get("amount"))
+        account_credit_by_invoice[invoice_id] = money(
+            account_credit_by_invoice.get(invoice_id, 0) + application_amount
+        )
+        source_adjustment = source_adjustments.get(clean_text(application.get("sourceAdjustmentId")))
+        if source_adjustment and source_adjustment.get("adjustmentSource") == "SERVICE_REBATE":
+            rebate_credit_by_invoice[invoice_id] = money(
+                rebate_credit_by_invoice.get(invoice_id, 0) + application_amount
+            )
+
+    return {
+        "adjustmentsByInvoice": adjustments_by_invoice,
+        "cashByInvoice": cash_by_invoice,
+        "accountCreditByInvoice": account_credit_by_invoice,
+        "rebateCreditByInvoice": rebate_credit_by_invoice,
+    }
 
 
 def receivables_aging_summary(
@@ -3622,46 +3702,11 @@ def monthly_collection_performance(
             ),
         )
 
-    adjustments_by_invoice: dict[str, list[dict[str, Any]]] = {}
-    source_adjustments: dict[str, dict[str, Any]] = {}
-    for adjustment in visible_adjustments():
-        adjustment_id = clean_text(adjustment.get("id"))
-        if adjustment_id:
-            source_adjustments[adjustment_id] = adjustment
-        invoice_id = clean_text(adjustment.get("invoiceId"))
-        if not invoice_id or not posting_active_as_of(adjustment, report_day, ("createdAt",)):
-            continue
-        adjustments_by_invoice.setdefault(invoice_id, []).append(adjustment)
-
-    cash_by_invoice: dict[str, float] = {}
-    for payment in visible_payments():
-        if not posting_active_as_of(payment, report_day, ("paymentDate", "postedAt", "createdAt")):
-            continue
-        for allocation in payment_allocations(payment):
-            invoice_id = clean_text(allocation.get("invoiceId"))
-            if not invoice_id:
-                continue
-            cash_by_invoice[invoice_id] = money(
-                cash_by_invoice.get(invoice_id, 0) + money(allocation.get("amount"))
-            )
-
-    account_credit_by_invoice: dict[str, float] = {}
-    rebate_credit_by_invoice: dict[str, float] = {}
-    for application in visible_credit_applications():
-        if not posting_active_as_of(application, report_day, ("appliedAt", "createdAt")):
-            continue
-        invoice_id = clean_text(application.get("invoiceId"))
-        if not invoice_id:
-            continue
-        application_amount = money(application.get("amount"))
-        account_credit_by_invoice[invoice_id] = money(
-            account_credit_by_invoice.get(invoice_id, 0) + application_amount
-        )
-        source_adjustment = source_adjustments.get(clean_text(application.get("sourceAdjustmentId")))
-        if source_adjustment and source_adjustment.get("adjustmentSource") == "SERVICE_REBATE":
-            rebate_credit_by_invoice[invoice_id] = money(
-                rebate_credit_by_invoice.get(invoice_id, 0) + application_amount
-            )
+    postings = collection_postings_as_of(report_day)
+    adjustments_by_invoice = postings["adjustmentsByInvoice"]
+    cash_by_invoice = postings["cashByInvoice"]
+    account_credit_by_invoice = postings["accountCreditByInvoice"]
+    rebate_credit_by_invoice = postings["rebateCreditByInvoice"]
 
     available_months: set[str] = {period_key}
     cohort_invoices: list[dict[str, Any]] = []
@@ -3891,6 +3936,339 @@ def monthly_collection_performance(
             "creditTreatment": "Invoice and account credits are reported separately and never counted as cash",
             "receivablesAging": "Open invoice balance aged by due date as of the selected reporting date",
         },
+        "generatedAt": now_iso(),
+    }
+
+
+def collection_billing_period(value: str | None) -> str:
+    selected = clean_text(value)
+    if not selected or normalize_upper(selected) == "ALL":
+        return ""
+    try:
+        parsed = date.fromisoformat(f"{selected}-01")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="billingPeriod must be ALL or YYYY-MM") from exc
+    if parsed.strftime("%Y-%m") != selected:
+        raise HTTPException(status_code=400, detail="billingPeriod must be ALL or YYYY-MM")
+    return selected
+
+
+def collection_open_invoice_item(
+    invoice: dict[str, Any],
+    report_day: date,
+    postings: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not invoice_active_as_of(invoice, report_day):
+        return None
+    invoice_id = clean_text(invoice.get("id"))
+    invoice_adjustments = postings["adjustmentsByInvoice"].get(invoice_id, [])
+    subtotal = money(
+        sum(item.get("amount", line_amount(item)) for item in invoice.get("lineItems", []))
+    )
+    debit_total = money(
+        sum(row.get("amount") for row in invoice_adjustments if row.get("type") == "DEBIT")
+    )
+    credit_total = money(
+        sum(row.get("amount") for row in invoice_adjustments if row.get("type") == "CREDIT")
+    )
+    direct_rebate_total = money(
+        sum(
+            row.get("amount")
+            for row in invoice_adjustments
+            if row.get("type") == "CREDIT" and row.get("adjustmentSource") == "SERVICE_REBATE"
+        )
+    )
+    gross_charges = money(subtotal + debit_total)
+    net_billed = money(max(0, gross_charges - credit_total))
+    cash_collected = money(postings["cashByInvoice"].get(invoice_id, 0.0))
+    account_credits = money(postings["accountCreditByInvoice"].get(invoice_id, 0.0))
+    rebate_applied = money(
+        direct_rebate_total + postings["rebateCreditByInvoice"].get(invoice_id, 0.0)
+    )
+    balance = money(max(0, net_billed - cash_collected - account_credits))
+    if balance <= 0:
+        return None
+
+    due_day = reporting_record_day(invoice.get("dueDate"))
+    days_overdue = max(0, (report_day - due_day).days) if due_day and due_day < report_day else 0
+    settlement_amount = money(cash_collected + account_credits)
+    payment_state = "PARTIALLY_PAID" if settlement_amount > 0 else "UNPAID"
+    billing_period = invoice_billing_period(invoice)
+    return {
+        "id": invoice_id,
+        "invoiceNumber": clean_text(invoice.get("invoiceNumber")),
+        "customerId": clean_text(invoice.get("customerId")),
+        "subscriptionId": clean_text(invoice.get("subscriptionId")),
+        "serviceAccountNumber": clean_text(invoice.get("serviceAccountNumber")),
+        "serviceId": clean_text(invoice.get("serviceId")),
+        "invoiceType": normalize_upper(invoice.get("invoiceType")),
+        "billingMode": normalize_upper(invoice.get("billingMode")),
+        **billing_period,
+        "issueDate": clean_text(invoice.get("issueDate")),
+        "dueDate": clean_text(invoice.get("dueDate")),
+        "grossCharges": gross_charges,
+        "invoiceCredits": credit_total,
+        "netBilledAmount": net_billed,
+        "cashCollected": cash_collected,
+        "accountCreditsApplied": account_credits,
+        "rebatesApplied": rebate_applied,
+        "settledAmount": settlement_amount,
+        "balance": balance,
+        "paymentState": payment_state,
+        "collectionState": "OVERDUE" if days_overdue > 0 else payment_state,
+        "daysOverdue": days_overdue,
+        "isOverdue": days_overdue > 0,
+    }
+
+
+def collection_worklist_accounts(
+    report_day: date,
+    billing_period: str = "",
+) -> tuple[list[dict[str, Any]], list[str]]:
+    business_today = billing_business_date()
+    if report_day > business_today:
+        raise HTTPException(status_code=400, detail="asOf cannot be in the future")
+    selected_period = collection_billing_period(billing_period)
+    postings = collection_postings_as_of(report_day)
+    grouped: dict[str, dict[str, Any]] = {}
+    available_periods: set[str] = set()
+
+    for invoice in visible_invoices():
+        item = collection_open_invoice_item(invoice, report_day, postings)
+        if item is None:
+            continue
+        period_key = clean_text(item.get("billingPeriodMonth"))
+        if period_key:
+            available_periods.add(period_key)
+        if selected_period and period_key != selected_period:
+            continue
+        customer_id = clean_text(item.get("customerId"))
+        if not customer_id:
+            continue
+        group = grouped.get(customer_id)
+        if group is None:
+            try:
+                customer = resolve_customer(customer_id)
+            except (HTTPException, KeyError, TypeError):
+                customer = dict(invoice.get("customer") or billing_customer_snapshot(customer_id))
+            group = {
+                "customerId": customer_id,
+                "customer": customer,
+                "outstandingBalance": 0.0,
+                "overdueBalance": 0.0,
+                "currentBalance": 0.0,
+                "openInvoiceCount": 0,
+                "overdueInvoiceCount": 0,
+                "partiallyPaidInvoiceCount": 0,
+                "unpaidInvoiceCount": 0,
+                "cashCollected": 0.0,
+                "accountCreditsApplied": 0.0,
+                "rebatesApplied": 0.0,
+                "oldestDueDate": "",
+                "oldestOverdueDate": "",
+                "daysOverdue": 0,
+                "openInvoices": [],
+            }
+            grouped[customer_id] = group
+
+        group["openInvoices"].append(item)
+        group["outstandingBalance"] = money(group["outstandingBalance"] + item["balance"])
+        group["cashCollected"] = money(group["cashCollected"] + item["cashCollected"])
+        group["accountCreditsApplied"] = money(
+            group["accountCreditsApplied"] + item["accountCreditsApplied"]
+        )
+        group["rebatesApplied"] = money(group["rebatesApplied"] + item["rebatesApplied"])
+        group["openInvoiceCount"] += 1
+        if item["paymentState"] == "PARTIALLY_PAID":
+            group["partiallyPaidInvoiceCount"] += 1
+        else:
+            group["unpaidInvoiceCount"] += 1
+        due_date = clean_text(item.get("dueDate"))
+        if due_date and (not group["oldestDueDate"] or due_date < group["oldestDueDate"]):
+            group["oldestDueDate"] = due_date
+        if item["isOverdue"]:
+            group["overdueBalance"] = money(group["overdueBalance"] + item["balance"])
+            group["overdueInvoiceCount"] += 1
+            group["daysOverdue"] = max(group["daysOverdue"], item["daysOverdue"])
+            if due_date and (
+                not group["oldestOverdueDate"] or due_date < group["oldestOverdueDate"]
+            ):
+                group["oldestOverdueDate"] = due_date
+        else:
+            group["currentBalance"] = money(group["currentBalance"] + item["balance"])
+
+    latest_payments = latest_posted_customer_payments(report_day)
+    rows: list[dict[str, Any]] = []
+    for group in grouped.values():
+        group["openInvoices"].sort(
+            key=lambda item: (
+                0 if item.get("isOverdue") else 1,
+                clean_text(item.get("dueDate")) or "9999-12-31",
+                clean_text(item.get("invoiceNumber")),
+            )
+        )
+        latest_payment = latest_payments.get(group["customerId"])
+        group["invoiceNumbers"] = [item["invoiceNumber"] for item in group["openInvoices"]]
+        group["billingPeriods"] = sorted(
+            {item["billingPeriodMonth"] for item in group["openInvoices"] if item["billingPeriodMonth"]},
+            reverse=True,
+        )
+        group["serviceAccountNumbers"] = sorted(
+            {
+                item["serviceAccountNumber"]
+                for item in group["openInvoices"]
+                if item["serviceAccountNumber"]
+            }
+        )
+        group["actionRequired"] = bool(group["overdueInvoiceCount"])
+        group["collectionStatus"] = (
+            "OVERDUE"
+            if group["overdueInvoiceCount"]
+            else "PARTIALLY_PAID"
+            if group["partiallyPaidInvoiceCount"]
+            else "CURRENT"
+        )
+        group["lastPaymentDate"] = clean_text(latest_payment.get("paymentDate")) if latest_payment else ""
+        group["lastPaymentAmount"] = money(latest_payment.get("amount")) if latest_payment else 0.0
+        group["lastPaymentChannel"] = clean_text(latest_payment.get("collectionChannel")) if latest_payment else ""
+        group["lastPaymentReceiptNumber"] = clean_text(latest_payment.get("receiptNumber")) if latest_payment else ""
+        rows.append(group)
+
+    rows.sort(
+        key=lambda row: (
+            0 if row["actionRequired"] else 1,
+            0 if money(row.get("overdueBalance")) > 0 else 1,
+            -int(row.get("daysOverdue") or 0),
+            -money(row.get("overdueBalance")),
+            -money(row.get("outstandingBalance")),
+            customer_name(row.get("customer") or {}).lower(),
+        )
+    )
+    return rows, sorted(available_periods, reverse=True)
+
+
+def collection_worklist_status_match(row: dict[str, Any], status: str) -> bool:
+    if status == "ALL_OPEN":
+        return True
+    if status == "ACTION_REQUIRED":
+        return bool(row.get("actionRequired"))
+    if status == "OVERDUE":
+        return money(row.get("overdueBalance")) > 0
+    if status == "PARTIALLY_PAID":
+        return int(row.get("partiallyPaidInvoiceCount") or 0) > 0
+    if status == "UNPAID":
+        return int(row.get("unpaidInvoiceCount") or 0) > 0
+    return False
+
+
+def collection_worklist_report(
+    as_of: date | None = None,
+    billing_period: str = "",
+    status: str = "ACTION_REQUIRED",
+    search: str = "",
+    page: int = 1,
+    page_size: int = 20,
+) -> dict[str, Any]:
+    report_day = as_of or billing_business_date()
+    selected_period = collection_billing_period(billing_period)
+    normalized_status = normalize_upper(status or "ACTION_REQUIRED")
+    if normalized_status not in COLLECTION_WORKLIST_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail="status must be ALL_OPEN, ACTION_REQUIRED, OVERDUE, PARTIALLY_PAID, or UNPAID",
+        )
+    account_rows, available_periods = collection_worklist_accounts(report_day, selected_period)
+    summary = {
+        "openCustomerCount": len(account_rows),
+        "actionRequiredCustomerCount": sum(bool(row["actionRequired"]) for row in account_rows),
+        "overdueCustomerCount": sum(money(row["overdueBalance"]) > 0 for row in account_rows),
+        "openInvoiceCount": sum(int(row["openInvoiceCount"]) for row in account_rows),
+        "overdueInvoiceCount": sum(int(row["overdueInvoiceCount"]) for row in account_rows),
+        "openAmount": money(sum(row["outstandingBalance"] for row in account_rows)),
+        "overdueAmount": money(sum(row["overdueBalance"] for row in account_rows)),
+        "currentAmount": money(sum(row["currentBalance"] for row in account_rows)),
+        "oldestDaysOverdue": max((int(row["daysOverdue"]) for row in account_rows), default=0),
+    }
+
+    search_terms = clean_text(search).lower().split()
+    filtered_rows: list[dict[str, Any]] = []
+    for row in account_rows:
+        if not collection_worklist_status_match(row, normalized_status):
+            continue
+        searchable = " ".join(
+            [
+                customer_name(row.get("customer") or {}),
+                clean_text((row.get("customer") or {}).get("accountNumber")),
+                clean_text((row.get("customer") or {}).get("contactNumber")),
+                clean_text((row.get("customer") or {}).get("address")),
+                row["customerId"],
+                *row["invoiceNumbers"],
+                *row["billingPeriods"],
+                *row["serviceAccountNumbers"],
+            ]
+        ).lower()
+        if search_terms and not all(term in searchable for term in search_terms):
+            continue
+        filtered_rows.append(row)
+
+    normalized_page_size = max(10, min(int(page_size or 20), 100))
+    total_rows = len(filtered_rows)
+    total_pages = max(1, ceil(total_rows / normalized_page_size))
+    normalized_page = max(1, min(int(page or 1), total_pages))
+    start_index = (normalized_page - 1) * normalized_page_size
+    paginated_rows = filtered_rows[start_index:start_index + normalized_page_size]
+    public_rows = [
+        {key: value for key, value in row.items() if key != "openInvoices"}
+        for row in paginated_rows
+    ]
+    period_label = (
+        date.fromisoformat(f"{selected_period}-01").strftime("%B %Y")
+        if selected_period
+        else "All Open Billing Periods"
+    )
+    return {
+        "scope": "ALL_OPEN_RECEIVABLES",
+        "asOfDate": report_day.isoformat(),
+        "timeZone": BILLING_TIMEZONE,
+        "billingPeriod": selected_period or "ALL",
+        "billingPeriodLabel": period_label,
+        "availableBillingPeriods": available_periods,
+        "selectedStatus": normalized_status,
+        "search": clean_text(search),
+        "summary": summary,
+        "rows": public_rows,
+        "pagination": {
+            "page": normalized_page,
+            "pageSize": normalized_page_size,
+            "totalRows": total_rows,
+            "totalPages": total_pages,
+        },
+        "definitions": {
+            "worklistScope": "Every active invoice with a remaining balance as of the reporting date",
+            "actionRequired": "Customer has at least one open invoice past its due date",
+            "billingPeriodFilter": "Optional invoice-origin period filter; ALL is the operational default",
+        },
+        "generatedAt": now_iso(),
+    }
+
+
+def collection_account_detail(
+    customer_id: str,
+    as_of: date | None = None,
+    billing_period: str = "",
+) -> dict[str, Any]:
+    report_day = as_of or billing_business_date()
+    selected_period = collection_billing_period(billing_period)
+    account_rows, _ = collection_worklist_accounts(report_day, selected_period)
+    account = next((row for row in account_rows if row["customerId"] == customer_id), None)
+    if account is None:
+        raise HTTPException(status_code=404, detail="No open receivables found for this customer and scope")
+    return {
+        **account,
+        "scope": "ALL_OPEN_RECEIVABLES",
+        "asOfDate": report_day.isoformat(),
+        "timeZone": BILLING_TIMEZONE,
+        "billingPeriod": selected_period or "ALL",
         "generatedAt": now_iso(),
     }
 
@@ -5198,6 +5576,106 @@ def get_monthly_collection_performance(
     )
 
 
+@router.get("/collections/worklist")
+@billing_read_snapshot
+def get_collection_worklist(
+    asOf: str = "",
+    billingPeriod: str = "",
+    status: str = "ACTION_REQUIRED",
+    search: str = "",
+    page: int = 1,
+    pageSize: int = 20,
+    admin=Depends(require_admin),
+):
+    seed_billing_data()
+    report_day = parse_day(asOf, "asOf") if asOf else billing_business_date()
+    return collection_worklist_report(
+        as_of=report_day,
+        billing_period=billingPeriod,
+        status=status,
+        search=search,
+        page=page,
+        page_size=pageSize,
+    )
+
+
+@router.get("/collections/accounts/{customer_id}")
+@billing_read_snapshot
+def get_collection_account(
+    customer_id: str,
+    asOf: str = "",
+    billingPeriod: str = "",
+    admin=Depends(require_admin),
+):
+    seed_billing_data()
+    report_day = parse_day(asOf, "asOf") if asOf else billing_business_date()
+    return collection_account_detail(customer_id, report_day, billingPeriod)
+
+
+@router.post("/collections/accounts/{customer_id}/follow-up-sms")
+def send_collection_follow_up_sms(
+    customer_id: str,
+    payload: CollectionFollowUpSmsPayload,
+    admin=Depends(require_admin),
+):
+    message_text = clean_text(payload.messageText)
+    if not message_text:
+        raise HTTPException(status_code=400, detail="SMS message text is required")
+    if _sms_sender is None:
+        raise HTTPException(status_code=503, detail="A2P Messaging provider is not configured")
+    report_day = parse_day(payload.asOf, "asOf") if payload.asOf else billing_business_date()
+    with billing_store.read_snapshot():
+        seed_billing_data()
+        account = collection_account_detail(customer_id, report_day)
+        customer = dict(account.get("customer") or {})
+        destination = clean_text(customer.get("contactNumber"))
+        if not destination:
+            raise HTTPException(status_code=400, detail="Customer has no saved mobile number")
+        request_context = {
+            "origin": "billing_collection_worklist",
+            "customerId": customer_id,
+            "accountNumber": clean_text(customer.get("accountNumber")),
+            "asOfDate": report_day.isoformat(),
+            "outstandingBalance": money(account.get("outstandingBalance")),
+            "overdueBalance": money(account.get("overdueBalance")),
+            "daysOverdue": int(account.get("daysOverdue") or 0),
+            "invoiceIds": [item["id"] for item in account.get("openInvoices", [])],
+            "invoiceNumbers": [item["invoiceNumber"] for item in account.get("openInvoices", [])],
+        }
+
+    sms_result = _sms_sender(
+        destination=destination,
+        message_text=message_text,
+        source=COLLECTION_FOLLOW_UP_SMS_SENDER_ID,
+        purpose="BILLING_COLLECTION_FOLLOW_UP",
+        request_context=request_context,
+        created_by_admin_id=admin.get("id") or admin["username"],
+    )
+    add_audit(
+        "billing_collection_follow_up_sms_sent",
+        "BillingCollectionAccount",
+        customer_id,
+        {
+            "destination": sms_result.get("destination") or "",
+            "messageId": sms_result.get("message_id") or "",
+            "senderId": COLLECTION_FOLLOW_UP_SMS_SENDER_ID,
+            "asOfDate": report_day.isoformat(),
+            "outstandingBalance": request_context["outstandingBalance"],
+            "overdueBalance": request_context["overdueBalance"],
+            "invoiceCount": len(request_context["invoiceIds"]),
+        },
+        admin["username"],
+    )
+    return {
+        "status": sms_result.get("status") or "SUCCESS",
+        "customerId": customer_id,
+        "destination": sms_result.get("destination") or "",
+        "messageId": sms_result.get("message_id") or "",
+        "senderId": COLLECTION_FOLLOW_UP_SMS_SENDER_ID,
+        "sentAt": now_iso(),
+    }
+
+
 @router.get("/billing-runs/preview")
 @billing_read_snapshot
 def preview_billing_run(asOf: str | None = None, admin=Depends(require_admin)):
@@ -5739,7 +6217,7 @@ def delete_invoice(invoice_id: str, reason: str = "", admin=Depends(require_admi
 @billing_read_snapshot
 def invoice_eligible_promotions(invoice_id: str, paymentDate: str = "", admin=Depends(require_admin)):
     invoice = find_invoice(invoice_id)
-    payment_day = parse_day(paymentDate or today_iso(), "paymentDate")
+    payment_day = posted_payment_day(paymentDate)
     promotion_options = eligible_payment_promotions(invoice, payment_day)
     recommended_bundle = recommended_payment_promotion_bundle(invoice, promotion_options)
     recommended_promotions = recommended_bundle["promotions"] if recommended_bundle else []
@@ -6042,7 +6520,7 @@ def create_payment(
         raise HTTPException(status_code=400, detail="Invalid payment status")
     if status != "POSTED":
         raise HTTPException(status_code=400, detail="New payments must be posted; use the void action for reversals")
-    payment_day = parse_day(payload.paymentDate, "paymentDate")
+    payment_day = posted_payment_day(payload.paymentDate)
     for quoted_allocation in payload.allocations or []:
         quote_fingerprint = clean_text(quoted_allocation.promotionQuoteFingerprint)[:128]
         if not quote_fingerprint:

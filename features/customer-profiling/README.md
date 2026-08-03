@@ -33,8 +33,9 @@ Restored workflows from the previous standalone Customer Profiling module:
 - Service location selector connected to System Settings -> Location Management, with manual customer locations added to Location Management when no saved record matches
 - Customer table and detail drawer display System Settings emotion avatars using the reusable `CustomerEmotionAvatar` component
 - Customer 360 replaces the old compact detail drawer as the canonical customer inspection experience. Opening a customer from the list, or opening `/customer-profiling?customerId=<id>`, shows a full module-owned detail workspace with a compact identity header and tabs for Overview, Subscriptions, Billing, Payments, Tickets, Equipment, and Activity.
+- New customer creation returns to the customer list and opens the onboarding modal for the saved customer. The Pending list/KPI wording remains Needs Onboarding.
 - Customer coordinate capture and detail map preview consume System Settings -> Maps provider settings, including Google Map Tiles session providers when configured, with Google Maps open-link and Street View retained as external helpers
-- Customer table actions include Check Serviceability, which opens Network Settings -> Serviceability Check filtered to the selected customer
+- Customer table actions are View, Edit, and, while setup remains incomplete, Onboarding. The Onboarding icon includes live `completed/7` progress derived from existing Service, Billing, Ticketing, and Inventory records and is removed when all seven steps are complete; Check Serviceability and Archive are not row actions.
 - Secondary contact fields
 - Bulk upload CSV workflow with a CSV-intake-only modal, inline collapsible icon guide above and outside the drag-and-drop area, drag-and-drop CSV upload, template download, and an Assess Import action that opens the full-page Review All Customers workspace. The page stages are Upload CSV, Review All Customers, and Upload Customers; Review/Upload now live outside the modal. The workflow includes client-side preview validation, duplicate checks, KPI summaries, barangay/city location counts with an ALL filter and clickable location chips, required Barangay validation, footer Previous/Next controls, a close warning that can discard or save the upload into Customer Drafts with a Bulk Upload indicator, single-line per-customer fix rows with table-style icon edit/collapse buttons that expand the editable form, highlighted invalid fields, duplicate auto-delete while retaining the first entry, and a searchable/sortable final upload review grouped by barangay/city without per-row selection checkboxes. Bulk upload excludes system-managed/account setup fields such as account number, customer type, business name, status, and recommender fields; those are generated or edited inside the system after import.
 
@@ -62,9 +63,11 @@ Read dependencies used by Customer 360:
 
 ```text
 GET /api/customer-profiling/customers/{customerId}
+GET /api/service/catalog?status=ACTIVE
 GET /api/service/accounts?customerId={customerId}
 GET /api/service/orders?customerId={customerId}
 GET /api/billing/subscriptions?customerId={customerId}
+GET /api/billing/installation-charges?customerId={customerId}
 GET /api/billing/customers/{customerId}/balance
 GET /api/billing/invoices?customerId={customerId}
 GET /api/billing/payments?customerId={customerId}
@@ -75,6 +78,30 @@ GET /api/inventory/assignments
 GET /api/logs
 ```
 
+## New Customer Onboarding
+
+The Onboarding action opens a large responsive workflow modal from the customer list. It is not a browser-only checklist: completion is derived from Customer Profiling, Service, Ticketing, Inventory, and Billing records. Previous and Next navigate between steps but never mark a step complete.
+
+Step states are `Complete`, `Current`, `Waiting`, `Needs Attention`, `Blocked`, `Not Required`, `Not Started`, and `Permission Required`. Existing active subscriptions may satisfy legacy serviceability/activation gates as `Not Required`; new onboarding journeys must record the applicable verification before Billing actions become available.
+
+Embedded actions retain owning-module authority:
+
+- Customer Profile opens the existing Customer Profiling editor.
+- Serviceability saves a Customer Profiling-owned manual disposition while a persisted Network Settings assessment contract is unavailable.
+- Plan & Installation creates `POST /api/service/orders`; Service creates the linked Ticketing ticket.
+- Installation Work updates the linked record through `PATCH /api/ticketing/tickets/{ticketId}`; Ticketing remains authoritative and synchronizes the Service Order lifecycle.
+- Activation Verification records manual network-access and equipment checks only after an active Service Account exists.
+- Billing Setup creates `POST /api/billing/installation-charges` and then `POST /api/billing/subscriptions`; Billing remains authoritative and generates the first invoice.
+
+Customer Profiling persists only workflow attestations unavailable from owning modules:
+
+```text
+PATCH /api/customer-profiling/customers/{customerId}/onboarding-verifications/serviceability
+PATCH /api/customer-profiling/customers/{customerId}/onboarding-verifications/network-equipment
+```
+
+Each attestation stores outcome, optional reference/notes, actor, and timestamp. A successful network/equipment verification requires both network access and equipment assignment checks. All other step status and references are read live from the owning modules and are not copied into Customer Profiling.
+
 Remaining integration contracts:
 
 - POS should expose a customer-filtered receipt/sales endpoint, such as `GET /api/point-of-sale/sales?customerId={customerId}`, plus receipt view/download when supported.
@@ -82,6 +109,8 @@ Remaining integration contracts:
 - Billing should expose a payment receipt view/download endpoint if official receipt documents become downloadable outside Billing/POS.
 - Billing should support a query-link contract for opening invoice/subscription detail directly from Customer 360, such as `/billing?tab=Invoices&invoiceId=<invoiceId>`.
 - Ticketing should support a query-link contract for opening a specific ticket detail directly from Customer 360, such as `/ticketing?ticketId=<ticketId>`.
+- Network Settings should expose a persisted customer serviceability assessment keyed by `customerId`, including outcome, NAP/port or topology reference, assessor, assessed timestamp, evidence, and review state. Once available, replace the Customer Profiling manual serviceability attestation with that authoritative read.
+- Network/Account Access Management should expose customer/service-account provisioning readiness for PPPoE and ONU mapping. Inventory should expose authoritative customer/service-account equipment assignment. Once both are available, replace manual Activation Verification with derived reads.
 
 ## Real-Data Readiness
 

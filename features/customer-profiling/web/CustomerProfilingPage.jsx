@@ -57,10 +57,13 @@ import {
 } from '../../system-settings/web/mapProviders';
 import {
   CUSTOMER_360_TABS,
+  buildCustomerOnboarding,
+  buildCustomerOnboardingProgressMap,
   buildCustomer360Data,
   customer360SectionState,
   emptyCustomer360Data,
-  hasCustomer360TabData
+  hasCustomer360TabData,
+  onboardingStepSatisfied
 } from './customer360ViewModel.js';
 import './customerProfiling.css';
 
@@ -75,6 +78,64 @@ const COORDINATE_CAPTURE_MAX_ZOOM = 19;
 const MAP_TILE_SIZE = 256;
 const MAP_TILE_COUNT = 3;
 const CUSTOMER_COLUMN_MENU_WIDTH = 304;
+const ONBOARDING_TICKET_STATUSES = ['OPEN', 'IN_PROGRESS', 'WAITING_CUSTOMER', 'WAITING_INTERNAL', 'RESOLVED', 'CLOSED', 'CANCELLED'];
+
+function todayIsoDate() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function nextMonthStartIso(value = todayIsoDate()) {
+  const date = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1)).toISOString().slice(0, 10);
+}
+
+const blankServiceabilityVerification = {
+  outcome: '',
+  reference: '',
+  notes: ''
+};
+
+const blankActivationVerification = {
+  outcome: '',
+  reference: '',
+  notes: '',
+  networkAccessVerified: false,
+  equipmentAssignmentVerified: false
+};
+
+const blankInstallationRequest = {
+  catalogId: '',
+  requestedDate: todayIsoDate(),
+  targetActivationDate: '',
+  priority: 'NORMAL',
+  installAddress: '',
+  notes: ''
+};
+
+const blankInstallationTicketUpdate = {
+  status: 'OPEN',
+  assignedTo: '',
+  dueDate: '',
+  resolutionSummary: ''
+};
+
+const blankInstallationCharge = {
+  status: '',
+  standardAmount: '',
+  chargedAmount: '',
+  waiverReason: '',
+  notes: ''
+};
+
+const blankOnboardingSubscription = {
+  billingMode: 'PREPAID',
+  billingDay: '1',
+  dueDays: '0',
+  startDate: todayIsoDate(),
+  nextInvoiceDate: nextMonthStartIso(),
+  notes: ''
+};
 
 function token() {
   return localStorage.getItem('threejmain_token');
@@ -818,7 +879,17 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const [expandedBulkUploadRowNumbers, setExpandedBulkUploadRowNumbers] = useState([]);
   const [isBulkUploading, setBulkUploading] = useState(false);
   const [isDetailsPanelOpen, setDetailsPanelOpen] = useState(false);
+  const [isOnboardingModalOpen, setOnboardingModalOpen] = useState(false);
   const [customerDetailTab, setCustomerDetailTab] = useState('overview');
+  const [onboardingProgressByCustomerId, setOnboardingProgressByCustomerId] = useState({});
+  const [onboardingActiveStepId, setOnboardingActiveStepId] = useState('');
+  const [onboardingAction, setOnboardingAction] = useState('');
+  const [serviceabilityVerificationForm, setServiceabilityVerificationForm] = useState(blankServiceabilityVerification);
+  const [activationVerificationForm, setActivationVerificationForm] = useState(blankActivationVerification);
+  const [installationRequestForm, setInstallationRequestForm] = useState(blankInstallationRequest);
+  const [installationTicketForm, setInstallationTicketForm] = useState(blankInstallationTicketUpdate);
+  const [installationChargeForm, setInstallationChargeForm] = useState(blankInstallationCharge);
+  const [onboardingSubscriptionForm, setOnboardingSubscriptionForm] = useState(blankOnboardingSubscription);
   const [areFiltersOpen, setFiltersOpen] = useState(false);
   const [formStage, setFormStage] = useState(0);
   const [customerDrafts, setCustomerDrafts] = useState([]);
@@ -849,6 +920,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const latestFiltersRef = useRef(blankCustomerFilters);
   const searchDebounceRef = useRef(null);
   const referralSearchDebounceRef = useRef(null);
+  const onboardingProgressRequestRef = useRef(0);
 
   const savedProvinces = uniqueValues(locations.map((location) => normalizeUpper(location.province)));
   const provinceOptions = uniqueValues([...savedProvinces, ...(meta.provinces || [])]);
@@ -949,7 +1021,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const statusTabs = [
     { label: 'All', value: '', count: overview?.totalCustomers ?? 0, tone: 'blue' },
     { label: 'Active', value: 'ACTIVE', count: overview?.activeCustomers ?? 0, tone: 'green' },
-    { label: 'Pending', value: 'PENDING', count: overview?.pendingCustomers ?? 0, tone: 'yellow' },
+    { label: 'Needs Onboarding', value: 'PENDING', count: overview?.pendingCustomers ?? 0, tone: 'yellow' },
     { label: 'Suspended', value: 'SUSPENDED', count: overview?.suspendedCustomers ?? 0, tone: 'red' },
     {
       label: 'Inactive',
@@ -965,6 +1037,11 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     }
   ];
   const customerDetailTabs = CUSTOMER_360_TABS;
+  const customerOnboarding = selected ? buildCustomerOnboarding(selected, customer360, customer360Errors) : null;
+  const activeOnboardingStepId = onboardingActiveStepId || customerOnboarding?.currentStepId || 'profile';
+  const activeOnboardingStep = customerOnboarding?.steps.find((step) => step.id === activeOnboardingStepId)
+    || customerOnboarding?.currentStep
+    || null;
   const activeColumnPreferenceLabel = statusTabs.find((item) => item.value === filters.status)?.label || 'All';
   const activeColumnPreferenceStorageKey = customerColumnStorageKey(columnPreferenceUserKey, filters.status);
   const columnMenuSearchQuery = columnMenuSearch.trim().toLowerCase();
@@ -980,6 +1057,35 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     .filter((item) => item.columns.length);
   const activeCustomerColumns = customerTableColumns.filter((column) => visibleCustomerColumns[column.key]);
   const visibleCustomerColumnCount = activeCustomerColumns.length;
+
+  async function loadCustomerOnboardingProgress(customerRows = []) {
+    const rows = Array.isArray(customerRows) ? customerRows : [];
+    if (!rows.length) return;
+    const requestId = onboardingProgressRequestRef.current + 1;
+    onboardingProgressRequestRef.current = requestId;
+    const sourceRequests = [
+      ['serviceCatalog', request('/service/catalog?status=ACTIVE')],
+      ['serviceAccounts', request('/service/accounts')],
+      ['serviceOrders', request('/service/orders')],
+      ['subscriptions', request('/billing/subscriptions')],
+      ['installationCharges', request('/billing/installation-charges')],
+      ['tickets', request('/ticketing/tickets')],
+      ['inventoryAssignments', request('/inventory/assignments')]
+    ];
+    const settled = await Promise.allSettled(sourceRequests.map(([, sourceRequest]) => sourceRequest));
+    if (requestId !== onboardingProgressRequestRef.current) return;
+    const nextSources = {};
+    const nextErrors = {};
+    settled.forEach((result, index) => {
+      const key = sourceRequests[index][0];
+      if (result.status === 'fulfilled') nextSources[key] = result.value;
+      else nextErrors[key] = normalizeRequestError(result.reason);
+    });
+    setOnboardingProgressByCustomerId((current) => ({
+      ...current,
+      ...buildCustomerOnboardingProgressMap(rows, nextSources, nextErrors)
+    }));
+  }
 
   async function load(nextFilters = filters) {
     setError('');
@@ -1002,32 +1108,39 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       setLocations(Array.isArray(nextLocations) ? nextLocations : []);
       setAvatarConfig(nextAvatarConfig);
       setMapProviderSettings(normalizeMapProviderSettings(nextMapProviders || undefined));
+      loadCustomerOnboardingProgress(nextCustomers.data);
     } catch (err) {
       setError(err.message);
     }
   }
 
-  async function loadCustomer(id) {
+  async function loadCustomer(id, requestedTab = '') {
     setError('');
     try {
       const customer = await request(`/customer-profiling/customers/${id}`);
+      const availableTab = customerDetailTabs.some((tab) => tab.value === requestedTab) ? requestedTab : '';
+      const nextTab = availableTab || 'overview';
       setSelected(customer);
-      setCustomerDetailTab('overview');
+      setOnboardingModalOpen(false);
+      setCustomerDetailTab(nextTab);
+      setOnboardingActiveStepId('');
       setDetailsPanelOpen(true);
-      syncCustomerUrl(customer.id);
+      syncCustomerUrl(customer.id, { tab: nextTab });
       loadCustomer360(customer);
     } catch (err) {
       setError(err.message);
     }
   }
 
-  function syncCustomerUrl(customerId, { replace = false } = {}) {
+  function syncCustomerUrl(customerId, { replace = false, tab = customerDetailTab } = {}) {
     if (typeof window === 'undefined') return;
     const url = new URL(window.location.href);
     if (customerId) {
       url.searchParams.set('customerId', customerId);
+      if (tab) url.searchParams.set('tab', tab);
     } else {
       url.searchParams.delete('customerId');
+      url.searchParams.delete('tab');
     }
     const nextUrl = `${url.pathname}${url.search}${url.hash}`;
     if (nextUrl === `${window.location.pathname}${window.location.search}${window.location.hash}`) return;
@@ -1040,9 +1153,11 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     setCustomer360Errors({});
     const customerId = encodeURIComponent(customer.id);
     const sources = [
+      ['serviceCatalog', request('/service/catalog?status=ACTIVE')],
       ['serviceAccounts', request(`/service/accounts?customerId=${customerId}`)],
       ['serviceOrders', request(`/service/orders?customerId=${customerId}`)],
       ['subscriptions', request(`/billing/subscriptions?customerId=${customerId}`)],
+      ['installationCharges', request(`/billing/installation-charges?customerId=${customerId}`)],
       ['balance', request(`/billing/customers/${customerId}/balance`)],
       ['invoices', request(`/billing/invoices?customerId=${customerId}`)],
       ['payments', request(`/billing/payments?customerId=${customerId}`)],
@@ -1063,9 +1178,22 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
         nextErrors[key] = normalizeRequestError(result.reason);
       }
     });
-    setCustomer360(buildCustomer360Data(customer, nextSources));
+    const nextCustomer360 = buildCustomer360Data(customer, nextSources);
+    setCustomer360(nextCustomer360);
     setCustomer360Errors(nextErrors);
     setCustomer360Loading(false);
+    const onboarding = buildCustomerOnboarding(customer, nextCustomer360, nextErrors);
+    setOnboardingProgressByCustomerId((current) => ({
+      ...current,
+      [customer.id]: {
+        completedCount: onboarding.completedCount,
+        totalCount: onboarding.totalCount,
+        currentStepId: onboarding.currentStepId,
+        currentStepLabel: onboarding.currentStep.label,
+        attentionCount: onboarding.attentionCount,
+        isComplete: onboarding.isComplete
+      }
+    }));
   }
 
   useEffect(() => { load(); }, []);
@@ -1073,13 +1201,16 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     const openCustomerFromUrl = () => {
       const params = new URLSearchParams(window.location.search);
       const customerId = params.get('customerId') || params.get('id');
+      const requestedTab = params.get('tab') || '';
       if (customerId) {
-        loadCustomer(customerId);
+        loadCustomer(customerId, requestedTab);
         return;
       }
       setDetailsPanelOpen(false);
+      setOnboardingModalOpen(false);
       setSelected(null);
       setCustomerDetailTab('overview');
+      setOnboardingActiveStepId('');
       setCustomer360(emptyCustomer360Data());
       setCustomer360Errors({});
     };
@@ -1155,6 +1286,68 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     customerMapProvider?.googleLanguage,
     customerMapProvider?.googleRegion
   ]);
+  useEffect(() => {
+    if (!selected?.id) return;
+    const verifications = selected.onboardingVerifications || {};
+    setOnboardingActiveStepId('');
+    setServiceabilityVerificationForm({
+      ...blankServiceabilityVerification,
+      ...(verifications.serviceability || {})
+    });
+    setActivationVerificationForm({
+      ...blankActivationVerification,
+      ...(verifications.networkEquipment || {})
+    });
+    setInstallationRequestForm({
+      ...blankInstallationRequest,
+      requestedDate: todayIsoDate(),
+      installAddress: formatCustomerAddress(selected)
+    });
+  }, [selected?.id]);
+  useEffect(() => {
+    const firstCatalog = customer360.serviceCatalog.find((item) => normalizeUpper(item.status) === 'ACTIVE') || customer360.serviceCatalog[0];
+    if (!selected?.id || !firstCatalog) return;
+    setInstallationRequestForm((current) => current.catalogId ? current : { ...current, catalogId: firstCatalog.id });
+  }, [selected?.id, customer360.serviceCatalog.length]);
+  useEffect(() => {
+    const ticket = customerOnboarding?.references.installationTicket;
+    if (!ticket?.id) {
+      setInstallationTicketForm(blankInstallationTicketUpdate);
+      return;
+    }
+    setInstallationTicketForm({
+      status: normalizeUpper(ticket.status) || 'OPEN',
+      assignedTo: ticket.assignedTo || '',
+      dueDate: String(ticket.dueDate || '').slice(0, 10),
+      resolutionSummary: ticket.resolutionSummary || ''
+    });
+  }, [customerOnboarding?.references.installationTicket?.id, customerOnboarding?.references.installationTicket?.updatedAt]);
+  useEffect(() => {
+    const account = customerOnboarding?.references.activeServiceAccount;
+    if (!account?.id) {
+      setInstallationChargeForm(blankInstallationCharge);
+      setOnboardingSubscriptionForm(blankOnboardingSubscription);
+      return;
+    }
+    const catalog = account.catalog || {};
+    const installFee = Number(catalog.installFee || 0);
+    const startDate = account.activationDate || todayIsoDate();
+    const billingMode = normalizeUpper(catalog.billingMode) === 'POSTPAID' ? 'POSTPAID' : 'PREPAID';
+    setInstallationChargeForm({
+      ...blankInstallationCharge,
+      standardAmount: installFee ? String(installFee) : '0',
+      chargedAmount: installFee ? String(installFee) : '0',
+      notes: `Installation fee decision for ${account.serviceAccountNumber || 'Service Account'}.`
+    });
+    setOnboardingSubscriptionForm({
+      ...blankOnboardingSubscription,
+      billingMode,
+      dueDays: billingMode === 'POSTPAID' ? '7' : '0',
+      startDate,
+      nextInvoiceDate: nextMonthStartIso(startDate),
+      notes: `Linked to ${account.serviceAccountNumber || 'Service Account'}.`
+    });
+  }, [customerOnboarding?.references.activeServiceAccount?.id]);
 
   function updateFilters(next) {
     const merged = { ...latestFiltersRef.current, ...next, page: 1 };
@@ -1531,10 +1724,22 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     setDetailsPanelOpen(false);
     setSelected(null);
     setCustomerDetailTab('overview');
+    setOnboardingActiveStepId('');
+    setOnboardingAction('');
     setCustomer360(emptyCustomer360Data());
     setCustomer360Errors({});
     setCustomer360Loading(false);
     syncCustomerUrl('');
+  }
+
+  function closeOnboardingModal() {
+    setOnboardingModalOpen(false);
+    setSelected(null);
+    setOnboardingActiveStepId('');
+    setOnboardingAction('');
+    setCustomer360(emptyCustomer360Data());
+    setCustomer360Errors({});
+    setCustomer360Loading(false);
   }
 
   function viewCustomer(customer) {
@@ -1542,9 +1747,239 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     loadCustomer(customer.id);
   }
 
-  function checkCustomerServiceability(customer) {
+  async function openCustomerOnboarding(customer) {
     if (!customer?.id) return;
-    window.location.assign(`/network-settings/serviceability-check?customerId=${encodeURIComponent(customer.id)}`);
+    setError('');
+    setOpenCustomerActionMenuId('');
+    setDetailsPanelOpen(false);
+    setOnboardingModalOpen(true);
+    setSelected(customer);
+    setOnboardingActiveStepId('');
+    setCustomer360(emptyCustomer360Data());
+    setCustomer360Errors({});
+    setCustomer360Loading(true);
+    try {
+      const refreshed = await request(`/customer-profiling/customers/${customer.id}`);
+      setSelected(refreshed);
+      await loadCustomer360(refreshed);
+    } catch (err) {
+      setCustomer360Loading(false);
+      setError(err.message);
+    }
+  }
+
+  function selectCustomerDetailTab(tab) {
+    setCustomerDetailTab(tab);
+    syncCustomerUrl(selected?.id, { replace: true, tab });
+  }
+
+  async function refreshCustomerOnboarding(successMessage) {
+    if (!selected?.id) return;
+    const refreshed = await request(`/customer-profiling/customers/${selected.id}`);
+    setSelected(refreshed);
+    setOnboardingActiveStepId('');
+    await loadCustomer360(refreshed);
+    await load(filters);
+    if (successMessage) setMessage(successMessage);
+  }
+
+  async function saveOnboardingVerification(step, verificationForm) {
+    if (!selected?.id || !verificationForm.outcome) {
+      setError('Select a verification outcome before saving.');
+      return;
+    }
+    if (step === 'serviceability' && !onboardingStepSatisfied(customerOnboarding?.steps.find((item) => item.id === 'profile'))) {
+      setError('Complete the Customer Profile step before recording serviceability.');
+      return;
+    }
+    if (step === 'network-equipment' && verificationForm.outcome === 'VERIFIED'
+      && (!verificationForm.networkAccessVerified || !verificationForm.equipmentAssignmentVerified)) {
+      setError('Verify both network access and equipment assignment before completing activation.');
+      return;
+    }
+    setError('');
+    setOnboardingAction(`verification:${step}`);
+    try {
+      await request(`/customer-profiling/customers/${selected.id}/onboarding-verifications/${step}`, {
+        method: 'PATCH',
+        body: JSON.stringify(verificationForm)
+      });
+      await refreshCustomerOnboarding(step === 'serviceability' ? 'Serviceability disposition saved.' : 'Activation verification saved.');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setOnboardingAction('');
+    }
+  }
+
+  async function createOnboardingInstallationRequest() {
+    if (!selected?.id) return;
+    const prerequisitesComplete = ['profile', 'serviceability'].every((stepId) => (
+      onboardingStepSatisfied(customerOnboarding?.steps.find((item) => item.id === stepId))
+    ));
+    if (!prerequisitesComplete) {
+      setError('Complete Customer Profile and Serviceability before creating the installation request.');
+      return;
+    }
+    if (!installationRequestForm.catalogId) {
+      setError('Select a service plan before creating the installation request.');
+      return;
+    }
+    if (!String(installationRequestForm.installAddress || '').trim()) {
+      setError('Installation address is required.');
+      return;
+    }
+    setError('');
+    setOnboardingAction('installation-request');
+    try {
+      await request('/service/orders', {
+        method: 'POST',
+        body: JSON.stringify({
+          customerId: selected.id,
+          catalogId: installationRequestForm.catalogId,
+          orderType: 'NEW_INSTALLATION',
+          requestedDate: installationRequestForm.requestedDate,
+          targetActivationDate: installationRequestForm.targetActivationDate,
+          installAddress: installationRequestForm.installAddress,
+          priority: installationRequestForm.priority,
+          notes: installationRequestForm.notes
+        })
+      });
+      await refreshCustomerOnboarding('Installation request and linked ticket created.');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setOnboardingAction('');
+    }
+  }
+
+  async function updateOnboardingInstallationTicket() {
+    const ticket = customerOnboarding?.references.installationTicket;
+    if (!ticket?.id) return;
+    if (['RESOLVED', 'CLOSED'].includes(installationTicketForm.status) && !String(installationTicketForm.resolutionSummary || '').trim()) {
+      setError('Resolution summary is required when completing installation work.');
+      return;
+    }
+    setError('');
+    setOnboardingAction('installation-ticket');
+    try {
+      await request(`/ticketing/tickets/${ticket.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(installationTicketForm)
+      });
+      await refreshCustomerOnboarding('Installation ticket updated.');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setOnboardingAction('');
+    }
+  }
+
+  async function createOnboardingInstallationCharge() {
+    const account = customerOnboarding?.references.activeServiceAccount;
+    const order = customerOnboarding?.references.installationOrder;
+    if (!account?.id) return;
+    if (!onboardingStepSatisfied(customerOnboarding?.steps.find((item) => item.id === 'activation'))) {
+      setError('Complete Activation Verification before creating Billing records.');
+      return;
+    }
+    if (!installationChargeForm.status) {
+      setError('Select the installation fee decision.');
+      return;
+    }
+    const standardAmount = Number(installationChargeForm.standardAmount || 0);
+    const chargedAmount = Number(installationChargeForm.chargedAmount || 0);
+    if (installationChargeForm.status === 'INVOICED' && chargedAmount <= 0) {
+      setError('Charged amount must be greater than zero for an invoiced installation fee.');
+      return;
+    }
+    if (installationChargeForm.status === 'WAIVED' && !String(installationChargeForm.waiverReason || '').trim()) {
+      setError('Waiver reason is required when waiving the installation fee.');
+      return;
+    }
+    const catalog = account.catalog || {};
+    setError('');
+    setOnboardingAction('installation-charge');
+    try {
+      await request('/billing/installation-charges', {
+        method: 'POST',
+        body: JSON.stringify({
+          customerId: selected.id,
+          serviceAccountId: account.id,
+          serviceAccountNumber: account.serviceAccountNumber,
+          serviceOrderId: order?.id || '',
+          serviceId: account.serviceReference || '',
+          catalogId: account.catalogId || catalog.id || '',
+          catalogCode: account.catalogCode || catalog.code || '',
+          catalogName: account.catalogName || catalog.name || '',
+          billingMode: normalizeUpper(catalog.billingMode) === 'POSTPAID' ? 'POSTPAID' : 'PREPAID',
+          status: installationChargeForm.status,
+          standardAmount: installationChargeForm.status === 'NO_FEE' ? 0 : standardAmount,
+          chargedAmount: installationChargeForm.status === 'INVOICED' ? chargedAmount : 0,
+          waiverReason: installationChargeForm.waiverReason,
+          notes: installationChargeForm.notes
+        })
+      });
+      await refreshCustomerOnboarding('Installation fee decision recorded.');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setOnboardingAction('');
+    }
+  }
+
+  async function createOnboardingSubscription() {
+    const account = customerOnboarding?.references.activeServiceAccount;
+    const order = customerOnboarding?.references.installationOrder;
+    if (!account?.id) return;
+    if (!onboardingStepSatisfied(customerOnboarding?.steps.find((item) => item.id === 'activation'))) {
+      setError('Complete Activation Verification before starting recurring billing.');
+      return;
+    }
+    const catalog = account.catalog || {};
+    const serviceId = account.serviceReference || '';
+    const catalogId = account.catalogId || catalog.id || '';
+    if (!serviceId || !catalogId) {
+      setError('The active Service Account is missing its service reference or catalog link.');
+      return;
+    }
+    if (!onboardingSubscriptionForm.startDate || !onboardingSubscriptionForm.nextInvoiceDate) {
+      setError('Billing start and next invoice dates are required.');
+      return;
+    }
+    const monthlyRate = Number(catalog.monthlyRate ?? account.monthlyRecurringCharge ?? 0);
+    setError('');
+    setOnboardingAction('subscription');
+    try {
+      await request('/billing/subscriptions', {
+        method: 'POST',
+        body: JSON.stringify({
+          customerId: selected.id,
+          serviceAccountId: account.id,
+          serviceAccountNumber: account.serviceAccountNumber || '',
+          serviceOrderId: order?.id || '',
+          catalogId,
+          catalogCode: account.catalogCode || catalog.code || '',
+          catalogName: account.catalogName || catalog.name || 'Internet service',
+          planName: account.catalogName || catalog.name || 'Internet service',
+          serviceId,
+          listMonthlyRate: monthlyRate,
+          monthlyRate,
+          billingMode: onboardingSubscriptionForm.billingMode,
+          billingDay: Number(onboardingSubscriptionForm.billingDay),
+          dueDays: Number(onboardingSubscriptionForm.dueDays),
+          startDate: onboardingSubscriptionForm.startDate,
+          nextInvoiceDate: onboardingSubscriptionForm.nextInvoiceDate,
+          status: 'ACTIVE',
+          notes: onboardingSubscriptionForm.notes
+        })
+      });
+      await refreshCustomerOnboarding('Billing subscription and first invoice created.');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setOnboardingAction('');
+    }
   }
 
   function handleCustomerRowClick(event, customer) {
@@ -1869,9 +2304,11 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       payload.recommendedByCustomerName = '';
     }
     try {
+      const wasEditing = Boolean(editingId);
       const saved = await request(path, { method, body: JSON.stringify(payload) });
       setMessage(`${saved.accountNumber} saved.`);
       const shouldRefreshOpenDetails = isDetailsPanelOpen && selected?.id === saved.id;
+      const shouldRefreshOnboardingModal = isOnboardingModalOpen && selected?.id === saved.id;
       if (activeDraftId) removeDrafts([activeDraftId]);
       setEditingId('');
       setActiveDraftId('');
@@ -1880,20 +2317,15 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       resetReferralPicker();
       setFormModalOpen(false);
       await load(filters);
-      if (shouldRefreshOpenDetails) await loadCustomer(saved.id);
+      if (shouldRefreshOpenDetails) {
+        await loadCustomer(saved.id, customerDetailTab);
+      } else if (shouldRefreshOnboardingModal || !wasEditing) {
+        await openCustomerOnboarding(saved);
+      }
       refreshShell();
     } catch (err) {
       setError(err.message);
     }
-  }
-
-  async function deleteCustomer(customer) {
-    if (!window.confirm(`Archive ${customer.accountNumber} - ${customer.fullName}?`)) return;
-    await request(`/customer-profiling/customers/${customer.id}`, { method: 'DELETE' });
-    setMessage(`${customer.accountNumber} archived.`);
-    if (selected?.id === customer.id) closeDetailsPanel();
-    await load(filters);
-    refreshShell();
   }
 
   async function downloadTemplate() {
@@ -2446,7 +2878,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     );
   }
 
-  function renderCustomerDetailsPanel() {
+  function renderCustomerDetailsPanel({ onboardingModal = false } = {}) {
     if (!selected) return null;
     const detailsCoordinates = customerCoordinates(selected);
     const activeSubscription = customer360.subscriptions.find((row) => normalizeUpper(row.status) === 'ACTIVE') || customer360.subscriptions[0] || null;
@@ -2513,6 +2945,537 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
         <span className="visually-hidden">{label}</span>
       </a>
     );
+    const onboardingStepIcon = (step) => {
+      if (step.state === 'complete') return IconCheck;
+      if (step.state === 'not-required') return IconMinus;
+      if (step.state === 'permission-denied') return IconLock;
+      if (['needs-attention', 'blocked'].includes(step.state)) return IconAlertTriangle;
+      if (step.state === 'waiting') return IconClock;
+      return ({
+        profile: IconUser,
+        serviceability: IconHomeSignal,
+        'installation-request': IconClipboardList,
+        'installation-work': IconTicket,
+        activation: IconRouter,
+        billing: IconFileInvoice,
+        complete: IconClipboardCheck
+      })[step.id] || IconClock;
+    };
+    const renderOnboardingFacts = (facts) => (
+      <div className="customer-onboarding-facts">
+        {facts.map(([label, value, meta = '']) => (
+          <div className="customer-onboarding-fact" key={label}>
+            <small>{label}</small>
+            <strong>{String(value ?? '').trim() || '-'}</strong>
+            {meta ? <span>{meta}</span> : null}
+          </div>
+        ))}
+      </div>
+    );
+    const renderVerificationAudit = (verification) => {
+      if (!verification?.verifiedAt) return null;
+      return (
+        <div className="customer-onboarding-verification-audit">
+          <IconHistory size={16} />
+          <span>{verification.verifiedBy || 'Authorized staff'} / {formatDisplayDateTime(verification.verifiedAt)}</span>
+          {verification.reference ? <strong>{verification.reference}</strong> : null}
+        </div>
+      );
+    };
+    const renderProfileOnboarding = () => (
+      <>
+        {renderOnboardingFacts([
+          ['Account number', selected.accountNumber],
+          ['Customer status', selected.status],
+          ['Primary contact', selected.contactNumber],
+          ['Email', selected.email],
+          ['Service location', formatCustomerResidence(selected)],
+          ['Installation address', formatCustomerAddress(selected)]
+        ])}
+        <div className="customer-onboarding-action-bar">
+          <button type="button" className="btn btn-primary" onClick={() => editCustomer(selected)}>
+            <IconEdit size={17} className="me-2" />Edit Customer Profile
+          </button>
+        </div>
+      </>
+    );
+    const renderServiceabilityOnboarding = () => {
+      const verification = customerOnboarding.references.serviceability;
+      const profileReady = onboardingStepSatisfied(customerOnboarding.steps.find((item) => item.id === 'profile'));
+      if (!profileReady) {
+        return <div className="customer-360-state"><IconLock size={20} /><span>Complete the Customer Profile before recording serviceability.</span></div>;
+      }
+      return (
+        <>
+          {renderVerificationAudit(verification)}
+          <div className="customer-onboarding-action-form">
+            <div className="customer-onboarding-form-grid">
+              <div>
+                <label className="form-label" htmlFor="onboarding-serviceability-outcome">Disposition</label>
+                <select
+                  id="onboarding-serviceability-outcome"
+                  className="form-select"
+                  value={serviceabilityVerificationForm.outcome || ''}
+                  onChange={(event) => setServiceabilityVerificationForm({ ...serviceabilityVerificationForm, outcome: event.target.value })}
+                >
+                  <option value="">Select disposition</option>
+                  <option value="QUALIFIED">Qualified</option>
+                  <option value="NEEDS_REVIEW">Needs Network Review</option>
+                  <option value="NOT_SERVICEABLE">Not Serviceable</option>
+                </select>
+              </div>
+              <div>
+                <label className="form-label" htmlFor="onboarding-serviceability-reference">Assessment reference</label>
+                <input
+                  id="onboarding-serviceability-reference"
+                  className="form-control"
+                  value={serviceabilityVerificationForm.reference || ''}
+                  onChange={(event) => setServiceabilityVerificationForm({ ...serviceabilityVerificationForm, reference: event.target.value })}
+                  placeholder="NAP, port, or survey reference"
+                />
+              </div>
+              <div className="customer-onboarding-form-wide">
+                <label className="form-label" htmlFor="onboarding-serviceability-notes">Assessment notes</label>
+                <textarea
+                  id="onboarding-serviceability-notes"
+                  className="form-control"
+                  rows="3"
+                  value={serviceabilityVerificationForm.notes || ''}
+                  onChange={(event) => setServiceabilityVerificationForm({ ...serviceabilityVerificationForm, notes: event.target.value })}
+                  placeholder="Record the assessment evidence and any follow-up requirement."
+                />
+              </div>
+            </div>
+            <div className="customer-onboarding-action-bar">
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={onboardingAction === 'verification:serviceability'}
+                onClick={() => saveOnboardingVerification('serviceability', serviceabilityVerificationForm)}
+              >
+                <IconDeviceFloppy size={17} className="me-2" />Save Disposition
+              </button>
+            </div>
+          </div>
+        </>
+      );
+    };
+    const renderInstallationRequestOnboarding = () => {
+      const order = customerOnboarding.references.installationOrder;
+      if (order && !['CANCELLED', 'REJECTED'].includes(normalizeUpper(order.status))) {
+        return renderOnboardingFacts([
+          ['Service Order', order.orderNumber || order.id],
+          ['Order status', order.status],
+          ['Plan', order.catalogName || order.catalog?.name],
+          ['Priority', order.priority],
+          ['Requested date', formatDisplayDate(order.requestedDate)],
+          ['Target activation', formatDisplayDate(order.targetActivationDate)],
+          ['Installation address', order.installAddress],
+          ['Linked ticket', order.ticketNumber || order.ticketId]
+        ]);
+      }
+      const requestPrerequisitesReady = ['profile', 'serviceability'].every((stepId) => (
+        onboardingStepSatisfied(customerOnboarding.steps.find((item) => item.id === stepId))
+      ));
+      if (!requestPrerequisitesReady) {
+        return <div className="customer-360-state"><IconLock size={20} /><span>Complete Customer Profile and Serviceability before creating the installation request.</span></div>;
+      }
+      const availableCatalog = customer360.serviceCatalog.filter((item) => normalizeUpper(item.status) === 'ACTIVE');
+      return (
+        <div className="customer-onboarding-action-form">
+          {renderState('serviceCatalog', availableCatalog, 'No active Service Catalog plans are available.')}
+          {!!availableCatalog.length && (
+            <>
+              <div className="customer-onboarding-form-grid">
+                <div className="customer-onboarding-form-wide">
+                  <label className="form-label" htmlFor="onboarding-plan">Service plan</label>
+                  <select
+                    id="onboarding-plan"
+                    className="form-select"
+                    value={installationRequestForm.catalogId}
+                    onChange={(event) => setInstallationRequestForm({ ...installationRequestForm, catalogId: event.target.value })}
+                  >
+                    <option value="">Select service plan</option>
+                    {availableCatalog.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name} / {item.downloadMbps || 0} Mbps / {formatMoney(item.monthlyRate)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="form-label" htmlFor="onboarding-requested-date">Requested date</label>
+                  <input id="onboarding-requested-date" type="date" className="form-control" value={installationRequestForm.requestedDate} onChange={(event) => setInstallationRequestForm({ ...installationRequestForm, requestedDate: event.target.value })} />
+                </div>
+                <div>
+                  <label className="form-label" htmlFor="onboarding-target-date">Target activation</label>
+                  <input id="onboarding-target-date" type="date" className="form-control" value={installationRequestForm.targetActivationDate} onChange={(event) => setInstallationRequestForm({ ...installationRequestForm, targetActivationDate: event.target.value })} />
+                </div>
+                <div>
+                  <label className="form-label" htmlFor="onboarding-priority">Priority</label>
+                  <select id="onboarding-priority" className="form-select" value={installationRequestForm.priority} onChange={(event) => setInstallationRequestForm({ ...installationRequestForm, priority: event.target.value })}>
+                    {['LOW', 'NORMAL', 'HIGH', 'URGENT'].map((value) => <option key={value} value={value}>{value}</option>)}
+                  </select>
+                </div>
+                <div className="customer-onboarding-form-wide">
+                  <label className="form-label" htmlFor="onboarding-install-address">Installation address</label>
+                  <input id="onboarding-install-address" className="form-control" value={installationRequestForm.installAddress} onChange={(event) => setInstallationRequestForm({ ...installationRequestForm, installAddress: event.target.value })} />
+                </div>
+                <div className="customer-onboarding-form-wide">
+                  <label className="form-label" htmlFor="onboarding-order-notes">Request notes</label>
+                  <textarea id="onboarding-order-notes" className="form-control" rows="3" value={installationRequestForm.notes} onChange={(event) => setInstallationRequestForm({ ...installationRequestForm, notes: event.target.value })} />
+                </div>
+              </div>
+              <div className="customer-onboarding-action-bar">
+                <button type="button" className="btn btn-primary" disabled={onboardingAction === 'installation-request'} onClick={createOnboardingInstallationRequest}>
+                  <IconClipboardList size={17} className="me-2" />Create Installation Request
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      );
+    };
+    const renderInstallationWorkOnboarding = () => {
+      const order = customerOnboarding.references.installationOrder;
+      const ticket = customerOnboarding.references.installationTicket;
+      return (
+        <>
+          {renderOnboardingFacts([
+            ['Service Order', order?.orderNumber || order?.id],
+            ['Order status', order?.status],
+            ['Ticket', ticket?.ticketNumber || order?.ticketNumber || ticket?.id],
+            ['Ticket status', ticket?.status || order?.ticketStatus],
+            ['Assigned team / technician', ticket?.assignedTo],
+            ['Due date', formatDisplayDate(ticket?.dueDate)],
+            ['Last update', formatDisplayDateTime(ticket?.updatedAt || order?.updatedAt)],
+            ['Resolution', ticket?.resolutionSummary]
+          ])}
+          {ticket && activeOnboardingStep?.state !== 'complete' && (
+            <div className="customer-onboarding-action-form">
+              <div className="customer-onboarding-form-grid">
+                <div>
+                  <label className="form-label" htmlFor="onboarding-ticket-status">Ticket status</label>
+                  <select id="onboarding-ticket-status" className="form-select" value={installationTicketForm.status} onChange={(event) => setInstallationTicketForm({ ...installationTicketForm, status: event.target.value })}>
+                    {ONBOARDING_TICKET_STATUSES.map((value) => <option key={value} value={value}>{value.replaceAll('_', ' ')}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="form-label" htmlFor="onboarding-ticket-assignee">Assigned team / technician</label>
+                  <input id="onboarding-ticket-assignee" className="form-control" value={installationTicketForm.assignedTo} onChange={(event) => setInstallationTicketForm({ ...installationTicketForm, assignedTo: event.target.value })} />
+                </div>
+                <div>
+                  <label className="form-label" htmlFor="onboarding-ticket-due">Due date</label>
+                  <input id="onboarding-ticket-due" type="date" className="form-control" value={installationTicketForm.dueDate} onChange={(event) => setInstallationTicketForm({ ...installationTicketForm, dueDate: event.target.value })} />
+                </div>
+                <div className="customer-onboarding-form-wide">
+                  <label className="form-label" htmlFor="onboarding-ticket-resolution">Resolution summary</label>
+                  <textarea id="onboarding-ticket-resolution" className="form-control" rows="3" value={installationTicketForm.resolutionSummary} onChange={(event) => setInstallationTicketForm({ ...installationTicketForm, resolutionSummary: event.target.value })} />
+                </div>
+              </div>
+              <div className="customer-onboarding-action-bar">
+                <button type="button" className="btn btn-primary" disabled={onboardingAction === 'installation-ticket'} onClick={updateOnboardingInstallationTicket}>
+                  <IconDeviceFloppy size={17} className="me-2" />Save Ticket Update
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      );
+    };
+    const renderActivationOnboarding = () => {
+      const account = customerOnboarding.references.activeServiceAccount;
+      const verification = customerOnboarding.references.networkEquipment;
+      return (
+        <>
+          {renderOnboardingFacts([
+            ['Service Account', account?.serviceAccountNumber || account?.id],
+            ['Service status', account?.status],
+            ['Service reference', account?.serviceReference],
+            ['Activation date', formatDisplayDate(account?.activationDate)],
+            ['Plan', account?.catalogName || account?.catalog?.name],
+            ['Equipment assignments', customerOnboarding.references.equipment.length]
+          ])}
+          {renderVerificationAudit(verification)}
+          {account && activeOnboardingStep?.state !== 'not-required' && (
+            <div className="customer-onboarding-action-form">
+              <div className="customer-onboarding-form-grid">
+                <div>
+                  <label className="form-label" htmlFor="onboarding-activation-outcome">Verification outcome</label>
+                  <select id="onboarding-activation-outcome" className="form-select" value={activationVerificationForm.outcome || ''} onChange={(event) => setActivationVerificationForm({ ...activationVerificationForm, outcome: event.target.value })}>
+                    <option value="">Select outcome</option>
+                    <option value="VERIFIED">Verified</option>
+                    <option value="NEEDS_ATTENTION">Needs Attention</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="form-label" htmlFor="onboarding-activation-reference">Provisioning reference</label>
+                  <input id="onboarding-activation-reference" className="form-control" value={activationVerificationForm.reference || ''} onChange={(event) => setActivationVerificationForm({ ...activationVerificationForm, reference: event.target.value })} placeholder="PPPoE, ONU, work order, or port reference" />
+                </div>
+                <label className="form-check customer-onboarding-check">
+                  <input className="form-check-input" type="checkbox" checked={Boolean(activationVerificationForm.networkAccessVerified)} onChange={(event) => setActivationVerificationForm({ ...activationVerificationForm, networkAccessVerified: event.target.checked })} />
+                  <span className="form-check-label">Network access and ONU provisioning verified</span>
+                </label>
+                <label className="form-check customer-onboarding-check">
+                  <input className="form-check-input" type="checkbox" checked={Boolean(activationVerificationForm.equipmentAssignmentVerified)} onChange={(event) => setActivationVerificationForm({ ...activationVerificationForm, equipmentAssignmentVerified: event.target.checked })} />
+                  <span className="form-check-label">Installed equipment assignment verified</span>
+                </label>
+                <div className="customer-onboarding-form-wide">
+                  <label className="form-label" htmlFor="onboarding-activation-notes">Verification notes</label>
+                  <textarea id="onboarding-activation-notes" className="form-control" rows="3" value={activationVerificationForm.notes || ''} onChange={(event) => setActivationVerificationForm({ ...activationVerificationForm, notes: event.target.value })} />
+                </div>
+              </div>
+              <div className="customer-onboarding-action-bar">
+                <button type="button" className="btn btn-primary" disabled={onboardingAction === 'verification:network-equipment'} onClick={() => saveOnboardingVerification('network-equipment', activationVerificationForm)}>
+                  <IconDeviceFloppy size={17} className="me-2" />Save Verification
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      );
+    };
+    const renderBillingOnboarding = () => {
+      const account = customerOnboarding.references.activeServiceAccount;
+      const order = customerOnboarding.references.installationOrder;
+      const charge = customerOnboarding.references.installationCharge;
+      const subscription = customerOnboarding.references.activeSubscription;
+      const chargeResolved = ['INVOICED', 'WAIVED', 'NO_FEE'].includes(normalizeUpper(charge?.status));
+      if (!account) return renderOnboardingFacts([['Service Account', 'Waiting for activation'], ['Billing status', 'Not started']]);
+      if (!onboardingStepSatisfied(customerOnboarding.steps.find((item) => item.id === 'activation'))) {
+        return (
+          <>
+            {renderOnboardingFacts([
+              ['Service Account', account.serviceAccountNumber || account.id],
+              ['Service status', account.status],
+              ['Billing status', 'Held for activation verification']
+            ])}
+            <div className="customer-360-state"><IconLock size={20} /><span>Complete Activation Verification before creating Billing records.</span></div>
+          </>
+        );
+      }
+      return (
+        <>
+          {renderOnboardingFacts([
+            ['Service Account', account.serviceAccountNumber || account.id],
+            ['Plan', account.catalogName || account.catalog?.name],
+            ['Monthly rate', formatMoney(account.catalog?.monthlyRate ?? account.monthlyRecurringCharge)],
+            ['Installation fee', charge?.status || 'Decision required'],
+            ['Installation invoice', charge?.invoiceNumber || charge?.invoiceId],
+            ['Subscription', subscription?.status || 'Not started'],
+            ['Billing mode', subscription?.billingMode || account.catalog?.billingMode],
+            ['First invoice', customerOnboarding.references.invoices[0]?.invoiceNumber || customerOnboarding.references.invoices[0]?.id]
+          ])}
+          {!chargeResolved && (
+            <div className="customer-onboarding-action-form">
+              <h5>Installation Fee Decision</h5>
+              <div className="customer-onboarding-form-grid">
+                <div>
+                  <label className="form-label" htmlFor="onboarding-fee-status">Decision</label>
+                  <select
+                    id="onboarding-fee-status"
+                    className="form-select"
+                    value={installationChargeForm.status}
+                    onChange={(event) => {
+                      const status = event.target.value;
+                      setInstallationChargeForm({
+                        ...installationChargeForm,
+                        status,
+                        chargedAmount: status === 'INVOICED' ? installationChargeForm.standardAmount : '0'
+                      });
+                    }}
+                  >
+                    <option value="">Select decision</option>
+                    <option value="INVOICED">Charge Installation Fee</option>
+                    <option value="WAIVED">Waive Installation Fee</option>
+                    <option value="NO_FEE">No Fee Required</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="form-label" htmlFor="onboarding-fee-standard">Standard amount</label>
+                  <input id="onboarding-fee-standard" type="number" min="0" step="0.01" className="form-control" value={installationChargeForm.standardAmount} disabled={installationChargeForm.status === 'NO_FEE'} onChange={(event) => setInstallationChargeForm({ ...installationChargeForm, standardAmount: event.target.value })} />
+                </div>
+                {installationChargeForm.status === 'INVOICED' && (
+                  <div>
+                    <label className="form-label" htmlFor="onboarding-fee-charged">Charged amount</label>
+                    <input id="onboarding-fee-charged" type="number" min="0" step="0.01" className="form-control" value={installationChargeForm.chargedAmount} onChange={(event) => setInstallationChargeForm({ ...installationChargeForm, chargedAmount: event.target.value })} />
+                  </div>
+                )}
+                {installationChargeForm.status === 'WAIVED' && (
+                  <div>
+                    <label className="form-label" htmlFor="onboarding-fee-reason">Waiver reason</label>
+                    <input id="onboarding-fee-reason" className="form-control" value={installationChargeForm.waiverReason} onChange={(event) => setInstallationChargeForm({ ...installationChargeForm, waiverReason: event.target.value })} />
+                  </div>
+                )}
+                <div className="customer-onboarding-form-wide">
+                  <label className="form-label" htmlFor="onboarding-fee-notes">Notes</label>
+                  <textarea id="onboarding-fee-notes" className="form-control" rows="2" value={installationChargeForm.notes} onChange={(event) => setInstallationChargeForm({ ...installationChargeForm, notes: event.target.value })} />
+                </div>
+              </div>
+              <div className="customer-onboarding-action-bar">
+                <button type="button" className="btn btn-primary" disabled={onboardingAction === 'installation-charge'} onClick={createOnboardingInstallationCharge}>
+                  <IconFileInvoice size={17} className="me-2" />Record Fee Decision
+                </button>
+              </div>
+            </div>
+          )}
+          {chargeResolved && !subscription && (
+            <div className="customer-onboarding-action-form">
+              <h5>Recurring Billing</h5>
+              <div className="customer-onboarding-form-grid">
+                <div>
+                  <label className="form-label" htmlFor="onboarding-billing-mode">Billing mode</label>
+                  <select
+                    id="onboarding-billing-mode"
+                    className="form-select"
+                    value={onboardingSubscriptionForm.billingMode}
+                    onChange={(event) => {
+                      const billingMode = event.target.value;
+                      setOnboardingSubscriptionForm({ ...onboardingSubscriptionForm, billingMode, dueDays: billingMode === 'POSTPAID' ? '7' : '0' });
+                    }}
+                  >
+                    <option value="PREPAID">Prepaid</option>
+                    <option value="POSTPAID">Postpaid</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="form-label" htmlFor="onboarding-billing-day">Billing day</label>
+                  <input id="onboarding-billing-day" type="number" min="1" max="28" className="form-control" value={onboardingSubscriptionForm.billingDay} onChange={(event) => setOnboardingSubscriptionForm({ ...onboardingSubscriptionForm, billingDay: event.target.value })} />
+                </div>
+                <div>
+                  <label className="form-label" htmlFor="onboarding-billing-start">Billing start</label>
+                  <input id="onboarding-billing-start" type="date" className="form-control" value={onboardingSubscriptionForm.startDate} onChange={(event) => setOnboardingSubscriptionForm({ ...onboardingSubscriptionForm, startDate: event.target.value })} />
+                </div>
+                <div>
+                  <label className="form-label" htmlFor="onboarding-next-invoice">Next invoice date</label>
+                  <input id="onboarding-next-invoice" type="date" className="form-control" value={onboardingSubscriptionForm.nextInvoiceDate} onChange={(event) => setOnboardingSubscriptionForm({ ...onboardingSubscriptionForm, nextInvoiceDate: event.target.value })} />
+                </div>
+                <div>
+                  <label className="form-label" htmlFor="onboarding-due-days">Payment terms</label>
+                  <div className="input-group">
+                    <input id="onboarding-due-days" type="number" min="0" max="60" className="form-control" value={onboardingSubscriptionForm.dueDays} onChange={(event) => setOnboardingSubscriptionForm({ ...onboardingSubscriptionForm, dueDays: event.target.value })} />
+                    <span className="input-group-text">days</span>
+                  </div>
+                </div>
+                <div className="customer-onboarding-form-wide">
+                  <label className="form-label" htmlFor="onboarding-subscription-notes">Notes</label>
+                  <textarea id="onboarding-subscription-notes" className="form-control" rows="2" value={onboardingSubscriptionForm.notes} onChange={(event) => setOnboardingSubscriptionForm({ ...onboardingSubscriptionForm, notes: event.target.value })} />
+                </div>
+              </div>
+              <div className="customer-onboarding-action-bar">
+                <button type="button" className="btn btn-primary" disabled={onboardingAction === 'subscription'} onClick={createOnboardingSubscription}>
+                  <IconCreditCard size={17} className="me-2" />Start Recurring Billing
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      );
+    };
+    const renderOnboardingStepContent = (step) => {
+      if (!step) return null;
+      if (step.id === 'profile') return renderProfileOnboarding();
+      if (step.id === 'serviceability') return renderServiceabilityOnboarding();
+      if (step.id === 'installation-request') return renderInstallationRequestOnboarding();
+      if (step.id === 'installation-work') return renderInstallationWorkOnboarding();
+      if (step.id === 'activation') return renderActivationOnboarding();
+      if (step.id === 'billing') return renderBillingOnboarding();
+      return renderOnboardingFacts([
+        ['Customer status', selected.status],
+        ['Service Account', customerOnboarding.references.activeServiceAccount?.serviceAccountNumber],
+        ['Subscription', customerOnboarding.references.activeSubscription?.status],
+        ['Completed steps', `${customerOnboarding.completedCount} of ${customerOnboarding.totalCount}`],
+        ['Open blockers', customerOnboarding.blockers.length]
+      ]);
+    };
+    const renderOnboarding = () => {
+      const step = activeOnboardingStep || customerOnboarding.currentStep;
+      const stepIndex = customerOnboarding.steps.findIndex((item) => item.id === step.id);
+      return (
+        <div className="customer-360-tab-panel customer-onboarding">
+          <section className="customer-onboarding-summary" aria-label="Onboarding status">
+            <div className="customer-onboarding-summary-main">
+              <div>
+                <small>Onboarding progress</small>
+                <strong>{customerOnboarding.completedCount} of {customerOnboarding.totalCount} complete</strong>
+              </div>
+              <div className="progress customer-onboarding-progress" aria-label={`${customerOnboarding.progress}% complete`}>
+                <div className="progress-bar" style={{ width: `${customerOnboarding.progress}%` }} />
+              </div>
+            </div>
+            <div><small>Current step</small><strong>{customerOnboarding.currentStep.label}</strong></div>
+            <div><small>Needs attention</small><strong>{customerOnboarding.attentionCount}</strong></div>
+            <div><small>Account status</small><strong>{selected.status}</strong></div>
+          </section>
+
+          {customer360Loading && (
+            <div className="customer-360-state loading" role="status"><IconRefresh size={20} /><span>Refreshing onboarding records...</span></div>
+          )}
+          {!!customerOnboarding.blockers.length && (
+            <section className="customer-onboarding-blockers" aria-label="Onboarding blockers">
+              <div className="customer-onboarding-blockers-title"><IconAlertTriangle size={18} /><strong>Needs Attention</strong></div>
+              <div>
+                {customerOnboarding.blockers.map((item) => (
+                  <button type="button" key={`${item.stepId}:${item.blocker}`} onClick={() => setOnboardingActiveStepId(item.stepId)}>
+                    <span>{item.stepLabel}</span>
+                    <strong>{item.blocker}</strong>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+
+          <div className="customer-onboarding-workspace">
+            <nav className="customer-onboarding-stepper" aria-label="Onboarding steps">
+              {customerOnboarding.steps.map((item, index) => {
+                const StepIcon = onboardingStepIcon(item);
+                return (
+                  <button
+                    type="button"
+                    key={item.id}
+                    className={`customer-onboarding-step ${item.id === step.id ? 'active' : ''} state-${item.state}`}
+                    onClick={() => setOnboardingActiveStepId(item.id)}
+                    aria-current={item.id === customerOnboarding.currentStepId ? 'step' : undefined}
+                  >
+                    <span className="customer-onboarding-step-icon"><StepIcon size={17} /></span>
+                    <span className="customer-onboarding-step-copy">
+                      <small>Step {index + 1}</small>
+                      <strong>{item.label}</strong>
+                      <span>{item.stateLabel}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </nav>
+            <section className="customer-onboarding-stage" aria-labelledby={`onboarding-${step.id}-title`}>
+              <header>
+                <div>
+                  <span className={`badge customer-onboarding-state-badge state-${step.state}`}>{step.stateLabel}</span>
+                  <h3 id={`onboarding-${step.id}-title`}>{step.label}</h3>
+                  <p>{step.description}</p>
+                </div>
+                <div className="customer-onboarding-owner"><small>Responsible team</small><strong>{step.owner}</strong></div>
+              </header>
+              {!!step.blockers.length && (
+                <div className={`customer-onboarding-step-alert state-${step.state}`}>
+                  <IconAlertTriangle size={18} />
+                  <div>{step.blockers.map((blocker) => <span key={blocker}>{blocker}</span>)}</div>
+                </div>
+              )}
+              <div className="customer-onboarding-stage-body">{renderOnboardingStepContent(step)}</div>
+              <footer className="customer-onboarding-stage-footer">
+                <button type="button" className="btn btn-outline-secondary" disabled={stepIndex <= 0} onClick={() => setOnboardingActiveStepId(customerOnboarding.steps[stepIndex - 1]?.id)}>
+                  <IconChevronLeft size={17} className="me-2" />Previous
+                </button>
+                <button type="button" className="btn btn-outline-secondary" disabled={stepIndex >= customerOnboarding.steps.length - 1} onClick={() => setOnboardingActiveStepId(customerOnboarding.steps[stepIndex + 1]?.id)}>
+                  Next<IconChevronRight size={17} className="ms-2" />
+                </button>
+              </footer>
+            </section>
+          </div>
+        </div>
+      );
+    };
     const renderOverview = () => {
       const currentPlan = activeSubscription?.planName || activeServiceAccount?.catalogName || '-';
       const nextBillingDate = formatDisplayDate(activeSubscription?.nextInvoiceDate);
@@ -2877,6 +3840,32 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       if (customerDetailTab === 'activity') return renderActivity();
       return renderOverview();
     };
+    if (onboardingModal) {
+      return (
+        <div className="customer-modal-backdrop customer-onboarding-modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeOnboardingModal()}>
+          <div className="customer-modal customer-onboarding-modal" role="dialog" aria-modal="true" aria-labelledby="customer-onboarding-modal-title">
+            <div className="customer-modal-header customer-onboarding-modal-header">
+              <div className="customer-detail-identity">
+                <CustomerEmotionAvatar customer={selected} avatarConfig={avatarConfig} size={46} className="customer-detail-avatar" />
+                <div className="customer-detail-heading">
+                  <div className="text-muted small">New customer onboarding</div>
+                  <h3 id="customer-onboarding-modal-title" className="customer-modal-title">{selected.fullName}</h3>
+                  <div className="customer-detail-badges">
+                    <span className="badge bg-secondary-lt text-secondary">{selected.accountNumber}</span>
+                    <span className={`badge ${statusClass(selected.status)}`}>{selected.status}</span>
+                    <span className="badge bg-blue-lt text-blue">{customerOnboarding.completedCount}/{customerOnboarding.totalCount} complete</span>
+                  </div>
+                </div>
+              </div>
+              <button type="button" className="btn btn-icon btn-sm customer-modal-close" title="Close onboarding" aria-label="Close onboarding" onClick={closeOnboardingModal}><IconX size={18} /></button>
+            </div>
+            <div className="customer-modal-body customer-onboarding-modal-body">
+              {renderOnboarding()}
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <aside className="customer-detail-panel customer-inline-detail-panel customer-360-panel-root" aria-label="Customer 360 details">
         <div className="customer-detail-panel-header customer-360-header">
@@ -2902,9 +3891,6 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
             <button type="button" className="btn btn-outline-primary btn-sm" onClick={() => editCustomer(selected)}>
               <IconEdit size={16} className="me-1" />Edit
             </button>
-            <button type="button" className="btn btn-outline-success btn-sm" onClick={() => checkCustomerServiceability(selected)}>
-              <IconHomeSignal size={16} className="me-1" />Serviceability
-            </button>
           </div>
         </div>
         <div className="customer-detail-panel-body">
@@ -2915,7 +3901,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                   type="button"
                   key={tab.value}
                   className={`customer-status-tab customer-detail-tab ${customerDetailTab === tab.value ? 'active' : ''}`}
-                  onClick={() => setCustomerDetailTab(tab.value)}
+                  onClick={() => selectCustomerDetailTab(tab.value)}
                   role="tab"
                   aria-selected={customerDetailTab === tab.value}
                 >
@@ -3023,19 +4009,27 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   }
 
   function renderCustomerActionButtons(customer, compact = false) {
+    const fallbackOnboarding = buildCustomerOnboarding(customer, emptyCustomer360Data());
+    const onboardingProgress = onboardingProgressByCustomerId[customer.id] || {
+      completedCount: fallbackOnboarding.completedCount,
+      totalCount: fallbackOnboarding.totalCount,
+      currentStepLabel: fallbackOnboarding.currentStep.label,
+      isComplete: fallbackOnboarding.isComplete
+    };
     const actions = [
       { label: 'View', icon: IconEye, tone: 'blue', onClick: viewCustomer },
       { label: 'Edit', icon: IconEdit, tone: 'azure', onClick: editCustomer },
-      { label: 'Check Serviceability', icon: IconHomeSignal, tone: 'green', onClick: checkCustomerServiceability },
-      { label: 'Archive', icon: IconTrash, tone: 'red', onClick: deleteCustomer }
+      ...(onboardingProgress.isComplete ? [] : [
+        { label: 'Onboarding', icon: IconClipboardList, tone: 'green', onClick: openCustomerOnboarding, progress: onboardingProgress }
+      ])
     ];
-    return actions.map(({ label, icon: ActionIcon, tone, onClick }) => (
+    return actions.map(({ label, icon: ActionIcon, tone, onClick, progress }) => (
       <button
         type="button"
         key={label}
-        className={`badge customer-action-badge bg-${tone}-lt text-${tone} border-0 ${compact ? 'compact' : ''}`}
-        title={label}
-        aria-label={`${label} ${customer.fullName}`}
+        className={`badge customer-action-badge bg-${tone}-lt text-${tone} border-0 ${progress ? 'has-progress' : ''} ${compact ? 'compact' : ''}`}
+        title={progress ? `${label}: ${progress.completedCount} of ${progress.totalCount} steps complete. Current: ${progress.currentStepLabel}.` : label}
+        aria-label={progress ? `${label} ${customer.fullName}, ${progress.completedCount} of ${progress.totalCount} steps complete` : `${label} ${customer.fullName}`}
         onClick={(event) => {
           event.stopPropagation();
           setOpenCustomerActionMenuId('');
@@ -3043,7 +4037,8 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
         }}
       >
         <ActionIcon size={compact ? 18 : 21} />
-        {compact && <span>{label}</span>}
+        {compact && <span className="customer-action-label">{label}</span>}
+        {progress && <span className={`customer-onboarding-action-progress ${compact ? 'compact-progress' : ''}`}>{progress.completedCount}/{progress.totalCount}</span>}
       </button>
     ));
   }
@@ -3703,7 +4698,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const kpis = [
     ['Total Customers', overview?.totalCustomers, IconUsers, 'azure'],
     ['Active', overview?.activeCustomers, IconActivity, 'green'],
-    ['Pending', overview?.pendingCustomers, IconClock, 'yellow'],
+    ['Needs Onboarding', overview?.pendingCustomers, IconClock, 'yellow'],
     ['Enrile Customers', overview?.enrileCustomers, IconMapPin, 'blue']
   ];
   const ActiveCustomerFormStageIcon = customerFormStageIcons[formStage] || IconClipboardCheck;
@@ -3936,6 +4931,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       </div>
       {isDetailsPanelOpen && selected && renderCustomerDetailsPanel()}
     </div>
+    {isOnboardingModalOpen && selected && renderCustomerDetailsPanel({ onboardingModal: true })}
     {isBulkUploadModalOpen && (
       <div className="customer-modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && requestBulkUploadClose()}>
         <div className="customer-modal customer-bulk-upload-modal" role="dialog" aria-modal="true" aria-labelledby="customer-bulk-upload-title">

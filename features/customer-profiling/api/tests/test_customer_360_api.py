@@ -23,13 +23,14 @@ class Customer360ApiTests(unittest.TestCase):
         customer_profiling.customer_store._schema_ready = False
         customer_profiling.CUSTOMER_SEED_DEMO = False
         self.admin = {"id": "admin-1", "username": "admin", "fullName": "Admin User"}
+        self.audit_events = []
 
         def current_admin(authorization):
             if authorization != "Bearer valid-token":
                 raise HTTPException(status_code=401, detail="Unauthorized")
             return self.admin
 
-        customer_profiling.configure_customer_profiling(current_admin, lambda *args: None)
+        customer_profiling.configure_customer_profiling(current_admin, lambda *args: self.audit_events.append(args))
         customer_profiling.customers.append(
             {
                 "id": "customer-1",
@@ -77,6 +78,52 @@ class Customer360ApiTests(unittest.TestCase):
             customer_profiling.get_customer("missing-customer", admin=admin)
 
         self.assertEqual(404, raised.exception.status_code)
+
+    def test_onboarding_verification_persists_actor_timestamp_and_reference(self):
+        result = customer_profiling.update_onboarding_verification(
+            "customer-1",
+            "serviceability",
+            customer_profiling.OnboardingVerificationPayload(
+                outcome="qualified",
+                reference="NAP-04 / Port 8",
+                notes="Optical path checked.",
+            ),
+            admin=self.admin,
+        )
+
+        verification = result["onboardingVerifications"]["serviceability"]
+        self.assertEqual("QUALIFIED", verification["outcome"])
+        self.assertEqual("NAP-04 / Port 8", verification["reference"])
+        self.assertEqual("Admin User", verification["verifiedBy"])
+        self.assertTrue(verification["verifiedAt"])
+        self.assertEqual("customer_onboarding_verification_updated", self.audit_events[-1][0])
+
+    def test_network_activation_requires_both_manual_checks(self):
+        with self.assertRaises(HTTPException) as raised:
+            customer_profiling.update_onboarding_verification(
+                "customer-1",
+                "network-equipment",
+                customer_profiling.OnboardingVerificationPayload(
+                    outcome="VERIFIED",
+                    networkAccessVerified=True,
+                    equipmentAssignmentVerified=False,
+                ),
+                admin=self.admin,
+            )
+
+        self.assertEqual(400, raised.exception.status_code)
+        self.assertIn("both be verified", raised.exception.detail)
+
+    def test_onboarding_verification_rejects_unknown_step(self):
+        with self.assertRaises(HTTPException) as raised:
+            customer_profiling.update_onboarding_verification(
+                "customer-1",
+                "payment",
+                customer_profiling.OnboardingVerificationPayload(outcome="VERIFIED"),
+                admin=self.admin,
+            )
+
+        self.assertEqual(400, raised.exception.status_code)
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ Current scope:
 Integration notes:
 
 - Inventory is the canonical item master and stock ledger. POS reads sellable items from Inventory and posts stock movements when sales are completed or voided.
-- Billing owns invoices, promotion qualification, stacking, discounts, rebates, and the payment ledger. POS owns customer-facing invoice payment intake and posts Billing payment records with `collectionChannel=POS`, selected invoice allocations, and allocation-level `promotionIds` bundles returned by Billing.
+- Billing owns invoices, promotion qualification, stacking, discounts, rebates, and the payment ledger. POS owns customer-facing invoice payment intake and posts Billing payment records with `collectionChannel=POS`, selected invoice allocations, and allocation-level `promotionIds` bundles returned by Billing. Invoice payment dates are capped at the current business day in POS and revalidated by Billing before posting.
 - ISP internal inventory stays outside POS checkout: office stock check-out/check-in is posted as Inventory movements, while technician custody and customer-assigned CPE should use Inventory assignments as that workflow matures.
 - Customer Profiling can provide optional customer lookup when wired through the shared shell; walk-in sales do not require it.
 - Invoice payment settlement is currently integrated with Billing; POS retail register sales remain separate from the Billing ledger.

@@ -212,6 +212,16 @@ REQUIRED_BULK_UPLOAD_HEADERS = [
     "contactNumber",
     "barangay",
 ]
+ONBOARDING_VERIFICATION_RULES = {
+    "SERVICEABILITY": {
+        "storageKey": "serviceability",
+        "outcomes": {"QUALIFIED", "NEEDS_REVIEW", "NOT_SERVICEABLE"},
+    },
+    "NETWORK_EQUIPMENT": {
+        "storageKey": "networkEquipment",
+        "outcomes": {"VERIFIED", "NEEDS_ATTENTION"},
+    },
+}
 
 CUSTOMER_STORAGE_MODE = os.getenv("CUSTOMER_PROFILING_STORAGE") or ("postgres" if os.getenv("DATABASE_URL") else "memory")
 CUSTOMER_SEED_DEMO = os.getenv("CUSTOMER_PROFILING_SEED_DEMO", "false").strip().lower() in {"1", "true", "yes", "on"}
@@ -251,6 +261,14 @@ class CustomerPayload(BaseModel):
     gender: str | None = None
     customerType: str | None = None
     status: str | None = None
+
+
+class OnboardingVerificationPayload(BaseModel):
+    outcome: str
+    reference: str | None = None
+    notes: str | None = None
+    networkAccessVerified: bool | None = None
+    equipmentAssignmentVerified: bool | None = None
 
 
 class CustomerProfileStore:
@@ -1011,6 +1029,63 @@ def customer_bulk_upload_template(admin=Depends(require_admin)):
 def get_customer(customer_id: str, admin=Depends(require_admin)):
     seed_customer_data()
     return customer_summary(find_customer(customer_id))
+
+
+@router.patch("/customers/{customer_id}/onboarding-verifications/{step}")
+def update_onboarding_verification(
+    customer_id: str,
+    step: str,
+    payload: OnboardingVerificationPayload,
+    admin=Depends(require_admin),
+):
+    seed_customer_data()
+    customer = find_customer(customer_id)
+    normalized_step = normalize_upper(step).replace("-", "_")
+    rule = ONBOARDING_VERIFICATION_RULES.get(normalized_step)
+    if not rule:
+        raise HTTPException(status_code=400, detail="Invalid onboarding verification step")
+
+    outcome = normalize_upper(payload.outcome)
+    if outcome not in rule["outcomes"]:
+        raise HTTPException(status_code=400, detail=f"Invalid {normalized_step.lower()} verification outcome")
+    if normalized_step == "NETWORK_EQUIPMENT" and outcome == "VERIFIED":
+        if payload.networkAccessVerified is not True or payload.equipmentAssignmentVerified is not True:
+            raise HTTPException(
+                status_code=400,
+                detail="Network access and equipment assignment must both be verified",
+            )
+
+    timestamp = now_iso()
+    verification = {
+        "step": normalized_step,
+        "outcome": outcome,
+        "reference": clean_value(payload.reference) or "",
+        "notes": clean_value(payload.notes) or "",
+        "networkAccessVerified": payload.networkAccessVerified is True,
+        "equipmentAssignmentVerified": payload.equipmentAssignmentVerified is True,
+        "verifiedAt": timestamp,
+        "verifiedByUserId": admin.get("id") or "",
+        "verifiedBy": admin.get("fullName") or admin.get("username") or "",
+    }
+    verifications = dict(customer.get("onboardingVerifications") or {})
+    verifications[rule["storageKey"]] = verification
+    customer["onboardingVerifications"] = verifications
+    customer["updatedAt"] = timestamp
+    customer["updatedByUserId"] = admin.get("id") or ""
+    save_customer_record(customer)
+    add_audit(
+        "customer_onboarding_verification_updated",
+        "Customer",
+        customer["id"],
+        {
+            "accountNumber": customer.get("accountNumber"),
+            "step": normalized_step,
+            "outcome": outcome,
+            "reference": verification["reference"],
+        },
+        admin.get("username") or "system",
+    )
+    return customer_summary(customer)
 
 
 @router.post("/customers")
