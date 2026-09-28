@@ -42,7 +42,6 @@ _audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None] | Non
 _settings: dict[str, Any] | None = None
 _port_registry: Callable[[], list[dict[str, Any]]] | None = None
 _locations: list[dict[str, Any]] = []
-_deleted_default_location_fingerprints: set[tuple[str, str, str, str]] = set()
 _system_settings_persistence_loaded = False
 
 
@@ -82,6 +81,14 @@ class LocationPatchPayload(BaseModel):
 
 class LocationBulkDeletePayload(BaseModel):
     ids: list[str] = Field(default_factory=list, min_length=1)
+
+
+class LocationBulkBarangayPayload(BaseModel):
+    municipality: str = Field(..., min_length=1, max_length=160)
+    barangays: list[str] = Field(..., min_length=1, max_length=500)
+    province: str | None = Field(default=None, max_length=160)
+    region: str | None = Field(default=None, max_length=160)
+    notes: str | None = Field(default=None, max_length=1000)
 
 
 class AvatarUploadPayload(BaseModel):
@@ -885,81 +892,6 @@ TECHNICIAN_PERMISSION_CODES = [
 ]
 
 
-DEFAULT_LOCATION_SEEDS = [
-    ("ALIBAGO", "ENRILE", "CAGAYAN"),
-    ("BARANGAY I", "ENRILE", "CAGAYAN"),
-    ("BARANGAY II", "ENRILE", "CAGAYAN"),
-    ("BARANGAY III", "ENRILE", "CAGAYAN"),
-    ("BARANGAY III-A", "ENRILE", "CAGAYAN"),
-    ("BARANGAY IV", "ENRILE", "CAGAYAN"),
-    ("BATU", "ENRILE", "CAGAYAN"),
-    ("DIVISORIA", "ENRILE", "CAGAYAN"),
-    ("INGA", "ENRILE", "CAGAYAN"),
-    ("LANNA", "ENRILE", "CAGAYAN"),
-    ("LEMU NORTE", "ENRILE", "CAGAYAN"),
-    ("LEMU SUR", "ENRILE", "CAGAYAN"),
-    ("LIWAN NORTE", "ENRILE", "CAGAYAN"),
-    ("LIWAN SUR", "ENRILE", "CAGAYAN"),
-    ("MADDARULUG NORTE", "ENRILE", "CAGAYAN"),
-    ("MADDARULUG SUR", "ENRILE", "CAGAYAN"),
-    ("MAGALALAG EAST", "ENRILE", "CAGAYAN"),
-    ("MAGALALAG WEST", "ENRILE", "CAGAYAN"),
-    ("MARRACURU", "ENRILE", "CAGAYAN"),
-    ("ROMA NORTE", "ENRILE", "CAGAYAN"),
-    ("ROMA SUR", "ENRILE", "CAGAYAN"),
-    ("SAN ANTONIO", "ENRILE", "CAGAYAN"),
-    ("BANGAD", "SANTA MARIA", "ISABELA"),
-    ("BUENAVISTA", "SANTA MARIA", "ISABELA"),
-    ("CALAMAGUI EAST", "SANTA MARIA", "ISABELA"),
-    ("CALAMAGUI NORTH", "SANTA MARIA", "ISABELA"),
-    ("CALAMAGUI WEST", "SANTA MARIA", "ISABELA"),
-    ("DIVISORIA", "SANTA MARIA", "ISABELA"),
-    ("LINGALING", "SANTA MARIA", "ISABELA"),
-    ("MOZZOZZIN NORTH", "SANTA MARIA", "ISABELA"),
-    ("MOZZOZZIN SUR", "SANTA MARIA", "ISABELA"),
-    ("NAGANACAN", "SANTA MARIA", "ISABELA"),
-    ("POBLACION 1", "SANTA MARIA", "ISABELA"),
-    ("POBLACION 2", "SANTA MARIA", "ISABELA"),
-    ("POBLACION 3", "SANTA MARIA", "ISABELA"),
-    ("POBLACION GK", "SANTA MARIA", "ISABELA"),
-    ("POBLACION BLISS", "SANTA MARIA", "ISABELA"),
-    ("QUINAGABIAN", "SANTA MARIA", "ISABELA"),
-    ("SAN ANTONIO", "SANTA MARIA", "ISABELA"),
-    ("SAN ISIDRO EAST", "SANTA MARIA", "ISABELA"),
-    ("SAN ISIDRO WEST", "SANTA MARIA", "ISABELA"),
-    ("SAN RAFAEL EAST", "SANTA MARIA", "ISABELA"),
-    ("SAN RAFAEL WEST", "SANTA MARIA", "ISABELA"),
-    ("VILLABUENA", "SANTA MARIA", "ISABELA"),
-    ("AGGUB", "CABAGAN", "ISABELA"),
-    ("ANNARONAN", "CABAGAN", "ISABELA"),
-    ("ANAO", "CABAGAN", "ISABELA"),
-    ("ANGANCASILIAN", "CABAGAN", "ISABELA"),
-    ("BALASIG", "CABAGAN", "ISABELA"),
-    ("CATABAYUNGAN", "CABAGAN", "ISABELA"),
-    ("CENTRO", "CABAGAN", "ISABELA"),
-    ("GARITA", "CABAGAN", "ISABELA"),
-    ("LUQUILU", "CABAGAN", "ISABELA"),
-    ("MAGLETICIA", "CABAGAN", "ISABELA"),
-    ("MASIPI EAST", "CABAGAN", "ISABELA"),
-    ("MASIPI WEST", "CABAGAN", "ISABELA"),
-    ("NGARAG", "CABAGAN", "ISABELA"),
-    ("SAN ANTONIO", "CABAGAN", "ISABELA"),
-    ("SAN BERNARDO", "CABAGAN", "ISABELA"),
-    ("SAN JUAN", "CABAGAN", "ISABELA"),
-    ("SAN PABLO", "CABAGAN", "ISABELA"),
-    ("SANTA MARIA", "CABAGAN", "ISABELA"),
-    ("SARANAY", "CABAGAN", "ISABELA"),
-    ("SAUI", "CABAGAN", "ISABELA"),
-    ("TALLAG", "CABAGAN", "ISABELA"),
-    ("UGAD", "CABAGAN", "ISABELA"),
-    ("UNION", "CABAGAN", "ISABELA"),
-    ("VILLAFLOR", "CABAGAN", "ISABELA"),
-    ("VILLAHERMOSA", "CABAGAN", "ISABELA"),
-    ("VILLA IMELDA", "CABAGAN", "ISABELA"),
-    ("VILLA JESUSA", "CABAGAN", "ISABELA"),
-]
-
-
 def configure_system_settings(
     current_admin: Callable[[str | None], dict[str, Any]],
     audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None],
@@ -1033,15 +965,16 @@ def load_persisted_system_settings() -> None:
         if isinstance(section, dict):
             store.setdefault(section_name, {}).update(section)
     locations = persisted.get("locations")
-    if isinstance(locations, list):
-        _locations[:] = [normalize_persisted_location(location) for location in locations if isinstance(location, dict)]
-    deleted_default_location_fingerprints = persisted.get("deleted_default_location_fingerprints")
-    if isinstance(deleted_default_location_fingerprints, list):
-        _deleted_default_location_fingerprints.clear()
-        for fingerprint in deleted_default_location_fingerprints:
-            normalized = normalize_location_fingerprint(fingerprint)
-            if normalized:
-                _deleted_default_location_fingerprints.add(normalized)
+    normalized_locations = [
+        normalize_persisted_location(location)
+        for location in locations
+        if isinstance(location, dict) and is_manual_location(location)
+    ] if isinstance(locations, list) else []
+    _locations[:] = normalized_locations
+    locations_need_cleanup = (
+        isinstance(locations, list)
+        and len(normalized_locations) != len(locations)
+    ) or "deleted_default_location_fingerprints" in persisted
     avatar = persisted.get("avatar")
     if isinstance(avatar, dict):
         store["avatar"] = avatar
@@ -1060,6 +993,8 @@ def load_persisted_system_settings() -> None:
     map_providers = persisted.get("mapProviders")
     if isinstance(map_providers, dict):
         store["mapProviders"] = normalize_map_provider_store(map_providers)
+    if locations_need_cleanup:
+        save_persisted_location_store()
 
 
 def save_persisted_system_settings(*section_names: str) -> None:
@@ -1070,9 +1005,7 @@ def save_persisted_system_settings(*section_names: str) -> None:
         for section_name in section_names:
             if section_name == "locations":
                 persisted["locations"] = [persisted_location(location) for location in _locations]
-                persisted["deleted_default_location_fingerprints"] = [
-                    list(fingerprint) for fingerprint in sorted(_deleted_default_location_fingerprints)
-                ]
+                persisted.pop("deleted_default_location_fingerprints", None)
             elif section_name == "access":
                 persisted["access"] = access_store()
             else:
@@ -1182,7 +1115,6 @@ def system_settings_backup_counts(payload: dict[str, Any]) -> dict[str, int]:
                 avatar_count += len(gender_uploads)
     return {
         "locations": len(payload.get("locations") or []),
-        "deletedLocationMarkers": len(payload.get("deleted_default_location_fingerprints") or []),
         "mapImages": len(map_uploads) if isinstance(map_uploads, dict) else 0,
         "mapProviders": len(map_providers) if isinstance(map_providers, list) else 0,
         "avatarImages": avatar_count,
@@ -1360,7 +1292,6 @@ def restore_system_settings_data(data: Any) -> dict[str, Any]:
     for section_name in ["avatar", "openai", "a2pMessaging", "access", "mapImages", "mapProviders"]:
         store.pop(section_name, None)
     _locations.clear()
-    _deleted_default_location_fingerprints.clear()
     _system_settings_persistence_loaded = False
     load_persisted_system_settings()
     return {"status": "restored", "counts": system_settings_backup_counts(data)}
@@ -3508,11 +3439,7 @@ def public_location(location: dict[str, Any]) -> dict[str, Any]:
 
 
 def persisted_location(location: dict[str, Any]) -> dict[str, Any]:
-    record = dict(public_location(location))
-    fingerprint = normalize_location_fingerprint(location.get("_default_seed_fingerprint"))
-    if fingerprint:
-        record["_default_seed_fingerprint"] = list(fingerprint)
-    return record
+    return dict(public_location(location))
 
 
 def normalize_location_text(value: Any) -> str:
@@ -3521,6 +3448,113 @@ def normalize_location_text(value: Any) -> str:
 
 def normalize_key(value: Any) -> str:
     return normalize_location_text(value).upper()
+
+
+MAP_PLACE_CATEGORY_LABELS = {
+    "education": "Schools & Education",
+    "health": "Health & Medical",
+    "government": "Government & Safety",
+    "transport": "Transport",
+    "religion": "Places of Worship",
+    "shopping": "Shops & Services",
+    "food_lodging": "Food & Lodging",
+    "nature": "Parks & Natural Features",
+    "other": "Other Landmarks",
+}
+
+
+def map_place_category(place_type: Any) -> str:
+    value = normalize_location_text(place_type).lower()
+    if any(word in value for word in ["school", "college", "university", "education", "academy", "library"]):
+        return "education"
+    if any(word in value for word in ["hospital", "clinic", "medical", "health", "pharmacy", "doctor", "dentist"]):
+        return "health"
+    if any(word in value for word in ["government", "civic", "police", "fire station", "courthouse", "post office", "city hall", "municipal"]):
+        return "government"
+    if any(word in value for word in ["airport", "bus", "rail", "station", "transport", "ferry", "port", "terminal"]):
+        return "transport"
+    if any(word in value for word in ["church", "chapel", "mosque", "temple", "religious", "worship"]):
+        return "religion"
+    if any(word in value for word in ["restaurant", "cafe", "coffee", "food", "hotel", "resort", "lodging"]):
+        return "food_lodging"
+    if any(word in value for word in ["store", "shop", "market", "mall", "bank", "business", "hardware", "service"]):
+        return "shopping"
+    if any(word in value for word in ["park", "stream", "river", "mountain", "lake", "forest", "natural", "beach"]):
+        return "nature"
+    return "other"
+
+
+def normalize_map_place_candidate(candidate: Any) -> dict[str, Any] | None:
+    if not isinstance(candidate, dict):
+        return None
+    location = candidate.get("location") if isinstance(candidate.get("location"), dict) else {}
+    try:
+        longitude = float(location.get("x"))
+        latitude = float(location.get("y"))
+    except (TypeError, ValueError):
+        return None
+    if not (-180 <= longitude <= 180 and -90 <= latitude <= 90):
+        return None
+    attributes = candidate.get("attributes") if isinstance(candidate.get("attributes"), dict) else {}
+    name = normalize_location_text(attributes.get("PlaceName") or candidate.get("address"))[:240]
+    if not name:
+        return None
+    address = normalize_location_text(attributes.get("LongLabel") or candidate.get("address") or name)[:500]
+    place_type = normalize_location_text(attributes.get("Type") or "Landmark")[:120]
+    category = map_place_category(place_type)
+    fingerprint = f"{name.lower()}|{latitude:.6f}|{longitude:.6f}|{place_type.lower()}"
+    try:
+        score = float(candidate.get("score") or 0)
+    except (TypeError, ValueError):
+        score = 0
+    return {
+        "id": f"place-{hashlib.sha256(fingerprint.encode('utf-8')).hexdigest()[:16]}",
+        "name": name,
+        "address": address,
+        "type": place_type,
+        "category": category,
+        "category_label": MAP_PLACE_CATEGORY_LABELS[category],
+        "latitude": latitude,
+        "longitude": longitude,
+        "score": max(0.0, min(100.0, score)),
+    }
+
+
+def fetch_map_place_candidates(parameters: dict[str, Any]) -> list[dict[str, Any]]:
+    endpoint = os.getenv(
+        "MAP_PLACE_SEARCH_URL",
+        "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates",
+    ).strip()
+    query = urllib.parse.urlencode({key: value for key, value in parameters.items() if value not in (None, "")})
+    request = urllib.request.Request(
+        f"{endpoint}?{query}",
+        headers={"Accept": "application/json", "User-Agent": "3JMain/0.1 coordinate-place-search"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Place search service returned HTTP {exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        reason = getattr(exc, "reason", None) or str(exc)
+        raise HTTPException(status_code=502, detail=f"Place search service is unavailable: {reason}") from exc
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=502, detail="Place search service returned an invalid response") from exc
+
+    if isinstance(payload, dict) and isinstance(payload.get("error"), dict):
+        message = normalize_location_text(payload["error"].get("message")) or "Place search failed"
+        raise HTTPException(status_code=502, detail=message)
+    candidates = payload.get("candidates") if isinstance(payload, dict) else []
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for candidate in candidates if isinstance(candidates, list) else []:
+        item = normalize_map_place_candidate(candidate)
+        if not item or item["id"] in seen:
+            continue
+        seen.add(item["id"])
+        items.append(item)
+    return items
 
 
 def synthesize_address(data: dict[str, Any]) -> str:
@@ -3536,6 +3570,22 @@ def synthesize_address(data: dict[str, Any]) -> str:
     return ", ".join(normalize_location_text(part) for part in parts if normalize_location_text(part))
 
 
+def canonical_system_location_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Use the barangay as the single operator-facing location name."""
+    canonical = dict(data)
+    barangay = normalize_location_text(canonical.get("barangay"))
+    if not barangay:
+        raise HTTPException(status_code=400, detail="Barangay is required")
+    municipality = normalize_location_text(canonical.get("municipality"))
+    province = normalize_location_text(canonical.get("province"))
+    canonical["barangay"] = barangay
+    canonical["municipality"] = municipality
+    canonical["province"] = province
+    canonical["location_name"] = barangay
+    canonical["address"] = ", ".join(part for part in [barangay, municipality, province] if part)
+    return canonical
+
+
 def location_fingerprint(data: dict[str, Any]) -> tuple[str, str, str, str]:
     return (
         normalize_key(synthesize_address(data)),
@@ -3545,52 +3595,16 @@ def location_fingerprint(data: dict[str, Any]) -> tuple[str, str, str, str]:
     )
 
 
-def normalize_location_fingerprint(value: Any) -> tuple[str, str, str, str] | None:
-    if not isinstance(value, (list, tuple)) or len(value) != 4:
-        return None
-    normalized = tuple(normalize_key(part) for part in value)
-    if not any(normalized):
-        return None
-    return normalized
-
-
 def normalize_persisted_location(location: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(location)
-    fingerprint = normalize_location_fingerprint(normalized.get("_default_seed_fingerprint"))
-    if fingerprint:
-        normalized["_default_seed_fingerprint"] = fingerprint
-    elif "_default_seed_fingerprint" in normalized:
-        normalized.pop("_default_seed_fingerprint", None)
+    normalized["geocode_source"] = "MANUAL"
+    normalized["raw_geocode"] = {}
+    normalized.pop("_default_seed_fingerprint", None)
     return normalized
 
 
-def default_location_seed(barangay: str, municipality: str, province: str) -> dict[str, Any]:
-    return {
-        "location_name": barangay,
-        "address": f"{barangay}, {municipality}, {province}",
-        "municipality": municipality,
-        "barangay": barangay,
-        "province": province,
-        "region": "REGION II",
-        "latitude": None,
-        "longitude": None,
-        "geocode_source": "PRELOADED",
-        "raw_geocode": {},
-        "notes": "Preloaded from existing Customer Profiling service-area values.",
-    }
-
-
-def default_location_fingerprints() -> set[tuple[str, str, str, str]]:
-    return {
-        location_fingerprint(default_location_seed(barangay, municipality, province))
-        for barangay, municipality, province in DEFAULT_LOCATION_SEEDS
-    }
-
-
-def remember_deleted_default_location(location: dict[str, Any]) -> None:
-    fingerprint = location.get("_default_seed_fingerprint") or location_fingerprint(location)
-    if fingerprint in default_location_fingerprints():
-        _deleted_default_location_fingerprints.add(fingerprint)
+def is_manual_location(location: dict[str, Any]) -> bool:
+    return normalize_key(location.get("geocode_source")) == "MANUAL"
 
 
 def find_matching_location(data: dict[str, Any]) -> dict[str, Any] | None:
@@ -3603,8 +3617,28 @@ def find_matching_location(data: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def find_matching_barangay_location(
+    municipality: str,
+    barangay: str,
+    province: str = "",
+) -> dict[str, Any] | None:
+    municipality_key = normalize_key(municipality)
+    barangay_key = normalize_key(barangay)
+    province_key = normalize_key(province)
+    for location in _locations:
+        if normalize_key(location.get("municipality")) != municipality_key:
+            continue
+        if normalize_key(location.get("barangay")) != barangay_key:
+            continue
+        existing_province_key = normalize_key(location.get("province"))
+        if province_key and existing_province_key and existing_province_key != province_key:
+            continue
+        return location
+    return None
+
+
 def find_location(location_id: str) -> dict[str, Any]:
-    seed_default_locations()
+    load_persisted_system_settings()
     for location in _locations:
         if location["id"] == location_id:
             return location
@@ -3632,8 +3666,8 @@ def location_record_from_data(
         "region": normalize_location_text(data.get("region")),
         "latitude": data.get("latitude"),
         "longitude": data.get("longitude"),
-        "geocode_source": normalize_location_text(data.get("geocode_source")) or source,
-        "raw_geocode": sanitize_summary(data.get("raw_geocode") or {}),
+        "geocode_source": source,
+        "raw_geocode": {},
         "notes": normalize_location_text(data.get("notes")),
         "created_by_admin_id": actor.get("id") if actor else None,
         "created_by_username": actor.get("username") if actor else "system",
@@ -3642,94 +3676,36 @@ def location_record_from_data(
     }
 
 
-def merge_missing_location_fields(location: dict[str, Any], data: dict[str, Any]) -> bool:
-    changed = False
-    for field in ["location_name", "address", "municipality", "barangay", "province", "region", "latitude", "longitude", "notes"]:
-        incoming = data.get(field)
-        if incoming not in (None, "") and location.get(field) in (None, ""):
-            location[field] = incoming
-            changed = True
-    if data.get("geocode_source") and location.get("geocode_source") in (None, "", "PRELOADED"):
-        location["geocode_source"] = data["geocode_source"]
-        changed = True
-    if data.get("raw_geocode") and not location.get("raw_geocode"):
-        location["raw_geocode"] = sanitize_summary(data["raw_geocode"])
-        changed = True
-    if changed:
-        location["updated_at"] = now_iso()
-    return changed
-
-
-def seed_default_locations() -> None:
-    load_persisted_system_settings()
-    for barangay, municipality, province in DEFAULT_LOCATION_SEEDS:
-        seed = default_location_seed(barangay, municipality, province)
-        seed_fingerprint = location_fingerprint(seed)
-        if seed_fingerprint in _deleted_default_location_fingerprints:
-            continue
-        if find_matching_location(seed):
-            continue
-        location = location_record_from_data(seed, source="PRELOADED")
-        location["_default_seed_fingerprint"] = seed_fingerprint
-        _locations.append(location)
-
-
 def ensure_location_record(data: dict[str, Any], actor: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    seed_default_locations()
+    """Resolve or create the manual location used by another module."""
+    load_persisted_system_settings()
+    has_location_detail = bool(synthesize_address(data))
     if data.get("locationId"):
         for location in _locations:
             if location["id"] == data["locationId"]:
-                if merge_missing_location_fields(location, data):
-                    save_persisted_location_store()
                 return public_location(location)
-    if not synthesize_address(data):
+    if not has_location_detail:
         return None
     existing = find_matching_location(data)
     if existing:
-        if merge_missing_location_fields(existing, data):
-            save_persisted_location_store()
         return public_location(existing)
-    location = location_record_from_data(data, actor=actor, source=data.get("geocode_source") or "CUSTOMER_PROFILING")
+
+    location = location_record_from_data(data, actor=actor, source="MANUAL")
     _locations.insert(0, location)
     save_persisted_location_store()
-    if actor:
-        add_audit(
-            "system_location_created",
-            "SystemLocation",
-            location["id"],
-            {"address": location["address"], "municipality": location["municipality"], "barangay": location["barangay"]},
-            actor["username"],
-        )
+    add_audit(
+        "system_location_created",
+        "SystemLocation",
+        location["id"],
+        {
+            "address": location["address"],
+            "municipality": location["municipality"],
+            "barangay": location["barangay"],
+            "created_from": "customer_location_link",
+        },
+        actor.get("username") if actor else "system",
+    )
     return public_location(location)
-
-
-def extract_geocode_suggestion(item: dict[str, Any]) -> dict[str, Any]:
-    address = item.get("address") or {}
-    municipality = (
-        address.get("city")
-        or address.get("town")
-        or address.get("municipality")
-        or address.get("county")
-    )
-    barangay = (
-        address.get("village")
-        or address.get("suburb")
-        or address.get("neighbourhood")
-        or address.get("quarter")
-        or address.get("hamlet")
-    )
-    return {
-        "display_name": item.get("display_name"),
-        "address": item.get("display_name"),
-        "municipality": municipality,
-        "barangay": barangay,
-        "province": address.get("state") or address.get("province"),
-        "region": address.get("region"),
-        "latitude": float(item["lat"]) if item.get("lat") else None,
-        "longitude": float(item["lon"]) if item.get("lon") else None,
-        "geocode_source": "NOMINATIM",
-        "raw_geocode": sanitize_summary(item),
-    }
 
 
 @router.get("/api/system-settings/backups")
@@ -4743,54 +4719,192 @@ def delete_avatar(emotion_id: str, admin=Depends(require_admin)):
 @router.get("/api/system-settings/locations")
 @router.get("/api/locations")
 def list_locations(admin=Depends(require_admin)):
-    seed_default_locations()
+    load_persisted_system_settings()
     return [public_location(location) for location in _locations]
 
 
 @router.get("/api/system-settings/locations/search")
 @router.get("/api/locations/search")
 def search_locations(q: str, admin=Depends(require_admin)):
-    query = (q or "").strip()
-    if len(query) < 3:
-        raise HTTPException(status_code=400, detail="Search text must be at least 3 characters")
-
-    geocoder_url = os.getenv("GEOCODER_SEARCH_URL", "https://nominatim.openstreetmap.org/search")
-    params = urllib.parse.urlencode({
-        "q": f"{query}, Philippines",
-        "format": "json",
-        "addressdetails": 1,
-        "limit": 5,
-    })
-    url = f"{geocoder_url}?{params}"
-    request = urllib.request.Request(
-        url,
-        headers={"User-Agent": "3JMain/0.1 location-management"},
+    raise HTTPException(
+        status_code=410,
+        detail="Address search is disabled. Locations must be added manually in System Settings.",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            raw_results = json.loads(response.read().decode("utf-8"))
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Address search failed: {exc}") from exc
-    if not isinstance(raw_results, list):
-        raise HTTPException(status_code=400, detail="Address search returned an unexpected response")
 
-    return {"results": [extract_geocode_suggestion(item) for item in raw_results]}
+
+@router.get("/api/system-settings/map-places/search")
+def search_map_places(
+    q: str,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    limit: int = 6,
+    admin=Depends(require_admin),
+):
+    query = normalize_location_text(q)
+    if len(query) < 2:
+        raise HTTPException(status_code=400, detail="Enter at least 2 characters to search places")
+    if len(query) > 200:
+        raise HTTPException(status_code=400, detail="Place search is limited to 200 characters")
+    if latitude is not None and not -90 <= latitude <= 90:
+        raise HTTPException(status_code=400, detail="Latitude must be between -90 and 90")
+    if longitude is not None and not -180 <= longitude <= 180:
+        raise HTTPException(status_code=400, detail="Longitude must be between -180 and 180")
+    safe_limit = min(10, max(1, int(limit or 6)))
+    parameters: dict[str, Any] = {
+        "f": "json",
+        "SingleLine": query,
+        "sourceCountry": "PH",
+        "outFields": "PlaceName,Type,City,Subregion,Region,Country,LongLabel",
+        "outSR": 4326,
+        "maxLocations": safe_limit,
+        "forStorage": "false",
+    }
+    if latitude is not None and longitude is not None:
+        parameters["location"] = f"{longitude:.6f},{latitude:.6f}"
+    items = fetch_map_place_candidates(parameters)[:safe_limit]
+    return {"query": query, "items": items}
+
+
+@router.get("/api/system-settings/map-places/landmarks")
+def nearby_map_landmarks(
+    latitude: float,
+    longitude: float,
+    radius_m: int = 5000,
+    limit: int = 30,
+    admin=Depends(require_admin),
+):
+    if not -90 <= latitude <= 90:
+        raise HTTPException(status_code=400, detail="Latitude must be between -90 and 90")
+    if not -180 <= longitude <= 180:
+        raise HTTPException(status_code=400, detail="Longitude must be between -180 and 180")
+    safe_radius = min(20_000, max(500, int(radius_m or 5000)))
+    safe_limit = min(50, max(1, int(limit or 30)))
+    items = fetch_map_place_candidates({
+        "f": "json",
+        "category": "POI",
+        "location": f"{longitude:.6f},{latitude:.6f}",
+        "distance": safe_radius,
+        "sourceCountry": "PH",
+        "outFields": "PlaceName,Type,City,Subregion,Region,Country,LongLabel",
+        "outSR": 4326,
+        "maxLocations": safe_limit,
+        "forStorage": "false",
+    })[:safe_limit]
+    category_counts: dict[str, int] = {}
+    for item in items:
+        category_counts[item["category"]] = category_counts.get(item["category"], 0) + 1
+    categories = [
+        {"id": category_id, "label": MAP_PLACE_CATEGORY_LABELS[category_id], "count": count}
+        for category_id, count in category_counts.items()
+    ]
+    return {
+        "center": {"latitude": latitude, "longitude": longitude},
+        "radius_m": safe_radius,
+        "items": items,
+        "categories": categories,
+    }
 
 
 @router.post("/api/system-settings/locations")
 @router.post("/api/locations")
 def create_location(payload: LocationPayload, admin=Depends(require_admin)):
-    data = payload.model_dump()
-    location = ensure_location_record(data, actor=admin)
-    if location is None:
-        raise HTTPException(status_code=400, detail="Address or location detail is required")
-    return location
+    load_persisted_system_settings()
+    data = canonical_system_location_data(payload.model_dump())
+    existing = find_matching_location(data)
+    if existing:
+        raise HTTPException(status_code=409, detail="This manual location already exists")
+    location = location_record_from_data(data, actor=admin, source="MANUAL")
+    _locations.insert(0, location)
+    save_persisted_location_store()
+    add_audit(
+        "system_location_created",
+        "SystemLocation",
+        location["id"],
+        {"address": location["address"], "municipality": location["municipality"], "barangay": location["barangay"]},
+        admin["username"],
+    )
+    return public_location(location)
+
+
+@router.post("/api/system-settings/locations/bulk-barangays")
+@router.post("/api/locations/bulk-barangays")
+def bulk_create_barangay_locations(payload: LocationBulkBarangayPayload, admin=Depends(require_admin)):
+    load_persisted_system_settings()
+    municipality = normalize_location_text(payload.municipality)
+    province = normalize_location_text(payload.province)
+    region = normalize_location_text(payload.region)
+    notes = normalize_location_text(payload.notes)
+    if not municipality:
+        raise HTTPException(status_code=400, detail="Municipality is required")
+
+    created_locations: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    seen_barangays: set[str] = set()
+    for raw_barangay in payload.barangays:
+        barangay = normalize_location_text(raw_barangay)
+        barangay_key = normalize_key(barangay)
+        if not barangay_key:
+            continue
+        if barangay_key in seen_barangays:
+            skipped.append({"barangay": barangay, "reason": "repeated_in_request"})
+            continue
+        seen_barangays.add(barangay_key)
+
+        existing = find_matching_barangay_location(municipality, barangay, province)
+        if existing:
+            skipped.append({
+                "barangay": barangay,
+                "reason": "already_exists",
+                "location_id": existing["id"],
+            })
+            continue
+
+        address = ", ".join(part for part in [barangay, municipality, province] if part)
+        created_locations.append(location_record_from_data(
+            {
+                "location_name": barangay,
+                "address": address,
+                "municipality": municipality,
+                "barangay": barangay,
+                "province": province,
+                "region": region,
+                "notes": notes,
+            },
+            actor=admin,
+            source="MANUAL",
+        ))
+
+    if not seen_barangays:
+        raise HTTPException(status_code=400, detail="At least one barangay name is required")
+
+    if created_locations:
+        _locations[0:0] = created_locations
+        save_persisted_location_store()
+    add_audit(
+        "system_location_barangays_bulk_created",
+        "SystemLocation",
+        "bulk",
+        {
+            "municipality": municipality,
+            "province": province,
+            "requested_count": len(seen_barangays),
+            "created_count": len(created_locations),
+            "skipped_count": len(skipped),
+        },
+        admin["username"],
+    )
+    return {
+        "status": "ok",
+        "created": len(created_locations),
+        "skipped": skipped,
+        "locations": [public_location(location) for location in created_locations],
+    }
 
 
 @router.post("/api/system-settings/locations/bulk-delete")
 @router.post("/api/locations/bulk-delete")
 def bulk_delete_locations(payload: LocationBulkDeletePayload, admin=Depends(require_admin)):
-    seed_default_locations()
+    load_persisted_system_settings()
     location_ids = []
     seen_ids = set()
     for raw_location_id in payload.ids:
@@ -4807,8 +4921,6 @@ def bulk_delete_locations(payload: LocationBulkDeletePayload, admin=Depends(requ
         raise HTTPException(status_code=404, detail="No matching locations found")
 
     deleted_ids = {location["id"] for location in deleted_locations}
-    for location in deleted_locations:
-        remember_deleted_default_location(location)
     _locations[:] = [location for location in _locations if location["id"] not in deleted_ids]
     save_persisted_location_store()
     missing_ids = [location_id for location_id in location_ids if location_id not in deleted_ids]
@@ -4831,18 +4943,15 @@ def update_location(location_id: str, payload: LocationPatchPayload, admin=Depen
         return public_location(location)
 
     candidate = dict(location)
-    for field in ["location_name", "municipality", "barangay", "province", "region", "geocode_source", "notes"]:
+    for field in ["location_name", "municipality", "barangay", "province", "region", "notes"]:
         if field in changes:
             candidate[field] = normalize_location_text(changes.get(field))
     for field in ["latitude", "longitude"]:
         if field in changes:
             candidate[field] = changes.get(field)
-    if "raw_geocode" in changes:
-        candidate["raw_geocode"] = sanitize_summary(changes.get("raw_geocode") or {})
-    if "address" in changes:
-        candidate["address"] = synthesize_address({**candidate, "address": changes.get("address")})
-    if not synthesize_address(candidate):
-        raise HTTPException(status_code=400, detail="Address or location detail is required")
+    candidate = canonical_system_location_data(candidate)
+    candidate["geocode_source"] = "MANUAL"
+    candidate["raw_geocode"] = {}
     location.update(candidate)
     location["updated_at"] = now_iso()
     save_persisted_location_store()
@@ -4860,7 +4969,6 @@ def update_location(location_id: str, payload: LocationPatchPayload, admin=Depen
 @router.delete("/api/locations/{location_id}")
 def delete_location(location_id: str, admin=Depends(require_admin)):
     location = find_location(location_id)
-    remember_deleted_default_location(location)
     _locations.remove(location)
     save_persisted_location_store()
     add_audit(

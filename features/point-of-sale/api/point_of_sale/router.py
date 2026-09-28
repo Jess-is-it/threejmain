@@ -1,12 +1,26 @@
 import hashlib
 import json
 import logging
+import os
+from contextlib import contextmanager
+from copy import deepcopy
 from datetime import date, datetime, timezone
-from typing import Any, Callable
+from functools import wraps
+from threading import RLock, local
+from typing import Any, Callable, Iterator
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
+
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+    from psycopg.types.json import Json
+except Exception:  # pragma: no cover - keeps local syntax checks independent of optional deps.
+    psycopg = None
+    dict_row = None
+    Json = None
 
 try:
     from inventory import get_pos_catalog_item, list_pos_catalog_items, record_pos_sale_movements, validate_pos_sale_inventory
@@ -27,6 +41,13 @@ sales: list[dict[str, Any]] = []
 payments: list[dict[str, Any]] = []
 invoice_payment_sms_results: dict[str, dict[str, Any]] = {}
 
+POS_RECORD_COLLECTIONS = {
+    "item": items,
+    "session": cashier_sessions,
+    "sale": sales,
+    "payment": payments,
+}
+
 _current_admin: Callable[[str | None], dict[str, Any]] | None = None
 _audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None] | None = None
 _customer_resolver: Callable[[str], dict[str, Any]] | None = None
@@ -39,6 +60,7 @@ SESSION_STATUSES = ["OPEN", "CLOSED", "CANCELLED"]
 SALE_STATUSES = ["COMPLETED", "VOID"]
 PAYMENT_STATUSES = ["POSTED", "VOID"]
 PAYMENT_METHODS = ["CASH", "GCASH", "CARD", "BANK_TRANSFER", "CHECK", "OTHER"]
+POINT_OF_SALE_STORAGE_MODE = os.getenv("POINT_OF_SALE_STORAGE") or ("postgres" if os.getenv("DATABASE_URL") else "memory")
 DEPENDENCIES = [
     {
         "module": "Inventory",
@@ -166,8 +188,11 @@ def today_iso() -> str:
 
 
 def add_audit(action: str, target_type: str, target_id: str, details: dict[str, Any] | None, actor: str) -> None:
-    if _audit_logger is not None:
-        _audit_logger(action, target_type, target_id, details, actor)
+    store = globals().get("pos_store")
+    if store is not None and store.in_transaction:
+        store.queue_audit(action, target_type, target_id, details or {}, actor)
+    elif _audit_logger is not None:
+        _audit_logger(action, target_type, target_id, details or {}, actor)
 
 
 def normalize_upper(value: Any) -> str:
@@ -210,6 +235,343 @@ def normalize_idempotency_key(value: Any, *, required: bool = True) -> str:
     return key
 
 
+class PointOfSaleRecordStore:
+    def __init__(self) -> None:
+        self.database_url = os.getenv("DATABASE_URL", "").strip()
+        self.storage_mode = POINT_OF_SALE_STORAGE_MODE.strip().lower()
+        self._schema_ready = False
+        self._loaded = False
+        self._process_lock = RLock()
+        self._state = local()
+
+    @property
+    def postgres_enabled(self) -> bool:
+        return self.storage_mode == "postgres"
+
+    @property
+    def in_transaction(self) -> bool:
+        return bool(getattr(self._state, "in_transaction", False))
+
+    @property
+    def current_connection(self):
+        return getattr(self._state, "connection", None)
+
+    def _connect(self, autocommit: bool = True):
+        if not self.postgres_enabled:
+            return None
+        if psycopg is None or dict_row is None:
+            raise HTTPException(status_code=503, detail="Point of Sale database driver is not installed")
+        if not self.database_url:
+            raise HTTPException(status_code=503, detail="Point of Sale database URL is not configured")
+        return psycopg.connect(self.database_url, autocommit=autocommit, row_factory=dict_row)
+
+    def ensure_schema(self, connection=None) -> bool:
+        if not self.postgres_enabled:
+            return False
+        if self._schema_ready:
+            return True
+        owns_connection = connection is None
+        conn = connection or self._connect()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT to_regclass('public.pos_records') AS table_name")
+                row = cursor.fetchone() or {}
+                if not row.get("table_name"):
+                    raise HTTPException(status_code=503, detail="Point of Sale database migration has not run")
+            self._schema_ready = True
+            return True
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Point of Sale database schema check failed")
+            raise HTTPException(status_code=503, detail=f"Point of Sale database is unavailable: {exc}") from exc
+        finally:
+            if owns_connection and conn is not None:
+                conn.close()
+
+    def load_records(self, force: bool = False, connection=None) -> bool:
+        if not self.ensure_schema(connection):
+            return False
+        if self._loaded and not force:
+            return True
+        owns_connection = connection is None
+        conn = connection or self._connect()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT record_type, record_id, data
+                    FROM pos_records
+                    ORDER BY created_at ASC, record_type, record_id
+                    """
+                )
+                rows = cursor.fetchall()
+        finally:
+            if owns_connection and conn is not None:
+                conn.close()
+        for collection in POS_RECORD_COLLECTIONS.values():
+            collection.clear()
+        for row in rows:
+            collection = POS_RECORD_COLLECTIONS.get(row["record_type"])
+            if collection is None:
+                continue
+            payload = dict(row.get("data") or {})
+            payload.setdefault("id", row["record_id"])
+            collection.append(payload)
+        self._loaded = True
+        return True
+
+    def save_record(self, record_type: str, record: dict[str, Any], connection=None) -> bool:
+        if not self.ensure_schema(connection):
+            return False
+        if Json is None:
+            raise HTTPException(status_code=503, detail="Point of Sale JSON database adapter is not installed")
+        owns_connection = connection is None
+        conn = connection or self._connect()
+        payload = dict(record)
+        record_id = clean_text(payload.get("id"))
+        if not record_id:
+            raise HTTPException(status_code=500, detail="Point of Sale record is missing an id")
+        document_number = (
+            clean_text(payload.get("receiptNumber"))
+            or clean_text(payload.get("saleNumber"))
+            or clean_text(payload.get("paymentNumber"))
+            or clean_text(payload.get("sessionNumber"))
+            or clean_text(payload.get("sku"))
+        )
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO pos_records (
+                        record_type,
+                        record_id,
+                        document_number,
+                        cashier_username,
+                        customer_id,
+                        sale_id,
+                        status,
+                        method,
+                        idempotency_key,
+                        data,
+                        created_at,
+                        updated_at,
+                        deleted_at
+                    )
+                    VALUES (
+                        %(record_type)s,
+                        %(record_id)s,
+                        %(document_number)s,
+                        %(cashier_username)s,
+                        %(customer_id)s,
+                        %(sale_id)s,
+                        %(status)s,
+                        %(method)s,
+                        %(idempotency_key)s,
+                        %(data)s,
+                        %(created_at)s,
+                        %(updated_at)s,
+                        %(deleted_at)s
+                    )
+                    ON CONFLICT (record_type, record_id) DO UPDATE SET
+                        document_number = EXCLUDED.document_number,
+                        cashier_username = EXCLUDED.cashier_username,
+                        customer_id = EXCLUDED.customer_id,
+                        sale_id = EXCLUDED.sale_id,
+                        status = EXCLUDED.status,
+                        method = EXCLUDED.method,
+                        idempotency_key = EXCLUDED.idempotency_key,
+                        data = EXCLUDED.data,
+                        updated_at = EXCLUDED.updated_at,
+                        deleted_at = EXCLUDED.deleted_at
+                    """,
+                    {
+                        "record_type": record_type,
+                        "record_id": record_id,
+                        "document_number": document_number,
+                        "cashier_username": payload.get("cashierUsername") or "",
+                        "customer_id": payload.get("customerId") or "",
+                        "sale_id": payload.get("saleId") or (record_id if record_type == "sale" else ""),
+                        "status": payload.get("status") or "",
+                        "method": payload.get("method") or "",
+                        "idempotency_key": payload.get("idempotencyKey") or "",
+                        "data": Json(payload),
+                        "created_at": payload.get("createdAt") or now_iso(),
+                        "updated_at": payload.get("updatedAt") or payload.get("createdAt") or now_iso(),
+                        "deleted_at": payload.get("deletedAt") or None,
+                    },
+                )
+            if owns_connection:
+                conn.commit()
+        finally:
+            if owns_connection and conn is not None:
+                conn.close()
+        return True
+
+    def save_all(self, connection=None) -> bool:
+        if not self.postgres_enabled:
+            return False
+        for record_type, collection in POS_RECORD_COLLECTIONS.items():
+            for record in collection:
+                self.save_record(record_type, record, connection=connection)
+        return True
+
+    def mark_dirty(self) -> None:
+        if self.in_transaction:
+            self._state.dirty = True
+
+    def queue_audit(
+        self,
+        action: str,
+        target_type: str,
+        target_id: str,
+        details: dict[str, Any] | None,
+        actor: str,
+    ) -> None:
+        event = {
+            "action": action,
+            "targetType": target_type,
+            "targetId": target_id,
+            "details": details or {},
+            "actor": actor,
+        }
+        if self.in_transaction:
+            self._state.pending_audits.append(event)
+        elif _audit_logger is not None:
+            _audit_logger(action, target_type, target_id, details or {}, actor)
+
+    def _snapshot(self) -> dict[str, list[dict[str, Any]]]:
+        return {record_type: deepcopy(collection) for record_type, collection in POS_RECORD_COLLECTIONS.items()}
+
+    def _restore(self, snapshot: dict[str, list[dict[str, Any]]]) -> None:
+        for record_type, collection in POS_RECORD_COLLECTIONS.items():
+            collection.clear()
+            collection.extend(deepcopy(snapshot.get(record_type, [])))
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        if self.in_transaction:
+            yield
+            return
+        connection = None
+        snapshot: dict[str, list[dict[str, Any]]] | None = None
+        committed_audits: list[dict[str, Any]] = []
+        with self._process_lock:
+            try:
+                if self.postgres_enabled:
+                    self.ensure_schema()
+                    connection = self._connect(autocommit=False)
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                            ("threejmain.point-of-sale.register-records",),
+                        )
+                    self.load_records(force=True, connection=connection)
+                elif not self._loaded:
+                    self._loaded = True
+                snapshot = self._snapshot()
+                self._state.in_transaction = True
+                self._state.connection = connection
+                self._state.dirty = False
+                self._state.pending_audits = []
+                yield
+                if self._state.dirty and self.postgres_enabled:
+                    self.save_all(connection=connection)
+                if connection is not None:
+                    connection.commit()
+                committed_audits = list(self._state.pending_audits)
+            except Exception as exc:
+                if connection is not None:
+                    connection.rollback()
+                if snapshot is not None:
+                    self._restore(snapshot)
+                if psycopg is not None and isinstance(exc, psycopg.errors.UniqueViolation):
+                    raise HTTPException(status_code=409, detail="Duplicate POS register posting was prevented") from exc
+                raise
+            finally:
+                for attribute in ["in_transaction", "connection", "dirty", "pending_audits"]:
+                    if hasattr(self._state, attribute):
+                        delattr(self._state, attribute)
+                if connection is not None:
+                    connection.close()
+        if _audit_logger is not None:
+            for event in committed_audits:
+                try:
+                    _audit_logger(
+                        event["action"],
+                        event["targetType"],
+                        event["targetId"],
+                        event["details"],
+                        event["actor"],
+                    )
+                except Exception:
+                    logger.exception("Point of Sale audit dispatch failed after commit")
+
+    def ensure_loaded(self) -> None:
+        if self.postgres_enabled:
+            self.load_records(force=not self.in_transaction)
+        elif not self._loaded:
+            self._loaded = True
+
+    def status(self) -> dict[str, Any]:
+        if not self.postgres_enabled:
+            return {"mode": "memory", "ready": False, "reason": "POINT_OF_SALE_STORAGE is not postgres"}
+        self.ensure_schema()
+        conn = self._connect()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT record_type, count(*) AS total
+                    FROM pos_records
+                    WHERE deleted_at IS NULL
+                    GROUP BY record_type
+                    ORDER BY record_type
+                    """
+                )
+                rows = cursor.fetchall()
+        finally:
+            conn.close()
+        return {
+            "mode": "postgres",
+            "ready": True,
+            "table": "pos_records",
+            "recordCounts": {row["record_type"]: int(row["total"]) for row in rows},
+        }
+
+
+pos_store = PointOfSaleRecordStore()
+
+
+def ensure_pos_data_loaded() -> None:
+    pos_store.ensure_loaded()
+
+
+def persist_pos_state() -> None:
+    if pos_store.in_transaction:
+        pos_store.mark_dirty()
+    elif pos_store.postgres_enabled:
+        pos_store.save_all()
+
+
+def pos_mutation(function: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with pos_store.transaction():
+            return function(*args, **kwargs)
+
+    return wrapped
+
+
+def pos_read_snapshot(function: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        ensure_pos_data_loaded()
+        return function(*args, **kwargs)
+
+    return wrapped
+
+
 def posting_fingerprint(record_type: str, payload: BaseModel | dict[str, Any]) -> str:
     payload_data = payload.model_dump(exclude_unset=True) if isinstance(payload, BaseModel) else payload
     serialized = json.dumps(
@@ -238,14 +600,17 @@ def parse_day(value: str | None, field_name: str) -> date:
 
 
 def next_number(prefix: str, rows: list[dict[str, Any]]) -> str:
+    ensure_pos_data_loaded()
     return f"{prefix}-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{len(rows) + 1:04d}"
 
 
 def visible(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ensure_pos_data_loaded()
     return [row for row in rows if not row.get("deletedAt")]
 
 
 def find_row(rows: list[dict[str, Any]], row_id: str, label: str) -> dict[str, Any]:
+    ensure_pos_data_loaded()
     for row in rows:
         if row["id"] == row_id and not row.get("deletedAt"):
             return row
@@ -413,7 +778,7 @@ def inventory_connected() -> bool:
 
 def pos_catalog_items(search: str = "", status: str = "") -> list[dict[str, Any]]:
     if inventory_connected():
-        rows = list_pos_catalog_items(search=search, status=status or "ACTIVE")
+        rows = list_pos_catalog_items(search=search, status=status or "ACTIVE", connection=pos_store.current_connection)
         if status:
             return [row for row in rows if normalize_upper(row.get("status")) == normalize_upper(status)]
         return rows
@@ -422,7 +787,7 @@ def pos_catalog_items(search: str = "", status: str = "") -> list[dict[str, Any]
 
 def pos_catalog_item(item_id: str) -> dict[str, Any]:
     if inventory_connected():
-        return get_pos_catalog_item(item_id)
+        return get_pos_catalog_item(item_id, connection=pos_store.current_connection)
     return {
         **find_item(item_id),
         "unit": "pcs",
@@ -434,7 +799,11 @@ def pos_catalog_item(item_id: str) -> dict[str, Any]:
 
 def validate_sale_inventory(line_items: list[dict[str, Any]], released_line_items: list[dict[str, Any]] | None = None) -> None:
     if validate_pos_sale_inventory is not None:
-        validate_pos_sale_inventory(line_items, released_line_items=released_line_items)
+        validate_pos_sale_inventory(
+            line_items,
+            released_line_items=released_line_items,
+            connection=pos_store.current_connection,
+        )
         return
     required_by_item: dict[str, float] = {}
     released_by_item: dict[str, float] = {}
@@ -450,9 +819,24 @@ def validate_sale_inventory(line_items: list[dict[str, Any]], released_line_item
             raise HTTPException(status_code=400, detail=f"Not enough stock for {item['sku']}")
 
 
-def post_sale_inventory_movements(line_items: list[dict[str, Any]], sale_reference: str, receipt_number: str, actor: str, reverse: bool = False) -> list[dict[str, Any]]:
+def post_sale_inventory_movements(
+    line_items: list[dict[str, Any]],
+    sale_reference: str,
+    receipt_number: str,
+    actor: str,
+    reverse: bool = False,
+    idempotency_prefix: str = "",
+) -> list[dict[str, Any]]:
     if record_pos_sale_movements is not None:
-        return record_pos_sale_movements(line_items, sale_reference, receipt_number, actor, reverse=reverse)
+        return record_pos_sale_movements(
+            line_items,
+            sale_reference,
+            receipt_number,
+            actor,
+            reverse=reverse,
+            connection=pos_store.current_connection,
+            idempotency_prefix=idempotency_prefix,
+        )
     adjust_stock(line_items, 1 if reverse else -1)
     return []
 
@@ -522,6 +906,7 @@ def user_register_session(admin: dict[str, Any]) -> dict[str, Any]:
         "deletedAt": None,
     }
     cashier_sessions.append(session)
+    persist_pos_state()
     return session
 
 
@@ -574,6 +959,7 @@ def adjust_stock(lines: list[dict[str, Any]], direction: int) -> None:
             raise HTTPException(status_code=400, detail=f"Not enough stock for {item['sku']}")
         item["stockOnHand"] = next_stock
         item["updatedAt"] = now_iso()
+    persist_pos_state()
 
 
 def sale_payments(sale_id: str) -> list[dict[str, Any]]:
@@ -689,6 +1075,7 @@ def normalize_payment_payload(
 
 
 def seed_point_of_sale_data() -> None:
+    ensure_pos_data_loaded()
     timestamp = now_iso()
     if not inventory_connected() and not items:
         seed_rows = [
@@ -714,6 +1101,7 @@ def seed_point_of_sale_data() -> None:
                     "deletedAt": None,
                 }
             )
+        persist_pos_state()
 
 
 def point_of_sale_metrics() -> dict[str, float | int]:
@@ -764,12 +1152,35 @@ def pos_meta(admin=Depends(require_admin)):
     }
 
 
+@router.get("/readiness")
+@pos_read_snapshot
+def pos_readiness(admin=Depends(require_admin)):
+    storage = pos_store.status()
+    return {
+        "module": "point-of-sale",
+        "realDataReady": storage.get("ready") is True and storage.get("mode") == "postgres",
+        "storage": storage,
+        "providers": {
+            "customers": _customer_resolver is not None,
+            "inventory": inventory_connected(),
+            "a2pMessaging": _sms_sender is not None,
+            "audit": _audit_logger is not None,
+        },
+        "durableRecords": ["item", "session", "sale", "payment"],
+        "notes": [
+            "Billing invoice payments are stored in Billing, not in POS records.",
+            "Inventory remains the canonical sellable item catalog.",
+        ],
+    }
+
+
 @router.get("/customers")
 def pos_customers(search: str = "", admin=Depends(require_admin)):
     return search_customers(search)[:50]
 
 
 @router.get("/overview")
+@pos_read_snapshot
 def pos_overview(admin=Depends(require_admin)):
     seed_point_of_sale_data()
     sale_rows = [sale_summary(sale) for sale in visible(sales)]
@@ -802,12 +1213,14 @@ def send_invoice_payment_confirmation(payload: InvoicePaymentConfirmationPayload
 
 
 @router.get("/items")
+@pos_read_snapshot
 def list_items(search: str = "", status: str = "", admin=Depends(require_admin)):
     seed_point_of_sale_data()
     return pos_catalog_items(search, status)
 
 
 @router.post("/items")
+@pos_mutation
 def create_item(payload: ItemPayload, admin=Depends(require_admin)):
     if inventory_connected():
         raise HTTPException(status_code=405, detail="Manage POS sellable items in Inventory")
@@ -817,11 +1230,13 @@ def create_item(payload: ItemPayload, admin=Depends(require_admin)):
     timestamp = now_iso()
     item = {"id": str(uuid4()), "createdAt": timestamp, "updatedAt": timestamp, "deletedAt": None, **record}
     items.append(item)
+    persist_pos_state()
     add_audit("pos_item_created", "POSItem", item["id"], {"sku": item["sku"]}, admin["username"])
     return item
 
 
 @router.patch("/items/{item_id}")
+@pos_mutation
 def update_item(item_id: str, payload: ItemPayload, admin=Depends(require_admin)):
     if inventory_connected():
         raise HTTPException(status_code=405, detail="Manage POS sellable items in Inventory")
@@ -831,11 +1246,13 @@ def update_item(item_id: str, payload: ItemPayload, admin=Depends(require_admin)
         raise HTTPException(status_code=400, detail="SKU already exists")
     current.update(record)
     current["updatedAt"] = now_iso()
+    persist_pos_state()
     add_audit("pos_item_updated", "POSItem", current["id"], {"sku": current["sku"]}, admin["username"])
     return current
 
 
 @router.delete("/items/{item_id}")
+@pos_mutation
 def delete_item(item_id: str, admin=Depends(require_admin)):
     if inventory_connected():
         raise HTTPException(status_code=405, detail="Manage POS sellable items in Inventory")
@@ -843,11 +1260,13 @@ def delete_item(item_id: str, admin=Depends(require_admin)):
     current["status"] = "ARCHIVED"
     current["deletedAt"] = now_iso()
     current["updatedAt"] = current["deletedAt"]
+    persist_pos_state()
     add_audit("pos_item_archived", "POSItem", current["id"], {"sku": current["sku"]}, admin["username"])
     return {"status": "ok"}
 
 
 @router.get("/sessions")
+@pos_read_snapshot
 def list_sessions(search: str = "", status: str = "", admin=Depends(require_admin)):
     seed_point_of_sale_data()
     rows = filter_rows([session_summary(session) for session in visible(cashier_sessions)], search, status)
@@ -855,6 +1274,7 @@ def list_sessions(search: str = "", status: str = "", admin=Depends(require_admi
 
 
 @router.post("/sessions")
+@pos_mutation
 def create_session(payload: SessionPayload, admin=Depends(require_admin)):
     record = normalize_session_payload(payload)
     if record["status"] == "OPEN" and any(
@@ -865,11 +1285,13 @@ def create_session(payload: SessionPayload, admin=Depends(require_admin)):
     timestamp = now_iso()
     session = {"id": str(uuid4()), "sessionNumber": next_number("SHIFT", cashier_sessions), "createdAt": timestamp, "updatedAt": timestamp, "deletedAt": None, **record}
     cashier_sessions.append(session)
+    persist_pos_state()
     add_audit("pos_session_opened", "POSCashierSession", session["id"], {"registerName": session["registerName"]}, admin["username"])
     return session_summary(session)
 
 
 @router.patch("/sessions/{session_id}")
+@pos_mutation
 def update_session(session_id: str, payload: SessionPayload, admin=Depends(require_admin)):
     current = find_session(session_id)
     record = normalize_session_payload(payload, current)
@@ -877,11 +1299,13 @@ def update_session(session_id: str, payload: SessionPayload, admin=Depends(requi
         raise HTTPException(status_code=400, detail="Closed sessions cannot be reopened")
     current.update(record)
     current["updatedAt"] = now_iso()
+    persist_pos_state()
     add_audit("pos_session_updated", "POSCashierSession", current["id"], {"status": current["status"]}, admin["username"])
     return session_summary(current)
 
 
 @router.post("/sessions/{session_id}/close")
+@pos_mutation
 def close_session(session_id: str, payload: SessionPayload, admin=Depends(require_admin)):
     current = find_session(session_id)
     if current["status"] != "OPEN":
@@ -891,11 +1315,13 @@ def close_session(session_id: str, payload: SessionPayload, admin=Depends(requir
     current["notes"] = data.get("notes", current.get("notes", ""))
     current["status"] = "CLOSED"
     current["updatedAt"] = now_iso()
+    persist_pos_state()
     add_audit("pos_session_closed", "POSCashierSession", current["id"], {"closingCash": current["closingCash"]}, admin["username"])
     return session_summary(current)
 
 
 @router.delete("/sessions/{session_id}")
+@pos_mutation
 def delete_session(session_id: str, admin=Depends(require_admin)):
     current = find_session(session_id)
     if any(sale["sessionId"] == session_id and sale["status"] != "VOID" and not sale.get("deletedAt") for sale in sales):
@@ -903,11 +1329,13 @@ def delete_session(session_id: str, admin=Depends(require_admin)):
     current["status"] = "CANCELLED"
     current["deletedAt"] = now_iso()
     current["updatedAt"] = current["deletedAt"]
+    persist_pos_state()
     add_audit("pos_session_cancelled", "POSCashierSession", current["id"], {}, admin["username"])
     return {"status": "ok"}
 
 
 @router.get("/sales")
+@pos_read_snapshot
 def list_sales(search: str = "", status: str = "", admin=Depends(require_admin)):
     seed_point_of_sale_data()
     rows = filter_rows([sale_summary(sale) for sale in visible(sales)], search, status)
@@ -915,6 +1343,7 @@ def list_sales(search: str = "", status: str = "", admin=Depends(require_admin))
 
 
 @router.post("/sales")
+@pos_mutation
 def create_sale(
     payload: SalePayload,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
@@ -986,7 +1415,13 @@ def create_sale(
             if payment_record["status"] == "POSTED":
                 remaining_balance = money(remaining_balance - payment_record["amount"])
             pending_payments.append(payment_record)
-    movement_records = post_sale_inventory_movements(line_items, sale_number, receipt_number, actor_username)
+    movement_records = post_sale_inventory_movements(
+        line_items,
+        sale_number,
+        receipt_number,
+        actor_username,
+        idempotency_prefix=f"pos-sale:{posting_key}",
+    )
     sale["inventoryMovementIds"] = [movement["id"] for movement in movement_records]
     sales.append(sale)
     for payment_record in pending_payments:
@@ -1021,15 +1456,22 @@ def create_sale(
         {"saleNumber": sale["saleNumber"], "receiptNumber": sale["receiptNumber"], "total": sale_total_amount(sale)},
         actor_username,
     )
+    persist_pos_state()
     return sale_summary(sale)
 
 
 @router.patch("/sales/{sale_id}")
+@pos_mutation
 def update_sale(sale_id: str, payload: SalePayload, admin=Depends(require_admin)):
     current = find_sale(sale_id)
     if current["status"] == "VOID":
         raise HTTPException(status_code=400, detail="Void sales cannot be edited")
     data = payload.model_dump(exclude_unset=True)
+    if "lineItems" in data:
+        raise HTTPException(
+            status_code=409,
+            detail="Posted sale lines are immutable; void this sale and create a replacement",
+        )
     if "sessionId" in data and data["sessionId"]:
         session = find_session(data["sessionId"])
         if session["status"] != "OPEN":
@@ -1040,13 +1482,6 @@ def update_sale(sale_id: str, payload: SalePayload, admin=Depends(require_admin)
         customer = resolve_customer(data["customerId"])
         current["customerId"] = customer["id"] if customer else None
         current["customer"] = customer
-    if "lineItems" in data and data["lineItems"] is not None:
-        next_lines = normalize_sale_lines(payload.lineItems)
-        validate_sale_inventory(next_lines, released_line_items=current["lineItems"])
-        reverse_movements = post_sale_inventory_movements(current["lineItems"], current["saleNumber"], current["receiptNumber"], admin["username"], reverse=True)
-        next_movements = post_sale_inventory_movements(next_lines, current["saleNumber"], current["receiptNumber"], admin["username"])
-        current["lineItems"] = next_lines
-        current["inventoryMovementIds"] = [*(current.get("inventoryMovementIds") or []), *[movement["id"] for movement in reverse_movements], *[movement["id"] for movement in next_movements]]
     if "saleDate" in data and data["saleDate"] is not None:
         current["saleDate"] = parse_day(data["saleDate"], "saleDate").isoformat()
     for field_name in ["discountAmount", "taxAmount"]:
@@ -1057,7 +1492,14 @@ def update_sale(sale_id: str, payload: SalePayload, admin=Depends(require_admin)
         if status not in SALE_STATUSES:
             raise HTTPException(status_code=400, detail="Invalid sale status")
         if status == "VOID":
-            reverse_movements = post_sale_inventory_movements(current["lineItems"], current["saleNumber"], current["receiptNumber"], admin["username"], reverse=True)
+            reverse_movements = post_sale_inventory_movements(
+                current["lineItems"],
+                current["saleNumber"],
+                current["receiptNumber"],
+                admin["username"],
+                reverse=True,
+                idempotency_prefix=f"pos-void:{current['id']}",
+            )
             current["inventoryMovementIds"] = [*(current.get("inventoryMovementIds") or []), *[movement["id"] for movement in reverse_movements]]
             for payment in payments:
                 if payment["saleId"] == sale_id and not payment.get("deletedAt"):
@@ -1067,15 +1509,24 @@ def update_sale(sale_id: str, payload: SalePayload, admin=Depends(require_admin)
     if "notes" in data and data["notes"] is not None:
         current["notes"] = data["notes"]
     current["updatedAt"] = now_iso()
+    persist_pos_state()
     add_audit("pos_sale_updated", "POSSale", current["id"], {"saleNumber": current["saleNumber"]}, admin["username"])
     return sale_summary(current)
 
 
 @router.delete("/sales/{sale_id}")
+@pos_mutation
 def delete_sale(sale_id: str, admin=Depends(require_admin)):
     current = find_sale(sale_id)
     if current["status"] != "VOID":
-        reverse_movements = post_sale_inventory_movements(current["lineItems"], current["saleNumber"], current["receiptNumber"], admin["username"], reverse=True)
+        reverse_movements = post_sale_inventory_movements(
+            current["lineItems"],
+            current["saleNumber"],
+            current["receiptNumber"],
+            admin["username"],
+            reverse=True,
+            idempotency_prefix=f"pos-void:{current['id']}",
+        )
         current["inventoryMovementIds"] = [*(current.get("inventoryMovementIds") or []), *[movement["id"] for movement in reverse_movements]]
     current["status"] = "VOID"
     current["deletedAt"] = now_iso()
@@ -1084,11 +1535,13 @@ def delete_sale(sale_id: str, admin=Depends(require_admin)):
         if payment["saleId"] == sale_id and not payment.get("deletedAt"):
             payment["status"] = "VOID"
             payment["updatedAt"] = current["updatedAt"]
+    persist_pos_state()
     add_audit("pos_sale_voided", "POSSale", current["id"], {"saleNumber": current["saleNumber"]}, admin["username"])
     return {"status": "ok"}
 
 
 @router.get("/payments")
+@pos_read_snapshot
 def list_payments(search: str = "", status: str = "", admin=Depends(require_admin)):
     seed_point_of_sale_data()
     rows = filter_rows(visible(payments), search, status)
@@ -1096,6 +1549,7 @@ def list_payments(search: str = "", status: str = "", admin=Depends(require_admi
 
 
 @router.post("/payments")
+@pos_mutation
 def create_payment(payload: PaymentPayload, admin=Depends(require_admin)):
     record = normalize_payment_payload(payload)
     timestamp = now_iso()
@@ -1109,6 +1563,7 @@ def create_payment(payload: PaymentPayload, admin=Depends(require_admin)):
         **record,
     }
     payments.append(payment)
+    persist_pos_state()
     add_audit(
         "pos_payment_posted",
         "POSPayment",
@@ -1120,20 +1575,24 @@ def create_payment(payload: PaymentPayload, admin=Depends(require_admin)):
 
 
 @router.patch("/payments/{payment_id}")
+@pos_mutation
 def update_payment(payment_id: str, payload: PaymentPayload, admin=Depends(require_admin)):
     current = find_payment(payment_id)
     record = normalize_payment_payload(payload, current)
     current.update(record)
     current["updatedAt"] = now_iso()
+    persist_pos_state()
     add_audit("pos_payment_updated", "POSPayment", current["id"], {"saleId": current["saleId"]}, admin["username"])
     return current
 
 
 @router.delete("/payments/{payment_id}")
+@pos_mutation
 def delete_payment(payment_id: str, admin=Depends(require_admin)):
     current = find_payment(payment_id)
     current["status"] = "VOID"
     current["deletedAt"] = now_iso()
     current["updatedAt"] = current["deletedAt"]
+    persist_pos_state()
     add_audit("pos_payment_voided", "POSPayment", current["id"], {"saleId": current["saleId"]}, admin["username"])
     return {"status": "ok"}

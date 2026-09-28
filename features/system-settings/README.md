@@ -5,7 +5,7 @@ System Settings owns operator-facing configuration for the ISP management shell.
 ## Scope
 
 - Branding and business profile fields, including company logo and browser page logo uploads copied from the old System Settings -> General flow. Logo uploads stage a pending preview and apply to the sidebar/favicon only after Save Settings.
-- Location Management for reusable site addresses, municipality/barangay details, coordinates, and geocoder autofill
+- Location Management for manually created reusable site addresses, duplicate-safe multi-barangay creation, and an interactive latitude/longitude map picker
 - Avatar mood uploads for customer-information screens, separated by Male/Female customer avatar slots
 - Avatar emotion scoring guide for customer-facing module behavior badges
 - OPENAI settings for API key storage, model and reasoning-effort selection, model pricing reference, and live API testing
@@ -49,11 +49,13 @@ system-settings/
   - `DELETE /api/system-settings/avatars/{emotion_id}`
 - Location endpoints:
   - `GET /api/system-settings/locations`
-  - `GET /api/system-settings/locations/search?q=<text>`
   - `POST /api/system-settings/locations`
+  - `POST /api/system-settings/locations/bulk-barangays`
   - `POST /api/system-settings/locations/bulk-delete`
   - `PATCH /api/system-settings/locations/{location_id}`
   - `DELETE /api/system-settings/locations/{location_id}`
+  - `GET /api/system-settings/map-places/search`
+  - `GET /api/system-settings/map-places/landmarks`
 - OPENAI endpoints:
   - `GET /api/system-settings/openai`
   - `PATCH /api/system-settings/openai`
@@ -104,14 +106,15 @@ system-settings/
   - `/api/system/ports`
   - `/api/locations`
   - `/api/locations/search`
+  - `/api/locations/bulk-barangays`
   - `/api/locations/bulk-delete`
   - `/api/locations/{location_id}`
 
 ## Integration Notes
 
 The app-shell configures this module with shared auth, audit logging, the shared settings store, and the port registry provider. The Ports tab lists threejmain Production ports (`8180` web, `8100` API), threejmain Staging ports (`8280` web, `8200` API), their internal PostgreSQL container ports, and existing 3JCentralPisowifi reservations.
-Location Management preloads the existing Customer Profiling service-area barangays and exposes edit actions so incomplete customer-created locations can be completed later. The table includes a switch-driven multiple select mode for bulk deleting selected locations; edit/add actions are hidden while selection mode is active. Deleted preloaded locations are suppressed from automatic reseeding and persisted.
-Branding/business/deployment settings, saved company/browser logo assets, Location records, deleted preload markers, Network Settings image assets, shared map provider settings, avatar images, avatar emotion guide settings, OPENAI settings, and A2P Messaging settings/logs are written to `SYSTEM_SETTINGS_DATA_PATH` (`/app/data/system_settings.json` in Docker Compose) so they survive API container restarts and rebuilds through the `threejmain_api_data` named volume. Company logo uploads accept PNG, JPG/JPEG, WebP, and GIF up to 5 MB; browser page logo uploads accept PNG, JPG/JPEG, WebP, GIF, and ICO up to 2 MB. Network Settings image assets accept PNG, JPG/JPEG, and WebP with a 512 KB maximum per image; avatar formats are PNG, JPG/JPEG, WebP, and GIF with a 1 MB maximum per image. Long-term production storage should still move to shared PostgreSQL and file/object storage before production use.
+Location Management is the single persisted manual location catalog for the system. Existing Customer Profiling addresses are backfilled into reusable manual records and linked to their customers by `locationId`; future customer saves link a selected record or create a manual record from the entered address. The table does not expose internal source labels because every visible location follows the same editable manual workflow. Add and Edit do not ask for a separate Location Name: the barangay is the canonical name and the API derives the address label from barangay, municipality, and province. Add Location opens one dialog where the operator chooses Single Location or Multiple Barangays. Multiple Barangays accepts up to 500 names in one request, creates one reusable location per unique municipality/barangay, and reports existing or repeated names as skipped instead of failing the batch. The multiple-entry mode reads the Customer Profiling location reference endpoint to auto-fill known barangays for a selected province and municipality, while custom one-per-line, comma-separated, or semicolon-separated lists remain supported when the reference catalog has no entries. Operators can type latitude/longitude or use the single-location map picker to search Philippine places, click, pan, and zoom to an exact point. On Edit, the picker reuses saved coordinates; when they are missing it resolves the barangay and opens the pin there. Nearby landmark overlays are grouped into checkable categories and can be refreshed around the current map center. Place lookup is a non-persisting map aid; saving still creates a manual location only. Nominatim catalog creation and automatic preloaded creation remain disabled; the retained compatibility location search route returns `410 Gone`. Legacy `PRELOADED`, `CUSTOMER_PROFILING`, and `NOMINATIM` rows are removed when the location store loads.
+Branding/business/deployment settings, saved company/browser logo assets, manual Location records, Network Settings image assets, shared map provider settings, avatar images, avatar emotion guide settings, OPENAI settings, and A2P Messaging settings/logs are written to `SYSTEM_SETTINGS_DATA_PATH` (`/app/data/system_settings.json` in Docker Compose) so they survive API container restarts and rebuilds through the `threejmain_api_data` named volume. Company logo uploads accept PNG, JPG/JPEG, WebP, and GIF up to 5 MB; browser page logo uploads accept PNG, JPG/JPEG, WebP, GIF, and ICO up to 2 MB. Network Settings image assets accept PNG, JPG/JPEG, and WebP with a 512 KB maximum per image; avatar formats are PNG, JPG/JPEG, WebP, and GIF with a 1 MB maximum per image. Long-term production storage should still move to shared PostgreSQL and file/object storage before production use.
 Reusable frontend avatar behavior code lives in `web/avatarEmotion.js` and `web/CustomerEmotionAvatar.jsx`. Customer-facing modules can import the component or resolver to display the current avatar, gender slot, mood score, and emotion label from the shared Avatar settings.
 OPENAI settings are stored in the same `SYSTEM_SETTINGS_DATA_PATH` file. The API returns only masked key metadata to the frontend, stores the selected model, selected reasoning effort, and optional organization/project ids, exposes current model pricing metadata, and tests connectivity through the OpenAI Responses API.
 A2P Messaging settings are stored in the same `SYSTEM_SETTINGS_DATA_PATH` file. The API returns only masked API key/password metadata to the frontend, sends Smart Messaging Suite test SMS requests through the saved configuration, stores local message logs, and exposes generated success/failure notifications to the shared top-nav bell through `/api/admin/notifications`.

@@ -19,6 +19,7 @@ import {
   IconWallet,
   IconX
 } from '@tabler/icons-react';
+import { billingMonthLabel, receiptDocument } from './receiptDocument.js';
 import './collector.css';
 
 const API = '/api';
@@ -62,11 +63,8 @@ function dateLabel(value) {
 }
 
 function billMonthLabel(invoice = {}) {
-  const value = invoice.billingCycleStart || invoice.issueDate || invoice.dueDate;
-  if (!value) return 'Monthly bill';
-  const parsed = new Date(`${String(value).slice(0, 10)}T00:00:00`);
-  if (Number.isNaN(parsed.getTime())) return 'Monthly bill';
-  return `${parsed.toLocaleDateString('en-PH', { month: 'long', year: 'numeric' })} bill`;
+  const month = billingMonthLabel(invoice);
+  return month === 'Billing period' ? 'Monthly bill' : `${month} bill`;
 }
 
 function dateTimeLabel(value) {
@@ -86,6 +84,29 @@ function customerName(customer = {}) {
   return customer.name
     || [customer.firstName, customer.middleName, customer.lastName].filter(Boolean).join(' ')
     || 'Unnamed customer';
+}
+
+function customerFirstName(customer = {}) {
+  const firstName = String(customer.firstName || '').trim();
+  if (firstName) return firstName;
+  return customerName(customer).trim().split(/\s+/)[0] || 'Customer';
+}
+
+function customerSmsDestination(customer = {}) {
+  return String(customer.contactNumber || customer.alternateMobileNumber || '').trim();
+}
+
+function smsAmount(value) {
+  return Number(value || 0).toLocaleString('en-PH', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  });
+}
+
+function unavailableCustomerMessage(account = {}) {
+  return `Hello, ${customerFirstName(account.customer)}. Our 3J collector visited today, but no one was available. `
+    + `Your current amount due is P${smsAmount(accountPayableToday(account))}. `
+    + 'Please contact 3J to arrange payment. Thank you.';
 }
 
 function customerLocation(customer = {}) {
@@ -199,151 +220,6 @@ function automaticPaymentBreakdown(invoices = [], rawReceived = 0, excessDecisio
   };
 }
 
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
-}
-
-function receiptDocument(collection, printEvent) {
-  const customer = collection.customer || {};
-  const advanceAmount = Number(collection.advanceAmount || 0);
-  const appliedAmount = Number(collection.appliedAmount ?? (Number(collection.amount || 0) - advanceAmount));
-  const address = customer.address
-    || [customer.addressLine1, customer.addressLine2, customer.barangay, customer.city, customer.province].filter(Boolean).join(', ');
-  const allocationRows = (collection.allocations || []).map((allocation) => {
-    const promotionRows = (allocation.promotions || []).map((promotion) => `
-      <tr class="promo-row">
-        <td>Promo: ${escapeHtml(promotion.promotionName || promotion.promotionCode || 'Automatic discount')}</td>
-        <td class="num">- P ${Number(promotion.amount || 0).toFixed(2)}</td>
-      </tr>
-    `).join('');
-    return `
-      <tr>
-        <td>
-          ${escapeHtml(allocation.invoiceNumber || 'Invoice')}<br>
-          <span class="muted">${escapeHtml(allocation.billingCycleStart || allocation.dueDate || '')}</span>
-        </td>
-        <td class="num">P ${Number(allocation.balanceBefore || allocation.amount || 0).toFixed(2)}</td>
-      </tr>
-      ${promotionRows}
-      <tr class="payment-row">
-        <td>Payment applied</td>
-        <td class="num">P ${Number(allocation.amount || 0).toFixed(2)}</td>
-      </tr>
-    `;
-  }).join('');
-  const advanceRow = advanceAmount > 0
-    ? `
-      <tr>
-        <td>Advance account credit<br><span class="muted">For a future monthly invoice</span></td>
-        <td class="num">P ${advanceAmount.toFixed(2)}</td>
-      </tr>
-    `
-    : '';
-  const planNames = [...new Set((collection.allocations || []).map((row) => row.catalogName).filter(Boolean))].join(', ');
-  const paymentReference = collection.method === 'GCASH' && collection.referenceNumber
-    ? `<tr><td>GCash Reference</td><td class="num">${escapeHtml(collection.referenceNumber)}</td></tr>`
-    : '';
-  const receivedAmount = Number(collection.receivedAmount ?? collection.tenderedAmount ?? collection.amount ?? 0);
-  const returnedAmount = Number(collection.returnedAmount ?? collection.changeAmount ?? 0);
-  const promotionDiscountAmount = Number(collection.promotionDiscountAmount || 0);
-  const balanceBefore = Number(collection.balanceBefore || 0);
-  const receivedRows = `
-    <tr><td>Amount Received</td><td class="num">P ${receivedAmount.toFixed(2)}</td></tr>
-    ${returnedAmount > 0 ? `<tr><td>${collection.method === 'CASH' ? 'Returned as Change' : 'Returned to Customer'}</td><td class="num">P ${returnedAmount.toFixed(2)}</td></tr>` : ''}
-  `;
-  const copyLabel = printEvent?.label === 'REPRINT'
-    ? `<div class="copy-label">REPRINT COPY ${Number(printEvent.copyNumber || 1)}</div>`
-    : '';
-  return `<!doctype html>
-  <html>
-    <head>
-      <meta charset="utf-8">
-      <title>${escapeHtml(collection.receiptNumber || 'Payment Receipt')}</title>
-      <style>
-        * { box-sizing: border-box; }
-        body { color: #000; font-family: Arial, sans-serif; font-size: 11pt; margin: 0 auto; width: 300px; -webkit-font-smoothing: none; }
-        .header, .thank-you, .copy-label { text-align: center; }
-        .header strong { font-size: 11pt; }
-        .copy-label { border: 1px solid #000; font-size: 9pt; font-weight: bold; margin: 7px 0; padding: 3px; }
-        hr { border: 0; border-top: 1px solid #000; margin: 8px 0; }
-        hr.dotted { border-top-style: dotted; margin: 4px 0; }
-        .section { margin-top: 8px; }
-        .section-title { font-weight: bold; margin-bottom: 4px; }
-        .muted { font-size: 8pt; }
-        .promo-row td { font-size: 9pt; }
-        .payment-row td { font-weight: bold; padding-bottom: 4px; }
-        table { border-collapse: collapse; width: 100%; }
-        td { padding: 1px 0; vertical-align: top; }
-        td.num { text-align: right; }
-        .footer-space { height: 25mm; }
-        @page { margin: 4mm; size: 80mm auto; }
-        @media print { body { width: 72mm; } }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <strong>3J COMPUTER AND INTERNET</strong><br>
-        INSTALLATION SERVICES<br>
-        Zone 2, Roma Norte, Enrile Cagayan<br>
-        09058234990
-      </div>
-      ${copyLabel}
-      <hr>
-      <div class="section">
-        Customer: ${escapeHtml(customerName(customer))}<br>
-        Address: ${escapeHtml(address || 'N/A')}<br>
-        ${planNames ? `Plan: ${escapeHtml(planNames)}<br>` : ''}
-        Account: ${escapeHtml(customer.accountNumber || 'N/A')}
-      </div>
-      <hr>
-      <div class="section">
-        <div class="section-title">PAYMENT RECEIPT</div>
-        Receipt #: ${escapeHtml(collection.receiptNumber || '')}<br>
-        Date: ${escapeHtml(dateTimeLabel(collection.createdAt))}<br>
-        Billing Status: ${escapeHtml(collection.billingPaymentStatus || 'POSTED')}
-      </div>
-      <div class="section">
-        <div class="section-title">PAYMENT ALLOCATION</div>
-        <table>${allocationRows}${advanceRow}</table>
-      </div>
-      <hr>
-      <div class="section">
-        <table>
-          <tr><td><strong>Total Amount Paid</strong></td><td class="num"><strong>P ${Number(collection.amount || 0).toFixed(2)}</strong></td></tr>
-          <tr><td>Regular balance before payment</td><td class="num">P ${balanceBefore.toFixed(2)}</td></tr>
-          ${promotionDiscountAmount > 0 ? `<tr><td>Automatic promo discounts</td><td class="num">- P ${promotionDiscountAmount.toFixed(2)}</td></tr>` : ''}
-          <tr><td>Applied to invoices</td><td class="num">P ${appliedAmount.toFixed(2)}</td></tr>
-          ${advanceAmount > 0 ? `<tr><td>Added as advance credit</td><td class="num">P ${advanceAmount.toFixed(2)}</td></tr>` : ''}
-          <tr><td><strong>Remaining Balance</strong></td><td class="num"><strong>P ${Number(collection.balanceAfter || 0).toFixed(2)}</strong></td></tr>
-          <tr><td><strong>Available Account Credit</strong></td><td class="num"><strong>P ${Number(collection.accountCreditAfter || 0).toFixed(2)}</strong></td></tr>
-        </table>
-      </div>
-      <hr class="dotted">
-      <div class="section">
-        <table>
-          <tr><td>Payment Method</td><td class="num">${escapeHtml(collection.method === 'GCASH' ? 'GCash' : 'Cash')}</td></tr>
-          ${paymentReference}
-          ${receivedRows}
-        </table>
-      </div>
-      <div class="section">Collector: ${escapeHtml(collection.collectorName || collection.collectorUsername || 'N/A')}</div>
-      <hr class="dotted">
-      <div class="thank-you section">Thank you for your payment!</div>
-      <div class="footer-space"></div>
-      <script>
-        window.onload = function () {
-          window.setTimeout(function () { window.print(); }, 150);
-        };
-      </script>
-    </body>
-  </html>`;
-}
-
 function mapsHref(customer = {}) {
   if (customer.latitude && customer.longitude) {
     return `https://www.google.com/maps?q=${encodeURIComponent(`${customer.latitude},${customer.longitude}`)}`;
@@ -377,10 +253,12 @@ function Metric({ icon: Icon, label, value, tone = 'blue' }) {
   );
 }
 
-function CustomerCard({ account, currentUser, onCollect, busy }) {
+function CustomerCard({ account, currentUser, onCollect, onMessage, collecting, messaging }) {
   const customer = account.customer || {};
   const claim = account.claim;
   const mine = claim && claim.collectorUsername === currentUser?.username;
+  const messageDestination = customerSmsDestination(customer);
+  const unavailable = Boolean(claim && !mine);
   return (
     <article className={`collector-customer-card card ${claim && !mine ? 'collector-customer-claimed' : ''}`}>
       <div className="card-body">
@@ -416,9 +294,18 @@ function CustomerCard({ account, currentUser, onCollect, busy }) {
           <a className="btn btn-outline-secondary" href={mapsHref(customer)} target="_blank" rel="noreferrer">
             <IconMapPin size={17} /> Map
           </a>
-          <button className="btn btn-primary" type="button" disabled={busy || Boolean(claim && !mine)} onClick={() => onCollect(account)}>
+          <button
+            className="btn btn-outline-primary"
+            type="button"
+            disabled={messaging || unavailable || !messageDestination}
+            title={!messageDestination ? 'No saved mobile number' : unavailable ? 'Another collector is handling this customer' : 'Send customer unavailable notice'}
+            onClick={() => onMessage(account)}
+          >
+            <IconMessage size={17} /> {messaging ? 'Sending…' : 'Message'}
+          </button>
+          <button className="btn btn-primary" type="button" disabled={collecting || unavailable} onClick={() => onCollect(account)}>
             {claim && !mine ? <IconClock size={17} /> : <IconCash size={17} />}
-            {busy ? 'Opening…' : claim && !mine ? 'In use' : 'Collect'}
+            {collecting ? 'Opening…' : claim && !mine ? 'In use' : 'Collect'}
           </button>
         </div>
       </div>
@@ -486,6 +373,9 @@ function RemittanceCard({ remittance }) {
 }
 
 function FinanceRemittanceCard({ remittance, draft, onChange, onConfirm, busy }) {
+  const collectionItems = Array.isArray(remittance.collectionItems) ? remittance.collectionItems : [];
+  const detailMismatch = collectionItems.length !== Number(remittance.collectionCount || 0)
+    || Math.abs(Number(remittance.listedCollectionTotal || 0) - Number(remittance.expectedTotal || 0)) > 0.005;
   return (
     <article className="collector-finance-card card">
       <div className="card-body">
@@ -501,6 +391,48 @@ function FinanceRemittanceCard({ remittance, draft, onChange, onConfirm, busy })
           <div><small>Expected GCash</small><strong>{money(remittance.expectedGcash)}</strong></div>
           <div><small>Receipts</small><strong>{remittance.collectionCount}</strong></div>
         </div>
+        <section className="collector-reconciliation-items" aria-label={`Payments in ${remittance.remittanceNumber}`}>
+          <div className="collector-reconciliation-heading">
+            <div>
+              <strong>Customers in this remittance</strong>
+              <span>Review every customer payment before confirming receipt.</span>
+            </div>
+            <span>{collectionItems.length} {collectionItems.length === 1 ? 'payment' : 'payments'}</span>
+          </div>
+          <div className="collector-reconciliation-table" role="table" aria-label="Customer payments">
+            <div className="collector-reconciliation-table-head" role="row">
+              <span role="columnheader">Customer and receipt</span>
+              <span role="columnheader">Method</span>
+              <span role="columnheader">Payment amount</span>
+            </div>
+            {collectionItems.map((item) => (
+              <div className="collector-reconciliation-row" role="row" key={item.collectionId}>
+                <div className="collector-reconciliation-customer" role="cell">
+                  <strong>{item.customerName || 'Unnamed customer'}</strong>
+                  <span>{item.accountNumber || 'No account number'} · {item.receiptNumber || 'No receipt number'}</span>
+                </div>
+                <div className="collector-reconciliation-method" role="cell">
+                  <span className={`badge ${item.method === 'GCASH' ? 'bg-cyan-lt text-cyan' : 'bg-orange-lt text-orange'}`}>
+                    {item.method === 'GCASH' ? 'GCash' : 'Cash'}
+                  </span>
+                </div>
+                <strong className="collector-reconciliation-amount" role="cell">{money(item.amount)}</strong>
+              </div>
+            ))}
+            {!collectionItems.length && (
+              <div className="collector-reconciliation-empty">No linked customer payments were found for this remittance.</div>
+            )}
+            <div className="collector-reconciliation-total">
+              <span>Listed payment total</span>
+              <strong>{money(remittance.listedCollectionTotal)}</strong>
+            </div>
+          </div>
+        </section>
+        {detailMismatch && (
+          <div className="alert alert-danger collector-reconciliation-warning" role="alert">
+            Linked payment details do not match this remittance summary. Refresh and resolve the discrepancy before confirming.
+          </div>
+        )}
         <div className="collector-handoff-summary">
           <div><span>Collector declared cash</span><strong>{money(remittance.declaredCash)}</strong></div>
           <div><span>Collector transferred GCash</span><strong>{money(remittance.gcashTransferredAmount)}</strong></div>
@@ -531,7 +463,7 @@ function FinanceRemittanceCard({ remittance, draft, onChange, onConfirm, busy })
             <span>Accept and close even when there is a documented variance</span>
           </label>
         </div>
-        <button className="btn btn-success w-100 mt-3" type="button" disabled={busy} onClick={onConfirm}>
+        <button className="btn btn-success w-100 mt-3" type="button" disabled={busy || detailMismatch} onClick={onConfirm}>
           <IconShieldCheck size={18} /> Confirm company receipt
         </button>
       </div>
@@ -549,6 +481,8 @@ export default function CollectorPage({ currentUser = {} }) {
   const [activeTab, setActiveTab] = useState('worklist');
   const [search, setSearch] = useState('');
   const [locationFilter, setLocationFilter] = useState('');
+  const [messageCustomer, setMessageCustomer] = useState(null);
+  const [messageSent, setMessageSent] = useState(null);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [selectedReceipt, setSelectedReceipt] = useState(null);
   const [payment, setPayment] = useState(null);
@@ -648,6 +582,10 @@ export default function CollectorPage({ currentUser = {} }) {
         const refreshed = (customerResult.items || []).find((row) => row.customerId === selectedCustomer.customerId);
         setSelectedCustomer(refreshed || null);
       }
+      if (messageCustomer) {
+        const refreshed = (customerResult.items || []).find((row) => row.customerId === messageCustomer.customerId);
+        setMessageCustomer(refreshed || null);
+      }
     } catch (err) {
       showError(err.message);
     } finally {
@@ -692,6 +630,36 @@ export default function CollectorPage({ currentUser = {} }) {
         row.customerId === account.customerId ? reservedAccount : row
       )));
       openCustomer(reservedAccount);
+    } catch (err) {
+      showError(err.message);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  function openUnavailableMessage(account) {
+    if (!customerSmsDestination(account.customer)) {
+      showError('This customer has no saved mobile number.');
+      return;
+    }
+    setMessageCustomer(account);
+  }
+
+  async function sendUnavailableMessage() {
+    if (!messageCustomer) return;
+    const customerId = messageCustomer.customerId;
+    setBusy(`message-${customerId}`);
+    try {
+      const result = await request(`/collector/customers/${customerId}/unavailable-message`, {
+        method: 'POST',
+        body: JSON.stringify({})
+      });
+      setMessageSent({
+        customerName: customerName(messageCustomer.customer),
+        destination: result.destination,
+        senderId: result.senderId
+      });
+      setMessageCustomer(null);
     } catch (err) {
       showError(err.message);
     } finally {
@@ -801,7 +769,7 @@ export default function CollectorPage({ currentUser = {} }) {
         })
       });
       printWindow.document.open();
-      printWindow.document.write(receiptDocument(result.collection, result.printEvent));
+      printWindow.document.write(receiptDocument(result.collection));
       printWindow.document.close();
       setSelectedReceipt(result.collection);
       await load();
@@ -963,7 +931,9 @@ export default function CollectorPage({ currentUser = {} }) {
                 account={account}
                 currentUser={currentUser}
                 onCollect={startCollection}
-                busy={busy === `collect-${account.customerId}`}
+                onMessage={openUnavailableMessage}
+                collecting={busy === `collect-${account.customerId}`}
+                messaging={busy === `message-${account.customerId}`}
               />
             ))}
           </div>
@@ -1050,7 +1020,7 @@ export default function CollectorPage({ currentUser = {} }) {
             <Metric icon={IconWallet} label="GCash expected" value={money(finance.metrics?.pendingGcash)} tone="cyan" />
             <Metric icon={IconAlertTriangle} label="Variance batches" value={finance.metrics?.varianceBatches || 0} tone="red" />
           </div>
-          <div className="collector-section-heading"><div><h3>Finance reconciliation</h3><p>Count physical cash and verify transfers in the company GCash account.</p></div></div>
+          <div className="collector-section-heading"><div><h3>Finance reconciliation</h3><p>Review the included customer payments, count physical cash, and verify company GCash transfers.</p></div></div>
           <div className="collector-finance-list">
             {(finance.openRemittances || []).map((remittance) => (
               <FinanceRemittanceCard
@@ -1065,6 +1035,80 @@ export default function CollectorPage({ currentUser = {} }) {
           </div>
           {!finance.openRemittances?.length && <div className="collector-empty card"><IconShieldCheck size={30} />No remittances are waiting for Finance.</div>}
         </section>
+      )}
+
+      {messageCustomer && (
+        <div className="collector-modal-backdrop" role="presentation">
+          <section className="collector-message-modal" role="dialog" aria-modal="true" aria-label="Send customer unavailable message">
+            <header>
+              <span className="collector-message-icon"><IconMessage size={23} /></span>
+              <div>
+                <h3>Customer unavailable</h3>
+                <span>{customerName(messageCustomer.customer)}</span>
+              </div>
+              <button
+                type="button"
+                aria-label="Close message preview"
+                disabled={busy === `message-${messageCustomer.customerId}`}
+                onClick={() => setMessageCustomer(null)}
+              >
+                <IconX size={20} />
+              </button>
+            </header>
+            <div className="collector-message-body">
+              <div className="collector-message-recipient">
+                <div><small>Send to</small><strong>{customerSmsDestination(messageCustomer.customer)}</strong></div>
+                <div><small>Sender ID</small><strong>3J BILL</strong></div>
+                <div><small>Current amount due</small><strong>{money(accountPayableToday(messageCustomer))}</strong></div>
+              </div>
+              <div className="collector-message-preview">
+                <small>Message preview</small>
+                <p>{unavailableCustomerMessage(messageCustomer)}</p>
+              </div>
+              <p className="collector-message-note">
+                The system checks the customer’s current Billing amount again before sending.
+              </p>
+              <div className="collector-message-actions">
+                <button
+                  className="btn btn-outline-secondary"
+                  type="button"
+                  disabled={busy === `message-${messageCustomer.customerId}`}
+                  onClick={() => setMessageCustomer(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-primary"
+                  type="button"
+                  disabled={busy === `message-${messageCustomer.customerId}`}
+                  onClick={sendUnavailableMessage}
+                >
+                  <IconSend size={18} />
+                  {busy === `message-${messageCustomer.customerId}` ? 'Sending…' : 'Send message'}
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {messageSent && (
+        <div className="collector-modal-backdrop" role="presentation">
+          <section className="collector-receipt-modal collector-message-success-modal" role="dialog" aria-modal="true" aria-label="Message sent">
+            <header>
+              <span className="collector-receipt-success"><IconCheck size={24} /></span>
+              <button type="button" aria-label="Close message sent popup" onClick={() => setMessageSent(null)}><IconX size={20} /></button>
+            </header>
+            <div className="collector-receipt-summary">
+              <small>A2P notification</small>
+              <h3>Message sent</h3>
+              <span>The customer-unavailable notice was sent to {messageSent.customerName}.</span>
+              <strong className="collector-message-success-destination">{messageSent.destination}</strong>
+              <span>Sender ID: {messageSent.senderId}</span>
+            </div>
+            <button className="btn btn-primary w-100" type="button" onClick={() => setMessageSent(null)}>Done</button>
+          </section>
+        </div>
       )}
 
       {selectedCustomer && payment && (

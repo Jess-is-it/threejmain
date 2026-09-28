@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   IconAlertTriangle,
   IconBell,
@@ -7,6 +7,7 @@ import {
   IconCircleOff,
   IconCopy,
   IconClock,
+  IconCurrentLocation,
   IconDatabase,
   IconDeviceFloppy,
   IconEdit,
@@ -20,6 +21,7 @@ import {
   IconMapPin,
   IconMail,
   IconMessageCircle,
+  IconMinus,
   IconNetwork,
   IconPhoto,
   IconPlayerPlay,
@@ -43,9 +45,16 @@ import { CUSTOMER_AVATAR_GENDERS, DEFAULT_CUSTOMER_EMOTION_SETTINGS } from './av
 import {
   DEFAULT_MAP_PROVIDER_SETTINGS,
   MAP_PROVIDER_TYPES,
+  createMapProviderSession,
+  defaultMapProvider,
+  enabledMapProviders,
   isProviderConfigured,
   isProviderUsable,
+  mapProviderById,
+  mapProviderNeedsSession,
+  mapProviderTileUrl,
   mapProviderTypeLabel,
+  mapProviderWithSession,
   normalizeMapProviderId,
   normalizeMapProviderSettings
 } from './mapProviders';
@@ -173,10 +182,10 @@ function KpiCard({ icon: Icon, label, value, tone = 'blue' }) {
   );
 }
 
-function Modal({ title, children, onClose, size = 'lg' }) {
+function Modal({ title, children, onClose, size = 'lg', className = '' }) {
   return (
     <>
-      <div className="modal modal-blur fade show d-block system-settings-modal" tabIndex="-1" role="dialog">
+      <div className={`modal modal-blur fade show d-block system-settings-modal ${className}`.trim()} tabIndex="-1" role="dialog">
         <div className={`modal-dialog modal-${size} modal-dialog-centered`}>
           <div className="modal-content">
             <div className="modal-header">
@@ -199,6 +208,119 @@ function hasCoordinates(location) {
     && location.longitude !== null
     && location.longitude !== undefined
     && location.longitude !== '';
+}
+
+function parseBarangayNames(value) {
+  const uniqueNames = [];
+  const seen = new Set();
+  String(value || '').split(/[\n,;]+/).forEach((rawName) => {
+    const name = rawName.trim();
+    const key = name.toUpperCase();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    uniqueNames.push(name);
+  });
+  return uniqueNames;
+}
+
+const DEFAULT_LOCATION_COORDINATES = { latitude: 17.559311, longitude: 121.684928 };
+const LOCATION_COORDINATE_ZOOM = 15;
+const LOCATION_COORDINATE_MIN_ZOOM = 12;
+const LOCATION_COORDINATE_MAX_ZOOM = 19;
+const LOCATION_MAP_TILE_SIZE = 256;
+const DEFAULT_LOCATION_MAP_VIEWPORT = {
+  width: LOCATION_MAP_TILE_SIZE * 3,
+  height: LOCATION_MAP_TILE_SIZE * 3
+};
+
+function coordinateNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function longitudeToTileX(longitude, zoom) {
+  return ((longitude + 180) / 360) * (2 ** zoom);
+}
+
+function latitudeToTileY(latitude, zoom) {
+  const latitudeRadians = (latitude * Math.PI) / 180;
+  return ((1 - Math.log(Math.tan(latitudeRadians) + (1 / Math.cos(latitudeRadians))) / Math.PI) / 2) * (2 ** zoom);
+}
+
+function tileXToLongitude(tileX, zoom) {
+  return (tileX / (2 ** zoom)) * 360 - 180;
+}
+
+function tileYToLatitude(tileY, zoom) {
+  const value = Math.PI * (1 - (2 * tileY) / (2 ** zoom));
+  return (Math.atan(Math.sinh(value)) * 180) / Math.PI;
+}
+
+function clampMapLatitude(latitude) {
+  return Math.max(-85.05112878, Math.min(85.05112878, latitude));
+}
+
+function normalizeMapLongitude(longitude) {
+  return ((((longitude + 180) % 360) + 360) % 360) - 180;
+}
+
+function locationCoordinateTiles(
+  centerLatitude,
+  centerLongitude,
+  selectedLatitude,
+  selectedLongitude,
+  zoom,
+  provider,
+  viewport = DEFAULT_LOCATION_MAP_VIEWPORT
+) {
+  const viewportWidth = Math.max(1, Number(viewport.width) || DEFAULT_LOCATION_MAP_VIEWPORT.width);
+  const viewportHeight = Math.max(1, Number(viewport.height) || DEFAULT_LOCATION_MAP_VIEWPORT.height);
+  const viewportTileWidth = viewportWidth / LOCATION_MAP_TILE_SIZE;
+  const viewportTileHeight = viewportHeight / LOCATION_MAP_TILE_SIZE;
+  const centerX = longitudeToTileX(centerLongitude, zoom);
+  const centerY = latitudeToTileY(centerLatitude, zoom);
+  const baseX = centerX - (viewportTileWidth / 2);
+  const baseY = centerY - (viewportTileHeight / 2);
+  const endX = baseX + viewportTileWidth;
+  const endY = baseY + viewportTileHeight;
+  const tiles = [];
+  for (let y = Math.floor(baseY); y < Math.ceil(endY); y += 1) {
+    for (let x = Math.floor(baseX); x < Math.ceil(endX); x += 1) {
+      const url = mapProviderTileUrl(provider, x, y, zoom);
+      if (url) {
+        tiles.push({
+          key: `${provider?.id || 'map'}-${zoom}-${x}-${y}`,
+          url,
+          style: {
+            left: `${Math.round((x - baseX) * LOCATION_MAP_TILE_SIZE)}px`,
+            top: `${Math.round((y - baseY) * LOCATION_MAP_TILE_SIZE)}px`,
+            width: `${LOCATION_MAP_TILE_SIZE}px`,
+            height: `${LOCATION_MAP_TILE_SIZE}px`
+          }
+        });
+      }
+    }
+  }
+  const markerX = (longitudeToTileX(selectedLongitude, zoom) - baseX) * LOCATION_MAP_TILE_SIZE;
+  const markerY = (latitudeToTileY(selectedLatitude, zoom) - baseY) * LOCATION_MAP_TILE_SIZE;
+  return {
+    baseX,
+    baseY,
+    tileSize: LOCATION_MAP_TILE_SIZE,
+    tiles,
+    marker: {
+      left: `${markerX}px`,
+      top: `${markerY}px`
+    }
+  };
+}
+
+function coordinatePointStyle(latitude, longitude, zoom, coordinateMap) {
+  if (!coordinateMap) return { display: 'none' };
+  const x = (longitudeToTileX(longitude, zoom) - coordinateMap.baseX) * coordinateMap.tileSize;
+  const y = (latitudeToTileY(latitude, zoom) - coordinateMap.baseY) * coordinateMap.tileSize;
+  return { left: `${x}px`, top: `${y}px` };
 }
 
 const AVATAR_UPLOAD_ACCEPT = 'image/png,image/jpeg,image/webp,image/gif';
@@ -291,32 +413,60 @@ function brandingFileAccepted(assetId, file) {
 
 function LocationManagementTab() {
   const emptyForm = {
-    location_name: '',
-    address: '',
     municipality: '',
     barangay: '',
     province: '',
     region: '',
     latitude: '',
     longitude: '',
-    geocode_source: '',
-    raw_geocode: null,
+    notes: ''
+  };
+  const emptyBulkForm = {
+    province: '',
+    municipality: '',
+    region: '',
+    barangays: '',
     notes: ''
   };
   const [locations, setLocations] = useState([]);
+  const [locationReference, setLocationReference] = useState({
+    provinces: [],
+    citiesByProvince: {},
+    barangaysByProvinceCity: {}
+  });
   const [modalOpen, setModalOpen] = useState(false);
+  const [locationEntryMode, setLocationEntryMode] = useState('single');
   const [editingId, setEditingId] = useState('');
   const [form, setForm] = useState(emptyForm);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState([]);
+  const [bulkForm, setBulkForm] = useState(emptyBulkForm);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
-  const [searching, setSearching] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [bulkSaving, setBulkSaving] = useState(false);
   const [bulkSelectEnabled, setBulkSelectEnabled] = useState(false);
   const [selectedLocationIds, setSelectedLocationIds] = useState([]);
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [mapProviderSettings, setMapProviderSettings] = useState(normalizeMapProviderSettings(DEFAULT_MAP_PROVIDER_SETTINGS));
+  const [mapProviderId, setMapProviderId] = useState(DEFAULT_MAP_PROVIDER_SETTINGS.defaultProviderId);
+  const [mapProviderSession, setMapProviderSession] = useState(null);
+  const [mapProviderSessionError, setMapProviderSessionError] = useState('');
+  const [coordinateCapture, setCoordinateCapture] = useState(null);
+  const [coordinateResolving, setCoordinateResolving] = useState(false);
+  const [coordinatePan, setCoordinatePan] = useState(null);
+  const [coordinateMapViewport, setCoordinateMapViewport] = useState(DEFAULT_LOCATION_MAP_VIEWPORT);
+  const [coordinateSearchQuery, setCoordinateSearchQuery] = useState('');
+  const [coordinateSearchResults, setCoordinateSearchResults] = useState([]);
+  const [coordinateSearchLoading, setCoordinateSearchLoading] = useState(false);
+  const [coordinateSearchError, setCoordinateSearchError] = useState('');
+  const [coordinateLandmarks, setCoordinateLandmarks] = useState([]);
+  const [coordinateLandmarksLoading, setCoordinateLandmarksLoading] = useState(false);
+  const [coordinateLandmarkError, setCoordinateLandmarkError] = useState('');
+  const [coordinateLandmarkFilters, setCoordinateLandmarkFilters] = useState({});
+  const coordinateMapElementRef = useRef(null);
+  const coordinateDragMovedRef = useRef(false);
+  const coordinateSearchRequestRef = useRef(0);
+  const coordinateLandmarkRequestRef = useRef(0);
 
   async function load() {
     setLoading(true);
@@ -331,39 +481,222 @@ function LocationManagementTab() {
 
   useEffect(() => {
     load();
+    request('/customer-profiling/meta')
+      .then((meta) => setLocationReference({
+        provinces: Array.isArray(meta?.provinces) ? meta.provinces : [],
+        citiesByProvince: meta?.citiesByProvince || {},
+        barangaysByProvinceCity: meta?.barangaysByProvinceCity || {}
+      }))
+      .catch(() => {});
+    request('/system-settings/map-providers')
+      .then((settings) => {
+        const normalized = normalizeMapProviderSettings(settings);
+        setMapProviderSettings(normalized);
+        setMapProviderId(normalized.defaultProviderId);
+      })
+      .catch(() => {
+        const fallback = normalizeMapProviderSettings(DEFAULT_MAP_PROVIDER_SETTINGS);
+        setMapProviderSettings(fallback);
+        setMapProviderId(fallback.defaultProviderId);
+      });
   }, []);
 
   useEffect(() => {
     setSelectedLocationIds((currentIds) => currentIds.filter((id) => locations.some((location) => location.id === id)));
   }, [locations]);
 
+  const mapProviderOptions = enabledMapProviders(mapProviderSettings);
+  const selectedMapProvider = mapProviderById(mapProviderSettings, mapProviderId)
+    || defaultMapProvider(mapProviderSettings);
+  const activeMapProvider = mapProviderWithSession(selectedMapProvider, mapProviderSession);
+  const coordinateMinZoom = Math.max(
+    LOCATION_COORDINATE_MIN_ZOOM,
+    Number(selectedMapProvider?.minZoom) || LOCATION_COORDINATE_MIN_ZOOM
+  );
+  const coordinateMaxZoom = Math.max(
+    coordinateMinZoom,
+    Number(selectedMapProvider?.maxZoom) || LOCATION_COORDINATE_MAX_ZOOM
+  );
+  const coordinateMap = coordinateCapture
+    ? locationCoordinateTiles(
+      coordinateCapture.centerLatitude,
+      coordinateCapture.centerLongitude,
+      coordinateCapture.selectedLatitude,
+      coordinateCapture.selectedLongitude,
+      coordinateCapture.zoom,
+      activeMapProvider,
+      coordinateMapViewport
+    )
+    : null;
+  const coordinateLandmarkCategories = [...coordinateLandmarks.reduce((categories, landmark) => {
+    if (!categories.has(landmark.category)) {
+      categories.set(landmark.category, {
+        id: landmark.category,
+        label: landmark.category_label || 'Other Landmarks',
+        count: 0
+      });
+    }
+    categories.get(landmark.category).count += 1;
+    return categories;
+  }, new Map()).values()];
+  const visibleCoordinateLandmarks = coordinateLandmarks.filter(
+    (landmark) => coordinateLandmarkFilters[landmark.category] !== false
+  );
+  const allCoordinateLandmarksChecked = coordinateLandmarkCategories.length > 0
+    && coordinateLandmarkCategories.every((category) => coordinateLandmarkFilters[category.id] !== false);
+
+  useEffect(() => {
+    const mapElement = coordinateMapElementRef.current;
+    if (!coordinateCapture || !mapElement) return undefined;
+
+    const updateViewport = () => {
+      const width = mapElement.clientWidth;
+      const height = mapElement.clientHeight;
+      if (!width || !height) return;
+      setCoordinateMapViewport((current) => (
+        Math.abs(current.width - width) < 0.5 && Math.abs(current.height - height) < 0.5
+          ? current
+          : { width, height }
+      ));
+    };
+
+    updateViewport();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateViewport);
+      return () => window.removeEventListener('resize', updateViewport);
+    }
+    const observer = new ResizeObserver(updateViewport);
+    observer.observe(mapElement);
+    return () => observer.disconnect();
+  }, [coordinateCapture ? true : false]);
+
+  useEffect(() => {
+    if (!coordinateCapture) {
+      coordinateSearchRequestRef.current += 1;
+      coordinateLandmarkRequestRef.current += 1;
+      setCoordinateSearchQuery('');
+      setCoordinateSearchResults([]);
+      setCoordinateSearchLoading(false);
+      setCoordinateSearchError('');
+      setCoordinateLandmarks([]);
+      setCoordinateLandmarksLoading(false);
+      setCoordinateLandmarkError('');
+      return;
+    }
+    loadCoordinateLandmarks(coordinateCapture.centerLatitude, coordinateCapture.centerLongitude);
+  }, [coordinateCapture ? true : false]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setMapProviderSession(null);
+    setMapProviderSessionError('');
+    if (!coordinateCapture || !mapProviderNeedsSession(selectedMapProvider)) return undefined;
+    createMapProviderSession(selectedMapProvider)
+      .then((session) => {
+        if (!cancelled) setMapProviderSession(session);
+      })
+      .catch((err) => {
+        if (!cancelled) setMapProviderSessionError(err.message || 'Map provider session failed.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    coordinateCapture ? true : false,
+    selectedMapProvider?.id,
+    selectedMapProvider?.apiKey,
+    selectedMapProvider?.sessionProvider,
+    selectedMapProvider?.googleMapType,
+    selectedMapProvider?.googleLanguage,
+    selectedMapProvider?.googleRegion
+  ]);
+
   function openAddLocation() {
     setEditingId('');
     setForm(emptyForm);
-    setSearchQuery('');
-    setSearchResults([]);
+    setBulkForm(emptyBulkForm);
+    setLocationEntryMode('single');
+    setCoordinateCapture(null);
     setError('');
     setMessage('');
     setModalOpen(true);
   }
 
+  function changeLocationEntryMode(mode) {
+    setLocationEntryMode(mode);
+    setCoordinateCapture(null);
+    setError('');
+  }
+
+  function changeBulkProvince(province) {
+    setBulkForm((current) => ({
+      ...current,
+      province,
+      municipality: '',
+      barangays: ''
+    }));
+  }
+
+  function changeBulkMunicipality(municipality) {
+    setBulkForm((current) => {
+      const referenceKey = `${String(current.province || '').trim().toUpperCase()}::${String(municipality || '').trim().toUpperCase()}`;
+      const catalogBarangays = locationReference.barangaysByProvinceCity[referenceKey] || [];
+      return {
+        ...current,
+        municipality,
+        barangays: catalogBarangays.length ? catalogBarangays.join('\n') : ''
+      };
+    });
+  }
+
+  async function saveBulkBarangays(e) {
+    e.preventDefault();
+    const barangays = parseBarangayNames(bulkForm.barangays);
+    if (!barangays.length) {
+      setError('Enter at least one barangay. Use one name per line or separate names with commas.');
+      return;
+    }
+    setBulkSaving(true);
+    setError('');
+    setMessage('');
+    try {
+      const result = await request('/system-settings/locations/bulk-barangays', {
+        method: 'POST',
+        body: JSON.stringify({
+          municipality: bulkForm.municipality,
+          province: bulkForm.province,
+          region: bulkForm.region,
+          barangays,
+          notes: bulkForm.notes
+        })
+      });
+      const created = Number(result.created) || 0;
+      const skipped = Array.isArray(result.skipped) ? result.skipped.length : 0;
+      closeLocationModal();
+      setMessage(
+        `${created} ${created === 1 ? 'barangay was' : 'barangays were'} added${skipped ? `; ${skipped} duplicate${skipped === 1 ? ' was' : 's were'} skipped` : ''}.`
+      );
+      await load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBulkSaving(false);
+    }
+  }
+
   function editLocation(location) {
+    setLocationEntryMode('single');
     setEditingId(location.id);
     setForm({
-      location_name: location.location_name || '',
-      address: location.address || '',
       municipality: location.municipality || '',
       barangay: location.barangay || '',
       province: location.province || '',
       region: location.region || '',
       latitude: location.latitude ?? '',
       longitude: location.longitude ?? '',
-      geocode_source: location.geocode_source || 'MANUAL',
-      raw_geocode: location.raw_geocode || null,
       notes: location.notes || ''
     });
-    setSearchQuery('');
-    setSearchResults([]);
+    setCoordinateCapture(null);
     setError('');
     setMessage('');
     setModalOpen(true);
@@ -373,48 +706,9 @@ function LocationManagementTab() {
     setModalOpen(false);
     setEditingId('');
     setForm(emptyForm);
-    setSearchQuery('');
-    setSearchResults([]);
-  }
-
-  async function searchAddress(e) {
-    e.preventDefault();
-    const query = searchQuery.trim();
-    if (query.length < 3) {
-      setError('Search text must be at least 3 characters.');
-      return;
-    }
-    setError('');
-    setMessage('');
-    setSearching(true);
-    try {
-      const data = await request(`/system-settings/locations/search?q=${encodeURIComponent(query)}`);
-      const results = data.results || [];
-      setSearchResults(results);
-      if (!results.length) setMessage('No address suggestions found. You can enter the address manually.');
-    } catch (err) {
-      setError(`${err.message}. You can still enter the location manually.`);
-      setSearchResults([]);
-    } finally {
-      setSearching(false);
-    }
-  }
-
-  function selectSuggestion(result) {
-    setForm({
-      ...form,
-      location_name: form.location_name || result.barangay || result.municipality || '',
-      address: result.address || result.display_name || '',
-      municipality: result.municipality || '',
-      barangay: result.barangay || '',
-      province: result.province || '',
-      region: result.region || '',
-      latitude: result.latitude ?? '',
-      longitude: result.longitude ?? '',
-      geocode_source: result.geocode_source || 'NOMINATIM',
-      raw_geocode: result.raw_geocode || result
-    });
-    setSearchResults([]);
+    setBulkForm(emptyBulkForm);
+    setLocationEntryMode('single');
+    setCoordinateCapture(null);
   }
 
   async function saveLocation(e) {
@@ -425,9 +719,15 @@ function LocationManagementTab() {
     try {
       const body = {
         ...form,
+        location_name: form.barangay.trim(),
+        address: [form.barangay, form.municipality, form.province]
+          .map((part) => part.trim())
+          .filter(Boolean)
+          .join(', '),
         latitude: form.latitude === '' ? null : Number(form.latitude),
         longitude: form.longitude === '' ? null : Number(form.longitude),
-        geocode_source: form.geocode_source || 'MANUAL'
+        geocode_source: 'MANUAL',
+        raw_geocode: {}
       };
       const path = editingId ? `/system-settings/locations/${editingId}` : '/system-settings/locations';
       await request(path, { method: editingId ? 'PATCH' : 'POST', body: JSON.stringify(body) });
@@ -507,6 +807,254 @@ function LocationManagementTab() {
     }
   }
 
+  async function loadCoordinateLandmarks(latitude, longitude) {
+    const normalizedLatitude = coordinateNumber(latitude);
+    const normalizedLongitude = coordinateNumber(longitude);
+    if (normalizedLatitude === null || normalizedLongitude === null) return;
+    const requestId = coordinateLandmarkRequestRef.current + 1;
+    coordinateLandmarkRequestRef.current = requestId;
+    setCoordinateLandmarksLoading(true);
+    setCoordinateLandmarkError('');
+    try {
+      const parameters = new URLSearchParams({
+        latitude: normalizedLatitude.toFixed(6),
+        longitude: normalizedLongitude.toFixed(6),
+        radius_m: '5000',
+        limit: '30'
+      });
+      const result = await request(`/system-settings/map-places/landmarks?${parameters.toString()}`);
+      if (coordinateLandmarkRequestRef.current !== requestId) return;
+      const items = Array.isArray(result?.items) ? result.items : [];
+      setCoordinateLandmarks(items);
+      setCoordinateLandmarkFilters((current) => {
+        const next = { ...current };
+        items.forEach((item) => {
+          if (!(item.category in next)) next[item.category] = true;
+        });
+        return next;
+      });
+    } catch (err) {
+      if (coordinateLandmarkRequestRef.current === requestId) {
+        setCoordinateLandmarks([]);
+        setCoordinateLandmarkError(err.message || 'Unable to load nearby landmarks.');
+      }
+    } finally {
+      if (coordinateLandmarkRequestRef.current === requestId) setCoordinateLandmarksLoading(false);
+    }
+  }
+
+  async function searchCoordinatePlaces(event) {
+    event.preventDefault();
+    const query = coordinateSearchQuery.trim();
+    if (query.length < 2 || !coordinateCapture) {
+      setCoordinateSearchError('Enter at least 2 characters to search places.');
+      return;
+    }
+    const requestId = coordinateSearchRequestRef.current + 1;
+    coordinateSearchRequestRef.current = requestId;
+    setCoordinateSearchLoading(true);
+    setCoordinateSearchError('');
+    try {
+      const parameters = new URLSearchParams({
+        q: query,
+        latitude: coordinateCapture.centerLatitude.toFixed(6),
+        longitude: coordinateCapture.centerLongitude.toFixed(6),
+        limit: '6'
+      });
+      const result = await request(`/system-settings/map-places/search?${parameters.toString()}`);
+      if (coordinateSearchRequestRef.current !== requestId) return;
+      const items = Array.isArray(result?.items) ? result.items : [];
+      setCoordinateSearchResults(items);
+      if (!items.length) setCoordinateSearchError('No matching places were found.');
+    } catch (err) {
+      if (coordinateSearchRequestRef.current === requestId) {
+        setCoordinateSearchResults([]);
+        setCoordinateSearchError(err.message || 'Unable to search places.');
+      }
+    } finally {
+      if (coordinateSearchRequestRef.current === requestId) setCoordinateSearchLoading(false);
+    }
+  }
+
+  function selectCoordinatePlace(place) {
+    const latitude = coordinateNumber(place?.latitude);
+    const longitude = coordinateNumber(place?.longitude);
+    if (latitude === null || longitude === null) return;
+    coordinateSearchRequestRef.current += 1;
+    setCoordinateCapture((current) => current ? {
+      ...current,
+      centerLatitude: latitude,
+      centerLongitude: longitude,
+      selectedLatitude: latitude,
+      selectedLongitude: longitude,
+      zoom: Math.min(coordinateMaxZoom, Math.max(current.zoom, 16))
+    } : current);
+    setCoordinateSearchQuery(place.name || '');
+    setCoordinateSearchResults([]);
+    setCoordinateSearchError('');
+    loadCoordinateLandmarks(latitude, longitude);
+  }
+
+  function toggleAllCoordinateLandmarks(checked) {
+    setCoordinateLandmarkFilters((current) => ({
+      ...current,
+      ...Object.fromEntries(coordinateLandmarkCategories.map((category) => [category.id, checked]))
+    }));
+  }
+
+  function toggleCoordinateLandmarkCategory(categoryId, checked) {
+    setCoordinateLandmarkFilters((current) => ({ ...current, [categoryId]: checked }));
+  }
+
+  async function openCoordinateCapture() {
+    let latitude = coordinateNumber(form.latitude);
+    let longitude = coordinateNumber(form.longitude);
+    const barangayQuery = [form.barangay, form.municipality, form.province, 'Philippines']
+      .map((part) => String(part || '').trim())
+      .filter(Boolean)
+      .join(', ');
+
+    setCoordinateSearchError('');
+    if ((latitude === null || longitude === null) && form.barangay.trim()) {
+      setCoordinateResolving(true);
+      try {
+        const parameters = new URLSearchParams({ q: barangayQuery, limit: '1' });
+        const result = await request(`/system-settings/map-places/search?${parameters.toString()}`);
+        const barangayPlace = Array.isArray(result?.items) ? result.items[0] : null;
+        const resolvedLatitude = coordinateNumber(barangayPlace?.latitude);
+        const resolvedLongitude = coordinateNumber(barangayPlace?.longitude);
+        if (resolvedLatitude !== null && resolvedLongitude !== null) {
+          latitude = resolvedLatitude;
+          longitude = resolvedLongitude;
+          setCoordinateSearchQuery(barangayPlace.name || form.barangay.trim());
+        } else {
+          setCoordinateSearchError('The barangay could not be located automatically. Search for it or move the pin manually.');
+        }
+      } catch (err) {
+        setCoordinateSearchError(err.message || 'The barangay could not be located automatically. Search for it or move the pin manually.');
+      } finally {
+        setCoordinateResolving(false);
+      }
+    }
+
+    latitude ??= DEFAULT_LOCATION_COORDINATES.latitude;
+    longitude ??= DEFAULT_LOCATION_COORDINATES.longitude;
+    const zoom = Math.min(coordinateMaxZoom, Math.max(coordinateMinZoom, LOCATION_COORDINATE_ZOOM));
+    setCoordinateCapture({
+      centerLatitude: latitude,
+      centerLongitude: longitude,
+      originLatitude: latitude,
+      originLongitude: longitude,
+      selectedLatitude: latitude,
+      selectedLongitude: longitude,
+      zoom
+    });
+  }
+
+  function selectCoordinateFromMapPoint(mapElement, clientX, clientY) {
+    if (!coordinateCapture || !coordinateMap) return;
+    const rect = mapElement.getBoundingClientRect();
+    const x = clientX - rect.left - mapElement.clientLeft;
+    const y = clientY - rect.top - mapElement.clientTop;
+    const tileX = coordinateMap.baseX + (x / coordinateMap.tileSize);
+    const tileY = coordinateMap.baseY + (y / coordinateMap.tileSize);
+    setCoordinateCapture((current) => current ? {
+      ...current,
+      selectedLatitude: tileYToLatitude(tileY, current.zoom),
+      selectedLongitude: tileXToLongitude(tileX, current.zoom)
+    } : current);
+  }
+
+  function startCoordinatePan(event) {
+    if (!coordinateCapture || !coordinateMap || event.button !== 0) return;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    coordinateDragMovedRef.current = false;
+    setCoordinatePan({
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      centerLatitude: coordinateCapture.centerLatitude,
+      centerLongitude: coordinateCapture.centerLongitude,
+      zoom: coordinateCapture.zoom
+    });
+  }
+
+  function moveCoordinatePan(event) {
+    if (!coordinatePan || coordinatePan.pointerId !== event.pointerId) return;
+    const deltaX = event.clientX - coordinatePan.startX;
+    const deltaY = event.clientY - coordinatePan.startY;
+    if (Math.abs(deltaX) + Math.abs(deltaY) > 4) coordinateDragMovedRef.current = true;
+    const tileDeltaX = deltaX / LOCATION_MAP_TILE_SIZE;
+    const tileDeltaY = deltaY / LOCATION_MAP_TILE_SIZE;
+    const startTileX = longitudeToTileX(coordinatePan.centerLongitude, coordinatePan.zoom);
+    const startTileY = latitudeToTileY(coordinatePan.centerLatitude, coordinatePan.zoom);
+    const maxTile = 2 ** coordinatePan.zoom;
+    const nextTileY = Math.max(0, Math.min(maxTile, startTileY - tileDeltaY));
+    setCoordinateCapture((current) => current ? {
+      ...current,
+      centerLatitude: clampMapLatitude(tileYToLatitude(nextTileY, coordinatePan.zoom)),
+      centerLongitude: normalizeMapLongitude(tileXToLongitude(startTileX - tileDeltaX, coordinatePan.zoom))
+    } : current);
+  }
+
+  function finishCoordinatePan(event) {
+    if (!coordinatePan || coordinatePan.pointerId !== event.pointerId) return;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    if (!coordinateDragMovedRef.current) {
+      selectCoordinateFromMapPoint(event.currentTarget, event.clientX, event.clientY);
+    }
+    coordinateDragMovedRef.current = false;
+    setCoordinatePan(null);
+  }
+
+  function changeCoordinateZoom(delta) {
+    setCoordinateCapture((current) => {
+      if (!current) return current;
+      const nextZoom = Math.min(coordinateMaxZoom, Math.max(coordinateMinZoom, current.zoom + delta));
+      if (nextZoom === current.zoom) return current;
+
+      const selectedOffsetX = longitudeToTileX(current.selectedLongitude, current.zoom)
+        - longitudeToTileX(current.centerLongitude, current.zoom);
+      const selectedOffsetY = latitudeToTileY(current.selectedLatitude, current.zoom)
+        - latitudeToTileY(current.centerLatitude, current.zoom);
+      const nextCenterX = longitudeToTileX(current.selectedLongitude, nextZoom) - selectedOffsetX;
+      const nextCenterY = latitudeToTileY(current.selectedLatitude, nextZoom) - selectedOffsetY;
+      const maxTile = 2 ** nextZoom;
+
+      return {
+        ...current,
+        zoom: nextZoom,
+        centerLatitude: clampMapLatitude(tileYToLatitude(Math.max(0, Math.min(maxTile, nextCenterY)), nextZoom)),
+        centerLongitude: normalizeMapLongitude(tileXToLongitude(nextCenterX, nextZoom))
+      };
+    });
+  }
+
+  function recenterCoordinateCapture() {
+    if (!coordinateCapture) return;
+    const latitude = coordinateCapture.originLatitude;
+    const longitude = coordinateCapture.originLongitude;
+    setCoordinateCapture((current) => current ? {
+      ...current,
+      centerLatitude: latitude,
+      centerLongitude: longitude,
+      selectedLatitude: latitude,
+      selectedLongitude: longitude
+    } : current);
+    loadCoordinateLandmarks(latitude, longitude);
+  }
+
+  function applyCoordinateCapture() {
+    if (!coordinateCapture) return;
+    setForm((current) => ({
+      ...current,
+      latitude: coordinateCapture.selectedLatitude.toFixed(6),
+      longitude: coordinateCapture.selectedLongitude.toFixed(6)
+    }));
+    setCoordinateCapture(null);
+    setCoordinatePan(null);
+  }
+
   const counts = {
     total: locations.length,
     withCoordinates: locations.filter(hasCoordinates).length,
@@ -517,12 +1065,18 @@ function LocationManagementTab() {
   const selectableLocationIds = locations.map((location) => location.id).filter(Boolean);
   const allLocationsSelected = selectableLocationIds.length > 0
     && selectableLocationIds.every((locationId) => selectedLocationIdSet.has(locationId));
+  const bulkBarangays = parseBarangayNames(bulkForm.barangays);
+  const referenceMunicipalities = bulkForm.province
+    ? (locationReference.citiesByProvince[String(bulkForm.province).toUpperCase()] || [])
+    : Object.values(locationReference.citiesByProvince).flat();
+  const selectedReferenceKey = `${String(bulkForm.province || '').trim().toUpperCase()}::${String(bulkForm.municipality || '').trim().toUpperCase()}`;
+  const selectedCatalogBarangays = locationReference.barangaysByProvinceCity[selectedReferenceKey] || [];
 
   return (
     <div className="row row-cards system-settings-locations">
       <div className="col-12">
         <div className="alert alert-info">
-          Location Management stores reusable addresses for site planning. Search can auto-fill municipality, barangay, latitude, and longitude when the geocoder has a match; manual entry is always available.
+          All customer addresses use this manual location catalog. Add reusable locations here, then select them when creating or updating a customer profile.
         </div>
       </div>
       {message && <div className="col-12"><div className="alert alert-success">{message}</div></div>}
@@ -536,7 +1090,7 @@ function LocationManagementTab() {
           <div className="card-header">
             <div>
               <h3 className="card-title mb-1">Locations</h3>
-              <div className="text-muted small">Saved deployment addresses with municipality, barangay, and coordinates.</div>
+              <div className="text-muted small">Reusable addresses with municipality, barangay, and coordinates.</div>
             </div>
             <div className="card-actions">
               <div className="system-settings-location-actions">
@@ -578,17 +1132,15 @@ function LocationManagementTab() {
                           type="checkbox"
                           checked={allLocationsSelected}
                           onChange={(e) => toggleAllLocations(e.target.checked)}
-                          disabled={!locations.length}
+                          disabled={!selectableLocationIds.length}
                           aria-label="Select all locations"
                         />
                       </th>
                     )}
                     <th>Location</th>
-                    <th>Address</th>
                     <th>Municipality</th>
                     <th>Barangay</th>
                     <th>Coordinates</th>
-                    <th>Source</th>
                     <th>Created At</th>
                     {!bulkSelectEnabled && <th className="w-1">Management</th>}
                   </tr>
@@ -618,7 +1170,6 @@ function LocationManagementTab() {
                           </td>
                         )}
                         <td className="fw-semibold">{location.location_name || 'Unnamed location'}</td>
-                        <td className="system-settings-location-address">{location.address}</td>
                         <td>{location.municipality || 'n/a'}</td>
                         <td>{location.barangay || 'n/a'}</td>
                         <td>
@@ -626,8 +1177,7 @@ function LocationManagementTab() {
                             ? <code>{Number(location.latitude).toFixed(6)}, {Number(location.longitude).toFixed(6)}</code>
                             : <span className="text-muted">n/a</span>}
                         </td>
-                        <td><span className="badge bg-blue-lt">{location.geocode_source || 'MANUAL'}</span></td>
-                        <td>{fmt(location.created_at)}</td>
+                        <td className="text-nowrap">{formatDateTime(location.created_at)}</td>
                         {!bulkSelectEnabled && <td>
                           <div className="btn-list flex-nowrap">
                             <button className="btn btn-icon btn-outline-primary" type="button" onClick={() => editLocation(location)} title="Edit location" aria-label="Edit location">
@@ -641,7 +1191,7 @@ function LocationManagementTab() {
                       </tr>
                     );
                   })}
-                  {!locations.length && <tr><td colSpan="8" className="text-muted p-4">No locations saved yet.</td></tr>}
+                  {!locations.length && <tr><td colSpan="6" className="text-muted p-4">No manually added locations yet.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -650,45 +1200,276 @@ function LocationManagementTab() {
       </div>
       {modalOpen && (
         <Modal title={editingId ? 'Edit Location' : 'Add Location'} onClose={closeLocationModal}>
-          <form onSubmit={searchAddress} className="mb-3">
-            <label className="form-label">Search Address</label>
-            <div className="input-group">
-              <input className="form-control" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search address, municipality, or barangay" />
-              <button className="btn btn-outline-primary" type="submit" disabled={searching || searchQuery.trim().length < 3}>
-                <IconSearch size={18} className="me-2" />{searching ? 'Searching...' : 'Search'}
+          {!editingId && (
+            <div className="btn-group w-100 mb-4" role="group" aria-label="Choose how to add locations">
+              <button
+                type="button"
+                className={`btn ${locationEntryMode === 'single' ? 'btn-primary active' : 'btn-outline-primary'}`}
+                aria-pressed={locationEntryMode === 'single'}
+                onClick={() => changeLocationEntryMode('single')}
+              >
+                <IconMapPin size={18} className="me-2" />Single Location
               </button>
-            </div>
-          </form>
-          {searchResults.length > 0 && (
-            <div className="list-group mb-3">
-              {searchResults.map((result, index) => (
-                <button className="list-group-item list-group-item-action" type="button" key={`${result.display_name}-${index}`} onClick={() => selectSuggestion(result)}>
-                  <div className="fw-semibold">{result.display_name}</div>
-                  <div className="text-muted small">{[result.barangay, result.municipality, result.province].filter(Boolean).join(' / ') || 'Address suggestion'}</div>
-                </button>
-              ))}
+              <button
+                type="button"
+                className={`btn ${locationEntryMode === 'multiple' ? 'btn-primary active' : 'btn-outline-primary'}`}
+                aria-pressed={locationEntryMode === 'multiple'}
+                onClick={() => changeLocationEntryMode('multiple')}
+              >
+                <IconListCheck size={18} className="me-2" />Multiple Barangays
+              </button>
             </div>
           )}
-          <form onSubmit={saveLocation}>
-            <div className="row g-3">
-              <div className="col-md-6"><label className="form-label">Location Name</label><input className="form-control" value={form.location_name} onChange={(e) => setForm({ ...form, location_name: e.target.value })} /></div>
-              <div className="col-md-6"><label className="form-label">Municipality</label><input className="form-control" value={form.municipality} onChange={(e) => setForm({ ...form, municipality: e.target.value })} /></div>
-              <div className="col-12"><label className="form-label">Address</label><input className="form-control" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} /></div>
-              <div className="col-md-6"><label className="form-label">Barangay</label><input className="form-control" value={form.barangay} onChange={(e) => setForm({ ...form, barangay: e.target.value })} /></div>
-              <div className="col-md-6"><label className="form-label">Province</label><input className="form-control" value={form.province} onChange={(e) => setForm({ ...form, province: e.target.value })} /></div>
-              <div className="col-md-6"><label className="form-label">Latitude</label><input className="form-control" type="number" step="any" value={form.latitude} onChange={(e) => setForm({ ...form, latitude: e.target.value })} /></div>
-              <div className="col-md-6"><label className="form-label">Longitude</label><input className="form-control" type="number" step="any" value={form.longitude} onChange={(e) => setForm({ ...form, longitude: e.target.value })} /></div>
-              <div className="col-md-6"><label className="form-label">Region</label><input className="form-control" value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })} /></div>
-              <div className="col-md-6"><label className="form-label">Source</label><input className="form-control" value={form.geocode_source || 'MANUAL'} onChange={(e) => setForm({ ...form, geocode_source: e.target.value })} /></div>
-              <div className="col-12"><label className="form-label">Notes</label><textarea className="form-control" rows="3" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div>
+          {!editingId && locationEntryMode === 'multiple' ? (
+            <form onSubmit={saveBulkBarangays}>
+              <div className="alert alert-info">
+                Choose a municipality to load its known barangays, or enter a custom list. Existing barangays in the same municipality are skipped automatically.
+              </div>
+              <div className="row g-3">
+                <div className="col-md-6">
+                  <label className="form-label">Province</label>
+                  <input
+                    className="form-control"
+                    list="system-settings-bulk-provinces"
+                    value={bulkForm.province}
+                    onChange={(e) => changeBulkProvince(e.target.value)}
+                    placeholder="Select or enter a province"
+                    required
+                  />
+                  <datalist id="system-settings-bulk-provinces">
+                    {locationReference.provinces.map((province) => <option key={province} value={province} />)}
+                  </datalist>
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label">Municipality</label>
+                  <input
+                    className="form-control"
+                    list="system-settings-bulk-municipalities"
+                    value={bulkForm.municipality}
+                    onChange={(e) => changeBulkMunicipality(e.target.value)}
+                    placeholder="Select or enter a municipality"
+                    required
+                  />
+                  <datalist id="system-settings-bulk-municipalities">
+                    {[...new Set(referenceMunicipalities)].sort().map((municipality) => <option key={municipality} value={municipality} />)}
+                  </datalist>
+                </div>
+                <div className="col-12">
+                  <div className="d-flex align-items-center justify-content-between gap-2 mb-1">
+                    <label className="form-label mb-0">Barangays</label>
+                    <span className="badge bg-blue-lt text-blue">{bulkBarangays.length} ready to add</span>
+                  </div>
+                  <textarea
+                    className="form-control system-settings-bulk-barangays-input"
+                    rows="10"
+                    value={bulkForm.barangays}
+                    onChange={(e) => setBulkForm((current) => ({ ...current, barangays: e.target.value }))}
+                    placeholder={'Enter one barangay per line\nBarangay 1\nBarangay 2\nBarangay 3'}
+                    required
+                  />
+                  <div className="form-hint">
+                    {selectedCatalogBarangays.length
+                      ? `Loaded all ${selectedCatalogBarangays.length} known barangays for this municipality. You can remove or add names before saving.`
+                      : 'Enter one barangay per line, or separate names with commas or semicolons.'}
+                  </div>
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label">Region <span className="text-muted">(optional)</span></label>
+                  <input className="form-control" value={bulkForm.region} onChange={(e) => setBulkForm((current) => ({ ...current, region: e.target.value }))} />
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label">Notes <span className="text-muted">(optional)</span></label>
+                  <input className="form-control" value={bulkForm.notes} onChange={(e) => setBulkForm((current) => ({ ...current, notes: e.target.value }))} />
+                </div>
+              </div>
+              <div className="modal-footer px-0 pb-0">
+                <button type="button" className="btn" onClick={closeLocationModal}>Cancel</button>
+                <button className="btn btn-primary" disabled={bulkSaving || !bulkBarangays.length}>
+                  <IconListCheck size={18} className="me-2" />{bulkSaving ? 'Adding Barangays...' : `Add ${bulkBarangays.length || ''} Barangays`}
+                </button>
+              </div>
+            </form>
+          ) : (
+            <form onSubmit={saveLocation}>
+              <div className="row g-3">
+                <div className="col-md-6"><label className="form-label">Municipality</label><input className="form-control" required value={form.municipality} onChange={(e) => setForm({ ...form, municipality: e.target.value })} /></div>
+                <div className="col-md-6"><label className="form-label">Barangay</label><input className="form-control" required value={form.barangay} onChange={(e) => setForm({ ...form, barangay: e.target.value })} /></div>
+                <div className="col-md-6"><label className="form-label">Province</label><input className="form-control" value={form.province} onChange={(e) => setForm({ ...form, province: e.target.value })} /></div>
+                <div className="col-md-4"><label className="form-label">Latitude</label><input className="form-control" type="number" min="-90" max="90" step="any" value={form.latitude} onChange={(e) => setForm({ ...form, latitude: e.target.value })} /></div>
+                <div className="col-md-4"><label className="form-label">Longitude</label><input className="form-control" type="number" min="-180" max="180" step="any" value={form.longitude} onChange={(e) => setForm({ ...form, longitude: e.target.value })} /></div>
+                <div className="col-md-4 d-flex align-items-end">
+                  <button type="button" className="btn btn-outline-primary w-100" onClick={openCoordinateCapture} disabled={coordinateResolving}>
+                    <IconMapPin size={18} className="me-2" />{coordinateResolving ? 'Locating Barangay...' : 'Pin Coordinates'}
+                  </button>
+                </div>
+                <div className="col-12"><div className="text-muted small">The map opens at the saved pin or locates the barangay automatically when coordinates have not been set.</div></div>
+                <div className="col-12"><label className="form-label">Region</label><input className="form-control" value={form.region} onChange={(e) => setForm({ ...form, region: e.target.value })} /></div>
+                <div className="col-12"><label className="form-label">Notes</label><textarea className="form-control" rows="3" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div>
+              </div>
+              <div className="modal-footer px-0 pb-0">
+                <button type="button" className="btn" onClick={closeLocationModal}>Cancel</button>
+                <button className="btn btn-primary" disabled={saving}>
+                  <IconDeviceFloppy size={18} className="me-2" />{saving ? 'Saving...' : editingId ? 'Update Location' : 'Save Location'}
+                </button>
+              </div>
+            </form>
+          )}
+        </Modal>
+      )}
+      {coordinateCapture && coordinateMap && (
+        <Modal title="Capture Longitude and Latitude" onClose={() => { setCoordinateCapture(null); setCoordinatePan(null); }} size="xl" className="system-settings-coordinate-modal">
+          <div className="system-settings-coordinate-picker">
+            <div className="system-settings-coordinate-map-shell">
+              <div
+                ref={coordinateMapElementRef}
+                className={`system-settings-coordinate-map ${coordinatePan ? 'is-panning' : ''}`}
+                onPointerDown={startCoordinatePan}
+                onPointerMove={moveCoordinatePan}
+                onPointerUp={finishCoordinatePan}
+                onPointerCancel={finishCoordinatePan}
+                onWheel={(event) => {
+                  event.preventDefault();
+                  changeCoordinateZoom(event.deltaY < 0 ? 1 : -1);
+                }}
+                role="application"
+                tabIndex={0}
+                aria-label="Pan map and select location coordinates"
+              >
+                {coordinateMap.tiles.map((tile) => <img key={tile.key} src={tile.url} style={tile.style} alt="" draggable="false" />)}
+                {visibleCoordinateLandmarks.map((landmark) => (
+                  <button
+                    type="button"
+                    key={landmark.id}
+                    className="system-settings-coordinate-landmark"
+                    data-category={landmark.category}
+                    style={coordinatePointStyle(landmark.latitude, landmark.longitude, coordinateCapture.zoom, coordinateMap)}
+                    title={`${landmark.name}${landmark.type ? ` — ${landmark.type}` : ''}`}
+                    aria-label={`Use ${landmark.name} coordinates`}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={() => selectCoordinatePlace(landmark)}
+                  >
+                    <IconMapPin size={15} />
+                    <span>{landmark.name}</span>
+                  </button>
+                ))}
+                <span className="system-settings-coordinate-marker" style={coordinateMap.marker}><IconMapPin size={28} /></span>
+              </div>
+              <div className="system-settings-coordinate-search">
+                <form onSubmit={searchCoordinatePlaces}>
+                  <div className="input-group input-group-sm">
+                    <span className="input-group-text"><IconSearch size={16} /></span>
+                    <input
+                      className="form-control"
+                      value={coordinateSearchQuery}
+                      onChange={(event) => {
+                        setCoordinateSearchQuery(event.target.value);
+                        setCoordinateSearchError('');
+                      }}
+                      placeholder="Search places"
+                      aria-label="Search places"
+                      autoComplete="off"
+                    />
+                    <button className="btn btn-primary" type="submit" disabled={coordinateSearchLoading}>
+                      {coordinateSearchLoading ? 'Searching...' : 'Search'}
+                    </button>
+                  </div>
+                </form>
+                {(coordinateSearchError || coordinateSearchResults.length > 0) && (
+                  <div className="system-settings-coordinate-search-results">
+                    {coordinateSearchError && <div className="system-settings-coordinate-search-message">{coordinateSearchError}</div>}
+                    {coordinateSearchResults.map((place) => (
+                      <button type="button" key={place.id} onClick={() => selectCoordinatePlace(place)}>
+                        <span className="fw-semibold">{place.name}</span>
+                        <small>{place.address}</small>
+                        <span className="badge bg-blue-lt text-blue">{place.type || 'Place'}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="system-settings-coordinate-controls" aria-label="Map controls">
+                <select
+                  className="form-select form-select-sm system-settings-coordinate-provider"
+                  value={selectedMapProvider?.id || ''}
+                  onChange={(event) => setMapProviderId(event.target.value)}
+                  aria-label="Coordinate map provider"
+                >
+                  {mapProviderOptions.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}
+                </select>
+                <div className="system-settings-coordinate-inline-readout" aria-label="Selected coordinates and zoom">
+                  <span><small>Long</small><strong>{coordinateCapture.selectedLongitude.toFixed(6)}</strong></span>
+                  <span><small>Lat</small><strong>{coordinateCapture.selectedLatitude.toFixed(6)}</strong></span>
+                  <span><small>Zoom</small><strong>{coordinateCapture.zoom}</strong></span>
+                </div>
+                <button type="button" className="btn btn-icon btn-sm" title="Zoom in" onClick={() => changeCoordinateZoom(1)} disabled={coordinateCapture.zoom >= coordinateMaxZoom}><IconPlus size={16} /></button>
+                <button type="button" className="btn btn-icon btn-sm" title="Zoom out" onClick={() => changeCoordinateZoom(-1)} disabled={coordinateCapture.zoom <= coordinateMinZoom}><IconMinus size={16} /></button>
+                <button type="button" className="btn btn-icon btn-sm" title="Return to starting point" onClick={recenterCoordinateCapture}><IconCurrentLocation size={16} /></button>
+              </div>
+              <details className="system-settings-coordinate-landmark-filter">
+                <summary>
+                  <IconListDetails size={17} />
+                  <span>Landmarks</span>
+                  <span className="badge bg-blue-lt text-blue">{visibleCoordinateLandmarks.length}/{coordinateLandmarks.length}</span>
+                </summary>
+                <div className="system-settings-coordinate-landmark-filter-panel">
+                  <div className="d-flex align-items-center justify-content-between gap-2 mb-2">
+                    <strong>Show landmarks</strong>
+                    <button
+                      type="button"
+                      className="btn btn-icon btn-sm"
+                      title="Refresh landmarks near map center"
+                      onClick={() => loadCoordinateLandmarks(coordinateCapture.centerLatitude, coordinateCapture.centerLongitude)}
+                      disabled={coordinateLandmarksLoading}
+                    >
+                      <IconRefresh size={15} />
+                    </button>
+                  </div>
+                  {coordinateLandmarksLoading ? (
+                    <div className="text-muted small">Loading nearby landmarks...</div>
+                  ) : coordinateLandmarkError ? (
+                    <div className="text-danger small">{coordinateLandmarkError}</div>
+                  ) : coordinateLandmarkCategories.length ? (
+                    <>
+                      <label className="form-check mb-2">
+                        <input
+                          className="form-check-input"
+                          type="checkbox"
+                          checked={allCoordinateLandmarksChecked}
+                          onChange={(event) => toggleAllCoordinateLandmarks(event.target.checked)}
+                        />
+                        <span className="form-check-label fw-semibold">All landmarks ({coordinateLandmarks.length})</span>
+                      </label>
+                      <div className="system-settings-coordinate-landmark-options">
+                        {coordinateLandmarkCategories.map((category) => (
+                          <label className="form-check" key={category.id}>
+                            <input
+                              className="form-check-input"
+                              type="checkbox"
+                              checked={coordinateLandmarkFilters[category.id] !== false}
+                              onChange={(event) => toggleCoordinateLandmarkCategory(category.id, event.target.checked)}
+                            />
+                            <span className="form-check-label">{category.label} ({category.count})</span>
+                          </label>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-muted small">No nearby landmarks found.</div>
+                  )}
+                </div>
+              </details>
+              {mapProviderNeedsSession(selectedMapProvider) && !mapProviderSession && !mapProviderSessionError && (
+                <small className="system-settings-coordinate-provider-status">Starting map session...</small>
+              )}
+              {mapProviderSessionError && (
+                <small className="system-settings-coordinate-provider-status error">{mapProviderSessionError}</small>
+              )}
             </div>
             <div className="modal-footer px-0 pb-0">
-              <button type="button" className="btn" onClick={closeLocationModal}>Cancel</button>
-              <button className="btn btn-primary" disabled={saving}>
-                <IconDeviceFloppy size={18} className="me-2" />{saving ? 'Saving...' : editingId ? 'Update Location' : 'Save Location'}
-              </button>
+              <button type="button" className="btn" onClick={() => { setCoordinateCapture(null); setCoordinatePan(null); }}>Cancel</button>
+              <button type="button" className="btn btn-primary" onClick={applyCoordinateCapture}><IconMapPin size={18} className="me-2" />Use Coordinates</button>
             </div>
-          </form>
+          </div>
         </Modal>
       )}
     </div>

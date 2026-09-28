@@ -687,6 +687,37 @@ def invoice_promotion_quote(invoice: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def account_payable_today(account: dict[str, Any]) -> float:
+    if account.get("payableToday") is not None:
+        return money(account.get("payableToday"))
+    return money(
+        sum(
+            invoice_promotion_quote(invoice)["discountedPayable"]
+            for invoice in account.get("invoices") or []
+        )
+    )
+
+
+def receipt_outstanding_invoice_snapshot(invoice: dict[str, Any]) -> dict[str, Any]:
+    """Freeze the customer-facing billing-period balance for durable receipt reprints."""
+    quote = invoice_promotion_quote(invoice)
+    balance = money(invoice.get("balance"))
+    return {
+        "invoiceId": clean_text(invoice.get("id"), 160),
+        "invoiceNumber": clean_text(invoice.get("invoiceNumber"), 160),
+        "billingCycleStart": clean_text(invoice.get("billingCycleStart"), 20),
+        "billingCycleEnd": clean_text(invoice.get("billingCycleEnd"), 20),
+        "issueDate": clean_text(invoice.get("issueDate"), 20),
+        "dueDate": clean_text(invoice.get("dueDate"), 20),
+        "status": normalize_upper(invoice.get("status")),
+        "catalogName": clean_text(invoice.get("catalogName"), 240),
+        "regularAmount": balance,
+        "promotionDiscountAmount": money(quote.get("promotionDiscountAmount")),
+        "amountDue": money(quote.get("discountedPayable", balance)),
+        "balance": balance,
+    }
+
+
 def automatic_collection_allocations(
     invoices: list[dict[str, Any]],
     raw_amount: float,
@@ -757,6 +788,49 @@ def visible_remittances_for_actor(actor: dict[str, Any]) -> list[dict[str, Any]]
     if not is_finance_actor(actor):
         rows = [row for row in rows if row.get("collectorUsername") == actor_username(actor)]
     return rows
+
+
+def finance_remittance_view(
+    remittance: dict[str, Any],
+    collection_by_id: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Attach the linked customer payments Finance must review before confirmation."""
+    linked_collections = collection_by_id or {
+        row.get("id"): row for row in collections if row.get("id") and not row.get("deletedAt")
+    }
+    collection_items = []
+    for collection_id in remittance.get("collectionIds") or []:
+        collection = linked_collections.get(collection_id)
+        if collection is None:
+            continue
+        customer = dict(collection.get("customer") or {})
+        customer_name = clean_text(customer.get("name"), 240) or " ".join(
+            part
+            for part in [
+                clean_text(customer.get("firstName"), 80),
+                clean_text(customer.get("middleName"), 80),
+                clean_text(customer.get("lastName"), 80),
+            ]
+            if part
+        )
+        collection_items.append(
+            {
+                "collectionId": clean_text(collection.get("id"), 160),
+                "customerId": clean_text(collection.get("customerId"), 160),
+                "customerName": customer_name or "Unnamed customer",
+                "accountNumber": clean_text(customer.get("accountNumber"), 160),
+                "receiptNumber": clean_text(collection.get("receiptNumber"), 160),
+                "paymentDate": clean_text(collection.get("paymentDate"), 20),
+                "createdAt": clean_text(collection.get("createdAt"), 80),
+                "method": normalize_upper(collection.get("method")) or "CASH",
+                "amount": money(collection.get("amount")),
+                "referenceNumber": clean_text(collection.get("referenceNumber"), 160),
+            }
+        )
+    row = dict(remittance)
+    row["collectionItems"] = collection_items
+    row["listedCollectionTotal"] = money(sum(item["amount"] for item in collection_items))
+    return row
 
 
 def open_custody_collections(username: str) -> list[dict[str, Any]]:
@@ -896,6 +970,111 @@ def list_collectible_customers(search: str = "", actor=Depends(require_actor)):
     }
 
 
+@router.post("/customers/{customer_id}/unavailable-message")
+def send_customer_unavailable_message(customer_id: str, actor=Depends(require_actor)):
+    require_collector_permission(actor, "collector.payment.collect")
+    account = next(
+        (row for row in billing_accounts("") if row.get("customerId") == customer_id),
+        None,
+    )
+    if account is None:
+        raise HTTPException(status_code=404, detail="Customer has no collectible Billing balance")
+
+    customer = account.get("customer") or {}
+    destination = customer_sms_destination(customer)
+    if not destination:
+        raise HTTPException(status_code=400, detail="Customer has no saved mobile number")
+    amount_due = account_payable_today(account)
+    if amount_due <= 0:
+        raise HTTPException(status_code=409, detail="Customer no longer has an amount due")
+    if _sms_sender is None:
+        raise HTTPException(status_code=503, detail="A2P Messaging provider is not configured")
+
+    message_request_id = str(uuid4())
+    message_text = unavailable_customer_sms_message(account)
+    request_context = {
+        "messageRequestId": message_request_id,
+        "customerId": customer_id,
+        "accountNumber": clean_text(customer.get("accountNumber"), 160),
+        "collectorUsername": actor_username(actor),
+        "amountDue": amount_due,
+        "visitOutcome": "CUSTOMER_UNAVAILABLE",
+    }
+    try:
+        result = _sms_sender(
+            destination=destination,
+            message_text=message_text,
+            source=COLLECTOR_SMS_SENDER_ID,
+            purpose="COLLECTOR_CUSTOMER_UNAVAILABLE",
+            request_context=request_context,
+            created_by_admin_id=actor.get("id") or actor_username(actor),
+        )
+        status = normalize_upper(result.get("status") or "SUCCESS")
+        if status != "SUCCESS":
+            raise HTTPException(status_code=502, detail="A2P Messaging did not accept the message")
+    except HTTPException as exc:
+        try:
+            add_audit(
+                "collector_customer_unavailable_sms_failed",
+                "Customer",
+                customer_id,
+                {
+                    **request_context,
+                    "destination": mask_sms_destination(destination),
+                    "error": clean_text(exc.detail, 500),
+                },
+                actor_username(actor),
+            )
+        except Exception:  # pragma: no cover - audit must not obscure the send error.
+            logger.exception("Collector unavailable-customer SMS failure audit could not be recorded")
+        raise
+    except Exception as exc:  # pragma: no cover - defensive provider boundary.
+        logger.exception("Collector unavailable-customer SMS failed")
+        try:
+            add_audit(
+                "collector_customer_unavailable_sms_failed",
+                "Customer",
+                customer_id,
+                {
+                    **request_context,
+                    "destination": mask_sms_destination(destination),
+                    "error": clean_text(exc, 500),
+                },
+                actor_username(actor),
+            )
+        except Exception:
+            logger.exception("Collector unavailable-customer SMS failure audit could not be recorded")
+        raise HTTPException(status_code=502, detail="Customer message could not be sent") from exc
+
+    try:
+        add_audit(
+            "collector_customer_unavailable_sms_sent",
+            "Customer",
+            customer_id,
+            {
+                **request_context,
+                "destination": mask_sms_destination(destination),
+                "senderId": COLLECTOR_SMS_SENDER_ID,
+                "messageId": clean_text(result.get("messageId") or result.get("message_id"), 200),
+            },
+            actor_username(actor),
+        )
+    except Exception:  # pragma: no cover - an accepted SMS must not look failed because audit dispatch failed.
+        logger.exception("Collector unavailable-customer SMS success audit could not be recorded")
+
+    return {
+        "status": "SUCCESS",
+        "messageRequestId": message_request_id,
+        "messageId": clean_text(result.get("messageId") or result.get("message_id"), 200),
+        "senderId": COLLECTOR_SMS_SENDER_ID,
+        "destination": mask_sms_destination(destination),
+        "messageText": message_text,
+        "customerId": customer_id,
+        "amountDue": amount_due,
+        "sentAt": now_iso(),
+    }
+
+
 @router.post("/customers/{customer_id}/claim")
 @collector_mutation
 def claim_customer(customer_id: str, payload: ClaimPayload, actor=Depends(require_actor)):
@@ -1007,6 +1186,37 @@ def collection_sms_message(record: dict[str, Any]) -> str:
     if remaining_balance > 0:
         return f"{message} You have a remaining balance of P{remaining_balance:,.2f}."
     return f"{message} Your account is now fully paid."
+
+
+def customer_first_name(customer: dict[str, Any]) -> str:
+    first_name = clean_text(customer.get("firstName"), 80)
+    if first_name:
+        return first_name
+    customer_name = clean_text(customer.get("name"), 160)
+    return customer_name.split()[0] if customer_name else "Customer"
+
+
+def customer_sms_destination(customer: dict[str, Any]) -> str:
+    return clean_text(
+        customer.get("contactNumber") or customer.get("alternateMobileNumber"),
+        32,
+    )
+
+
+def mask_sms_destination(destination: str) -> str:
+    clean_destination = clean_text(destination, 32)
+    if len(clean_destination) <= 4:
+        return clean_destination
+    return f"{'*' * (len(clean_destination) - 4)}{clean_destination[-4:]}"
+
+
+def unavailable_customer_sms_message(account: dict[str, Any]) -> str:
+    customer = account.get("customer") or {}
+    return (
+        f"Hello, {customer_first_name(customer)}. Our 3J collector visited today, but no one was available. "
+        f"Your current amount due is P{account_payable_today(account):,.2f}. "
+        "Please contact 3J to arrange payment. Thank you."
+    )
 
 
 def send_collection_sms(record: dict[str, Any], actor: dict[str, Any], destination: str) -> dict[str, Any]:
@@ -1193,6 +1403,16 @@ def create_collection(
         accounts_after = billing_accounts("")
         account_after = next((row for row in accounts_after if row.get("customerId") == payload.customerId), None)
         balance_after = money(account_after.get("outstandingBalance")) if account_after else 0
+        outstanding_invoices_before = [
+            receipt_outstanding_invoice_snapshot(invoice)
+            for invoice in account_before.get("invoices") or []
+            if money(invoice.get("balance")) > 0
+        ]
+        outstanding_invoices_after = [
+            receipt_outstanding_invoice_snapshot(invoice)
+            for invoice in (account_after or {}).get("invoices") or []
+            if money(invoice.get("balance")) > 0
+        ]
         timestamp = now_iso()
         allocation_rows = []
         payment_allocations = {
@@ -1278,6 +1498,8 @@ def create_collection(
             "tenderedAmount": tendered_amount if method == "CASH" else amount,
             "changeAmount": returned_amount if method == "CASH" else 0,
             "allocations": allocation_rows,
+            "outstandingInvoicesBefore": outstanding_invoices_before,
+            "outstandingInvoicesAfter": outstanding_invoices_after,
             "balanceBefore": money(account_before.get("outstandingBalance")),
             "amountDueBefore": money(account_before.get("payableToday", account_before.get("outstandingBalance"))),
             "promotionDiscountAmount": promotion_discount_total,
@@ -1494,6 +1716,9 @@ def finance_overview(actor=Depends(require_actor)):
     closed_rows = [
         row for row in remittances if row.get("status") == "CLOSED" and not row.get("deletedAt")
     ]
+    collection_by_id = {
+        row.get("id"): row for row in collections if row.get("id") and not row.get("deletedAt")
+    }
     return {
         "metrics": {
             "pendingBatches": len(open_rows),
@@ -1506,12 +1731,18 @@ def finance_overview(actor=Depends(require_actor)):
                 if clean_text(row.get("closedAt"), 20).startswith(today_iso())
             ),
         },
-        "openRemittances": sorted(open_rows, key=lambda row: row.get("submittedAt") or ""),
-        "recentClosed": sorted(
-            closed_rows,
-            key=lambda row: row.get("closedAt") or "",
-            reverse=True,
-        )[:20],
+        "openRemittances": [
+            finance_remittance_view(row, collection_by_id)
+            for row in sorted(open_rows, key=lambda row: row.get("submittedAt") or "")
+        ],
+        "recentClosed": [
+            finance_remittance_view(row, collection_by_id)
+            for row in sorted(
+                closed_rows,
+                key=lambda row: row.get("closedAt") or "",
+                reverse=True,
+            )[:20]
+        ],
     }
 
 
@@ -1528,6 +1759,15 @@ def confirm_remittance(
         return remittance
     if remittance.get("status") not in {"SUBMITTED", "VARIANCE"}:
         raise HTTPException(status_code=409, detail="Remittance is not available for confirmation")
+    reconciliation = finance_remittance_view(remittance)
+    if (
+        len(reconciliation["collectionItems"]) != int(remittance.get("collectionCount") or 0)
+        or money(reconciliation["listedCollectionTotal"]) != money(remittance.get("expectedTotal"))
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Linked customer payments do not match the remittance summary",
+        )
     company_reference = clean_text(payload.companyGcashReference, 160)
     if money(remittance.get("expectedGcash")) > 0 and not company_reference:
         raise HTTPException(status_code=400, detail="Company GCash receiving reference is required")

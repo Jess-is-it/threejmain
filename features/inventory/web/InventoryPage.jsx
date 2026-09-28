@@ -36,6 +36,11 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function idempotencyKey(prefix = 'inventory') {
+  const random = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${prefix}:${random}`;
+}
+
 function money(value) {
   return new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP' }).format(Number(value || 0));
 }
@@ -128,7 +133,7 @@ const blankMovement = {
   quantity: '1',
   serialNumber: '',
   fromLocation: '',
-  toLocation: 'Main stockroom',
+  toLocation: 'inventory-location-main',
   referenceType: 'MANUAL',
   referenceId: '',
   notes: ''
@@ -152,17 +157,30 @@ const blankAssignment = {
   notes: ''
 };
 
+const blankLocation = {
+  id: '',
+  code: '',
+  name: '',
+  type: 'STOCKROOM',
+  parentLocationId: '',
+  active: true,
+  notes: ''
+};
+
 export default function InventoryPage({ refreshShell = () => {} }) {
   const [activeTab, setActiveTab] = useState('Overview');
-  const [meta, setMeta] = useState({ itemCategories: [], trackingTypes: [], itemStatuses: [], movementTypes: [], assignmentStatuses: [], assigneeTypes: [] });
+  const [meta, setMeta] = useState({ itemCategories: [], trackingTypes: [], itemStatuses: [], movementTypes: [], locationTypes: [], assignmentStatuses: [], assigneeTypes: [] });
   const [overview, setOverview] = useState({ metrics: {}, lowStockItems: [], recentMovements: [], activeAssignments: [] });
   const [items, setItems] = useState([]);
   const [movements, setMovements] = useState([]);
   const [assignments, setAssignments] = useState([]);
+  const [locations, setLocations] = useState([]);
+  const [balances, setBalances] = useState([]);
   const [itemForm, setItemForm] = useState(blankItem);
   const [itemModalOpen, setItemModalOpen] = useState(false);
   const [movementForm, setMovementForm] = useState(blankMovement);
   const [assignmentForm, setAssignmentForm] = useState(blankAssignment);
+  const [locationForm, setLocationForm] = useState(blankLocation);
   const [search, setSearch] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -173,18 +191,22 @@ export default function InventoryPage({ refreshShell = () => {} }) {
     setError('');
     try {
       const query = encodeURIComponent(nextSearch);
-      const [nextMeta, nextOverview, nextItems, nextMovements, nextAssignments] = await Promise.all([
+      const [nextMeta, nextOverview, nextItems, nextMovements, nextAssignments, nextLocations, nextBalances] = await Promise.all([
         request('/inventory/meta'),
         request('/inventory/overview'),
         request(`/inventory/items?search=${query}`),
         request(`/inventory/movements?search=${query}`),
-        request(`/inventory/assignments?search=${query}`)
+        request(`/inventory/assignments?search=${query}`),
+        request('/inventory/locations'),
+        request('/inventory/balances')
       ]);
       setMeta(nextMeta);
       setOverview(nextOverview);
       setItems(nextItems);
       setMovements(nextMovements);
       setAssignments(nextAssignments);
+      setLocations(nextLocations);
+      setBalances(nextBalances);
     } catch (err) {
       setError(err.message);
     }
@@ -197,6 +219,17 @@ export default function InventoryPage({ refreshShell = () => {} }) {
       <>
         <option value="">Select item</option>
         {items.map((item) => <option key={item.id} value={item.id}>{itemLabel(item)} ({item.availableQuantity} {item.unit})</option>)}
+      </>
+    );
+  }
+
+  function locationOptions({ includeBlank = true } = {}) {
+    return (
+      <>
+        {includeBlank && <option value="">Select location</option>}
+        {locations.filter((location) => location.active).map((location) => (
+          <option key={location.id} value={location.id}>{location.code} - {location.name}</option>
+        ))}
       </>
     );
   }
@@ -236,20 +269,46 @@ export default function InventoryPage({ refreshShell = () => {} }) {
     e.preventDefault();
     const body = { ...movementForm, quantity: Number(movementForm.quantity) };
     delete body.id;
-    const path = movementForm.id ? `/inventory/movements/${movementForm.id}` : '/inventory/movements';
-    await request(path, { method: movementForm.id ? 'PATCH' : 'POST', body: JSON.stringify(body) });
+    await request('/inventory/movements', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey('manual-movement') },
+      body: JSON.stringify(body)
+    });
     setMovementForm(blankMovement);
-    setMessage(movementForm.id ? 'Movement saved.' : 'Movement recorded.');
+    setMessage('Movement posted to the immutable ledger.');
     await load();
     refreshShell();
   }
 
-  async function deleteMovement(id) {
-    if (!window.confirm('Delete this movement record?')) return;
-    await request(`/inventory/movements/${id}`, { method: 'DELETE' });
-    setMessage('Movement deleted.');
+  async function reverseMovement(row) {
+    const reason = window.prompt(`Reason for reversing ${row.type} movement ${row.id}?`, 'Posting correction');
+    if (reason === null) return;
+    await request(`/inventory/movements/${row.id}/reverse`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey(`movement-reversal:${row.id}`) },
+      body: JSON.stringify({ reason })
+    });
+    setMessage('Reversal posted. The original movement remains in the ledger.');
     await load();
     refreshShell();
+  }
+
+  async function submitLocation(e) {
+    e.preventDefault();
+    const body = { ...locationForm };
+    delete body.id;
+    const path = locationForm.id ? `/inventory/locations/${locationForm.id}` : '/inventory/locations';
+    await request(path, { method: locationForm.id ? 'PATCH' : 'POST', body: JSON.stringify(body) });
+    setLocationForm(blankLocation);
+    setMessage(locationForm.id ? 'Location saved.' : 'Location created.');
+    await load();
+  }
+
+  async function archiveLocation(id) {
+    if (!window.confirm('Archive this empty location?')) return;
+    await request(`/inventory/locations/${id}`, { method: 'DELETE' });
+    setMessage('Location archived.');
+    await load();
   }
 
   async function submitAssignment(e) {
@@ -334,7 +393,7 @@ export default function InventoryPage({ refreshShell = () => {} }) {
       </div>
 
       <ul className="nav nav-tabs mb-3">
-        {['Overview', 'Items', 'Movements', 'Assignments'].map((tab) => (
+        {['Overview', 'Items', 'Movements', 'Locations', 'Assignments'].map((tab) => (
           <li className="nav-item" key={tab}>
             <button className={`nav-link ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>{tab}</button>
           </li>
@@ -406,7 +465,9 @@ export default function InventoryPage({ refreshShell = () => {} }) {
                   <TextField label="On Hand" type="number" min="0" step="0.01" value={itemForm.quantityOnHand} required onChange={(quantityOnHand) => setItemForm({ ...itemForm, quantityOnHand })} />
                   <TextField label="Reorder Point" type="number" min="0" step="0.01" value={itemForm.reorderPoint} onChange={(reorderPoint) => setItemForm({ ...itemForm, reorderPoint })} />
                 </div>
-                <TextField label="Location" value={itemForm.location} onChange={(location) => setItemForm({ ...itemForm, location })} />
+                <SelectField label="Default Location" value={itemForm.location} required onChange={(location) => setItemForm({ ...itemForm, location })}>
+                  {locations.filter((location) => location.active).map((location) => <option key={location.id} value={location.name}>{location.code} - {location.name}</option>)}
+                </SelectField>
                 <TextField label="Supplier" value={itemForm.supplier} onChange={(supplier) => setItemForm({ ...itemForm, supplier })} />
                 <SelectField label="Status" value={itemForm.status} options={meta.itemStatuses || ['ACTIVE']} onChange={(status) => setItemForm({ ...itemForm, status })} />
                 <TextArea label="Serial Numbers" value={itemForm.serialNumbersText} onChange={(serialNumbersText) => setItemForm({ ...itemForm, serialNumbersText })} />
@@ -424,34 +485,70 @@ export default function InventoryPage({ refreshShell = () => {} }) {
       {activeTab === 'Movements' && (
         <div className="row row-cards">
           <div className="col-lg-4">
-            <Card title={movementForm.id ? 'Edit Movement' : 'New Movement'} icon={IconPackageExport}>
+            <Card title="Post Movement" icon={IconPackageExport}>
               <form className="inventory-form" onSubmit={submitMovement}>
                 <SelectField label="Item" value={movementForm.itemId} required onChange={(itemId) => {
                   const item = itemById.get(itemId);
-                  setMovementForm({ ...movementForm, itemId, toLocation: item?.location || movementForm.toLocation });
+                  setMovementForm({ ...movementForm, itemId, toLocation: item?.locationId || movementForm.toLocation });
                 }}>{itemOptions()}</SelectField>
-                <SelectField label="Type" value={movementForm.type} options={meta.movementTypes || ['RECEIVE']} onChange={(type) => setMovementForm({ ...movementForm, type })} />
+                <SelectField label="Type" value={movementForm.type} options={meta.movementTypes || ['RECEIVE']} onChange={(type) => {
+                  const item = itemById.get(movementForm.itemId);
+                  const defaultLocation = item?.locationId || 'inventory-location-main';
+                  if (['RECEIVE', 'RETURN'].includes(type)) setMovementForm({ ...movementForm, type, fromLocation: '', toLocation: defaultLocation });
+                  else if (type === 'ISSUE') setMovementForm({ ...movementForm, type, fromLocation: defaultLocation, toLocation: '' });
+                  else if (type === 'ADJUST') setMovementForm({ ...movementForm, type, fromLocation: '', toLocation: defaultLocation });
+                  else setMovementForm({ ...movementForm, type, fromLocation: defaultLocation, toLocation: '' });
+                }} />
                 <TextField label="Quantity" type="number" min="0.01" step="0.01" value={movementForm.quantity} required onChange={(quantity) => setMovementForm({ ...movementForm, quantity })} />
                 <TextField label="Serial Number" value={movementForm.serialNumber} onChange={(serialNumber) => setMovementForm({ ...movementForm, serialNumber })} />
                 <div className="inventory-two-cols">
-                  <TextField label="From" value={movementForm.fromLocation} onChange={(fromLocation) => setMovementForm({ ...movementForm, fromLocation })} />
-                  <TextField label="To" value={movementForm.toLocation} onChange={(toLocation) => setMovementForm({ ...movementForm, toLocation })} />
+                  <SelectField label="From" value={movementForm.fromLocation} onChange={(fromLocation) => setMovementForm({ ...movementForm, fromLocation })}>{locationOptions()}</SelectField>
+                  <SelectField label="To" value={movementForm.toLocation} onChange={(toLocation) => setMovementForm({ ...movementForm, toLocation })}>{locationOptions()}</SelectField>
                 </div>
                 <div className="inventory-two-cols">
                   <TextField label="Reference Type" value={movementForm.referenceType} onChange={(referenceType) => setMovementForm({ ...movementForm, referenceType })} />
                   <TextField label="Reference ID" value={movementForm.referenceId} onChange={(referenceId) => setMovementForm({ ...movementForm, referenceId })} />
                 </div>
                 <TextArea label="Notes" value={movementForm.notes} onChange={(notes) => setMovementForm({ ...movementForm, notes })} />
+                <div className="text-muted small">Receipts and returns add to “To”; issues remove from “From”; transfers require both; adjustments require exactly one side.</div>
                 <div className="inventory-form-actions">
-                  {movementForm.id && <button className="btn" type="button" onClick={() => setMovementForm(blankMovement)}>Cancel</button>}
-                  <button className="btn btn-primary"><IconDeviceFloppy size={16} className="me-1" />Save</button>
+                  <button className="btn btn-primary"><IconDeviceFloppy size={16} className="me-1" />Post</button>
                 </div>
               </form>
             </Card>
           </div>
           <div className="col-lg-8">
             <Card title="Movements" icon={IconPackageExport}>
-              <MovementTable rows={movements} onEdit={(row) => setMovementForm({ ...blankMovement, ...row, quantity: String(row.quantity) })} onDelete={deleteMovement} />
+              <MovementTable rows={movements} onReverse={reverseMovement} />
+            </Card>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'Locations' && (
+        <div className="row row-cards">
+          <div className="col-lg-4">
+            <Card title={locationForm.id ? 'Edit Location' : 'New Location'} icon={IconBox}>
+              <form className="inventory-form" onSubmit={submitLocation}>
+                <TextField label="Code" value={locationForm.code} required onChange={(code) => setLocationForm({ ...locationForm, code })} />
+                <TextField label="Name" value={locationForm.name} required onChange={(name) => setLocationForm({ ...locationForm, name })} />
+                <SelectField label="Type" value={locationForm.type} options={meta.locationTypes || ['STOCKROOM']} onChange={(type) => setLocationForm({ ...locationForm, type })} />
+                <SelectField label="Parent Location" value={locationForm.parentLocationId} onChange={(parentLocationId) => setLocationForm({ ...locationForm, parentLocationId })}>{locationOptions()}</SelectField>
+                <TextArea label="Notes" value={locationForm.notes} onChange={(notes) => setLocationForm({ ...locationForm, notes })} />
+                <label className="form-check">
+                  <input className="form-check-input" type="checkbox" checked={locationForm.active} onChange={(event) => setLocationForm({ ...locationForm, active: event.target.checked })} />
+                  <span className="form-check-label">Active location</span>
+                </label>
+                <div className="inventory-form-actions">
+                  {locationForm.id && <button className="btn" type="button" onClick={() => setLocationForm(blankLocation)}>Cancel</button>}
+                  <button className="btn btn-primary"><IconDeviceFloppy size={16} className="me-1" />Save</button>
+                </div>
+              </form>
+            </Card>
+          </div>
+          <div className="col-lg-8">
+            <Card title="Warehouses and Stock Locations" icon={IconBox}>
+              <LocationTable rows={locations} balances={balances} onEdit={(row) => setLocationForm({ ...blankLocation, ...row })} onDelete={archiveLocation} />
             </Card>
           </div>
         </div>
@@ -554,7 +651,7 @@ function ItemTable({ rows, onEdit, onDelete, compact = false }) {
   );
 }
 
-function MovementTable({ rows, onEdit, onDelete }) {
+function MovementTable({ rows, onReverse }) {
   if (!rows.length) return <Empty />;
   return (
     <div className="table-responsive">
@@ -580,6 +677,50 @@ function MovementTable({ rows, onEdit, onDelete }) {
               <td>{row.quantity} {row.item?.unit}</td>
               <td>{row.referenceType}{row.referenceId ? ` ${row.referenceId}` : ''}</td>
               <td>{row.fromLocation || '-'} {'->'} {row.toLocation || '-'}</td>
+              <td className="text-end">
+                {row.reversalOfId ? (
+                  <span className="badge bg-secondary-lt text-secondary">REVERSAL</span>
+                ) : (
+                  <button className="btn btn-sm" type="button" onClick={() => onReverse(row)} title="Post reversal">
+                    <IconRefresh size={14} className="me-1" />Reverse
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function LocationTable({ rows, balances, onEdit, onDelete }) {
+  if (!rows.length) return <Empty />;
+  const quantityByLocation = new Map();
+  balances.forEach((balance) => {
+    quantityByLocation.set(balance.locationId, Number(quantityByLocation.get(balance.locationId) || 0) + Number(balance.quantity || 0));
+  });
+  return (
+    <div className="table-responsive">
+      <table className="table card-table table-vcenter">
+        <thead>
+          <tr>
+            <th>Location</th>
+            <th>Type</th>
+            <th>Items</th>
+            <th>Total Quantity</th>
+            <th>Status</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.id}>
+              <td><div className="fw-bold">{row.name}</div><div className="text-muted">{row.code}</div></td>
+              <td>{String(row.type || '').replaceAll('_', ' ')}</td>
+              <td>{row.itemCount ?? balances.filter((balance) => balance.locationId === row.id && Number(balance.quantity) > 0).length}</td>
+              <td>{row.totalQuantity ?? quantityByLocation.get(row.id) ?? 0}</td>
+              <td><span className={`badge ${statusClass(row.active ? 'active' : 'inactive')}`}>{row.active ? 'ACTIVE' : 'INACTIVE'}</span></td>
               <RowActions row={row} onEdit={onEdit} onDelete={onDelete} />
             </tr>
           ))}

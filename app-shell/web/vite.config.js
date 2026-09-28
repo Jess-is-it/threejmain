@@ -11,7 +11,8 @@ export default defineConfig({
     alias: {
       react: path.resolve(__dirname, 'node_modules/react'),
       'react-dom': path.resolve(__dirname, 'node_modules/react-dom'),
-      '@tabler/icons-react': path.resolve(__dirname, 'node_modules/@tabler/icons-react')
+      '@tabler/icons-react': path.resolve(__dirname, 'node_modules/@tabler/icons-react'),
+      exceljs: path.resolve(__dirname, 'node_modules/exceljs')
     }
   },
   server: {

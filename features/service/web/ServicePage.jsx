@@ -3260,13 +3260,46 @@ function ServiceOrderSplitView({
 
 function CustomerAccountDetailPanel({ row, selectedOrderId, onAddOrder, onSelectOrder, onEdit, onCancel, onClose, avatarConfig }) {
   const rowKey = accountRowId(row);
-  const customer = row?.customer || null;
+  const rowCustomer = row?.customer || null;
   const accounts = row?.accounts || (row?.account ? [row.account] : []);
+  const customerId = rowCustomer?.id || accounts[0]?.customerId || '';
+  const [currentCustomer, setCurrentCustomer] = useState(null);
+  const [customerStatusUnavailable, setCustomerStatusUnavailable] = useState(false);
+  const customer = currentCustomer?.id === customerId ? { ...rowCustomer, ...currentCustomer } : rowCustomer;
+  const accountIds = accounts.map((account) => account.id).filter(Boolean).join('|');
+  const [liveBillingByAccount, setLiveBillingByAccount] = useState({});
   const primaryAccount = row?.account || primaryServiceAccount(accounts);
   const customerOrders = row?.orders || [];
   const [expandedOrderIds, setExpandedOrderIds] = useState(() => (
     selectedOrderId ? [selectedOrderId] : (customerOrders[0]?.id ? [customerOrders[0].id] : [])
   ));
+
+  useEffect(() => {
+    let cancelled = false;
+    setCurrentCustomer(null);
+    setCustomerStatusUnavailable(false);
+    if (!customerId) return () => { cancelled = true; };
+    request(`/customer-profiling/customers/${encodeURIComponent(customerId)}`)
+      .then((profile) => { if (!cancelled) setCurrentCustomer(profile); })
+      .catch(() => { if (!cancelled) setCustomerStatusUnavailable(true); });
+    return () => { cancelled = true; };
+  }, [customerId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLiveBillingByAccount({});
+    if (!accountIds) return () => { cancelled = true; };
+    Promise.all(accountIds.split('|').map(async (accountId) => {
+      try {
+        return [accountId, { data: await request(`/billing/service-accounts/${encodeURIComponent(accountId)}/summary`) }];
+      } catch (error) {
+        return [accountId, { error: error.message || 'Live Billing data is unavailable.' }];
+      }
+    })).then((results) => {
+      if (!cancelled) setLiveBillingByAccount(Object.fromEntries(results));
+    });
+    return () => { cancelled = true; };
+  }, [accountIds]);
 
   useEffect(() => {
     if (selectedOrderId) {
@@ -3311,7 +3344,7 @@ function CustomerAccountDetailPanel({ row, selectedOrderId, onAddOrder, onSelect
                   <IconUsers size={16} />
                 </span>
                 <h3 className="m-0">{customerLabel(customer)}</h3>
-                <span className={`badge ${statusClass(customer.status || 'ACTIVE')}`}>{label(customer.status || 'ACTIVE')}</span>
+                <span className={`badge ${statusClass(customerStatusUnavailable ? 'UNKNOWN' : customer.status || 'UNKNOWN')}`}>{customerStatusUnavailable ? 'Status unavailable' : label(customer.status || 'UNKNOWN')}</span>
               </div>
               <div className="text-muted small mt-1">
                 <span>{customer.accountNumber || 'No account number'}</span>
@@ -3366,6 +3399,16 @@ function CustomerAccountDetailPanel({ row, selectedOrderId, onAddOrder, onSelect
                     <div>
                       <div className="fw-semibold">{account.serviceAccountNumber || account.serviceReference}</div>
                       <div className="text-muted small">{account.catalogName || account.catalog?.name || 'Service'} · {account.serviceAddress || customerFullAddressLabel(customer)}</div>
+                      {liveBillingByAccount[account.id]?.data ? (
+                        <div className="service-account-live-billing small">
+                          <span><strong>Current amount due:</strong> {money(liveBillingByAccount[account.id].data.balance)}</span>
+                          <span><strong>Paid through:</strong> {liveBillingByAccount[account.id].data.paidThroughMonth || 'No paid cycle recorded'}</span>
+                          <span><strong>Next invoice due:</strong> {valueOrDash(liveBillingByAccount[account.id].data.nextDueInvoice?.dueDate)}</span>
+                          <span><strong>Next billing cycle:</strong> {valueOrDash(liveBillingByAccount[account.id].data.nextInvoiceCycleStart)}</span>
+                        </div>
+                      ) : (
+                        <div className="text-muted small">{liveBillingByAccount[account.id]?.error || 'Loading live Billing data…'}</div>
+                      )}
                     </div>
                     <span className={`badge ${statusClass(account.status || 'ACTIVE')}`}>{label(account.status || 'ACTIVE')}</span>
                   </div>

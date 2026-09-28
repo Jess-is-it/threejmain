@@ -16,6 +16,7 @@
 - Customer contact/address/coordinates sourced from Customer Profiling
 - Instant client-side worklist search across customer, account, contact, address, service, and invoice fields
 - Worklist location filter built from each customer's saved barangay/city/province, with saved-address fallback
+- Worklist `Message` action beside Map and Collect for a confirmation-gated, fixed customer-unavailable A2P notice; the API reloads Billing, uses the current promotion-adjusted amount due, sends from `3J BILL` to the saved primary/alternate mobile, and writes success/failure audit context. Accepted sends show a dedicated completion popup rather than the page-level inline notice.
 - Page shell uses the shared app-shell `container-xl` width and left/right boundaries exactly like Billing; Collector must not add an inner centered max-width or mobile negative margins.
 - Silent 15-minute reservation when Collect is tapped, with conflict prevention and automatic release when the payment form closes
 - One collector-entered `Amount received`, automatically allocated oldest invoice first and then across later invoices
@@ -84,6 +85,8 @@ Posted Billing payments and receipt identifiers are immutable. Reprints append p
 
 `GET /api/collector/customers` returns Billing account aging rows enriched with Customer Profiling contact/location and the current internal reservation. Account rows include `outstandingBalance`, `promotionDiscountTotal`, `payableToday`, and `paymentDate`; each open invoice includes an authoritative `promotionQuote` with version, fingerprint, ordered promotion IDs/names, discount, and discounted payable.
 
+`POST /api/collector/customers/{customer_id}/unavailable-message` requires collection permission and a saved customer mobile number. It reloads the collectible account, refuses zero/stale balances, calculates the current promotion-adjusted amount due on the server, and submits the approved visit notice through System Settings A2P with purpose `COLLECTOR_CUSTOMER_UNAVAILABLE` and sender ID `3J BILL`. The response exposes only the masked destination plus safe message identifiers; both A2P delivery logging and Collector business audit context are retained.
+
 `POST /api/collector/collections` requires:
 
 - stable `Idempotency-Key`
@@ -99,7 +102,7 @@ It returns the Collector collection record with the Billing payment id, official
 
 `POST /api/collector/collections/{id}/print-events` appends `ORIGINAL` for the first print and `REPRINT` for later prints. It does not call Billing or A2P.
 
-`POST /api/collector/remittances` submits held collections. `POST /api/collector/remittances/{id}/confirm` records Finance count/verification and either closes or flags the batch.
+`POST /api/collector/remittances` submits held collections. `GET /api/collector/finance/overview` enriches every open/recent remittance with `collectionItems`, containing each linked customer name, account number, receipt number, method, and payment amount plus `listedCollectionTotal` for Finance review. The UI and confirmation API block settlement when the linked item count or total does not match the remittance summary. `POST /api/collector/remittances/{id}/confirm` records Finance count/verification and either closes or flags the batch.
 
 ## Persistence
 
@@ -123,15 +126,16 @@ The restricted app shell redirects Collector/Finance roles to `/collector`. Admi
 
 ## Receipt And Android Printing
 
-Receipt HTML is generated from the persisted collection/Billing snapshot, escaped before insertion, and opens in a separate browser window. It shows the regular balance, each applied promotion and discount, actual payment, advance when present, and remaining balance. It uses `window.print()` and an 80 mm print layout. The Android device needs a compatible Bluetooth printer print service/app.
+Receipt HTML is generated from the persisted collection/Billing snapshot, escaped before insertion, and opens in a separate browser window. Each new collection freezes `outstandingInvoicesBefore` and `outstandingInvoicesAfter` with invoice identifiers, stored billing-cycle dates, regular/net amounts, promotion discount, and balance. The 80 mm receipt derives readable month/year labels from those stored billing cycles (never the receipt date), shows invoice numbers only as small references, lists all outstanding months before payment, every month affected with Paid/Partial status and exact application, promotional detail under the applicable month, and all remaining unpaid months and balances. Payment summary and cash/GCash details follow those billing-period sections.
 
-The first print is original. Every later request reuses the Billing receipt number and adds a visible `REPRINT COPY N` marker plus an audit event. Reprinting never reposts the payment or resends SMS.
+The first print and every later reprint use the same clean customer-facing receipt format and Billing receipt number; no reprint-copy banner is printed. Reprints still append an internal audit event and never repost the payment or resend SMS.
 
 ## Known Boundaries And Risks
 
 - Offline payment capture is not implemented. Collection posting needs network access so Billing can revalidate the balance.
 - Quotes are intentionally day-bound. Leaving a payment form open across a Billing business-date boundary produces a refresh-required conflict rather than honoring a stale Early Bird quote.
 - SMS depends on enabled and valid A2P Messaging settings; failures are retained on the collection and do not roll back the receipt.
+- The customer-unavailable message is an explicit collector action with a preview/confirmation step. It is not free-form, does not reserve the account, and is rejected if the customer has no saved primary or alternate mobile number or no longer has an amount due.
 - Collector explicitly passes `source="3J BILL"` to the shared System Settings A2P sender; it does not rely on the global default Sender ID.
 - Collector SMS wording excludes the receipt number and labels `balanceAfter` as the customer's total `Remaining balance`, not as a single-invoice balance.
 - The SMS starts `Thank you, <first name>! We received your payment of P<amount>.` It then shows the remaining balance when positive or `Your account is now fully paid.` whenever the balance is zero. Advance-credit details are intentionally excluded. Name fallback uses the first word of the customer display name and then `Customer`.
@@ -147,6 +151,7 @@ Run:
 
 ```bash
 python3 -m unittest features/collector/api/tests/test_collector_workflow.py -v
+node --test features/collector/web/tests/receiptDocument.test.mjs
 ```
 
-Covered: automatic-reservation collision, server-enforced oldest-first partial/multi-invoice allocation, automatic promo forwarding, stale/manipulated quote rejection, partial-payment promo protection, promoted payoff plus advance, returned excess/change, payment/SMS/idempotent replay, audited reprint, GCash validation/duplicate reference, Finance settlement, and independent cash/GCash variance detection.
+Covered: automatic-reservation collision, permission-controlled customer-unavailable A2P messaging with a server-calculated promotional balance, server-enforced oldest-first partial/multi-invoice allocation, automatic promo forwarding, stale/manipulated quote rejection, partial-payment promo protection, promoted payoff plus advance, returned excess/change, payment/SMS/idempotent replay, audited reprint, GCash validation/duplicate reference, Finance settlement, independent cash/GCash variance detection, and month-first receipt rendering for multi-month, promoted, and partial payments.

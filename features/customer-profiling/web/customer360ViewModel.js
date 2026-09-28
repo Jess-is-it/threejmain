@@ -19,6 +19,7 @@ export const CUSTOMER_360_ENDPOINTS = {
   billingBalance: '/api/billing/customers/{customerId}/balance',
   billingInvoices: '/api/billing/invoices?customerId={customerId}',
   billingPayments: '/api/billing/payments?customerId={customerId}',
+  billingMigrationPaymentEvidence: '/api/billing/migration-payment-evidence?customerId={customerId}',
   billingAdjustments: '/api/billing/adjustments?customerId={customerId}',
   pointOfSaleSales: '/api/point-of-sale/sales',
   ticketingTickets: '/api/ticketing/tickets?customerId={customerId}',
@@ -40,6 +41,7 @@ export function emptyCustomer360Data() {
     openInvoices: [],
     overdueInvoices: [],
     payments: [],
+    legacyPaymentEvidence: [],
     posSales: [],
     adjustments: [],
     tickets: [],
@@ -116,6 +118,7 @@ export function buildCustomer360Data(customer, sources = {}) {
     openInvoices: invoices.filter(isOpenInvoice),
     overdueInvoices: invoices.filter(isOverdueInvoice),
     payments: normalizeArray(sources.payments).sort(byRecentDate),
+    legacyPaymentEvidence: normalizeArray(sources.legacyPaymentEvidence).sort(byRecentDate),
     posSales: filterCustomerPosSales(sources.posSales, customer?.id),
     adjustments: normalizeArray(sources.adjustments).sort(byRecentDate),
     tickets: normalizeArray(sources.tickets).sort(byRecentDate),
@@ -139,7 +142,7 @@ export function hasCustomer360TabData(data, tab) {
   if (tab === 'overview') return true;
   if (tab === 'subscriptions') return data.subscriptions.length > 0 || data.serviceAccounts.length > 0;
   if (tab === 'billing') return data.invoices.length > 0 || data.adjustments.length > 0 || Boolean(data.balance);
-  if (tab === 'payments') return data.payments.length > 0 || data.posSales.length > 0;
+  if (tab === 'payments') return data.payments.length > 0 || data.legacyPaymentEvidence.length > 0 || data.posSales.length > 0;
   if (tab === 'tickets') return data.tickets.length > 0;
   if (tab === 'equipment') return data.equipment.length > 0;
   if (tab === 'activity') return data.activity.length > 0;
@@ -239,6 +242,8 @@ function matchingSubscription(subscriptions, account, order) {
   return subscriptions.find((subscription) => normalizeStatus(subscription.status) === 'ACTIVE' && subscription.serviceAccountId === account?.id)
     || subscriptions.find((subscription) => normalizeStatus(subscription.status) === 'ACTIVE' && subscription.serviceOrderId === order?.id)
     || subscriptions.find((subscription) => normalizeStatus(subscription.status) === 'ACTIVE')
+    || subscriptions.find((subscription) => subscription.serviceAccountId === account?.id)
+    || subscriptions.find((subscription) => subscription.serviceOrderId === order?.id)
     || null;
 }
 
@@ -259,6 +264,7 @@ export function buildCustomerOnboarding(customer = {}, data = emptyCustomer360Da
   const serviceAccount = matchingServiceAccount(serviceAccounts, installationOrder);
   const activeServiceAccount = serviceAccounts.find((account) => normalizeStatus(account.status) === 'ACTIVE') || (normalizeStatus(serviceAccount?.status) === 'ACTIVE' ? serviceAccount : null);
   const activeSubscription = matchingSubscription(subscriptions, activeServiceAccount || serviceAccount, installationOrder);
+  const migratedExistingSubscriber = Boolean(customer?.migration?.existingSubscriber && (activeSubscription || serviceAccount));
   const installationCharge = installationCharges.find((charge) => charge.serviceAccountId === (activeServiceAccount || serviceAccount)?.id)
     || installationCharges[0]
     || null;
@@ -293,7 +299,9 @@ export function buildCustomerOnboarding(customer = {}, data = emptyCustomer360Da
 
   const orderStatus = normalizeStatus(installationOrder?.status);
   let requestStep;
-  if (installationOrder && !TERMINAL_FAILURE_STATUSES.has(orderStatus)) {
+  if (migratedExistingSubscriber) {
+    requestStep = stepRecord('installation-request', 'not-required', 'This line was already installed before migration; no new Service Order is required.');
+  } else if (installationOrder && !TERMINAL_FAILURE_STATUSES.has(orderStatus)) {
     requestStep = stepRecord('installation-request', 'complete', 'A New Installation Service Order and linked ticket have been created.');
   } else if (installationOrder) {
     requestStep = stepRecord('installation-request', 'needs-attention', 'The latest installation request cannot proceed.', [`Service Order is ${orderStatus}. Create a replacement request when appropriate.`]);
@@ -309,7 +317,9 @@ export function buildCustomerOnboarding(customer = {}, data = emptyCustomer360Da
 
   const ticketStatus = normalizeStatus(installationTicket?.status || installationOrder?.ticketStatus);
   let installationStep;
-  if (INSTALLATION_DONE_STATUSES.has(orderStatus) || TICKET_DONE_STATUSES.has(ticketStatus)) {
+  if (migratedExistingSubscriber) {
+    installationStep = stepRecord('installation-work', 'not-required', 'Historical installation was accepted during subscriber migration.');
+  } else if (INSTALLATION_DONE_STATUSES.has(orderStatus) || TICKET_DONE_STATUSES.has(ticketStatus)) {
     installationStep = stepRecord('installation-work', 'complete', 'The installation work has been completed.');
   } else if (TERMINAL_FAILURE_STATUSES.has(orderStatus) || ticketStatus === 'CANCELLED') {
     installationStep = stepRecord('installation-work', 'blocked', 'Installation work was cancelled or rejected.', ['Create or restore a valid installation request before continuing.']);
@@ -327,6 +337,8 @@ export function buildCustomerOnboarding(customer = {}, data = emptyCustomer360Da
   let activationStep;
   if (activeServiceAccount && activationOutcome === 'VERIFIED') {
     activationStep = stepRecord('activation', 'complete', 'The active Service Account, network access, and equipment assignment are verified.');
+  } else if (migratedExistingSubscriber) {
+    activationStep = stepRecord('activation', 'not-required', 'Historical activation is accepted for this migrated installed line.');
   } else if (legacyActivation) {
     activationStep = stepRecord('activation', 'not-required', 'Existing live billing and service records are accepted as activation evidence.');
   } else if (activationOutcome === 'NEEDS_ATTENTION') {

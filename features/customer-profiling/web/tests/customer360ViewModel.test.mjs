@@ -171,6 +171,28 @@ test('fully provisioned active customer completes onboarding without browser bal
   assert.equal(onboarding.steps.find((step) => step.id === 'complete').state, 'complete');
 });
 
+test('migrated installed subscriber does not require a new installation order or ticket', () => {
+  const migratedCustomer = {
+    ...customer,
+    status: 'ACTIVE',
+    migration: { existingSubscriber: true, installationWorkflow: 'NOT_REQUIRED' }
+  };
+  const data = buildCustomer360Data(migratedCustomer, {
+    serviceAccounts: [{ id: 'service-migrated', customerId: customer.id, status: 'ACTIVE' }],
+    subscriptions: [{ id: 'subscription-migrated', customerId: customer.id, serviceAccountId: 'service-migrated', status: 'ACTIVE' }],
+    installationCharges: [{ id: 'charge-migrated', customerId: customer.id, serviceAccountId: 'service-migrated', status: 'NO_FEE' }],
+    legacyPaymentEvidence: [{ id: 'evidence-1', customerId: customer.id, amount: 2000, excludedFromCashReports: true }]
+  });
+  const onboarding = buildCustomerOnboarding(migratedCustomer, data);
+
+  assert.equal(onboarding.steps.find((step) => step.id === 'installation-request').state, 'not-required');
+  assert.equal(onboarding.steps.find((step) => step.id === 'installation-work').state, 'not-required');
+  assert.equal(onboarding.isComplete, true);
+  assert.equal(data.payments.length, 0);
+  assert.equal(data.legacyPaymentEvidence.length, 1);
+  assert.equal(hasCustomer360TabData(data, 'payments'), true);
+});
+
 test('onboarding exposes integration failures and permission restrictions at the affected step', () => {
   const qualifiedCustomer = {
     ...customer,

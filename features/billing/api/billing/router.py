@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from functools import wraps
-from math import ceil
+from math import ceil, floor
 from threading import Event, RLock, Thread, local
 from typing import Any, Callable, Iterator
 from uuid import uuid4
@@ -49,6 +49,7 @@ adjustments: list[dict[str, Any]] = []
 installation_charges: list[dict[str, Any]] = []
 promotions: list[dict[str, Any]] = []
 billing_runs: list[dict[str, Any]] = []
+legacy_payment_evidence: list[dict[str, Any]] = []
 
 _current_admin: Callable[[str | None], dict[str, Any]] | None = None
 _audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None] | None = None
@@ -97,6 +98,7 @@ BILLING_RECORD_COLLECTIONS = {
     "installation_charge": installation_charges,
     "promotion": promotions,
     "billing_run": billing_runs,
+    "migration_evidence": legacy_payment_evidence,
 }
 BILLING_STORAGE_MODE = os.getenv("BILLING_STORAGE") or ("postgres" if os.getenv("DATABASE_URL") else "memory")
 BILLING_SEED_DEMO = os.getenv("BILLING_SEED_DEMO", "false").strip().lower() in {"1", "true", "yes", "on"}
@@ -108,7 +110,8 @@ MAX_BILLING_CATCHUP_CYCLES = 240
 DEFAULT_EARLY_BIRD_DISCOUNT = 200.0
 ACCOUNT_SUMMARY_SNAPSHOT_VERSION = 1
 PAYMENT_PROMOTION_QUOTE_VERSION = 1
-OUTAGE_REBATE_QUOTE_VERSION = 2
+OUTAGE_REBATE_QUOTE_VERSION = 3
+OUTAGE_REBATE_ROUNDING_METHOD = "FLOOR_TO_WHOLE_PESO_AFTER_CUSTOMER_TOTAL"
 
 try:
     BILLING_ZONE = ZoneInfo(BILLING_TIMEZONE)
@@ -877,6 +880,25 @@ def next_month_start(source: date) -> date:
     return month_end(source) + timedelta(days=1)
 
 
+def migrated_subscription_next_invoice_date(payload: dict[str, Any], billing_mode: str) -> str:
+    mode = normalize_upper(billing_mode)
+    if mode not in BILLING_MODES:
+        raise HTTPException(status_code=400, detail="billingMode must be PREPAID or POSTPAID")
+    cutover_value = clean_text(payload.get("cutoverDate"))
+    if not cutover_value:
+        raise HTTPException(status_code=400, detail="cutoverDate is required for billing migration")
+    cutover_day = parse_day(cutover_value, "cutoverDate")
+    base_next_day = next_month_start(cutover_day) if mode == "PREPAID" else month_start(cutover_day)
+    paid_through = clean_text(payload.get("lastPaidThroughMonth"))
+    if not paid_through:
+        return base_next_day.isoformat()
+    try:
+        paid_through_day = date.fromisoformat(f"{paid_through}-01")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="lastPaidThroughMonth must use YYYY-MM") from exc
+    return max(base_next_day, next_month_start(paid_through_day)).isoformat()
+
+
 def inclusive_days(start: date, end: date) -> int:
     return (end - start).days + 1
 
@@ -1207,6 +1229,19 @@ def promotion_summary(promotion: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def migration_promotion_catalog() -> list[dict[str, Any]]:
+    """Return promotions that can be assigned automatically during subscriber migration."""
+    ensure_billing_data_loaded()
+    eligible = [
+        promotion_summary(promotion)
+        for promotion in visible_promotions()
+        if promotion.get("appliesTo") == "MONTHLY_SERVICE"
+        and promotion_is_active(promotion)
+        and not clean_bool(promotion.get("requiresApproval"))
+    ]
+    return sorted(eligible, key=promotion_order_key)
+
+
 def ensure_unique_promo_code(promo_code: str, current_promotion_id: str | None = None) -> None:
     for promotion in visible_promotions():
         if promotion.get("id") == current_promotion_id:
@@ -1434,6 +1469,10 @@ def installation_charge_for_service_account(service_account_id: str) -> dict[str
         if charge.get("serviceAccountId") == service_account_id and charge.get("status") != "VOID":
             return charge
     return None
+
+
+def is_imported_installation_charge(charge: dict[str, Any]) -> bool:
+    return (charge.get("migration") or {}).get("source") == "EXISTING_SUBSCRIBER_CSV"
 
 
 def ensure_installation_fee_resolved(record: dict[str, Any], current_subscription: dict[str, Any] | None = None) -> None:
@@ -2557,6 +2596,10 @@ def prorated_monthly_outage_amount(monthly_rate: float, outage_start: datetime, 
     return money(total)
 
 
+def floor_to_whole_peso(value: Any) -> float:
+    return float(floor(max(0.0, money(value))))
+
+
 def existing_outage_rebate(customer_id: str, outage_start: str, outage_end: str) -> dict[str, Any] | None:
     return next(
         (
@@ -2623,6 +2666,8 @@ def outage_rebate_quote(payload: OutageRebatePreviewPayload | OutageRebateBatchP
             )
 
         calculated_amount = money(sum(row["calculatedAmount"] for row in subscription_rows))
+        rounded_rebate_amount = floor_to_whole_peso(calculated_amount)
+        rounding_adjustment_amount = money(calculated_amount - rounded_rebate_amount)
         monthly_recurring_charge = money(sum(row["monthlyRate"] for row in subscription_rows))
         invoice = None
         invoice_state = None
@@ -2640,9 +2685,11 @@ def outage_rebate_quote(payload: OutageRebatePreviewPayload | OutageRebateBatchP
             ineligible_reason = "Customer has no active priced subscription during this outage window"
         elif calculated_amount <= 0:
             ineligible_reason = "The selected outage duration produces no billable rebate"
+        elif rounded_rebate_amount <= 0:
+            ineligible_reason = "Calculated rebate rounds down below PHP 1"
 
         invoice_balance = money(invoice_state.get("balance")) if invoice_state else 0.0
-        rebate_amount = calculated_amount if not ineligible_reason else 0.0
+        rebate_amount = rounded_rebate_amount if not ineligible_reason else 0.0
         apply_now_amount = money(min(rebate_amount, invoice_balance))
         carry_forward_amount = money(max(0, rebate_amount - apply_now_amount))
         application_mode = (
@@ -2662,6 +2709,8 @@ def outage_rebate_quote(payload: OutageRebatePreviewPayload | OutageRebateBatchP
                 "subscriptions": subscription_rows,
                 "monthlyRecurringCharge": monthly_recurring_charge,
                 "calculatedAmount": calculated_amount,
+                "roundingMethod": OUTAGE_REBATE_ROUNDING_METHOD,
+                "roundingAdjustmentAmount": rounding_adjustment_amount,
                 "rebateAmount": rebate_amount,
                 "applyNowAmount": apply_now_amount,
                 "carryForwardAmount": carry_forward_amount,
@@ -2691,6 +2740,8 @@ def outage_rebate_quote(payload: OutageRebatePreviewPayload | OutageRebateBatchP
                 for subscription in row["subscriptions"]
             ],
             "calculatedAmount": row["calculatedAmount"],
+            "roundingMethod": row["roundingMethod"],
+            "roundingAdjustmentAmount": row["roundingAdjustmentAmount"],
             "rebateAmount": row["rebateAmount"],
             "applyNowAmount": row["applyNowAmount"],
             "carryForwardAmount": row["carryForwardAmount"],
@@ -2705,6 +2756,7 @@ def outage_rebate_quote(payload: OutageRebatePreviewPayload | OutageRebateBatchP
             "customerIds": customer_ids,
             "outageStart": outage_start_value,
             "outageEnd": outage_end_value,
+            "roundingMethod": OUTAGE_REBATE_ROUNDING_METHOD,
             "rows": fingerprint_rows,
         },
     )
@@ -2713,6 +2765,7 @@ def outage_rebate_quote(payload: OutageRebatePreviewPayload | OutageRebateBatchP
         "version": OUTAGE_REBATE_QUOTE_VERSION,
         "timezone": BILLING_TIMEZONE,
         "calculationMethod": "ACTUAL_CALENDAR_MONTH_HOURLY_PRORATION",
+        "roundingMethod": OUTAGE_REBATE_ROUNDING_METHOD,
         "outageStart": outage_start_value,
         "outageEnd": outage_end_value,
         "durationMinutes": duration_minutes,
@@ -2722,6 +2775,9 @@ def outage_rebate_quote(payload: OutageRebatePreviewPayload | OutageRebateBatchP
         "ineligibleCount": len(rows) - len(eligible_rows),
         "canPost": bool(rows) and len(eligible_rows) == len(rows),
         "totalCalculatedAmount": money(sum(row["calculatedAmount"] for row in rows)),
+        "totalRoundingAdjustmentAmount": money(
+            sum(row["roundingAdjustmentAmount"] for row in rows)
+        ),
         "totalRebateAmount": money(sum(row["rebateAmount"] for row in eligible_rows)),
         "quoteFingerprint": quote_fingerprint,
         "rows": rows,
@@ -2748,7 +2804,15 @@ def outage_rebate_batch_response(
         "timezone": first.get("outageTimezone") or BILLING_TIMEZONE,
         "durationMinutes": first.get("outageDurationMinutes"),
         "durationHours": first.get("outageDurationHours"),
+        "calculationMethod": first.get("outageCalculationMethod") or "",
+        "roundingMethod": first.get("outageRoundingMethod") or "",
         "customerCount": len(ordered),
+        "totalCalculatedAmount": money(
+            sum(money(adjustment.get("outageCalculatedAmount")) for adjustment in ordered)
+        ),
+        "totalRoundingAdjustmentAmount": money(
+            sum(money(adjustment.get("outageRoundingAdjustmentAmount")) for adjustment in ordered)
+        ),
         "totalRebateAmount": money(sum(adjustment.get("amount") for adjustment in ordered)),
         "totalAppliedAmount": money(sum(adjustment.get("creditAppliedAmount") for adjustment in ordered)),
         "totalAvailableCredit": money(sum(adjustment.get("creditAvailableAmount") for adjustment in ordered)),
@@ -3043,7 +3107,7 @@ def invoice_qualified_promotion_terms(invoice: dict[str, Any]) -> list[dict[str,
     )
     if not promotion_ids:
         promotion_ids = list(snapshot_by_id)
-    if not promotion_ids:
+    if not promotion_ids and not clean_bool(invoice.get("promotionQualificationSnapshotComplete")):
         subscription_id = clean_text(invoice.get("subscriptionId"))
         if subscription_id:
             try:
@@ -3319,11 +3383,71 @@ def billing_cycle_invoice_due_date(subscription: dict[str, Any], cycle_start: da
     return month_end(cycle_start)
 
 
-def expected_billing_cycle_keys(subscription: dict[str, Any], as_of: date | None = None) -> list[str]:
+def migration_invoice_expectation_start(
+    subscription: dict[str, Any], invoice_rows: list[dict[str, Any]] | None = None,
+) -> date | None:
+    migration = subscription.get("migration") or {}
+    if migration.get("source") != "EXISTING_SUBSCRIBER_CSV":
+        return None
+
+    fixed_start = clean_text(migration.get("invoiceExpectationStart"))
+    if fixed_start:
+        return parse_day(fixed_start, "invoiceExpectationStart")
+
+    # Older imports did not save the initial schedule. Reconstruct it from the
+    # cutover and reference-only payment coverage without changing ledger data.
+    cutover_date = clean_text(migration.get("cutoverDate"))
+    if not cutover_date:
+        return None
+    paid_through = clean_text(migration.get("lastPaidThroughMonth"))
+    if not paid_through:
+        evidence = next(
+            (
+                row for row in legacy_payment_evidence
+                if row.get("subscriptionId") == subscription.get("id")
+                and (row.get("migration") or {}).get("fingerprint") == migration.get("fingerprint")
+            ),
+            None,
+        )
+        paid_through = clean_text((evidence or {}).get("paidThroughMonth"))
+    inferred_start = parse_day(
+        migrated_subscription_next_invoice_date(
+            {"cutoverDate": cutover_date, "lastPaidThroughMonth": paid_through},
+            subscription.get("billingMode"),
+        ),
+        "invoiceExpectationStart",
+    )
+
+    # Older imports without payment evidence retain their initial schedule in
+    # nextInvoiceDate until the first regular invoice. After billing advances
+    # that date, the first regular cycle remains the expectation baseline.
+    if not paid_through and invoice_rows is not None:
+        regular_cycle_starts = [
+            parse_day(invoice["billingCycleStart"], "billingCycleStart")
+            for invoice in invoice_rows
+            if invoice.get("subscriptionId") == subscription.get("id")
+            and invoice.get("invoiceType") in MONTHLY_INVOICE_TYPES
+            and (invoice.get("migration") or {}).get("source") != "EXISTING_SUBSCRIBER_CSV"
+            and invoice.get("billingCycleStart")
+        ]
+        if regular_cycle_starts:
+            return max(inferred_start, min(regular_cycle_starts))
+        next_invoice_date = clean_text(subscription.get("nextInvoiceDate"))
+        if next_invoice_date:
+            return max(inferred_start, parse_day(next_invoice_date, "nextInvoiceDate"))
+    return inferred_start
+
+
+def expected_billing_cycle_keys(
+    subscription: dict[str, Any], as_of: date | None = None,
+    invoice_rows: list[dict[str, Any]] | None = None,
+) -> list[str]:
     if subscription.get("status") != "ACTIVE":
         return []
     as_of_day = as_of or date.today()
-    cycle_start = parse_day(subscription.get("startDate") or subscription.get("nextInvoiceDate"), "startDate")
+    cycle_start = migration_invoice_expectation_start(subscription, invoice_rows) or parse_day(
+        subscription.get("startDate") or subscription.get("nextInvoiceDate"), "startDate"
+    )
     cycle_keys: list[str] = []
     for _ in range(240):
         if billing_cycle_invoice_due_date(subscription, cycle_start) > as_of_day:
@@ -3335,7 +3459,7 @@ def expected_billing_cycle_keys(subscription: dict[str, Any], as_of: date | None
 
 def missing_billing_cycle_keys(subscription: dict[str, Any], invoice_rows: list[dict[str, Any]], as_of: date | None = None) -> list[str]:
     billed_keys = monthly_invoice_cycle_keys(subscription["id"], invoice_rows)
-    return [cycle_key for cycle_key in expected_billing_cycle_keys(subscription, as_of) if cycle_key not in billed_keys]
+    return [cycle_key for cycle_key in expected_billing_cycle_keys(subscription, as_of, invoice_rows) if cycle_key not in billed_keys]
 
 
 def missing_billing_cycle_summary(subscription: dict[str, Any], invoice_rows: list[dict[str, Any]], as_of: date | None = None) -> dict[str, Any]:
@@ -3439,6 +3563,73 @@ def customer_balance(customer_id: str) -> dict[str, Any]:
         "openInvoices": sum(1 for invoice in customer_invoices if invoice["status"] not in ["PAID", "VOID"]),
         **unpaid_months,
         **missing_cycles,
+    }
+
+
+def service_account_billing_summary(
+    service_account_id: str,
+    *,
+    subscription: dict[str, Any] | None = None,
+    invoice_rows: list[dict[str, Any]] | None = None,
+    evidence_rows: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Read the current ledger for one service line, keeping import evidence separate."""
+    if subscription is None:
+        subscription = next(
+            (row for row in visible_subscriptions() if row.get("serviceAccountId") == service_account_id),
+            None,
+        )
+    invoices = invoice_rows if invoice_rows is not None else [
+        invoice_summary(row)
+        for row in visible_invoices()
+        if row.get("serviceAccountId") == service_account_id and row.get("status") != "VOID"
+    ]
+    evidence = evidence_rows if evidence_rows is not None else [
+        row for row in legacy_payment_evidence
+        if row.get("serviceAccountId") == service_account_id and not row.get("deletedAt")
+    ]
+    if subscription is None and not invoices and not evidence:
+        raise HTTPException(status_code=404, detail="Billing service account not found")
+    open_invoices = sorted(
+        (row for row in invoices if row.get("balance", 0) > 0),
+        key=lambda row: (row.get("dueDate") or "9999-12-31", row.get("createdAt") or ""),
+    )
+    business_day = billing_business_date().isoformat()
+    next_due_invoice = next(
+        (row for row in open_invoices if (row.get("dueDate") or "") >= business_day),
+        open_invoices[0] if open_invoices else None,
+    )
+    paid_through_candidates = [
+        row.get("paidThroughMonth", "") for row in evidence if row.get("paidThroughMonth")
+    ] + [
+        str(row.get("billingCycleEnd") or "")[:7]
+        for row in invoices
+        if row.get("invoiceType") == "MONTHLY" and row.get("status") == "PAID" and row.get("billingCycleEnd")
+    ]
+    next_cycle = (subscription or {}).get("nextInvoiceDate") or ""
+    next_generation = (
+        billing_cycle_generation_date(subscription, parse_day(next_cycle, "nextInvoiceDate")).isoformat()
+        if subscription and next_cycle else ""
+    )
+    anchor = subscription or (invoices[0] if invoices else evidence[0])
+    return {
+        "serviceAccountId": service_account_id,
+        "customerId": anchor.get("customerId", ""),
+        "balance": money(sum(row.get("balance", 0) for row in invoices)),
+        "overdueBalance": money(sum(row.get("balance", 0) for row in invoices if row.get("status") == "OVERDUE")),
+        "openInvoiceCount": len(open_invoices),
+        "nextDueInvoice": {
+            "id": next_due_invoice["id"],
+            "invoiceNumber": next_due_invoice.get("invoiceNumber", ""),
+            "billingCycleStart": next_due_invoice.get("billingCycleStart", ""),
+            "dueDate": next_due_invoice.get("dueDate", ""),
+            "balance": next_due_invoice.get("balance", 0),
+        } if next_due_invoice else None,
+        "paidThroughMonth": max(paid_through_candidates, default=""),
+        "nextInvoiceCycleStart": next_cycle,
+        "nextInvoiceGenerationDate": next_generation,
+        "billingMode": (subscription or {}).get("billingMode") or (invoices[0].get("billingMode") if invoices else ""),
+        "source": "BILLING_LEDGER",
     }
 
 
@@ -5393,6 +5584,315 @@ def seed_billing_data() -> None:
     persist_billing_state()
 
 
+def migrate_existing_subscriber_billing(payload: dict[str, Any], actor: str) -> dict[str, Any]:
+    """Create the billing cutover for an installed legacy line without posting legacy cash."""
+    if not billing_store.in_transaction:
+        with billing_store.transaction():
+            return migrate_existing_subscriber_billing(payload, actor)
+
+    ensure_billing_data_loaded()
+    migration_fingerprint = clean_text(payload.get("migrationFingerprint"))
+    if not migration_fingerprint:
+        raise HTTPException(status_code=400, detail="migrationFingerprint is required")
+
+    existing_subscription = next(
+        (
+            subscription
+            for subscription in visible_subscriptions()
+            if clean_text((subscription.get("migration") or {}).get("fingerprint")) == migration_fingerprint
+        ),
+        None,
+    )
+    if existing_subscription is not None:
+        evidence = next(
+            (
+                row
+                for row in legacy_payment_evidence
+                if clean_text((row.get("migration") or {}).get("fingerprint")) == migration_fingerprint
+            ),
+            None,
+        )
+        imported_invoices = [
+            invoice_summary(invoice)
+            for invoice in visible_invoices()
+            if clean_text((invoice.get("migration") or {}).get("fingerprint")) == migration_fingerprint
+        ]
+        return {
+            "subscription": deepcopy(existing_subscription),
+            "invoices": imported_invoices,
+            "legacyPaymentEvidence": deepcopy(evidence) if evidence else None,
+            "idempotentReplay": True,
+        }
+
+    customer_id = clean_text(payload.get("customerId"))
+    customer = resolve_customer(customer_id)
+    service_account = dict(payload.get("serviceAccount") or {})
+    catalog = dict(payload.get("catalog") or service_account.get("catalog") or {})
+    service_account_id = clean_text(service_account.get("id"))
+    if not service_account_id:
+        raise HTTPException(status_code=400, detail="Migrated Service Account is required")
+
+    imported_rate = money(payload.get("monthlyRate"))
+    list_rate = money(catalog.get("monthlyRate"))
+    billing_mode = normalize_upper(payload.get("billingMode") or catalog.get("billingMode"))
+    start_date = clean_text(payload.get("serviceStartDate")) or clean_text(payload.get("cutoverDate")) or today_iso()
+    next_invoice_date = migrated_subscription_next_invoice_date(payload, billing_mode)
+
+    charge = installation_charge_for_service_account(service_account_id)
+    if charge is None:
+        charge_record = normalize_installation_charge_payload(
+            InstallationChargePayload(
+                customerId=customer_id,
+                serviceAccountId=service_account_id,
+                serviceAccountNumber=clean_text(service_account.get("serviceAccountNumber")),
+                serviceId=clean_text(service_account.get("serviceReference")),
+                catalogId=clean_text(catalog.get("id")),
+                catalogCode=clean_text(catalog.get("code")),
+                catalogName=clean_text(catalog.get("name")),
+                billingMode=billing_mode,
+                status="NO_FEE",
+                standardAmount=0,
+                chargedAmount=0,
+                waiverReason="Historical installation completed before system migration; no new charge.",
+                issueDate=clean_text(payload.get("cutoverDate")) or today_iso(),
+                notes="Existing subscriber migration installation-fee resolution.",
+            )
+        )
+        timestamp = now_iso()
+        charge = {
+            "id": str(uuid4()),
+            "customerId": customer_id,
+            "customer": customer,
+            "invoiceId": "",
+            "invoiceNumber": "",
+            "invoiceStatus": "",
+            "invoiceBalance": 0,
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+            "deletedAt": None,
+            "migration": {
+                "fingerprint": migration_fingerprint,
+                "source": "EXISTING_SUBSCRIBER_CSV",
+            },
+            **charge_record,
+        }
+        installation_charges.append(charge)
+
+    subscription_record = normalize_subscription_payload(
+        SubscriptionPayload(
+            customerId=customer_id,
+            serviceAccountId=service_account_id,
+            serviceAccountNumber=clean_text(service_account.get("serviceAccountNumber")),
+            catalogId=clean_text(catalog.get("id")),
+            catalogCode=clean_text(catalog.get("code")),
+            catalogName=clean_text(catalog.get("name")) or clean_text(payload.get("planName")),
+            planName=clean_text(payload.get("planName")) or clean_text(catalog.get("name")),
+            serviceId=clean_text(service_account.get("serviceReference")),
+            listMonthlyRate=list_rate,
+            monthlyRate=imported_rate,
+            priceOverrideAmount=imported_rate if imported_rate != list_rate else None,
+            priceOverrideReason=(
+                "Legacy contracted rate preserved during existing-subscriber migration."
+                if imported_rate != list_rate
+                else ""
+            ),
+            billingMode=billing_mode,
+            billingDay=1,
+            startDate=start_date,
+            nextInvoiceDate=next_invoice_date,
+            dueDays=int(payload.get("dueDays") if payload.get("dueDays") not in [None, ""] else (0 if billing_mode == "PREPAID" else 7)),
+            qualifiedPromotionIds=list(payload.get("qualifiedPromotionIds") or []),
+            status="PAUSED" if normalize_upper(payload.get("serviceStatus")) == "SUSPENDED" else "ACTIVE",
+            notes="Existing installed subscriber migrated with a controlled billing cutover.",
+        )
+    )
+    ensure_service_target_available(subscription_record)
+    ensure_installation_fee_resolved(subscription_record)
+    timestamp = now_iso()
+    subscription = {
+        "id": str(uuid4()),
+        "customer": customer,
+        "createdAt": timestamp,
+        "updatedAt": timestamp,
+        "deletedAt": None,
+        "firstInvoiceSuppressedForMigration": True,
+        "migration": {
+            "fingerprint": migration_fingerprint,
+            "batchId": clean_text(payload.get("batchId")),
+            "rowId": clean_text(payload.get("rowId")),
+            "source": "EXISTING_SUBSCRIBER_CSV",
+            "cutoverDate": clean_text(payload.get("cutoverDate")),
+            "lastPaidThroughMonth": clean_text(payload.get("lastPaidThroughMonth")),
+            "invoiceExpectationStart": next_invoice_date,
+            "billingScheduleSource": "BILLING_MODE_CUTOVER_AND_PAID_THROUGH",
+            "migratedAt": timestamp,
+            "migratedBy": actor,
+        },
+        **subscription_record,
+    }
+    subscriptions.append(subscription)
+
+    imported_invoices: list[dict[str, Any]] = []
+    resolution = normalize_upper(payload.get("balanceResolution") or "MONTHLY_INVOICES")
+    if resolution not in {"MONTHLY_INVOICES", "OPENING_BALANCE"}:
+        raise HTTPException(status_code=400, detail="Invalid migration balance resolution")
+    if resolution == "OPENING_BALANCE" and money(payload.get("outstandingBalance")) <= 0:
+        raise HTTPException(status_code=400, detail="A positive outstanding balance is required for migration opening balance")
+    arrear_months = [clean_text(value) for value in payload.get("arrearMonths") or [] if clean_text(value)]
+    if resolution == "OPENING_BALANCE" and money(payload.get("outstandingBalance")) > 0:
+        opening_amount = money(payload.get("outstandingBalance"))
+        issue_day = parse_day(payload.get("balanceAsOfDate") or payload.get("cutoverDate"), "balanceAsOfDate")
+        posting_key = f"migration-opening:{migration_fingerprint}"
+        opening_invoice = {
+            "id": str(uuid4()),
+            "invoiceNumber": next_number("INV", invoices, "invoiceNumber"),
+            "idempotencyKey": posting_key,
+            "idempotencyFingerprint": posting_fingerprint(
+                "invoice",
+                {"source": "MIGRATION_OPENING_BALANCE", "migrationFingerprint": migration_fingerprint, "amount": opening_amount},
+            ),
+            "customerId": customer_id,
+            "customer": customer,
+            "subscriptionId": "",
+            "serviceAccountId": service_account_id,
+            "serviceAccountNumber": clean_text(service_account.get("serviceAccountNumber")),
+            "serviceOrderId": "",
+            "serviceId": clean_text(service_account.get("serviceReference")),
+            "catalogId": clean_text(catalog.get("id")),
+            "catalogCode": clean_text(catalog.get("code")),
+            "catalogName": clean_text(catalog.get("name")),
+            "listMonthlyRate": list_rate,
+            "pricingSource": subscription.get("pricingSource"),
+            "priceOverrideAmount": subscription.get("priceOverrideAmount"),
+            "priceOverrideReason": subscription.get("priceOverrideReason", ""),
+            "billingMode": billing_mode,
+            "billingCycleAnchor": "LEGACY_OPENING_BALANCE",
+            "invoiceType": "MANUAL",
+            "qualifiedPromotionIds": [],
+            "qualifiedPromotions": [],
+            "qualifiedPromotionCount": 0,
+            "earlyBirdEligible": False,
+            "earlyBirdDiscountAmount": 0,
+            "earlyBirdCutoffDate": "",
+            "billingCycleStart": "",
+            "billingCycleEnd": "",
+            "issueDate": issue_day.isoformat(),
+            "dueDate": issue_day.isoformat(),
+            "status": "ISSUED",
+            "lineItems": [{"description": "Legacy Opening Balance", "quantity": 1, "unitPrice": opening_amount, "amount": opening_amount}],
+            "notes": "Audited opening balance imported because month-by-month reconstruction required review.",
+            "migrationUnpaidMonths": arrear_months,
+            "migration": {"fingerprint": migration_fingerprint, "source": "EXISTING_SUBSCRIBER_CSV", "resolution": resolution},
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+            "deletedAt": None,
+        }
+        invoices.append(opening_invoice)
+        capture_invoice_account_summary_at_issue(opening_invoice)
+        imported_invoices.append(invoice_summary(opening_invoice))
+    else:
+        for month_value in arrear_months:
+            try:
+                cycle_start = date.fromisoformat(f"{month_value}-01")
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=f"Invalid arrear month: {month_value}") from exc
+            generated_on = cycle_start if billing_mode == "PREPAID" else month_end(cycle_start)
+            summary = create_invoice_from_subscription(
+                {
+                    **subscription,
+                    "qualifiedPromotionIds": [],
+                    "qualifiedPromotions": [],
+                    "qualifiedPromotionCount": 0,
+                    "earlyBirdEligible": False,
+                    "earlyBirdPromotionId": "",
+                },
+                cycle_start.isoformat(),
+                idempotency_key=f"migration-cycle:{migration_fingerprint}:{month_value}",
+                credit_actor=actor,
+                generated_on=generated_on,
+            )
+            invoice = find_invoice(summary["id"])
+            invoice.update(
+                {
+                    "qualifiedPromotionIds": [],
+                    "qualifiedPromotions": [],
+                    "qualifiedPromotionCount": 0,
+                    "earlyBirdEligible": False,
+                    "earlyBirdDiscountAmount": 0,
+                    "earlyBirdPromotionId": "",
+                    "earlyBirdPromotionCode": "",
+                    "earlyBirdPromotionName": "",
+                    "earlyBirdCutoffDate": "",
+                    "promotionQualificationSnapshotComplete": True,
+                    "migrationPromotionPolicy": "HISTORICAL_BALANCE_EXCLUDED",
+                }
+            )
+            invoice["notes"] = "Unpaid monthly service migrated from the legacy subscriber list."
+            invoice["migration"] = {
+                "fingerprint": migration_fingerprint,
+                "source": "EXISTING_SUBSCRIBER_CSV",
+                "resolution": resolution,
+                "paidThroughMonth": clean_text(payload.get("lastPaidThroughMonth")),
+            }
+            imported_invoices.append(invoice_summary(invoice))
+
+    subscription["nextInvoiceDate"] = next_invoice_date
+    subscription["updatedAt"] = now_iso()
+
+    evidence = None
+    last_payment_amount = money(payload.get("lastPaymentAmount"))
+    last_payment_date = clean_text(payload.get("lastPaymentDate"))
+    if last_payment_amount > 0 or last_payment_date:
+        evidence = {
+            "id": str(uuid4()),
+            "idempotencyKey": f"migration-payment-evidence:{migration_fingerprint}",
+            "customerId": customer_id,
+            "serviceAccountId": service_account_id,
+            "subscriptionId": subscription["id"],
+            "status": "REFERENCE_ONLY",
+            "amount": last_payment_amount,
+            "paymentDate": last_payment_date,
+            "coverageFromMonth": clean_text(payload.get("paymentCoverageFromMonth")),
+            "paidThroughMonth": clean_text(payload.get("lastPaidThroughMonth")),
+            "coverageSource": clean_text(payload.get("coverageSource")),
+            "regularMonthlyRate": money(payload.get("lastPaymentRegularMonthlyRate") or imported_rate),
+            "promotionId": clean_text(payload.get("lastPaymentPromotionId")),
+            "promotionCode": clean_text(payload.get("lastPaymentPromotionCode")),
+            "promotionName": clean_text(payload.get("lastPaymentPromotionName")),
+            "promotionDiscountPerMonth": money(payload.get("lastPaymentPromotionDiscountPerMonth")),
+            "expectedDiscountedAmount": money(payload.get("lastPaymentExpectedDiscountedAmount")),
+            "promotionMatchStatus": clean_text(payload.get("lastPaymentPromotionMatchStatus")),
+            "excludedFromCashReports": True,
+            "notes": "Legacy payment evidence only; no new cash receipt was posted.",
+            "migration": {"fingerprint": migration_fingerprint, "source": "EXISTING_SUBSCRIBER_CSV"},
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+            "deletedAt": None,
+        }
+        legacy_payment_evidence.append(evidence)
+
+    add_audit(
+        "billing_existing_subscriber_migrated",
+        "BillingSubscription",
+        subscription["id"],
+        {
+            "customerId": customer_id,
+            "serviceAccountId": service_account_id,
+            "migrationFingerprint": migration_fingerprint,
+            "invoiceCount": len(imported_invoices),
+            "balanceResolution": resolution,
+        },
+        actor,
+    )
+    persist_billing_state()
+    return {
+        "subscription": deepcopy(subscription),
+        "invoices": imported_invoices,
+        "legacyPaymentEvidence": deepcopy(evidence) if evidence else None,
+        "idempotentReplay": False,
+    }
+
+
 def filter_rows(rows: list[dict[str, Any]], search: str = "", status: str = "", customer_id: str = "") -> list[dict[str, Any]]:
     filtered = rows
     if customer_id:
@@ -5845,6 +6345,12 @@ def list_installation_charges(
 @billing_mutation
 def create_installation_charge(payload: InstallationChargePayload, admin=Depends(require_admin)):
     record = normalize_installation_charge_payload(payload)
+    if any(
+        charge.get("serviceAccountId") == record["serviceAccountId"]
+        and is_imported_installation_charge(charge)
+        for charge in visible_installation_charges()
+    ):
+        raise HTTPException(status_code=409, detail="Existing subscriber installation is historical; no new installation fee decision is allowed")
     existing = installation_charge_for_service_account(record["serviceAccountId"])
     if existing:
         raise HTTPException(status_code=409, detail="Installation fee decision already exists for this Service Account")
@@ -5883,6 +6389,8 @@ def create_installation_charge(payload: InstallationChargePayload, admin=Depends
 @billing_mutation
 def update_installation_charge(charge_id: str, payload: InstallationChargePayload, admin=Depends(require_admin)):
     current = find_installation_charge(charge_id)
+    if is_imported_installation_charge(current):
+        raise HTTPException(status_code=409, detail="Historical imported installation decisions are read-only")
     if current.get("invoiceId"):
         raise HTTPException(status_code=409, detail="Invoiced installation fee decisions are immutable; void and recreate the decision")
     record = normalize_installation_charge_payload(payload, current)
@@ -5916,6 +6424,8 @@ def update_installation_charge(charge_id: str, payload: InstallationChargePayloa
 @billing_mutation
 def delete_installation_charge(charge_id: str, admin=Depends(require_admin)):
     current = find_installation_charge(charge_id)
+    if is_imported_installation_charge(current):
+        raise HTTPException(status_code=409, detail="Historical imported installation decisions are read-only")
     if current.get("status") == "VOID":
         return {"status": "ok", "idempotentReplay": True}
     timestamp = now_iso()
@@ -6245,6 +6755,17 @@ def list_payments(search: str = "", customerId: str = "", admin=Depends(require_
     seed_billing_data()
     rows = filter_rows(visible_payments(), search, "", customerId)
     return sorted(rows, key=lambda row: row["createdAt"], reverse=True)
+
+
+@router.get("/migration-payment-evidence")
+@billing_read_snapshot
+def list_migration_payment_evidence(customerId: str = "", admin=Depends(require_admin)):
+    """Reference-only legacy payments; intentionally separate from cash/payment reporting."""
+    seed_billing_data()
+    rows = [row for row in legacy_payment_evidence if not row.get("deletedAt")]
+    if customerId:
+        rows = [row for row in rows if row.get("customerId") == customerId]
+    return sorted((deepcopy(row) for row in rows), key=lambda row: row.get("createdAt", ""), reverse=True)
 
 
 def early_bird_discount_for_payment(invoice: dict[str, Any], amount: float, payment_day: date) -> dict[str, Any] | None:
@@ -6879,7 +7400,9 @@ def create_outage_rebate_batch(
             {
                 "customerId": row["customerId"],
                 "invoiceId": row["invoiceId"],
+                "calculatedAmount": row["calculatedAmount"],
                 "amount": row["rebateAmount"],
+                "roundingMethod": row["roundingMethod"],
                 "outageStart": quote["outageStart"],
                 "outageEnd": quote["outageEnd"],
             },
@@ -6898,7 +7421,7 @@ def create_outage_rebate_batch(
             "adjustmentSource": "SERVICE_REBATE",
             "applicationMode": "CUSTOMER_ACCOUNT_CREDIT",
             "status": "POSTED",
-            "notes": "Automatically calculated from active subscription rates and held as customer credit until applied.",
+            "notes": "Automatically calculated from active subscription rates, rounded down to a whole peso, and held as customer credit until applied.",
             "outageBatchId": batch_id,
             "outageBatchIdempotencyKey": posting_key,
             "outageBatchFingerprint": batch_fingerprint,
@@ -6910,8 +7433,10 @@ def create_outage_rebate_batch(
             "outageDurationMinutes": quote["durationMinutes"],
             "outageDurationHours": quote["durationHours"],
             "outageCalculationMethod": quote["calculationMethod"],
+            "outageRoundingMethod": row["roundingMethod"],
             "outageMonthlyRecurringCharge": row["monthlyRecurringCharge"],
             "outageCalculatedAmount": row["calculatedAmount"],
+            "outageRoundingAdjustmentAmount": row["roundingAdjustmentAmount"],
             "outageApplyNowAmount": row["applyNowAmount"],
             "outageCarryForwardAmount": row["carryForwardAmount"],
             "outageApplicationMode": row["applicationMode"],
@@ -6961,6 +7486,9 @@ def create_outage_rebate_batch(
                 "outageStart": quote["outageStart"],
                 "outageEnd": quote["outageEnd"],
                 "calculationMethod": quote["calculationMethod"],
+                "calculatedAmount": row["calculatedAmount"],
+                "roundingMethod": row["roundingMethod"],
+                "roundingAdjustmentAmount": row["roundingAdjustmentAmount"],
             },
             admin["username"],
         )
@@ -6977,6 +7505,9 @@ def create_outage_rebate_batch(
             "timezone": quote["timezone"],
             "durationMinutes": quote["durationMinutes"],
             "calculationMethod": quote["calculationMethod"],
+            "roundingMethod": quote["roundingMethod"],
+            "totalCalculatedAmount": quote["totalCalculatedAmount"],
+            "totalRoundingAdjustmentAmount": quote["totalRoundingAdjustmentAmount"],
             "totalAppliedAmount": money(
                 sum(adjustment.get("initialAppliedAmount") for adjustment in batch_adjustments)
             ),
@@ -7185,3 +7716,75 @@ def list_balances(admin=Depends(require_admin)):
 def get_customer_balance(customer_id: str, admin=Depends(require_admin)):
     seed_billing_data()
     return customer_balance(customer_id)
+
+
+@router.get("/service-accounts/{service_account_id}/summary")
+@billing_read_snapshot
+def get_service_account_billing_summary(service_account_id: str, admin=Depends(require_admin)):
+    seed_billing_data()
+    return service_account_billing_summary(service_account_id)
+
+
+@router.get("/subscriber-migrations/{batch_id}/records")
+@billing_read_snapshot
+def subscriber_migration_billing_records(batch_id: str, admin=Depends(require_admin)):
+    """Expose only this import batch's lines for a read-only post-import check."""
+    seed_billing_data()
+    subscriptions = [
+        row for row in visible_subscriptions()
+        if (row.get("migration") or {}).get("batchId") == batch_id
+    ]
+    account_ids = {row.get("serviceAccountId") for row in subscriptions if row.get("serviceAccountId")}
+    invoice_rows = [
+        invoice_summary(row) for row in visible_invoices()
+        if row.get("serviceAccountId") in account_ids
+    ]
+    evidence_rows = [
+        row for row in legacy_payment_evidence
+        if row.get("serviceAccountId") in account_ids and not row.get("deletedAt")
+    ]
+    invoices_by_account: dict[str, list[dict[str, Any]]] = {}
+    evidence_by_account: dict[str, list[dict[str, Any]]] = {}
+    for row in invoice_rows:
+        if row.get("status") != "VOID":
+            invoices_by_account.setdefault(row["serviceAccountId"], []).append(row)
+    for row in evidence_rows:
+        evidence_by_account.setdefault(row["serviceAccountId"], []).append(row)
+    return {
+        "subscriptions": [
+            {
+                "id": row["id"], "serviceAccountId": row.get("serviceAccountId"),
+                "customerId": row.get("customerId"), "status": row.get("status"),
+                "billingMode": row.get("billingMode"), "monthlyRate": row.get("monthlyRate"),
+                "nextInvoiceDate": row.get("nextInvoiceDate"),
+            }
+            for row in subscriptions
+        ],
+        "invoices": [
+            {
+                "id": row["id"], "serviceAccountId": row.get("serviceAccountId"),
+                "subscriptionId": row.get("subscriptionId"), "invoiceNumber": row.get("invoiceNumber"),
+                "invoiceType": row.get("invoiceType"), "billingCycleStart": row.get("billingCycleStart"),
+                "dueDate": row.get("dueDate"), "issueDate": row.get("issueDate"),
+                "total": row.get("total"), "balance": row.get("balance"), "status": row.get("status"),
+            }
+            for row in invoice_rows
+        ],
+        "legacyPaymentEvidence": [
+            {
+                "serviceAccountId": row.get("serviceAccountId"), "subscriptionId": row.get("subscriptionId"),
+                "paymentDate": row.get("paymentDate"), "amount": row.get("amount"),
+                "coverageFromMonth": row.get("coverageFromMonth"), "paidThroughMonth": row.get("paidThroughMonth"),
+                "status": row.get("status"),
+            }
+            for row in evidence_rows
+        ],
+        "summaries": [
+            service_account_billing_summary(
+                row["serviceAccountId"], subscription=row,
+                invoice_rows=invoices_by_account.get(row["serviceAccountId"], []),
+                evidence_rows=evidence_by_account.get(row["serviceAccountId"], []),
+            )
+            for row in subscriptions if row.get("serviceAccountId")
+        ],
+    }

@@ -30,6 +30,18 @@ log "Deploying staging from $REPO_ROOT on ports web=$WEB_PORT api=$API_PORT vers
 
 docker compose --project-name "$COMPOSE_PROJECT" -f "$REPO_ROOT/docker-compose.yml" up -d --build
 
+for service in postgres api web; do
+  mapfile -t staging_container_ids < <(
+    docker compose --project-name "$COMPOSE_PROJECT" -f "$REPO_ROOT/docker-compose.yml" ps --all --quiet "$service"
+  )
+  if [[ ${#staging_container_ids[@]} -ne 1 ]]; then
+    log "ERROR: expected one staging $service container, found ${#staging_container_ids[@]}"
+    exit 1
+  fi
+  docker update --restart unless-stopped "${staging_container_ids[0]}" >/dev/null
+done
+log "Staging containers will restart after host or Docker restarts"
+
 for attempt in $(seq 1 40); do
   if curl -fsS "http://127.0.0.1:${API_PORT}/health" >/dev/null; then
     log "Staging API is healthy"

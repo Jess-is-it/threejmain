@@ -1,5 +1,14 @@
 # Service Module Context
 
+## Existing Subscriber Migration
+
+- Customer Profiling calls internal providers `migration_catalog_options()` and `migrate_existing_service_line(payload, actor)` during the reviewed installed-subscriber cutover.
+- Imported plans must map to an active Service Catalog item or use the explicit `CREATE_LEGACY` action. Legacy catalog records use a stable migration plan key, a `LEGACY-...` code, zero installation fee, and migration audit metadata.
+- Each accepted CSV line creates one idempotent `ACTIVE` or `SUSPENDED` Service Account keyed by its migration fingerprint. It preserves the imported recurring rate, activation/billing dates, last payment date, next billing date, balance, and service address.
+- Preserved imported balance and next billing date are historical source snapshots; Billing owns the current amount due and invoice schedule. The visible Service Account detail reads `GET /api/billing/service-accounts/{serviceAccountId}/summary` per line and displays live amount due, paid-through month, next open invoice due date, and next cycle. Its customer status is refreshed from `GET /api/customer-profiling/customers/{customerId}` when details open rather than relying on the Service Account's creation-time customer snapshot.
+- `GET /api/service/subscriber-migrations/{batchId}/accounts` returns only accounts in a migration batch for the post-import reconciliation report.
+- Historical installation is represented directly on the Service Account. No fabricated `NEW_INSTALLATION` Service Order or Ticket is created. Customer Profiling lifecycle status is synchronized from the resulting account.
+
 ## Purpose
 
 Service manages the ISP service catalog, service accounts, and service orders. The catalog answers what internet services the ISP offers. Service accounts represent actual customer internet lines/subscriptions. Service orders answer what service request a customer is trying to avail.

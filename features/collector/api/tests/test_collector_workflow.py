@@ -152,6 +152,7 @@ class CollectorWorkflowTests(unittest.TestCase):
                     else 0
                 )
                 invoice["balance"] = round(before - requested["amount"] - promotion_discount, 2)
+                invoice["status"] = "PAID" if invoice["balance"] <= 0 else "PARTIALLY_PAID"
                 allocations.append(
                     {
                         "invoiceId": invoice["id"],
@@ -287,6 +288,58 @@ class CollectorWorkflowTests(unittest.TestCase):
         self.assertTrue(metadata["canViewFinance"])
         self.assertTrue(metadata["canConfirmFinance"])
 
+    def test_collector_can_send_server_calculated_unavailable_customer_message(self):
+        self.add_promo_quote()
+
+        sent = collector.send_customer_unavailable_message(
+            self.customer["id"],
+            actor=self.collector_actor,
+        )
+
+        self.assertEqual("SUCCESS", sent["status"])
+        self.assertEqual("3J BILL", sent["senderId"])
+        self.assertEqual("*******4567", sent["destination"])
+        self.assertEqual(280.0, sent["amountDue"])
+        self.assertEqual(1, len(self.sms_messages))
+        message = self.sms_messages[0]
+        self.assertEqual(self.customer["contactNumber"], message["destination"])
+        self.assertEqual("3J BILL", message["source"])
+        self.assertEqual("COLLECTOR_CUSTOMER_UNAVAILABLE", message["purpose"])
+        self.assertEqual(
+            "Hello, Ada. Our 3J collector visited today, but no one was available. "
+            "Your current amount due is P280.00. Please contact 3J to arrange payment. Thank you.",
+            message["message_text"],
+        )
+        self.assertEqual("CUSTOMER_UNAVAILABLE", message["request_context"]["visitOutcome"])
+        self.assertEqual(280.0, message["request_context"]["amountDue"])
+        self.assertEqual("collector-one", message["request_context"]["collectorUsername"])
+        self.assertTrue(message["request_context"]["messageRequestId"])
+        audit = next(
+            event
+            for event in self.audit_events
+            if event["action"] == "collector_customer_unavailable_sms_sent"
+        )
+        self.assertEqual(self.customer["id"], audit["targetId"])
+        self.assertEqual("*******4567", audit["details"]["destination"])
+
+    def test_unavailable_customer_message_requires_collector_permission_and_saved_mobile(self):
+        with self.assertRaises(HTTPException) as forbidden:
+            collector.send_customer_unavailable_message(
+                self.customer["id"],
+                actor=self.finance_actor,
+            )
+        self.assertEqual(403, forbidden.exception.status_code)
+
+        self.customer["contactNumber"] = ""
+        self.customer["alternateMobileNumber"] = ""
+        with self.assertRaises(HTTPException) as missing_mobile:
+            collector.send_customer_unavailable_message(
+                self.customer["id"],
+                actor=self.collector_actor,
+            )
+        self.assertEqual(400, missing_mobile.exception.status_code)
+        self.assertEqual([], self.sms_messages)
+
     def test_payment_posts_to_billing_sends_sms_and_replays_safely(self):
         self.claim()
         posted = self.post_cash()
@@ -306,6 +359,19 @@ class CollectorWorkflowTests(unittest.TestCase):
         self.assertEqual(self.customer["contactNumber"], self.sms_messages[0]["destination"])
         self.assertEqual("COLLECTOR_PAYMENT_CONFIRMATION", self.sms_messages[0]["purpose"])
         self.assertEqual("3J BILL", posted["sms"]["senderId"])
+        self.assertEqual(
+            ["2026-05-01", "2026-06-01"],
+            [row["billingCycleStart"] for row in posted["outstandingInvoicesBefore"]],
+        )
+        self.assertEqual(
+            [100.0, 200.0],
+            [row["amountDue"] for row in posted["outstandingInvoicesBefore"]],
+        )
+        self.assertEqual(1, len(posted["outstandingInvoicesAfter"]))
+        self.assertEqual("2026-06-01", posted["outstandingInvoicesAfter"][0]["billingCycleStart"])
+        self.assertEqual(150.0, posted["outstandingInvoicesAfter"][0]["balance"])
+        self.assertEqual("PAID", posted["allocations"][0]["statusAfter"])
+        self.assertEqual("PARTIALLY_PAID", posted["allocations"][1]["statusAfter"])
         self.assertEqual(
             "Thank you, Ada! We received your payment of P150.00. "
             "You have a remaining balance of P150.00.",
@@ -346,6 +412,8 @@ class CollectorWorkflowTests(unittest.TestCase):
         self.assertEqual(150.0, posted["balanceAfter"])
         self.assertEqual(0.0, posted["allocations"][0]["balanceAfter"])
         self.assertEqual("Automatic Loyalty Discount", posted["allocations"][0]["promotions"][0]["promotionName"])
+        self.assertEqual(80.0, posted["outstandingInvoicesBefore"][0]["amountDue"])
+        self.assertEqual(20.0, posted["outstandingInvoicesBefore"][0]["promotionDiscountAmount"])
         self.assertEqual(
             "Thank you, Ada! We received your payment of P130.00. "
             "You have a remaining balance of P150.00.",
@@ -594,6 +662,14 @@ class CollectorWorkflowTests(unittest.TestCase):
             collector.RemittancePayload(declaredCash=150),
             actor=self.collector_actor,
         )
+        finance_batch = collector.finance_overview(actor=self.finance_actor)["openRemittances"][0]
+        self.assertEqual(1, len(finance_batch["collectionItems"]))
+        self.assertEqual("Ada Lovelace", finance_batch["collectionItems"][0]["customerName"])
+        self.assertEqual("ACC-0001", finance_batch["collectionItems"][0]["accountNumber"])
+        self.assertEqual(posted["receiptNumber"], finance_batch["collectionItems"][0]["receiptNumber"])
+        self.assertEqual("CASH", finance_batch["collectionItems"][0]["method"])
+        self.assertEqual(150.0, finance_batch["collectionItems"][0]["amount"])
+        self.assertEqual(150.0, finance_batch["listedCollectionTotal"])
         closed = collector.confirm_remittance(
             submitted["id"],
             collector.RemittanceConfirmationPayload(
@@ -643,6 +719,31 @@ class CollectorWorkflowTests(unittest.TestCase):
 
         self.assertEqual("VARIANCE", reviewed["status"])
         self.assertEqual("UNDER_REVIEW", collector.collections[0]["custodyStatus"])
+
+    def test_finance_cannot_confirm_remittance_with_missing_collection_details(self):
+        self.claim()
+        self.post_cash()
+        submitted = collector.submit_remittance(
+            collector.RemittancePayload(declaredCash=150),
+            actor=self.collector_actor,
+        )
+        collector.collections.clear()
+
+        with self.assertRaises(HTTPException) as raised:
+            collector.confirm_remittance(
+                submitted["id"],
+                collector.RemittanceConfirmationPayload(
+                    countedCash=150,
+                    confirmedGcashAmount=0,
+                ),
+                actor=self.finance_actor,
+            )
+
+        self.assertEqual(409, raised.exception.status_code)
+        self.assertEqual(
+            "Linked customer payments do not match the remittance summary",
+            raised.exception.detail,
+        )
 
 
 if __name__ == "__main__":

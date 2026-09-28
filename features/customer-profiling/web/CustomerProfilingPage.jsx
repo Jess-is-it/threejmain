@@ -65,6 +65,13 @@ import {
   hasCustomer360TabData,
   onboardingStepSatisfied
 } from './customer360ViewModel.js';
+import {
+  existingSubscriberWorkbookBuffer,
+  isExcelSubscriberFile,
+  parseExistingSubscriberWorkbook
+} from './subscriberMigrationWorkbook.js';
+import { summarizeSubscriberMigrationOutcome } from './subscriberMigrationOutcome.js';
+import { reconcileSubscriberMigration } from './subscriberMigrationReconciliation.js';
 import './customerProfiling.css';
 
 const API = '/api';
@@ -427,6 +434,34 @@ function parseCustomerCsv(text, requiredHeaders, existingCustomers = []) {
   return { headers, rows: validateBulkUploadRows(parsedRows, requiredHeaders, existingCustomers), fileErrors };
 }
 
+function parseExistingSubscriberCsv(text, requiredHeaders) {
+  const rows = parseCsv(text);
+  if (rows.length < 2) return { rows: [], errors: ['CSV must include a header row and at least one installed line.'] };
+  const headers = rows[0].map((header) => String(header || '').trim());
+  const headerKeys = headers.map((header) => header.toLowerCase());
+  const errors = requiredHeaders
+    .filter((header) => !headerKeys.includes(header.toLowerCase()))
+    .map((header) => `Missing required header: ${header}`);
+  const parsedRows = rows.slice(1).map((cells) => Object.fromEntries(
+    headers.map((header, index) => [header, String(cells[index] || '').trim()])
+  )).filter((row) => Object.values(row).some((value) => value));
+  if (!parsedRows.length) errors.push('No installed subscriber lines were found.');
+  return { rows: parsedRows, errors };
+}
+
+function downloadCsvFile(filename, headers, rows) {
+  const csv = [
+    headers.map(csvEscape).join(','),
+    ...rows.map((row) => headers.map((header) => csvEscape(row?.[header] || '')).join(','))
+  ].join('\n');
+  const href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+  const link = document.createElement('a');
+  link.href = href;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(href);
+}
+
 function locationLabel(location) {
   const parts = [
     location.location_name,
@@ -500,6 +535,19 @@ function formatMoney(value) {
     currency: 'PHP',
     maximumFractionDigits: 2
   }).format(Number.isFinite(amount) ? amount : 0);
+}
+
+function formatPromotionDiscount(promotion = {}) {
+  if (promotion.discountType === 'WAIVE') return 'Waive';
+  if (promotion.discountType === 'PERCENT') return `${Number(promotion.discountPercent || 0)}%`;
+  return formatMoney(promotion.discountAmount);
+}
+
+function promotionDiscountAmountForRate(promotion = {}, monthlyRate = 0) {
+  const rate = Number(monthlyRate || 0);
+  if (promotion.discountType === 'WAIVE') return rate;
+  if (promotion.discountType === 'PERCENT') return Math.round((rate * Number(promotion.discountPercent || 0) / 100) * 100) / 100;
+  return Math.min(rate, Number(promotion.discountAmount || 0));
 }
 
 function formatBillingCycle(row = {}) {
@@ -878,6 +926,22 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const [bulkUploadLocationFilter, setBulkUploadLocationFilter] = useState('');
   const [expandedBulkUploadRowNumbers, setExpandedBulkUploadRowNumbers] = useState([]);
   const [isBulkUploading, setBulkUploading] = useState(false);
+  const [isSubscriberMigrationOpen, setSubscriberMigrationOpen] = useState(false);
+  const [subscriberMigrationFileName, setSubscriberMigrationFileName] = useState('');
+  const [subscriberMigrationRows, setSubscriberMigrationRows] = useState([]);
+  const [subscriberMigrationErrors, setSubscriberMigrationErrors] = useState([]);
+  const [subscriberMigrationBatch, setSubscriberMigrationBatch] = useState(null);
+  const [subscriberMigrationPlanMappings, setSubscriberMigrationPlanMappings] = useState({});
+  const [subscriberMigrationPromotionMappings, setSubscriberMigrationPromotionMappings] = useState({});
+  const [subscriberMigrationDecisions, setSubscriberMigrationDecisions] = useState({});
+  const [subscriberMigrationBusy, setSubscriberMigrationBusy] = useState(false);
+  const [subscriberMigrationResumeId, setSubscriberMigrationResumeId] = useState('');
+  const [subscriberMigrationReviewView, setSubscriberMigrationReviewView] = useState('plans');
+  const [subscriberMigrationExpandedRowId, setSubscriberMigrationExpandedRowId] = useState('');
+  const [subscriberMigrationOutcome, setSubscriberMigrationOutcome] = useState(null);
+  const [subscriberMigrationReconciliation, setSubscriberMigrationReconciliation] = useState(null);
+  const [subscriberMigrationRecheckBusy, setSubscriberMigrationRecheckBusy] = useState(false);
+  const [isSubscriberMigrationOutcomeOpen, setSubscriberMigrationOutcomeOpen] = useState(false);
   const [isDetailsPanelOpen, setDetailsPanelOpen] = useState(false);
   const [isOnboardingModalOpen, setOnboardingModalOpen] = useState(false);
   const [customerDetailTab, setCustomerDetailTab] = useState('overview');
@@ -927,23 +991,17 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const savedCities = uniqueValues(locations
     .filter((location) => !filters.province || normalizeUpper(location.province) === normalizeUpper(filters.province))
     .map((location) => normalizeUpper(location.municipality)));
-  const formSavedCities = uniqueValues(locations
-    .filter((location) => !form.province || normalizeUpper(location.province) === normalizeUpper(form.province))
-    .map((location) => normalizeUpper(location.municipality)));
   const cities = filters.province ? uniqueValues([...(meta.citiesByProvince?.[filters.province] || []), ...savedCities]) : uniqueValues([...(meta.cities || []), ...savedCities]);
-  const formCities = form.province ? uniqueValues([...(meta.citiesByProvince?.[form.province] || []), ...formSavedCities]) : uniqueValues([...(meta.cities || []), ...formSavedCities]);
   const barangayKey = `${filters.province}::${filters.city}`;
   const formBarangayKey = `${form.province}::${form.city}`;
   const savedBarangays = uniqueValues(locations
     .filter((location) => (!filters.province || normalizeUpper(location.province) === normalizeUpper(filters.province))
       && (!filters.city || normalizeUpper(location.municipality) === normalizeUpper(filters.city)))
     .map((location) => normalizeUpper(location.barangay)));
-  const formSavedBarangays = uniqueValues(locations
-    .filter((location) => (!form.province || normalizeUpper(location.province) === normalizeUpper(form.province))
-      && (!form.city || normalizeUpper(location.municipality) === normalizeUpper(form.city)))
-    .map((location) => normalizeUpper(location.barangay)));
   const barangays = filters.province && filters.city ? uniqueValues([...(meta.barangaysByProvinceCity?.[barangayKey] || []), ...savedBarangays]) : uniqueValues([...(meta.barangays || []), ...savedBarangays]);
-  const formBarangays = form.province && form.city ? uniqueValues([...(meta.barangaysByProvinceCity?.[formBarangayKey] || []), ...formSavedBarangays]) : uniqueValues([...(meta.barangays || []), ...formSavedBarangays]);
+  const customerFormProvinceOptions = meta.provinces?.length ? meta.provinces : ['CAGAYAN', 'ISABELA'];
+  const customerFormCityOptions = meta.citiesByProvince?.[form.province] || [];
+  const customerFormBarangayOptions = meta.barangaysByProvinceCity?.[formBarangayKey] || [];
   const requiredBulkUploadHeaders = meta.requiredBulkUploadHeaders || ['firstName', 'lastName', 'contactNumber', 'barangay'];
   const bulkUploadBarangayOptionsFor = (row) => {
     const province = normalizeUpper(row?.data?.province);
@@ -1161,6 +1219,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       ['balance', request(`/billing/customers/${customerId}/balance`)],
       ['invoices', request(`/billing/invoices?customerId=${customerId}`)],
       ['payments', request(`/billing/payments?customerId=${customerId}`)],
+      ['legacyPaymentEvidence', request(`/billing/migration-payment-evidence?customerId=${customerId}`)],
       ['adjustments', request(`/billing/adjustments?customerId=${customerId}`)],
       ['posSales', request('/point-of-sale/sales')],
       ['tickets', request(`/ticketing/tickets?customerId=${customerId}`)],
@@ -1671,6 +1730,312 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     setError('');
   }
 
+  function hydrateSubscriberMigrationBatch(batch) {
+    setSubscriberMigrationBatch(batch);
+    setSubscriberMigrationResumeId(batch?.id || '');
+    setSubscriberMigrationPlanMappings((current) => Object.fromEntries((batch?.planGroups || []).map((group) => [
+      group.planKey,
+      current[group.planKey] || group.suggestedMapping || { action: 'REVIEW' }
+    ])));
+    setSubscriberMigrationPromotionMappings((current) => Object.fromEntries((batch?.promotionGroups || []).map((group) => [
+      group.importedCode,
+      current[group.importedCode] || group.suggestedMapping || { action: 'REVIEW' }
+    ])));
+    setSubscriberMigrationDecisions((current) => Object.fromEntries((batch?.rows || []).map((row) => [
+      row.id,
+      current[row.id] || {
+        customerAction: row.duplicates?.length ? 'REVIEW' : 'CREATE',
+        customerId: '',
+        balanceResolution: row.billingPreview?.defaultResolution || 'MONTHLY_INVOICES'
+      }
+    ])));
+  }
+
+  function openSubscriberMigration() {
+    setSubscriberMigrationOpen(true);
+    setSubscriberMigrationOutcomeOpen(false);
+    setSubscriberMigrationErrors([]);
+    setSubscriberMigrationReviewView('plans');
+    setSubscriberMigrationExpandedRowId('');
+    setMessage('');
+    setError('');
+  }
+
+  function closeSubscriberMigration() {
+    setSubscriberMigrationOpen(false);
+    setSubscriberMigrationBusy(false);
+  }
+
+  async function downloadSubscriberMigrationTemplate() {
+    setSubscriberMigrationBusy(true);
+    try {
+      const template = await request('/customer-profiling/customers/existing-subscriber-template');
+      const buffer = await existingSubscriberWorkbookBuffer(template);
+      const href = URL.createObjectURL(new Blob(
+        [buffer],
+        { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
+      ));
+      const link = document.createElement('a');
+      link.href = href;
+      link.download = template.filename || 'existing-subscribers-migration-template.xlsx';
+      link.click();
+      URL.revokeObjectURL(href);
+    } catch (err) {
+      setSubscriberMigrationErrors([err.message]);
+    } finally {
+      setSubscriberMigrationBusy(false);
+    }
+  }
+
+  async function handleSubscriberMigrationFile(event) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    setSubscriberMigrationOutcome(null);
+    setSubscriberMigrationOutcomeOpen(false);
+    setSubscriberMigrationBusy(true);
+    try {
+      const template = await request('/customer-profiling/customers/existing-subscriber-template');
+      const parsed = isExcelSubscriberFile(file)
+        ? await parseExistingSubscriberWorkbook(file, template.requiredHeaders || [])
+        : parseExistingSubscriberCsv(await file.text(), template.requiredHeaders || []);
+      setSubscriberMigrationFileName(file.name);
+      setSubscriberMigrationRows(parsed.rows);
+      setSubscriberMigrationErrors(parsed.errors);
+      setSubscriberMigrationBatch(null);
+      setSubscriberMigrationPlanMappings({});
+      setSubscriberMigrationPromotionMappings({});
+      setSubscriberMigrationDecisions({});
+      setSubscriberMigrationReviewView('plans');
+      setSubscriberMigrationExpandedRowId('');
+    } catch (err) {
+      setSubscriberMigrationErrors([err.message || 'Unable to read the selected Excel or CSV file.']);
+    } finally {
+      setSubscriberMigrationBusy(false);
+    }
+  }
+
+  async function assessSubscriberMigration() {
+    setSubscriberMigrationBusy(true);
+    setSubscriberMigrationErrors([]);
+    try {
+      const batch = await request('/customer-profiling/subscriber-migrations', {
+        method: 'POST',
+        body: JSON.stringify({ filename: subscriberMigrationFileName, rows: subscriberMigrationRows })
+      });
+      hydrateSubscriberMigrationBatch(batch);
+      setSubscriberMigrationReconciliation(null);
+      setSubscriberMigrationReviewView('plans');
+      setSubscriberMigrationExpandedRowId('');
+    } catch (err) {
+      setSubscriberMigrationErrors([err.message]);
+    } finally {
+      setSubscriberMigrationBusy(false);
+    }
+  }
+
+  async function resumeSubscriberMigration() {
+    if (!subscriberMigrationResumeId.trim()) return;
+    setSubscriberMigrationBusy(true);
+    setSubscriberMigrationErrors([]);
+    try {
+      const batch = await request(`/customer-profiling/subscriber-migrations/${encodeURIComponent(subscriberMigrationResumeId.trim())}`);
+      hydrateSubscriberMigrationBatch(batch);
+      setSubscriberMigrationReconciliation(null);
+      setSubscriberMigrationFileName(batch.filename || 'Saved migration batch');
+      setSubscriberMigrationReviewView('plans');
+      setSubscriberMigrationExpandedRowId('');
+      if (['COMPLETED', 'PARTIAL', 'FAILED'].includes(batch.status)) {
+        setSubscriberMigrationOutcome(summarizeSubscriberMigrationOutcome(batch));
+        setSubscriberMigrationOpen(false);
+        setSubscriberMigrationOutcomeOpen(true);
+        await checkSubscriberMigration(batch);
+      }
+    } catch (err) {
+      setSubscriberMigrationErrors([err.message]);
+    } finally {
+      setSubscriberMigrationBusy(false);
+    }
+  }
+
+  function updateSubscriberPlanMapping(planKey, patch) {
+    setSubscriberMigrationPlanMappings((current) => ({ ...current, [planKey]: { ...(current[planKey] || {}), ...patch } }));
+  }
+
+  function updateSubscriberPromotionMapping(importedCode, patch) {
+    setSubscriberMigrationPromotionMappings((current) => ({
+      ...current,
+      [importedCode]: { ...(current[importedCode] || {}), ...patch }
+    }));
+  }
+
+  function updateSubscriberRowDecision(rowId, patch) {
+    setSubscriberMigrationDecisions((current) => ({ ...current, [rowId]: { ...(current[rowId] || {}), ...patch } }));
+  }
+
+  async function checkSubscriberMigration(batch = subscriberMigrationBatch) {
+    if (!batch?.id) return;
+    setSubscriberMigrationRecheckBusy(true);
+    try {
+      const [accounts, billingRecords, currentCustomers] = await Promise.all([
+        request(`/service/subscriber-migrations/${encodeURIComponent(batch.id)}/accounts`),
+        request(`/billing/subscriber-migrations/${encodeURIComponent(batch.id)}/records`),
+        request(`/customer-profiling/subscriber-migrations/${encodeURIComponent(batch.id)}/current-customers`)
+      ]);
+      setSubscriberMigrationReconciliation(reconcileSubscriberMigration(batch, accounts, billingRecords, currentCustomers));
+    } catch (err) {
+      setSubscriberMigrationReconciliation({ error: err.message || 'Unable to verify imported records.' });
+    } finally {
+      setSubscriberMigrationRecheckBusy(false);
+    }
+  }
+
+  async function commitSubscriberMigration() {
+    if (!subscriberMigrationBatch?.id) return;
+    setSubscriberMigrationBusy(true);
+    setSubscriberMigrationErrors([]);
+    let batch;
+    try {
+      batch = await request(`/customer-profiling/subscriber-migrations/${encodeURIComponent(subscriberMigrationBatch.id)}/commit`, {
+        method: 'POST',
+        body: JSON.stringify({
+          planMappings: subscriberMigrationPlanMappings,
+          promotionMappings: subscriberMigrationPromotionMappings,
+          rowDecisions: subscriberMigrationDecisions
+        })
+      });
+    } catch (err) {
+      setSubscriberMigrationErrors([err.message || 'The import could not be completed. Review the batch and try again.']);
+    } finally {
+      setSubscriberMigrationBusy(false);
+    }
+    if (!batch) return;
+
+    hydrateSubscriberMigrationBatch(batch);
+    setSubscriberMigrationOpen(false);
+    setSubscriberMigrationOutcome(summarizeSubscriberMigrationOutcome(batch));
+    setSubscriberMigrationOutcomeOpen(true);
+    await checkSubscriberMigration(batch);
+    await load(filters);
+    refreshShell();
+  }
+
+  async function downloadSubscriberMigrationResults() {
+    if (!subscriberMigrationBatch?.id) return;
+    setSubscriberMigrationErrors([]);
+    try {
+      const result = await request(`/customer-profiling/subscriber-migrations/${encodeURIComponent(subscriberMigrationBatch.id)}/result`);
+      downloadCsvFile(result.filename, result.headers, result.rows || []);
+    } catch (err) {
+      setSubscriberMigrationErrors([err.message]);
+    }
+  }
+
+  function downloadSubscriberMigrationReconciliation() {
+    const report = subscriberMigrationReconciliation;
+    if (!report?.rows) return;
+    downloadCsvFile(`existing-subscriber-reconciliation-${report.batchId.slice(0, 8)}.csv`, [
+      'Row', 'Subscriber', 'Customer account', 'Service account', 'Source balance as of',
+      'Source balance', 'Paid through', 'Current balance', 'Next invoice due',
+      'Next billing cycle', 'Current customer status', 'Issues'
+    ], report.rows.map((row) => ({
+      'Row': row.rowNumber,
+      'Subscriber': row.name,
+      'Customer account': row.accountNumber,
+      'Service account': row.serviceAccountNumber,
+      'Source balance as of': row.sourceBalanceAsOf,
+      'Source balance': String(row.sourceBalance),
+      'Paid through': row.paidThroughMonth,
+      'Current balance': row.currentBalance === null ? '' : String(row.currentBalance),
+      'Next invoice due': row.nextInvoiceDueDate,
+      'Next billing cycle': row.nextInvoiceCycleStart,
+      'Current customer status': row.customerStatus,
+      'Issues': row.issues.join('; ')
+    })));
+  }
+
+  function renderSubscriberMigrationOutcome() {
+    const outcome = subscriberMigrationOutcome;
+    if (!outcome) return null;
+    const hasImportIssues = outcome.notImported > 0;
+    const reconciliation = subscriberMigrationReconciliation;
+    const hasReconciliationIssues = Number(reconciliation?.needsReview || 0) > 0;
+    const visibleRows = outcome.notImportedRows.slice(0, 20);
+    const title = hasReconciliationIssues ? 'Import finished; review discrepancies' : !hasImportIssues ? 'All subscribers imported' : outcome.imported ? 'Import finished with issues' : 'No subscribers imported';
+
+    return (
+      <div className="customer-modal-backdrop subscriber-migration-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setSubscriberMigrationOutcomeOpen(false)}>
+        <div className="customer-modal subscriber-migration-outcome-modal" role="alertdialog" aria-modal="true" aria-labelledby="subscriber-migration-outcome-title" aria-describedby="subscriber-migration-outcome-description">
+          <div className="customer-modal-header">
+            <div>
+              <div className="text-muted small">Existing subscriber import</div>
+              <h3 id="subscriber-migration-outcome-title" className="customer-modal-title">{title}</h3>
+              <p id="subscriber-migration-outcome-description" className="text-muted mb-0">{outcome.imported} of {outcome.total} rows imported. {outcome.notImported} not imported.</p>
+            </div>
+            <button type="button" className="btn btn-icon btn-sm" title="Close results" aria-label="Close results" onClick={() => setSubscriberMigrationOutcomeOpen(false)}><IconX size={18} /></button>
+          </div>
+          <div className="customer-modal-body subscriber-migration-outcome-body">
+            {!!subscriberMigrationErrors.length && <div className="alert alert-danger mb-0" role="alert">{subscriberMigrationErrors.map((item) => <div key={item}>{item}</div>)}</div>}
+            <div className="subscriber-migration-outcome-counts">
+              <div className="subscriber-migration-outcome-count is-success"><strong>{outcome.imported}</strong><span>Imported</span></div>
+              <div className={`subscriber-migration-outcome-count ${hasImportIssues ? 'has-issues' : ''}`}><strong>{outcome.notImported}</strong><span>Not imported</span></div>
+            </div>
+            {hasImportIssues ? (
+              <>
+                <p className="subscriber-migration-outcome-breakdown">{outcome.failed} failed · {outcome.invalid} invalid · {outcome.skipped} skipped or already imported · {outcome.pending} pending</p>
+                <h4 className="subscriber-migration-outcome-section-title">Rows needing attention</h4>
+                <div className="subscriber-migration-outcome-rows">
+                  {visibleRows.map((row) => (
+                    <div className="subscriber-migration-outcome-row" key={row.id}>
+                      <div><strong>Row {row.rowNumber}: {row.name}</strong><span>{row.status.replaceAll('_', ' ')}</span></div>
+                      <p>{row.reason}</p>
+                    </div>
+                  ))}
+                </div>
+                {outcome.notImportedRows.length > visibleRows.length && <p className="text-muted small mb-0">Showing the first {visibleRows.length} rows. Download results for all row statuses and errors.</p>}
+              </>
+            ) : (
+              <div className="alert alert-success mb-0" role="status">All reviewed rows were imported successfully.</div>
+            )}
+            <section className="subscriber-migration-reconciliation">
+              <div className="subscriber-migration-reconciliation-heading">
+                <h4 className="subscriber-migration-outcome-section-title">Post-import reconciliation</h4>
+                <button type="button" className="btn btn-sm btn-outline-secondary" disabled={subscriberMigrationRecheckBusy} onClick={() => checkSubscriberMigration()}>{subscriberMigrationRecheckBusy ? 'Checking…' : 'Recheck records'}</button>
+              </div>
+              {subscriberMigrationRecheckBusy && <p className="text-muted small mb-0" role="status">Checking current Customer, Service, and Billing records…</p>}
+              {reconciliation?.error && <div className="alert alert-warning mb-0" role="alert">Verification could not finish: {reconciliation.error}</div>}
+              {reconciliation?.rows && (
+                <>
+                  <p className="mb-0"><strong>{reconciliation.verified} verified</strong> · <strong>{reconciliation.needsReview} need review</strong> of {reconciliation.checked} imported lines.</p>
+                  <p className="text-muted small mb-0">Source balance is the sheet value on its as-of date. Current balance comes from Billing and may change after new invoices or payments.</p>
+                  <div className="subscriber-migration-outcome-rows">
+                    {reconciliation.rows.slice(0, 20).map((row) => (
+                      <div className="subscriber-migration-outcome-row" key={row.id}>
+                        <div><strong>Row {row.rowNumber}: {row.name}</strong><span>{row.issues.length ? 'NEEDS REVIEW' : 'VERIFIED'}</span></div>
+                        <p>Source {formatMoney(row.sourceBalance)} as of {row.sourceBalanceAsOf || '-'} · Current {row.currentBalance === null ? 'unavailable' : formatMoney(row.currentBalance)} · Paid through {row.paidThroughMonth || '-'} · Invoice due {row.nextInvoiceDueDate || '-'} · Next cycle {row.nextInvoiceCycleStart || '-'} · Customer {row.customerStatus || '-'}</p>
+                        {row.issues.map((issue) => <p className="text-warning" key={issue}>{issue}</p>)}
+                      </div>
+                    ))}
+                  </div>
+                  {reconciliation.rows.length > 20 && <p className="text-muted small mb-0">Showing the first 20 imported lines. Download the reconciliation for all rows.</p>}
+                </>
+              )}
+            </section>
+            <p className="text-muted small mb-0">Batch {outcome.batchId} · {outcome.filename}</p>
+          </div>
+          <div className="customer-modal-footer customer-modal-footer-split">
+            <button type="button" className="btn btn-outline-secondary" autoFocus onClick={() => setSubscriberMigrationOutcomeOpen(false)}>Done</button>
+            <div className="btn-list">
+              <button type="button" className="btn btn-outline-primary" onClick={downloadSubscriberMigrationResults}><IconFileSpreadsheet size={17} className="me-2" />Download results</button>
+              {reconciliation?.rows && <button type="button" className="btn btn-outline-primary" onClick={downloadSubscriberMigrationReconciliation}>Download reconciliation</button>}
+              {hasImportIssues && <button type="button" className="btn btn-primary" onClick={() => { setSubscriberMigrationErrors([]); setSubscriberMigrationOutcomeOpen(false); setSubscriberMigrationReviewView('subscribers'); setSubscriberMigrationOpen(true); }}>Review batch</button>}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   function discardBulkUploadDraft() {
     const draftIdToRemove = activeBulkUploadDraftId;
     setBulkUploadModalOpen(false);
@@ -2065,6 +2430,50 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     if (event.key !== 'Enter') return;
     event.preventDefault();
     if (filteredLocationRecords[0]) applyLocation(filteredLocationRecords[0].id);
+  }
+
+  function handleCustomerProvinceChange(value) {
+    const province = normalizeUpper(value);
+    const availableCities = meta.citiesByProvince?.[province] || [];
+    const city = province === 'CAGAYAN' && availableCities.includes('ENRILE')
+      ? 'ENRILE'
+      : availableCities[0] || '';
+    const availableBarangays = meta.barangaysByProvinceCity?.[`${province}::${city}`] || [];
+    setForm((current) => ({
+      ...current,
+      locationId: '',
+      locationName: '',
+      province,
+      city,
+      barangay: availableBarangays[0] || ''
+    }));
+    setLocationSearch('');
+    setLocationPickerOpen(false);
+  }
+
+  function handleCustomerCityChange(value) {
+    const city = normalizeUpper(value);
+    const availableBarangays = meta.barangaysByProvinceCity?.[`${form.province}::${city}`] || [];
+    setForm((current) => ({
+      ...current,
+      locationId: '',
+      locationName: '',
+      city,
+      barangay: availableBarangays[0] || ''
+    }));
+    setLocationSearch('');
+    setLocationPickerOpen(false);
+  }
+
+  function handleCustomerBarangayChange(value) {
+    setForm((current) => ({
+      ...current,
+      locationId: '',
+      locationName: '',
+      barangay: normalizeUpper(value)
+    }));
+    setLocationSearch('');
+    setLocationPickerOpen(false);
   }
 
   async function loadReferralOptions(searchValue = '') {
@@ -2792,21 +3201,24 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
               <div className="col-md-4"><label className="form-label">Landmark</label><input className="form-control" value={form.landmark || ''} onChange={(e) => setForm({ ...form, landmark: e.target.value })} placeholder="Nearest landmark or service-area note" /></div>
               <div className="col-md-4">
                 <label className="form-label">Province</label>
-                <input className="form-control" list="customer-province-options" value={form.province || ''} onChange={(e) => setForm({ ...form, province: normalizeUpper(e.target.value), city: '', barangay: '' })} />
+                <select className="form-select" value={form.province || 'CAGAYAN'} onChange={(event) => handleCustomerProvinceChange(event.target.value)}>
+                  {customerFormProvinceOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
               </div>
               <div className="col-md-4">
-                <label className="form-label">City</label>
-                <input className="form-control" list="customer-city-options" value={form.city || ''} onChange={(e) => setForm({ ...form, city: normalizeUpper(e.target.value), barangay: '' })} />
+                <label className="form-label">City / Municipality</label>
+                <select className="form-select" value={form.city || ''} onChange={(event) => handleCustomerCityChange(event.target.value)}>
+                  {customerFormCityOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
               </div>
               <div className="col-md-4">
                 <label className="form-label">Barangay</label>
-                <input className="form-control" list="customer-barangay-options" value={form.barangay || ''} onChange={(e) => setForm({ ...form, barangay: normalizeUpper(e.target.value) })} />
+                <select className="form-select" value={form.barangay || ''} onChange={(event) => handleCustomerBarangayChange(event.target.value)}>
+                  {customerFormBarangayOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
               </div>
               <div className="col-md-6"><label className="form-label">Address Line 1</label><input className="form-control" value={form.addressLine1 || ''} onChange={(e) => setForm({ ...form, addressLine1: e.target.value })} /></div>
               <div className="col-md-6"><label className="form-label">Address Line 2</label><input className="form-control" value={form.addressLine2 || ''} onChange={(e) => setForm({ ...form, addressLine2: e.target.value })} /></div>
-              <datalist id="customer-province-options">{provinceOptions.map((item) => <option key={item} value={item} />)}</datalist>
-              <datalist id="customer-city-options">{formCities.map((item) => <option key={item} value={item} />)}</datalist>
-              <datalist id="customer-barangay-options">{formBarangays.map((item) => <option key={item} value={item} />)}</datalist>
             </div>
           </section>
           <section className="customer-form-section-panel">
@@ -3478,7 +3890,21 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     };
     const renderOverview = () => {
       const currentPlan = activeSubscription?.planName || activeServiceAccount?.catalogName || '-';
-      const nextBillingDate = formatDisplayDate(activeSubscription?.nextInvoiceDate);
+      const nextBillingCycle = formatDisplayDate(activeSubscription?.nextInvoiceDate);
+      const activeServiceAccountId = activeSubscription?.serviceAccountId || activeServiceAccount?.id;
+      const billingBusinessDay = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+      const lineOpenInvoices = customer360.openInvoices
+        .filter((invoice) => !activeServiceAccountId || invoice.serviceAccountId === activeServiceAccountId)
+        .sort((left, right) => String(left.dueDate || '').localeCompare(String(right.dueDate || '')));
+      const nextDueInvoice = lineOpenInvoices.find((invoice) => String(invoice.dueDate || '') >= billingBusinessDay) || lineOpenInvoices[0];
+      const paidThroughMonth = [
+        ...customer360.legacyPaymentEvidence
+          .filter((evidence) => !activeServiceAccountId || evidence.serviceAccountId === activeServiceAccountId)
+          .map((evidence) => evidence.paidThroughMonth || ''),
+        ...customer360.invoices
+          .filter((invoice) => invoice.serviceAccountId === activeServiceAccountId && invoice.status === 'PAID' && invoice.invoiceType === 'MONTHLY')
+          .map((invoice) => String(invoice.billingCycleEnd || '').slice(0, 7))
+      ].filter(Boolean).sort().at(-1) || '-';
       const latestInvoice = customer360.invoices[0] || customer360.openInvoices[0];
       const openInvoiceCount = customer360.openInvoices.length || Number(balance.openInvoices || 0);
       const overdueInvoiceCount = customer360.overdueInvoices.length || Number(balance.overdueInvoices || 0);
@@ -3504,8 +3930,8 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
             </div>
             <div className="customer-360-metric">
               <IconCalendarDue size={20} />
-              <span>Next Billing</span>
-              <strong>{nextBillingDate}</strong>
+              <span>Next invoice cycle</span>
+              <strong>{nextBillingCycle}</strong>
               <small>{activeSubscription?.billingCycle || activeSubscription?.billingMode || 'Billing schedule unavailable'}</small>
             </div>
           </div>
@@ -3538,6 +3964,8 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                 {renderSummaryFact('Overdue invoices', overdueInvoiceCount)}
                 {renderSummaryFact('Latest invoice', latestInvoice?.invoiceNumber || latestInvoice?.id, latestInvoice ? `${formatMoney(latestInvoice.balance ?? latestInvoice.totalAmount)} balance` : '')}
                 {renderSummaryFact('Latest invoice status', latestInvoice?.status)}
+                {renderSummaryFact('Paid through', paidThroughMonth)}
+                {renderSummaryFact('Next invoice due', formatDisplayDate(nextDueInvoice?.dueDate))}
               </div>
             </section>
 
@@ -3571,7 +3999,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                 {renderSummaryFact('Customer created', formatDisplayDateTime(selected.createdAt))}
                 {renderSummaryFact('Last profile update', formatDisplayDateTime(selected.updatedAt))}
                 {renderSummaryFact('Activation date', formatDisplayDate(activeServiceAccount?.activationDate || activeSubscription?.startDate))}
-                {renderSummaryFact('Next billing date', nextBillingDate)}
+                {renderSummaryFact('Next invoice cycle', nextBillingCycle)}
                 {renderSummaryFact('Latest service order activity', formatDisplayDateTime(activeOrder?.updatedAt || activeOrder?.createdAt))}
               </div>
             </section>
@@ -3704,7 +4132,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     );
     const renderPayments = () => (
       <div className="customer-360-tab-panel">
-        {renderState(['payments', 'posSales'], [...customer360.payments, ...customer360.posSales], 'No payment history found for this customer.')}
+        {renderState(['payments', 'legacyPaymentEvidence', 'posSales'], [...customer360.payments, ...customer360.legacyPaymentEvidence, ...customer360.posSales], 'No payment history found for this customer.')}
         {!!customer360.payments.length && (
           <div className="customer-360-table-wrap">
             <table className="table table-sm customer-360-table">
@@ -3738,6 +4166,28 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
               </tbody>
             </table>
           </div>
+        )}
+        {!!customer360.legacyPaymentEvidence.length && (
+          <section className="customer-360-panel customer-360-legacy-payment-evidence">
+            <h4>Legacy Payment Evidence</h4>
+            <p className="text-muted">Imported for historical reference. These amounts are excluded from current cash receipts and collection reports.</p>
+            <div className="customer-360-table-wrap">
+              <table className="table table-sm customer-360-table">
+                <thead><tr><th>Last payment date</th><th>Amount</th><th>Coverage</th><th>Paid through</th><th>Status</th></tr></thead>
+                <tbody>
+                  {customer360.legacyPaymentEvidence.map((evidence) => (
+                    <tr key={evidence.id}>
+                      <td>{formatDisplayDate(evidence.paymentDate)}</td>
+                      <td>{formatMoney(evidence.amount)}</td>
+                      <td>{evidence.coverageFromMonth || '-'} to {evidence.paidThroughMonth || '-'}</td>
+                      <td>{evidence.paidThroughMonth || '-'}</td>
+                      <td><span className="badge bg-blue-lt text-blue">Reference only</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
         )}
         {!!customer360.posSales.length && (
           <section className="customer-360-panel">
@@ -4695,6 +5145,349 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     );
   }
 
+  function renderSubscriberMigrationModal() {
+    const batch = subscriberMigrationBatch;
+    const planGroups = batch?.planGroups || [];
+    const promotionGroups = batch?.promotionGroups || [];
+    const migrationRows = batch?.rows || [];
+    const unresolvedPlanCount = planGroups.filter((group) => {
+      const mapping = subscriberMigrationPlanMappings[group.planKey] || {};
+      return mapping.action !== 'CREATE_LEGACY' && !(mapping.action === 'MAP_EXISTING' && mapping.catalogId);
+    }).length;
+    const unresolvedPromotionCount = promotionGroups.filter((group) => {
+      const mapping = subscriberMigrationPromotionMappings[group.importedCode] || {};
+      return mapping.action !== 'IGNORE' && !(mapping.action === 'MAP_EXISTING' && mapping.promotionId);
+    }).length;
+    const unresolvedCustomerCount = migrationRows.filter((row) => {
+      if (['IMPORTED', 'SKIPPED', 'DUPLICATE_IMPORTED', 'INVALID'].includes(row.status)) return false;
+      const decision = subscriberMigrationDecisions[row.id] || {};
+      return !decision.customerAction
+        || decision.customerAction === 'REVIEW'
+        || (['LINK', 'LINK_UPDATE'].includes(decision.customerAction) && !decision.customerId);
+    }).length;
+    const unresolvedPlans = unresolvedPlanCount > 0;
+    const unresolvedPromotions = unresolvedPromotionCount > 0;
+    const unresolvedCustomers = unresolvedCustomerCount > 0;
+    const canCommit = batch && !unresolvedPlans && !unresolvedPromotions && !unresolvedCustomers && !subscriberMigrationBusy;
+    return (
+      <div className="customer-modal-backdrop subscriber-migration-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeSubscriberMigration()}>
+        <div className="customer-modal subscriber-migration-modal" role="dialog" aria-modal="true" aria-labelledby="subscriber-migration-title">
+          <div className="customer-modal-header">
+            <div>
+              <div className="text-muted small">Installed-line migration</div>
+              <h3 id="subscriber-migration-title" className="customer-modal-title">Import Existing Subscribers</h3>
+              <p className="text-muted mb-0">Each spreadsheet or CSV row creates one existing internet line. Customer, Service, and Billing records are reviewed together.</p>
+            </div>
+            <button type="button" className="btn btn-icon btn-sm" title="Close" onClick={closeSubscriberMigration}><IconX size={18} /></button>
+          </div>
+          <div className="customer-modal-body subscriber-migration-body">
+            {!!subscriberMigrationErrors.length && <div className="alert alert-danger subscriber-migration-error" role="alert">{subscriberMigrationErrors.map((item) => <div key={item}>{item}</div>)}</div>}
+            {!batch && (
+              <div className="subscriber-migration-start">
+                <section className="subscriber-migration-callout">
+                  <IconHomeSignal size={28} />
+                  <div><strong>This is separate from profile-only Bulk Upload.</strong><span>It generates account numbers, accepts the historical installation, records the migration date automatically, and keeps old payments out of new cash reports.</span></div>
+                </section>
+                <div className="subscriber-migration-grid">
+                  <section className="subscriber-migration-panel">
+                    <h4>1. Download and complete the sample</h4>
+                    <p>The Excel template includes location dropdowns, rate and billing fields, promotion codes, sample data, and an Active Promotions reference sheet.</p>
+                    <button type="button" className="btn btn-outline-primary" disabled={subscriberMigrationBusy} onClick={downloadSubscriberMigrationTemplate}><IconFileSpreadsheet size={17} className="me-2" />Download Excel template with samples</button>
+                  </section>
+                  <section className="subscriber-migration-panel">
+                    <h4>2. Select the completed file</h4>
+                    <p>Excel and CSV files are accepted. Billing day and next billing date are derived automatically when the reviewed lines are imported.</p>
+                    <label className="btn btn-primary mb-2">
+                      <IconUpload size={17} className="me-2" />Choose Excel or CSV
+                      <input className="visually-hidden" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.csv,text/csv" onChange={handleSubscriberMigrationFile} />
+                    </label>
+                    {subscriberMigrationFileName && <div className="subscriber-migration-file"><strong>{subscriberMigrationFileName}</strong><span>{subscriberMigrationRows.length} installed line(s)</span></div>}
+                  </section>
+                </div>
+                <section className="subscriber-migration-resume">
+                  <div><strong>Resume a saved batch</strong><span>Use the batch ID shown after assessment. Completed rows are not created again.</span></div>
+                  <input className="form-control" value={subscriberMigrationResumeId} onChange={(event) => setSubscriberMigrationResumeId(event.target.value)} placeholder="Migration batch ID" />
+                  <button type="button" className="btn btn-outline-secondary" disabled={!subscriberMigrationResumeId.trim() || subscriberMigrationBusy} onClick={resumeSubscriberMigration}>Resume</button>
+                </section>
+              </div>
+            )}
+            {batch && (
+              <div className="subscriber-migration-review">
+                <div className="subscriber-migration-batch-heading">
+                  <div><span className={`badge ${statusClass(batch.status)}`}>{batch.status}</span><strong>{batch.filename}</strong><small>Batch {batch.id} · {batch.migrationCommittedAt ? `Effective date ${batch.cutoverDate}` : 'Effective date assigned on import'}{batch.effectiveDateTimezone ? ` · ${batch.effectiveDateTimezone}` : ''}</small></div>
+                  <button type="button" className="btn btn-outline-secondary btn-sm" onClick={() => {
+                    setSubscriberMigrationBatch(null);
+                    setSubscriberMigrationFileName('');
+                    setSubscriberMigrationRows([]);
+                    setSubscriberMigrationErrors([]);
+                    setSubscriberMigrationPlanMappings({});
+                    setSubscriberMigrationPromotionMappings({});
+                    setSubscriberMigrationDecisions({});
+                    setSubscriberMigrationReviewView('plans');
+                    setSubscriberMigrationExpandedRowId('');
+                  }}>Start another file</button>
+                </div>
+                <div className="subscriber-migration-summary">
+                  {[['Lines', batch.summary?.total], ['Ready', batch.summary?.ready], ['Needs review', batch.summary?.needsReview], ['Imported', batch.summary?.imported], ['Failed', batch.summary?.failed]].map(([label, value]) => <div key={label}><span>{label}</span><strong>{value || 0}</strong></div>)}
+                </div>
+                <div className="subscriber-migration-review-tabs" role="tablist" aria-label="Existing subscriber review steps">
+                  <button
+                    type="button"
+                    id="subscriber-migration-plans-tab"
+                    className={`subscriber-migration-review-tab ${subscriberMigrationReviewView === 'plans' ? 'is-active' : ''}`}
+                    role="tab"
+                    aria-selected={subscriberMigrationReviewView === 'plans'}
+                    aria-controls="subscriber-migration-plans-panel"
+                    onClick={() => setSubscriberMigrationReviewView('plans')}
+                  >
+                    <span><strong>1. Plan mapping</strong><small>{planGroups.length} rate group(s)</small></span>
+                    <span className={`subscriber-migration-tab-state ${unresolvedPlanCount ? 'needs-review' : 'is-ready'}`}>{unresolvedPlanCount ? `${unresolvedPlanCount} to resolve` : 'Complete'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="subscriber-migration-promotions-tab"
+                    className={`subscriber-migration-review-tab ${subscriberMigrationReviewView === 'promotions' ? 'is-active' : ''}`}
+                    role="tab"
+                    aria-selected={subscriberMigrationReviewView === 'promotions'}
+                    aria-controls="subscriber-migration-promotions-panel"
+                    onClick={() => setSubscriberMigrationReviewView('promotions')}
+                  >
+                    <span><strong>2. Promotions</strong><small>{promotionGroups.length} imported code(s)</small></span>
+                    <span className={`subscriber-migration-tab-state ${unresolvedPromotionCount ? 'needs-review' : 'is-ready'}`}>{unresolvedPromotionCount ? `${unresolvedPromotionCount} to resolve` : 'Complete'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="subscriber-migration-subscribers-tab"
+                    className={`subscriber-migration-review-tab ${subscriberMigrationReviewView === 'subscribers' ? 'is-active' : ''}`}
+                    role="tab"
+                    aria-selected={subscriberMigrationReviewView === 'subscribers'}
+                    aria-controls="subscriber-migration-subscribers-panel"
+                    onClick={() => setSubscriberMigrationReviewView('subscribers')}
+                  >
+                    <span><strong>3. Subscriber review</strong><small>{migrationRows.length} installed line(s)</small></span>
+                    <span className={`subscriber-migration-tab-state ${unresolvedCustomerCount ? 'needs-review' : 'is-ready'}`}>{unresolvedCustomerCount ? `${unresolvedCustomerCount} to review` : 'Ready'}</span>
+                  </button>
+                </div>
+                {subscriberMigrationReviewView === 'plans' && (
+                  <section className="subscriber-migration-panel subscriber-migration-focus-panel" id="subscriber-migration-plans-panel" role="tabpanel" aria-labelledby="subscriber-migration-plans-tab">
+                    <div className="subscriber-migration-panel-heading">
+                      <div><h4>Rate and plan mapping</h4><p>Match each imported rate group to a current plan, or create a migration-only legacy plan.</p></div>
+                    </div>
+                    <div className="subscriber-migration-plan-list">
+                    {planGroups.map((group) => {
+                      const mapping = subscriberMigrationPlanMappings[group.planKey] || {};
+                      return (
+                        <div className="subscriber-migration-plan" key={group.planKey}>
+                          <div><strong>{formatMoney(group.monthlyRate)} imported rate</strong><span>{group.billingMode} · {group.rowCount} line(s)</span></div>
+                          <select className="form-select" value={mapping.action || 'REVIEW'} onChange={(event) => updateSubscriberPlanMapping(group.planKey, { action: event.target.value, catalogId: '' })}>
+                            <option value="REVIEW">Review mapping</option>
+                            <option value="MAP_EXISTING">Map to active plan</option>
+                            <option value="CREATE_LEGACY">Create legacy plan</option>
+                          </select>
+                          {mapping.action === 'MAP_EXISTING' && (
+                            <select className="form-select" value={mapping.catalogId || ''} onChange={(event) => updateSubscriberPlanMapping(group.planKey, { catalogId: event.target.value })}>
+                              <option value="">Choose active plan</option>
+                              {(batch.catalogs || []).map((catalog) => <option key={catalog.id} value={catalog.id}>{catalog.name} · {formatMoney(catalog.monthlyRate)} · {catalog.billingMode}</option>)}
+                            </select>
+                          )}
+                        </div>
+                      );
+                    })}
+                    </div>
+                  </section>
+                )}
+                {subscriberMigrationReviewView === 'promotions' && (
+                  <section className="subscriber-migration-panel subscriber-migration-focus-panel" id="subscriber-migration-promotions-panel" role="tabpanel" aria-labelledby="subscriber-migration-promotions-tab">
+                    <div className="subscriber-migration-panel-heading">
+                      <div><h4>Promotion mapping</h4><p>Map each imported code to an active Billing promotion. The same mapping is applied to every line that uses that code.</p></div>
+                    </div>
+                    {!promotionGroups.length ? (
+                      <div className="subscriber-migration-empty-state"><IconCheck size={18} /><span>No promotion codes were imported. These subscriptions will start without automatic promotions.</span></div>
+                    ) : (
+                      <div className="subscriber-migration-plan-list">
+                        {promotionGroups.map((group) => {
+                          const mapping = subscriberMigrationPromotionMappings[group.importedCode] || {};
+                          return (
+                            <div className="subscriber-migration-plan subscriber-migration-promotion-map" key={group.importedCode}>
+                              <div>
+                                <strong>{group.importedCode}</strong>
+                                <span>{group.qualificationRowCount || 0} future qualification · {group.lastPaymentRowCount || 0} legacy payment · {(group.billingModes || []).join(' / ')}</span>
+                              </div>
+                              <select className="form-select" value={mapping.action || 'REVIEW'} onChange={(event) => updateSubscriberPromotionMapping(group.importedCode, { action: event.target.value, promotionId: '' })}>
+                                <option value="REVIEW">Review mapping</option>
+                                <option value="MAP_EXISTING">Map to Billing promotion</option>
+                                <option value="IGNORE">Do not import this code</option>
+                              </select>
+                              {mapping.action === 'MAP_EXISTING' && (
+                                <select className="form-select" value={mapping.promotionId || ''} onChange={(event) => updateSubscriberPromotionMapping(group.importedCode, { promotionId: event.target.value })}>
+                                  <option value="">Choose active promotion</option>
+                                  {(batch.promotions || []).map((promotion) => {
+                                    const compatible = !promotion.billingMode || (group.billingModes || []).every((mode) => mode === promotion.billingMode);
+                                    return <option key={promotion.id} value={promotion.id} disabled={!compatible}>{promotion.promoCode} · {promotion.name} · {formatPromotionDiscount(promotion)} · {promotion.paymentRule}{compatible ? '' : ' · incompatible billing mode'}</option>;
+                                  })}
+                                </select>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </section>
+                )}
+                {subscriberMigrationReviewView === 'subscribers' && (
+                  <section className="subscriber-migration-panel subscriber-migration-focus-panel" id="subscriber-migration-subscribers-panel" role="tabpanel" aria-labelledby="subscriber-migration-subscribers-tab">
+                    <div className="subscriber-migration-panel-heading">
+                      <div><h4>Subscriber review</h4><p>Open a line only when you need to check its customer, payment coverage, or balance decision.</p></div>
+                    </div>
+                    <div className="subscriber-migration-row-list">
+                    {migrationRows.map((row) => {
+                      const item = row.normalized || {};
+                      const preview = row.billingPreview || {};
+                      const decision = subscriberMigrationDecisions[row.id] || {};
+                      const terminal = ['IMPORTED', 'SKIPPED', 'DUPLICATE_IMPORTED', 'INVALID'].includes(row.status);
+                      const isExpanded = subscriberMigrationExpandedRowId === row.id;
+                      const lastPaymentPromotionMapping = subscriberMigrationPromotionMappings[item.lastPaymentPromotionCode] || {};
+                      const mappedLastPaymentPromotion = (batch.promotions || []).find((promotion) => promotion.id === lastPaymentPromotionMapping.promotionId);
+                      const mappedLastPaymentDiscount = mappedLastPaymentPromotion
+                        ? promotionDiscountAmountForRate(mappedLastPaymentPromotion, item.monthlyRate)
+                        : 0;
+                      const mappedLastPaymentExpected = mappedLastPaymentPromotion
+                        ? Number(preview.coveredMonthCount || 0) * Math.max(0, Number(item.monthlyRate || 0) - mappedLastPaymentDiscount)
+                        : 0;
+                      const mappedLastPaymentMatches = Boolean(
+                        mappedLastPaymentPromotion
+                        && Number(preview.coveredMonthCount || 0) > 0
+                        && Math.abs(mappedLastPaymentExpected - Number(item.lastPaymentAmount || 0)) < .01
+                      );
+                      const legacyPromotionView = mappedLastPaymentPromotion ? {
+                        importedCode: item.lastPaymentPromotionCode,
+                        code: mappedLastPaymentPromotion.promoCode,
+                        name: mappedLastPaymentPromotion.name,
+                        regularMonthlyRate: Number(item.monthlyRate || 0),
+                        discountPerMonth: mappedLastPaymentDiscount,
+                        matchStatus: mappedLastPaymentMatches ? 'MATCHED' : 'AMOUNT_MISMATCH'
+                      } : preview.legacyPaymentPromotion;
+                      const visibleWarnings = (preview.warnings || []).filter((warning) => !(
+                        mappedLastPaymentMatches
+                        && (
+                          warning.startsWith('Map last-payment promotion')
+                          || warning.includes('not an exact multiple')
+                          || warning.includes('does not equal last payment amount')
+                        )
+                      ));
+                      const customerNeedsDecision = !terminal && (
+                        !decision.customerAction
+                        || decision.customerAction === 'REVIEW'
+                        || (['LINK', 'LINK_UPDATE'].includes(decision.customerAction) && !decision.customerId)
+                      );
+                      const attentionLabel = row.validationErrors?.length
+                        ? 'Validation issue'
+                        : row.error
+                          ? 'Import error'
+                          : customerNeedsDecision
+                            ? 'Decision needed'
+                            : visibleWarnings.length
+                              ? 'Billing warning'
+                              : '';
+                      const subscriberName = [item.firstName, item.lastName].filter(Boolean).join(' ') || 'Unnamed subscriber';
+                      return (
+                        <article className={`subscriber-migration-row ${row.validationErrors?.length || row.error ? 'has-error' : ''}`} key={row.id}>
+                          <button
+                            type="button"
+                            className="subscriber-migration-row-summary"
+                            aria-expanded={isExpanded}
+                            aria-controls={`subscriber-migration-row-${row.id}`}
+                            onClick={() => setSubscriberMigrationExpandedRowId(isExpanded ? '' : row.id)}
+                          >
+                            <span className="subscriber-migration-row-identity"><strong>{subscriberName}</strong><small>Row {row.rowNumber}{item.contactNumber ? ` · ${item.contactNumber}` : ''}</small></span>
+                            <span className="subscriber-migration-row-meta">
+                              <span>{formatMoney(item.monthlyRate)} · {item.billingMode}</span>
+                              {attentionLabel && <span className="subscriber-migration-attention"><IconAlertTriangle size={14} />{attentionLabel}</span>}
+                              <span className={`badge ${statusClass(row.status)}`}>{row.status}</span>
+                              <span className="subscriber-migration-row-toggle">{isExpanded ? 'Hide' : 'Review'}<IconChevronRight className={isExpanded ? 'is-open' : ''} size={17} /></span>
+                            </span>
+                          </button>
+                          {isExpanded && (
+                            <div className="subscriber-migration-row-details" id={`subscriber-migration-row-${row.id}`}>
+                              {!!row.validationErrors?.length && <div className="text-danger small">{row.validationErrors.join(' · ')}</div>}
+                              {!row.validationErrors?.length && (
+                                <div className="subscriber-migration-row-grid">
+                                  <div>
+                                    <label className="form-label">Customer profile decision</label>
+                                    <select className="form-select" disabled={terminal} value={decision.customerAction || 'REVIEW'} onChange={(event) => updateSubscriberRowDecision(row.id, { customerAction: event.target.value, customerId: '' })}>
+                                      <option value="REVIEW">Review required</option>
+                                      <option value="CREATE">Create new profile</option>
+                                      {!!row.duplicates?.length && <option value="LINK">Link existing, keep profile</option>}
+                                      {!!row.duplicates?.length && <option value="LINK_UPDATE">Link existing and update profile</option>}
+                                      <option value="SKIP">Skip line</option>
+                                    </select>
+                                    {['LINK', 'LINK_UPDATE'].includes(decision.customerAction) && (
+                                      <select className="form-select mt-2" disabled={terminal} value={decision.customerId || ''} onChange={(event) => updateSubscriberRowDecision(row.id, { customerId: event.target.value })}>
+                                        <option value="">Choose matching customer</option>
+                                        {(row.duplicates || []).map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.accountNumber} · {candidate.fullName} · {candidate.reasons.join(', ')}</option>)}
+                                      </select>
+                                    )}
+                                    {!!row.duplicates?.length && <small>{row.duplicates.length} possible existing profile(s) found.</small>}
+                                  </div>
+                                  <div>
+                                    <label className="form-label">Legacy payment coverage</label>
+                                    <div className="subscriber-migration-balance-facts">
+                                      <span>{preview.coveredMonthCount || 0} month(s) covered</span>
+                                      <span>{preview.coverageFromMonth || '?'} to {preview.paidThroughMonth || '?'}</span>
+                                      {!!item.qualifiedPromotionCodes?.length && <span>Future promotions: {item.qualifiedPromotionCodes.join(', ')}</span>}
+                                      {!!legacyPromotionView?.importedCode && (
+                                        <span>
+                                          Last payment promo: {legacyPromotionView.code || legacyPromotionView.importedCode}
+                                          {legacyPromotionView.matchStatus === 'MATCHED'
+                                            ? ` · ${formatMoney(legacyPromotionView.regularMonthlyRate)} less ${formatMoney(legacyPromotionView.discountPerMonth)} per month`
+                                            : ` · ${String(legacyPromotionView.matchStatus || 'review').replaceAll('_', ' ').toLowerCase()}`}
+                                        </span>
+                                      )}
+                                      <span>{preview.arrearMonths?.length || 0} unpaid month(s): {preview.arrearMonths?.join(', ') || 'none'}</span>
+                                      <span>Next cycle at import: {preview.nextBillingDate || 'assigned on import'}</span>
+                                      <span>Source balance: {formatMoney(item.outstandingBalance)} as of {item.balanceAsOfDate || batch.cutoverDate || '-'}</span>
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <label className="form-label">Balance resolution</label>
+                                    <select className="form-select" disabled={terminal} value={decision.balanceResolution || preview.defaultResolution || 'MONTHLY_INVOICES'} onChange={(event) => updateSubscriberRowDecision(row.id, { balanceResolution: event.target.value })}>
+                                      <option value="MONTHLY_INVOICES">Create unpaid monthly invoices ({formatMoney(preview.calculatedBalance)})</option>
+                                      <option value="OPENING_BALANCE" disabled={Number(preview.suppliedBalance || 0) <= 0}>Create one opening balance ({formatMoney(preview.suppliedBalance)})</option>
+                                    </select>
+                                    <small>{preview.classification?.replaceAll('_', ' ')}{preview.balanceVariance ? ` · variance ${formatMoney(preview.balanceVariance)}` : ''}</small>
+                                  </div>
+                                </div>
+                              )}
+                              {!!visibleWarnings.length && <div className="subscriber-migration-warning"><IconAlertTriangle size={15} />{visibleWarnings.join(' ')}</div>}
+                              {row.error && <div className="text-danger small">{row.error}</div>}
+                              {row.result?.accountNumber && <div className="subscriber-migration-result">Account {row.result.accountNumber} · Service {row.result.serviceAccountNumber || '-'} · {row.result.invoiceCount || 0} invoice(s)</div>}
+                            </div>
+                          )}
+                        </article>
+                      );
+                    })}
+                  </div>
+                  </section>
+                )}
+              </div>
+            )}
+          </div>
+          <div className="customer-modal-footer customer-modal-footer-split">
+            <button type="button" className="btn btn-outline-secondary" onClick={closeSubscriberMigration}>Close</button>
+            {!batch ? (
+              <button type="button" className="btn btn-primary" disabled={!subscriberMigrationRows.length || !!subscriberMigrationErrors.length || subscriberMigrationBusy} onClick={assessSubscriberMigration}><IconClipboardCheck size={17} className="me-2" />Assess subscribers</button>
+            ) : (
+              <div className="btn-list">
+                <button type="button" className="btn btn-outline-primary" onClick={downloadSubscriberMigrationResults}><IconFileSpreadsheet size={17} className="me-2" />Download results</button>
+                <button type="button" className="btn btn-primary" disabled={!canCommit} onClick={commitSubscriberMigration}>{subscriberMigrationBusy ? 'Importing…' : 'Import reviewed lines'}</button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const kpis = [
     ['Total Customers', overview?.totalCustomers, IconUsers, 'azure'],
     ['Active', overview?.activeCustomers, IconActivity, 'green'],
@@ -4717,6 +5510,16 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
               <div className="alert alert-success customer-success-alert mb-0" role="status" aria-live="polite">
                 <span className="customer-success-alert-icon" aria-hidden="true"><IconDeviceFloppy size={18} /></span>
                 <span>{message}</span>
+              </div>
+            </div>
+          )}
+          {subscriberMigrationOutcome && (
+            <div className="col-12">
+              <div className={`alert ${subscriberMigrationOutcome.notImported || subscriberMigrationReconciliation?.needsReview || subscriberMigrationReconciliation?.error ? 'alert-warning' : 'alert-success'} subscriber-migration-outcome-banner mb-0`} role="status" aria-live="polite">
+                {subscriberMigrationOutcome.notImported || subscriberMigrationReconciliation?.needsReview || subscriberMigrationReconciliation?.error ? <IconAlertTriangle size={20} aria-hidden="true" /> : <IconCheck size={20} aria-hidden="true" />}
+                <span><strong>Existing subscriber import finished:</strong> {subscriberMigrationOutcome.imported} imported, {subscriberMigrationOutcome.notImported} not imported out of {subscriberMigrationOutcome.total} rows.{subscriberMigrationReconciliation?.rows ? ` ${subscriberMigrationReconciliation.verified} verified; ${subscriberMigrationReconciliation.needsReview} need review.` : ''}</span>
+                <button type="button" className="btn btn-sm btn-outline-primary" onClick={() => setSubscriberMigrationOutcomeOpen(true)}>View results</button>
+                <button type="button" className="btn btn-icon btn-sm" aria-label="Dismiss import result" title="Dismiss import result" onClick={() => setSubscriberMigrationOutcome(null)}><IconX size={16} /></button>
               </div>
             </div>
           )}
@@ -4766,6 +5569,9 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                   </div>
                   <button className="btn btn-outline-primary btn-sm" onClick={openBulkUploadModal}>
                     <IconUpload size={16} className="me-1" />Bulk Upload
+                  </button>
+                  <button className="btn btn-outline-primary btn-sm" onClick={openSubscriberMigration}>
+                    <IconHomeSignal size={16} className="me-1" />Import Existing Subscribers
                   </button>
                   <button className="btn btn-primary btn-sm customer-header-icon-button" title="New Customer" aria-label="New Customer" onClick={openNewCustomerModal}>
                     <IconPlus size={16} />
@@ -4932,6 +5738,8 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       {isDetailsPanelOpen && selected && renderCustomerDetailsPanel()}
     </div>
     {isOnboardingModalOpen && selected && renderCustomerDetailsPanel({ onboardingModal: true })}
+    {isSubscriberMigrationOpen && renderSubscriberMigrationModal()}
+    {isSubscriberMigrationOutcomeOpen && renderSubscriberMigrationOutcome()}
     {isBulkUploadModalOpen && (
       <div className="customer-modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && requestBulkUploadClose()}>
         <div className="customer-modal customer-bulk-upload-modal" role="dialog" aria-modal="true" aria-labelledby="customer-bulk-upload-title">

@@ -1184,18 +1184,19 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
             }
         )
         with patch.object(billing, "billing_business_date", return_value=date(2026, 8, 15)):
-            billing.create_payment(
-                billing.PaymentPayload(
-                    invoiceId=invoice["id"],
-                    amount=100,
-                    method="CASH",
-                    paymentDate="2026-08-14",
-                    collectionChannel="POS",
-                    status="POSTED",
-                ),
-                idempotency_key="payment:current-partial",
-                admin=self.admin,
-            )
+            with patch.object(billing, "now_iso", return_value="2026-08-14T12:00:00+00:00"):
+                billing.create_payment(
+                    billing.PaymentPayload(
+                        invoiceId=invoice["id"],
+                        amount=100,
+                        method="CASH",
+                        paymentDate="2026-08-14",
+                        collectionChannel="POS",
+                        status="POSTED",
+                    ),
+                    idempotency_key="payment:current-partial",
+                    admin=self.admin,
+                )
             needs_follow_up = billing.collection_worklist_report(
                 as_of=date(2026, 8, 15),
                 status="ACTION_REQUIRED",
@@ -2055,9 +2056,76 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
         self.assertEqual("Asia/Manila", july_quote["timezone"])
         self.assertEqual(24.0, july_quote["durationHours"])
         self.assertEqual(32.26, july_quote["rows"][0]["calculatedAmount"])
-        self.assertEqual(32.26, july_quote["rows"][0]["rebateAmount"])
-        self.assertEqual(32.8, cross_month_quote["rows"][0]["rebateAmount"])
+        self.assertEqual("FLOOR_TO_WHOLE_PESO_AFTER_CUSTOMER_TOTAL", july_quote["roundingMethod"])
+        self.assertEqual(0.26, july_quote["rows"][0]["roundingAdjustmentAmount"])
+        self.assertEqual(32.0, july_quote["rows"][0]["rebateAmount"])
+        self.assertEqual(0.8, cross_month_quote["rows"][0]["roundingAdjustmentAmount"])
+        self.assertEqual(32.0, cross_month_quote["rows"][0]["rebateAmount"])
+        self.assertEqual(32.0, july_quote["totalRebateAmount"])
         self.assertTrue(july_quote["canPost"])
+
+    def test_outage_rebate_floors_once_after_customer_subscription_total(self):
+        first_subscription = self.add_subscription()
+        first_subscription.update(
+            {
+                "startDate": "2026-06-01",
+                "monthlyRate": 20.0,
+                "listMonthlyRate": 20.0,
+            }
+        )
+        second_subscription = deepcopy(first_subscription)
+        second_subscription.update(
+            {
+                "id": "subscription-2",
+                "serviceAccountId": "service-account-2",
+                "serviceAccountNumber": "SA-0002",
+                "serviceOrderId": "service-order-2",
+                "serviceId": "SVC-0002",
+            }
+        )
+        billing.subscriptions.append(second_subscription)
+
+        preview = billing.preview_outage_rebates(
+            billing.OutageRebatePreviewPayload(
+                customerIds=[self.customer["id"]],
+                outageStart="2026-07-15T00:00",
+                outageEnd="2026-07-16T00:00",
+            ),
+            admin=self.admin,
+        )
+
+        row = preview["rows"][0]
+        self.assertEqual([0.65, 0.65], [item["calculatedAmount"] for item in row["subscriptions"]])
+        self.assertEqual(1.3, row["calculatedAmount"])
+        self.assertEqual(0.3, row["roundingAdjustmentAmount"])
+        self.assertEqual(1.0, row["rebateAmount"])
+        self.assertTrue(row["eligible"])
+
+    def test_outage_rebate_rejects_customer_total_below_one_peso_after_floor(self):
+        subscription = self.add_subscription()
+        subscription.update(
+            {
+                "startDate": "2026-06-01",
+                "monthlyRate": 20.0,
+                "listMonthlyRate": 20.0,
+            }
+        )
+
+        preview = billing.preview_outage_rebates(
+            billing.OutageRebatePreviewPayload(
+                customerIds=[self.customer["id"]],
+                outageStart="2026-07-15T00:00",
+                outageEnd="2026-07-16T00:00",
+            ),
+            admin=self.admin,
+        )
+
+        row = preview["rows"][0]
+        self.assertEqual(0.65, row["calculatedAmount"])
+        self.assertEqual(0.0, row["rebateAmount"])
+        self.assertFalse(row["eligible"])
+        self.assertFalse(preview["canPost"])
+        self.assertIn("below php 1", row["ineligibleReason"].lower())
 
     def test_outage_rebate_without_open_bill_is_applied_to_next_monthly_invoice(self):
         subscription = self.add_subscription()
@@ -2074,7 +2142,7 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
         self.assertEqual("", preview["rows"][0]["invoiceId"])
         self.assertEqual("NEXT_INVOICE", preview["rows"][0]["applicationMode"])
         self.assertEqual(0.0, preview["rows"][0]["applyNowAmount"])
-        self.assertEqual(32.26, preview["rows"][0]["carryForwardAmount"])
+        self.assertEqual(32.0, preview["rows"][0]["carryForwardAmount"])
 
         batch = billing.create_outage_rebate_batch(
             billing.OutageRebateBatchPayload(
@@ -2087,10 +2155,13 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
         adjustment = billing.adjustments[0]
 
         self.assertEqual(0.0, batch["totalAppliedAmount"])
-        self.assertEqual(32.26, batch["totalAvailableCredit"])
-        self.assertEqual(32.26, billing.customer_credit_balance(self.customer["id"]))
+        self.assertEqual(32.0, batch["totalAvailableCredit"])
+        self.assertEqual(32.0, billing.customer_credit_balance(self.customer["id"]))
         self.assertEqual("", adjustment["invoiceId"])
         self.assertEqual("CUSTOMER_ACCOUNT_CREDIT", adjustment["applicationMode"])
+        self.assertEqual(32.26, adjustment["outageCalculatedAmount"])
+        self.assertEqual(0.26, adjustment["outageRoundingAdjustmentAmount"])
+        self.assertEqual("FLOOR_TO_WHOLE_PESO_AFTER_CUSTOMER_TOTAL", adjustment["outageRoundingMethod"])
         self.assertEqual([], billing.credit_applications)
 
         next_invoice = billing.generate_subscription_invoice(
@@ -2102,10 +2173,10 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
 
         self.assertEqual("PARTIALLY_PAID", next_invoice["status"])
         self.assertEqual(0.0, next_invoice["paymentTotal"])
-        self.assertEqual(32.26, next_invoice["accountCreditAppliedTotal"])
-        self.assertEqual(32.26, next_invoice["paidTotal"])
-        self.assertEqual(32.26, next_invoice["rebateTotal"])
-        self.assertEqual(967.74, next_invoice["balance"])
+        self.assertEqual(32.0, next_invoice["accountCreditAppliedTotal"])
+        self.assertEqual(32.0, next_invoice["paidTotal"])
+        self.assertEqual(32.0, next_invoice["rebateTotal"])
+        self.assertEqual(968.0, next_invoice["balance"])
         self.assertEqual(0.0, billing.customer_credit_balance(self.customer["id"]))
         self.assertEqual(1, len(billing.credit_applications))
         self.assertEqual(adjustment["id"], billing.credit_applications[0]["sourceAdjustmentId"])
@@ -2113,7 +2184,7 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
 
         detail = billing.get_invoice(next_invoice["id"], admin=self.admin)
         self.assertEqual("Service rebate", detail["adjustments"][0]["adjustmentLabel"])
-        self.assertEqual(32.26, detail["adjustments"][0]["amount"])
+        self.assertEqual(32.0, detail["adjustments"][0]["amount"])
         document = billing.download_invoice_pdf(next_invoice["id"], admin=self.admin).body
         self.assertIn(b"Service outage rebate", document)
         self.assertIn(b"Account credits applied", document)
@@ -2197,13 +2268,15 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
         )
 
         self.assertEqual(2, first["customerCount"])
-        self.assertEqual(80.65, first["totalRebateAmount"])
+        self.assertEqual(80.65, first["totalCalculatedAmount"])
+        self.assertEqual(0.65, first["totalRoundingAdjustmentAmount"])
+        self.assertEqual(80.0, first["totalRebateAmount"])
         self.assertEqual(first["batchId"], replay["batchId"])
         self.assertTrue(replay["idempotentReplay"])
         self.assertEqual(2, len(billing.adjustments))
-        self.assertEqual({32.26, 48.39}, {row["amount"] for row in billing.adjustments})
-        self.assertEqual(467.74, billing.invoice_summary(first_invoice)["balance"])
-        self.assertEqual(451.61, billing.invoice_summary(second_invoice)["balance"])
+        self.assertEqual({32.0, 48.0}, {row["amount"] for row in billing.adjustments})
+        self.assertEqual(468.0, billing.invoice_summary(first_invoice)["balance"])
+        self.assertEqual(452.0, billing.invoice_summary(second_invoice)["balance"])
         self.assertTrue(all(row["outageBatchId"] == first["batchId"] for row in billing.adjustments))
         self.assertTrue(
             any(event["action"] == "billing_outage_rebate_batch_posted" for event in self.audit_events)

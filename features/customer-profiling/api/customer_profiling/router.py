@@ -1,8 +1,13 @@
+import hashlib
+import json
 import logging
 import os
-from datetime import datetime, timezone
+import re
+from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -29,160 +34,28 @@ customers: list[dict[str, Any]] = []
 
 _current_admin: Callable[[str | None], dict[str, Any]] | None = None
 _audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None] | None = None
+_service_catalog_provider: Callable[[], list[dict[str, Any]]] | None = None
+_service_migration_provider: Callable[[dict[str, Any], str], dict[str, Any]] | None = None
+_billing_migration_provider: Callable[[dict[str, Any], str], dict[str, Any]] | None = None
+_billing_promotion_provider: Callable[[], list[dict[str, Any]]] | None = None
+_customer_location_backfill_complete = False
 
 CUSTOMER_TYPES = ["RESIDENTIAL", "BUSINESS", "ENTERPRISE"]
 CUSTOMER_STATUSES = ["ACTIVE", "INACTIVE", "SUSPENDED", "PENDING"]
 CUSTOMER_GENDERS = ["MALE", "FEMALE"]
-PROVINCES = ["CAGAYAN", "ISABELA"]
+LOCATION_CATALOG = json.loads(
+    Path(__file__).with_name("cagayan_isabela_locations.json").read_text(encoding="utf-8")
+)
+LOCATION_CATALOG_PROVINCES = LOCATION_CATALOG["provinces"]
+PROVINCES = list(LOCATION_CATALOG_PROVINCES)
 MUNICIPALITIES_BY_PROVINCE = {
-    "CAGAYAN": [
-        "ABULUG",
-        "ALCALA",
-        "ALLACAPAN",
-        "AMULUNG",
-        "APARRI",
-        "BAGGAO",
-        "BALLESTEROS",
-        "BUGUEY",
-        "CALAYAN",
-        "CAMALANIUGAN",
-        "CLAVERIA",
-        "ENRILE",
-        "GATTARAN",
-        "GONZAGA",
-        "IGUIG",
-        "LAL-LO",
-        "LASAM",
-        "PAMPLONA",
-        "PENABLANCA",
-        "PIAT",
-        "RIZAL",
-        "SANCHEZ-MIRA",
-        "SANTA ANA",
-        "SANTA PRAXEDES",
-        "SANTA TERESITA",
-        "SANTO NINO",
-        "SOLANA",
-        "TUAO",
-        "TUGUEGARAO CITY",
-    ],
-    "ISABELA": [
-        "ALICIA",
-        "ANGADANAN",
-        "AURORA",
-        "BENITO SOLIVEN",
-        "BURGOS",
-        "CABAGAN",
-        "CABATUAN",
-        "CAUAYAN CITY",
-        "CORDON",
-        "DINAPIGUE",
-        "DIVILACAN",
-        "ECHAGUE",
-        "GAMU",
-        "ILAGAN CITY",
-        "JONES",
-        "LUNA",
-        "MACONACON",
-        "MALLIG",
-        "NAGUILIAN",
-        "PALANAN",
-        "QUEZON",
-        "QUIRINO",
-        "RAMON",
-        "REINA MERCEDES",
-        "ROXAS",
-        "SAN AGUSTIN",
-        "SAN GUILLERMO",
-        "SAN ISIDRO",
-        "SAN MANUEL",
-        "SAN MARIANO",
-        "SAN MATEO",
-        "SAN PABLO",
-        "SANTA MARIA",
-        "SANTIAGO CITY",
-        "SANTO TOMAS",
-        "TUMAUINI",
-    ],
+    province: list(cities)
+    for province, cities in LOCATION_CATALOG_PROVINCES.items()
 }
 BARANGAYS_BY_PROVINCE_CITY = {
-    "CAGAYAN::ENRILE": [
-        "ALIBAGO",
-        "BARANGAY I",
-        "BARANGAY II",
-        "BARANGAY III",
-        "BARANGAY III-A",
-        "BARANGAY IV",
-        "BATU",
-        "DIVISORIA",
-        "INGA",
-        "LANNA",
-        "LEMU NORTE",
-        "LEMU SUR",
-        "LIWAN NORTE",
-        "LIWAN SUR",
-        "MADDARULUG NORTE",
-        "MADDARULUG SUR",
-        "MAGALALAG EAST",
-        "MAGALALAG WEST",
-        "MARRACURU",
-        "ROMA NORTE",
-        "ROMA SUR",
-        "SAN ANTONIO",
-    ],
-    "ISABELA::SANTA MARIA": [
-        "BANGAD",
-        "BUENAVISTA",
-        "CALAMAGUI EAST",
-        "CALAMAGUI NORTH",
-        "CALAMAGUI WEST",
-        "DIVISORIA",
-        "LINGALING",
-        "MOZZOZZIN NORTH",
-        "MOZZOZZIN SUR",
-        "NAGANACAN",
-        "POBLACION 1",
-        "POBLACION 2",
-        "POBLACION 3",
-        "POBLACION GK",
-        "POBLACION BLISS",
-        "QUINAGABIAN",
-        "SAN ANTONIO",
-        "SAN ISIDRO EAST",
-        "SAN ISIDRO WEST",
-        "SAN RAFAEL EAST",
-        "SAN RAFAEL WEST",
-        "VILLABUENA",
-    ],
-    "ISABELA::CABAGAN": [
-        "AGGUB",
-        "ANNARONAN",
-        "ANAO",
-        "ANGANCASILIAN",
-        "BALASIG",
-        "CATABAYUNGAN",
-        "CENTRO",
-        "GARITA",
-        "LUQUILU",
-        "MAGLETICIA",
-        "MASIPI EAST",
-        "MASIPI WEST",
-        "NGARAG",
-        "SAN ANTONIO",
-        "SAN BERNARDO",
-        "SAN JUAN",
-        "SAN PABLO",
-        "SANTA MARIA",
-        "SARANAY",
-        "SAUI",
-        "TALLAG",
-        "UGAD",
-        "UNION",
-        "VILLAFLOR",
-        "VILLAHERMOSA",
-        "VILLA IMELDA",
-        "VILLA JESUSA",
-    ],
+    f"{province}::{city}": barangays
+    for province, cities in LOCATION_CATALOG_PROVINCES.items()
+    for city, barangays in cities.items()
 }
 BULK_UPLOAD_HEADERS = [
     "firstName",
@@ -212,6 +85,67 @@ REQUIRED_BULK_UPLOAD_HEADERS = [
     "contactNumber",
     "barangay",
 ]
+EXISTING_SUBSCRIBER_PROFILE_HEADERS = [
+    header for header in BULK_UPLOAD_HEADERS
+    if header not in {"locationId", "locationName"}
+]
+EXISTING_SUBSCRIBER_MIGRATION_HEADERS = [
+    *EXISTING_SUBSCRIBER_PROFILE_HEADERS,
+    "monthlyRate",
+    "billingMode",
+    "serviceStartDate",
+    "serviceStatus",
+    "qualifiedPromotionCodes",
+    "lastPaymentPromotionCode",
+    "lastPaymentDate",
+    "lastPaymentAmount",
+    "paymentCoverageFromMonth",
+    "lastPaidThroughMonth",
+    "outstandingBalance",
+    "balanceAsOfDate",
+]
+REQUIRED_EXISTING_SUBSCRIBER_HEADERS = [
+    *REQUIRED_BULK_UPLOAD_HEADERS,
+    "monthlyRate",
+    "billingMode",
+    "serviceStartDate",
+    "serviceStatus",
+]
+EXISTING_SUBSCRIBER_COLUMN_GUIDE = {
+    "firstName": {"purpose": "Customer's given name.", "format": "Text", "example": "JUAN"},
+    "middleName": {"purpose": "Customer's middle name or initial, when known.", "format": "Optional text", "example": "D"},
+    "lastName": {"purpose": "Customer's family name.", "format": "Text", "example": "DELA CRUZ"},
+    "birthDate": {"purpose": "Customer's date of birth, when available.", "format": "Optional YYYY-MM-DD", "example": "1990-05-18"},
+    "contactNumber": {"purpose": "Primary mobile or telephone number used to identify and contact the customer.", "format": "Text; preserve the leading zero", "example": "09171234567"},
+    "alternateMobileNumber": {"purpose": "Secondary mobile number, when available.", "format": "Optional text; preserve the leading zero", "example": "09180000001"},
+    "facebookAccountName": {"purpose": "Customer's Facebook display name for contact reference.", "format": "Optional text", "example": "JUAN DELA CRUZ"},
+    "facebookProfileLink": {"purpose": "Direct link to the customer's Facebook profile.", "format": "Optional URL", "example": "https://www.facebook.com/juan.delacruz"},
+    "email": {"purpose": "Customer's email address.", "format": "Optional email address", "example": "juan.delacruz@example.com"},
+    "addressLine1": {"purpose": "Primary service-address detail such as house number, street, zone, or purok.", "format": "Optional text", "example": "PUROK 1"},
+    "addressLine2": {"purpose": "Additional service-address detail.", "format": "Optional text", "example": "SITIO CENTRO"},
+    "landmark": {"purpose": "Nearby landmark that helps identify the installed line's location.", "format": "Optional text", "example": "NEAR BARANGAY HALL"},
+    "province": {"purpose": "Province of the installed service address.", "format": "Dropdown: CAGAYAN or ISABELA", "example": "CAGAYAN"},
+    "city": {"purpose": "City or municipality of the installed service address; choices depend on Province.", "format": "Dependent dropdown", "example": "ENRILE"},
+    "barangay": {"purpose": "Barangay of the installed service address; choices depend on Province and City.", "format": "Dependent dropdown", "example": "ALIBAGO"},
+    "latitude": {"purpose": "North/south GPS coordinate of the installed line; used to create the internal location record.", "format": "Optional decimal from -90 to 90", "example": "17.559311"},
+    "longitude": {"purpose": "East/west GPS coordinate of the installed line; used to create the internal location record.", "format": "Optional decimal from -180 to 180", "example": "121.684928"},
+    "gender": {"purpose": "Customer gender used by the profile and avatar settings.", "format": "Optional dropdown: MALE or FEMALE", "example": "MALE"},
+    "monthlyRate": {"purpose": "Current monthly amount charged for the installed line; combined with Billing Mode for plan mapping.", "format": "Non-negative number; no currency symbol", "example": "1000"},
+    "billingMode": {"purpose": "Identifies whether service is paid before or after the service month.", "format": "Dropdown: PREPAID or POSTPAID", "example": "PREPAID"},
+    "serviceStartDate": {"purpose": "Original date the already-installed internet line became active.", "format": "YYYY-MM-DD", "example": "2024-01-15"},
+    "serviceStatus": {"purpose": "Current operating status of the installed line at migration.", "format": "Dropdown: ACTIVE or SUSPENDED", "example": "ACTIVE"},
+    "qualifiedPromotionCodes": {"purpose": "Billing promotions the subscriber should qualify for after migration.", "format": "Optional Billing promo codes separated by semicolons", "example": "EARLY-BIRD-200;LOYALTY-50"},
+    "lastPaymentPromotionCode": {"purpose": "Promotion actually applied to the imported last payment; used to explain a discounted payment amount.", "format": "Optional single Billing promo code", "example": "EARLY-BIRD-200"},
+    "lastPaymentDate": {"purpose": "Date of the latest payment in the old system; stored as reference evidence, not new cash.", "format": "Optional YYYY-MM-DD", "example": "2026-08-05"},
+    "lastPaymentAmount": {"purpose": "Amount of the latest old-system payment; helps infer how many months it covered.", "format": "Optional non-negative number", "example": "2000"},
+    "paymentCoverageFromMonth": {"purpose": "First service month covered by the last payment.", "format": "Optional YYYY-MM", "example": "2026-06"},
+    "lastPaidThroughMonth": {"purpose": "Latest service month that is fully paid; arrears begin after this month.", "format": "Optional YYYY-MM", "example": "2026-07"},
+    "outstandingBalance": {"purpose": "Total unpaid balance carried from the old system; enter zero when nothing is owed.", "format": "Optional non-negative number", "example": "2000"},
+    "balanceAsOfDate": {"purpose": "Date on which Outstanding Balance was accurate; used for a reviewed opening balance.", "format": "Optional YYYY-MM-DD", "example": "2026-09-16"},
+}
+MIGRATION_PROFILE_FIELDS = set(EXISTING_SUBSCRIBER_PROFILE_HEADERS)
+MIGRATION_STATUSES = {"ACTIVE", "SUSPENDED"}
+MONTH_PATTERN = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 ONBOARDING_VERIFICATION_RULES = {
     "SERVICEABILITY": {
         "storageKey": "serviceability",
@@ -225,6 +159,13 @@ ONBOARDING_VERIFICATION_RULES = {
 
 CUSTOMER_STORAGE_MODE = os.getenv("CUSTOMER_PROFILING_STORAGE") or ("postgres" if os.getenv("DATABASE_URL") else "memory")
 CUSTOMER_SEED_DEMO = os.getenv("CUSTOMER_PROFILING_SEED_DEMO", "false").strip().lower() in {"1", "true", "yes", "on"}
+SUBSCRIBER_MIGRATION_TIMEZONE = os.getenv("BILLING_TIMEZONE", "Asia/Manila").strip() or "Asia/Manila"
+try:
+    SUBSCRIBER_MIGRATION_ZONE = ZoneInfo(SUBSCRIBER_MIGRATION_TIMEZONE)
+except ZoneInfoNotFoundError:
+    logger.warning("Unknown BILLING_TIMEZONE %s for subscriber migration; falling back to UTC", SUBSCRIBER_MIGRATION_TIMEZONE)
+    SUBSCRIBER_MIGRATION_TIMEZONE = "UTC"
+    SUBSCRIBER_MIGRATION_ZONE = ZoneInfo("UTC")
 
 
 class CustomerPayload(BaseModel):
@@ -269,6 +210,17 @@ class OnboardingVerificationPayload(BaseModel):
     notes: str | None = None
     networkAccessVerified: bool | None = None
     equipmentAssignmentVerified: bool | None = None
+
+
+class ExistingSubscriberMigrationBatchPayload(BaseModel):
+    filename: str = "existing-subscribers.csv"
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ExistingSubscriberMigrationCommitPayload(BaseModel):
+    planMappings: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    promotionMappings: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    rowDecisions: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class CustomerProfileStore:
@@ -447,13 +399,168 @@ class CustomerProfileStore:
 customer_store = CustomerProfileStore()
 
 
+class SubscriberMigrationStore:
+    def __init__(self) -> None:
+        self._batches: dict[str, dict[str, Any]] = {}
+        self._rows: dict[str, list[dict[str, Any]]] = {}
+
+    @property
+    def postgres_enabled(self) -> bool:
+        return customer_store.postgres_enabled
+
+    def ensure_schema(self) -> bool:
+        if not self.postgres_enabled:
+            return False
+        customer_store.ensure_schema()
+        with customer_store._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT to_regclass('public.subscriber_migration_batches') AS batches, to_regclass('public.subscriber_migration_rows') AS rows")
+                record = cursor.fetchone() or {}
+                if not record.get("batches") or not record.get("rows"):
+                    raise HTTPException(status_code=503, detail="Existing-subscriber migration database migration has not run")
+        return True
+
+    @staticmethod
+    def _timestamp(value: Any) -> Any:
+        return value.isoformat() if hasattr(value, "isoformat") else value
+
+    def _batch_from_row(self, record: dict[str, Any]) -> dict[str, Any]:
+        data = dict(record.get("data") or {})
+        data.update(
+            {
+                "id": record.get("id"),
+                "filename": record.get("filename"),
+                "fileHash": record.get("file_hash"),
+                "cutoverDate": self._timestamp(record.get("cutover_date")),
+                "status": record.get("status"),
+                "createdAt": self._timestamp(record.get("created_at")),
+                "updatedAt": self._timestamp(record.get("updated_at")),
+                "createdByUserId": record.get("created_by_user_id"),
+                "updatedByUserId": record.get("updated_by_user_id"),
+            }
+        )
+        return data
+
+    def _migration_row_from_record(self, record: dict[str, Any]) -> dict[str, Any]:
+        data = dict(record.get("data") or {})
+        data.update(
+            {
+                "id": record.get("id"),
+                "batchId": record.get("batch_id"),
+                "rowNumber": record.get("row_number"),
+                "fingerprint": record.get("row_fingerprint"),
+                "status": record.get("status"),
+                "result": dict(record.get("result") or {}),
+                "error": record.get("error") or "",
+                "createdAt": self._timestamp(record.get("created_at")),
+                "updatedAt": self._timestamp(record.get("updated_at")),
+            }
+        )
+        return data
+
+    def save_batch(self, batch: dict[str, Any]) -> None:
+        if not self.ensure_schema():
+            self._batches[batch["id"]] = dict(batch)
+            return
+        if Json is None:
+            raise HTTPException(status_code=503, detail="Customer Profiling JSON database adapter is not installed")
+        data = {key: value for key, value in batch.items() if key not in {"id", "filename", "fileHash", "cutoverDate", "status", "createdAt", "updatedAt", "createdByUserId", "updatedByUserId"}}
+        with customer_store._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO subscriber_migration_batches (id, filename, file_hash, cutover_date, status, data, created_at, updated_at, created_by_user_id, updated_by_user_id)
+                    VALUES (%(id)s, %(filename)s, %(file_hash)s, %(cutover_date)s, %(status)s, %(data)s, %(created_at)s, %(updated_at)s, %(created_by)s, %(updated_by)s)
+                    ON CONFLICT (id) DO UPDATE SET cutover_date = EXCLUDED.cutover_date, status = EXCLUDED.status, data = EXCLUDED.data, updated_at = EXCLUDED.updated_at, updated_by_user_id = EXCLUDED.updated_by_user_id
+                    """,
+                    {
+                        "id": batch["id"], "filename": batch["filename"], "file_hash": batch.get("fileHash", ""),
+                        "cutover_date": batch["cutoverDate"], "status": batch["status"], "data": Json(data),
+                        "created_at": batch["createdAt"], "updated_at": batch["updatedAt"],
+                        "created_by": batch.get("createdByUserId", ""), "updated_by": batch.get("updatedByUserId", ""),
+                    },
+                )
+
+    def save_row(self, row: dict[str, Any]) -> None:
+        if not self.ensure_schema():
+            rows = self._rows.setdefault(row["batchId"], [])
+            for index, current in enumerate(rows):
+                if current["id"] == row["id"]:
+                    rows[index] = dict(row)
+                    break
+            else:
+                rows.append(dict(row))
+            return
+        if Json is None:
+            raise HTTPException(status_code=503, detail="Customer Profiling JSON database adapter is not installed")
+        data = {key: value for key, value in row.items() if key not in {"id", "batchId", "rowNumber", "fingerprint", "status", "result", "error", "createdAt", "updatedAt"}}
+        with customer_store._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO subscriber_migration_rows (id, batch_id, row_number, row_fingerprint, status, data, result, error, created_at, updated_at)
+                    VALUES (%(id)s, %(batch_id)s, %(row_number)s, %(fingerprint)s, %(status)s, %(data)s, %(result)s, %(error)s, %(created_at)s, %(updated_at)s)
+                    ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, data = EXCLUDED.data, result = EXCLUDED.result, error = EXCLUDED.error, updated_at = EXCLUDED.updated_at
+                    """,
+                    {
+                        "id": row["id"], "batch_id": row["batchId"], "row_number": row["rowNumber"], "fingerprint": row["fingerprint"],
+                        "status": row["status"], "data": Json(data), "result": Json(row.get("result") or {}), "error": row.get("error", ""),
+                        "created_at": row["createdAt"], "updated_at": row["updatedAt"],
+                    },
+                )
+
+    def get_batch(self, batch_id: str) -> dict[str, Any] | None:
+        if not self.ensure_schema():
+            batch = self._batches.get(batch_id)
+            return dict(batch) if batch else None
+        with customer_store._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT * FROM subscriber_migration_batches WHERE id = %s", (batch_id,))
+                record = cursor.fetchone()
+        return self._batch_from_row(record) if record else None
+
+    def list_rows(self, batch_id: str) -> list[dict[str, Any]]:
+        if not self.ensure_schema():
+            return [dict(row) for row in sorted(self._rows.get(batch_id, []), key=lambda item: item["rowNumber"])]
+        with customer_store._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT * FROM subscriber_migration_rows WHERE batch_id = %s ORDER BY row_number", (batch_id,))
+                records = cursor.fetchall()
+        return [self._migration_row_from_record(record) for record in records]
+
+    def find_imported_fingerprint(self, fingerprint: str) -> dict[str, Any] | None:
+        if not self.ensure_schema():
+            for rows in self._rows.values():
+                for row in rows:
+                    if row.get("fingerprint") == fingerprint and row.get("status") == "IMPORTED":
+                        return dict(row)
+            return None
+        with customer_store._connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT * FROM subscriber_migration_rows WHERE row_fingerprint = %s AND status = 'IMPORTED' LIMIT 1", (fingerprint,))
+                record = cursor.fetchone()
+        return self._migration_row_from_record(record) if record else None
+
+
+subscriber_migration_store = SubscriberMigrationStore()
+
+
 def configure_customer_profiling(
     current_admin: Callable[[str | None], dict[str, Any]],
     audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None],
+    service_catalog_provider: Callable[[], list[dict[str, Any]]] | None = None,
+    service_migration_provider: Callable[[dict[str, Any], str], dict[str, Any]] | None = None,
+    billing_migration_provider: Callable[[dict[str, Any], str], dict[str, Any]] | None = None,
+    billing_promotion_provider: Callable[[], list[dict[str, Any]]] | None = None,
 ) -> None:
-    global _current_admin, _audit_logger
+    global _current_admin, _audit_logger, _service_catalog_provider, _service_migration_provider, _billing_migration_provider, _billing_promotion_provider, _customer_location_backfill_complete
     _current_admin = current_admin
     _audit_logger = audit_logger
+    _service_catalog_provider = service_catalog_provider
+    _service_migration_provider = service_migration_provider
+    _billing_migration_provider = billing_migration_provider
+    _billing_promotion_provider = billing_promotion_provider
+    _customer_location_backfill_complete = False
 
 
 def require_admin(authorization: str | None = Header(default=None)):
@@ -464,6 +571,13 @@ def require_admin(authorization: str | None = Header(default=None)):
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def subscriber_migration_business_date(current: datetime | None = None) -> str:
+    moment = current or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(SUBSCRIBER_MIGRATION_ZONE).date().isoformat()
 
 
 def add_audit(action: str, target_type: str, target_id: str, details: dict[str, Any] | None, actor: str) -> None:
@@ -584,6 +698,341 @@ def generate_account_number() -> str:
         candidate += 7919
 
 
+def parse_iso_date(value: Any, field_name: str, required: bool = False) -> str:
+    text = str(value or "").strip()
+    if not text:
+        if required:
+            raise ValueError(f"{field_name} is required")
+        return ""
+    try:
+        return date.fromisoformat(text).isoformat()
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must use YYYY-MM-DD") from exc
+
+
+def parse_month(value: Any, field_name: str, required: bool = False) -> str:
+    text = str(value or "").strip()
+    if not text:
+        if required:
+            raise ValueError(f"{field_name} is required")
+        return ""
+    if not MONTH_PATTERN.fullmatch(text):
+        raise ValueError(f"{field_name} must use YYYY-MM")
+    return text
+
+
+def month_number(value: str) -> int:
+    year, month = (int(part) for part in value.split("-"))
+    return year * 12 + month - 1
+
+
+def month_value(number: int) -> str:
+    return f"{number // 12:04d}-{number % 12 + 1:02d}"
+
+
+def months_inclusive(start: str, end: str) -> list[str]:
+    if not start or not end or month_number(start) > month_number(end):
+        return []
+    return [month_value(number) for number in range(month_number(start), month_number(end) + 1)]
+
+
+def money_value(value: Any, field_name: str, required: bool = False) -> float:
+    text = str(value if value is not None else "").strip().replace(",", "")
+    if not text:
+        if required:
+            raise ValueError(f"{field_name} is required")
+        return 0.0
+    try:
+        amount = round(float(text), 2)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a number") from exc
+    if amount < 0:
+        raise ValueError(f"{field_name} cannot be negative")
+    return amount
+
+
+def migration_plan_key(row: dict[str, Any]) -> str:
+    return "|".join(
+        [
+            f"{float(row.get('monthlyRate') or 0):.2f}",
+            normalize_upper(row.get("billingMode")),
+        ]
+    )
+
+
+def migration_plan_label(row: dict[str, Any]) -> str:
+    return f"Legacy {normalize_upper(row.get('billingMode')).title()} Rate {float(row.get('monthlyRate') or 0):,.2f}"
+
+
+def migration_identity_key(row: dict[str, Any]) -> str:
+    contact = re.sub(r"\D", "", str(row.get("contactNumber") or ""))
+    return "|".join(
+        [
+            normalize_upper(row.get("firstName")),
+            normalize_upper(row.get("lastName")),
+            contact,
+            normalize_upper(row.get("addressLine1") or row.get("landmark")),
+            normalize_upper(row.get("barangay")),
+            normalize_upper(row.get("city")),
+        ]
+    )
+
+
+def migration_row_fingerprint(row: dict[str, Any]) -> str:
+    material = "|".join(
+        [
+            migration_identity_key(row),
+            migration_plan_key(row),
+            str(row.get("serviceStartDate") or ""),
+        ]
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def migration_billing_schedule(billing_mode: str, effective_date: str, paid_through_month: str = "") -> dict[str, Any]:
+    effective_month_number = month_number(parse_iso_date(effective_date, "effectiveDate", required=True)[:7])
+    mode = normalize_upper(billing_mode)
+    if mode not in {"PREPAID", "POSTPAID"}:
+        raise ValueError("billingMode must be PREPAID or POSTPAID")
+    base_next_month_number = effective_month_number + (1 if mode == "PREPAID" else 0)
+    paid_through_next_month_number = month_number(paid_through_month) + 1 if paid_through_month else base_next_month_number
+    next_month_number = max(base_next_month_number, paid_through_next_month_number)
+    return {
+        "billingDay": 1,
+        "nextBillingDate": f"{month_value(next_month_number)}-01",
+        "scheduleSource": "BILLING_MODE_AND_PAID_THROUGH",
+    }
+
+
+def normalize_promotion_code(value: Any) -> str:
+    return re.sub(r"\s+", "-", str(value or "").strip().upper())
+
+
+def parse_promotion_codes(value: Any) -> list[str]:
+    codes: list[str] = []
+    for raw_code in str(value or "").split(";"):
+        code = normalize_promotion_code(raw_code)
+        if code and code not in codes:
+            codes.append(code)
+    return codes
+
+
+def migration_promotion_discount_amount(promotion: dict[str, Any], base_amount: float) -> float:
+    discount_type = normalize_upper(promotion.get("discountType"))
+    if discount_type == "WAIVE":
+        return round(base_amount, 2)
+    if discount_type == "PERCENT":
+        return round(base_amount * float(promotion.get("discountPercent") or 0) / 100, 2)
+    return round(min(base_amount, float(promotion.get("discountAmount") or 0)), 2)
+
+
+def migration_promotion_is_compatible(promotion: dict[str, Any], billing_mode: str) -> bool:
+    promotion_mode = normalize_upper(promotion.get("billingMode"))
+    return (
+        normalize_upper(promotion.get("appliesTo")) == "MONTHLY_SERVICE"
+        and not bool(promotion.get("requiresApproval"))
+        and (not promotion_mode or promotion_mode == normalize_upper(billing_mode))
+    )
+
+
+def payment_and_balance_preview(
+    row: dict[str, Any],
+    effective_date: str,
+    last_payment_promotion: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    monthly_rate = float(row["monthlyRate"])
+    payment_amount = float(row.get("lastPaymentAmount") or 0)
+    coverage_from = str(row.get("paymentCoverageFromMonth") or "")
+    paid_through = str(row.get("lastPaidThroughMonth") or "")
+    coverage_source = "EXPLICIT" if coverage_from and paid_through else ""
+    warnings: list[str] = []
+    covered_month_count = 0
+    imported_promotion_code = normalize_promotion_code(row.get("lastPaymentPromotionCode"))
+    promotion_discount_per_month = 0.0
+    discounted_monthly_amount = monthly_rate
+    promotion_match_status = "NONE"
+    if imported_promotion_code and last_payment_promotion:
+        promotion_discount_per_month = migration_promotion_discount_amount(last_payment_promotion, monthly_rate)
+        discounted_monthly_amount = round(max(0, monthly_rate - promotion_discount_per_month), 2)
+        promotion_match_status = "PENDING_AMOUNT_CHECK"
+    elif imported_promotion_code:
+        promotion_match_status = "UNRESOLVED"
+        warnings.append(f"Map last-payment promotion {imported_promotion_code} before verifying the discounted payment amount.")
+
+    payment_monthly_basis = discounted_monthly_amount if promotion_match_status == "PENDING_AMOUNT_CHECK" else monthly_rate
+    exact_months = payment_amount / payment_monthly_basis if payment_monthly_basis > 0 and payment_amount > 0 else 0
+    exact_month_count = int(round(exact_months)) if abs(exact_months - round(exact_months)) < 0.0001 else 0
+    if exact_months and not exact_month_count:
+        basis_label = "discounted monthly amount" if promotion_match_status == "PENDING_AMOUNT_CHECK" else "imported monthly rate"
+        warnings.append(f"Last payment amount is not an exact multiple of the {basis_label}.")
+
+    if coverage_from and paid_through:
+        covered_month_count = len(months_inclusive(coverage_from, paid_through))
+        expected_payment_amount = round(covered_month_count * payment_monthly_basis, 2)
+        if payment_amount and expected_payment_amount != round(payment_amount, 2):
+            basis_label = "after the mapped promotion" if promotion_match_status == "PENDING_AMOUNT_CHECK" else "at the imported rate"
+            warnings.append(f"Explicit payment coverage does not equal last payment amount {basis_label}.")
+            if promotion_match_status == "PENDING_AMOUNT_CHECK":
+                promotion_match_status = "AMOUNT_MISMATCH"
+        elif payment_amount and promotion_match_status == "PENDING_AMOUNT_CHECK":
+            promotion_match_status = "MATCHED"
+    elif paid_through and exact_month_count:
+        coverage_from = month_value(month_number(paid_through) - exact_month_count + 1)
+        covered_month_count = exact_month_count
+        coverage_source = "INFERRED_FROM_DISCOUNTED_AMOUNT_AND_PAID_THROUGH" if last_payment_promotion else "INFERRED_FROM_AMOUNT_AND_PAID_THROUGH"
+        if promotion_match_status == "PENDING_AMOUNT_CHECK":
+            promotion_match_status = "MATCHED"
+    elif coverage_from and exact_month_count:
+        paid_through = month_value(month_number(coverage_from) + exact_month_count - 1)
+        covered_month_count = exact_month_count
+        coverage_source = "INFERRED_FROM_DISCOUNTED_AMOUNT_AND_COVERAGE_START" if last_payment_promotion else "INFERRED_FROM_AMOUNT_AND_COVERAGE_START"
+        if promotion_match_status == "PENDING_AMOUNT_CHECK":
+            promotion_match_status = "MATCHED"
+    elif payment_amount:
+        warnings.append("Provide a paid-through month or coverage start to anchor the last payment.")
+
+    expected_discounted_amount = round(covered_month_count * discounted_monthly_amount, 2) if covered_month_count and last_payment_promotion else 0.0
+    legacy_promotion = {
+        "importedCode": imported_promotion_code,
+        "id": str((last_payment_promotion or {}).get("id") or ""),
+        "code": str((last_payment_promotion or {}).get("promoCode") or imported_promotion_code),
+        "name": str((last_payment_promotion or {}).get("name") or ""),
+        "discountType": str((last_payment_promotion or {}).get("discountType") or ""),
+        "regularMonthlyRate": round(monthly_rate, 2),
+        "discountPerMonth": promotion_discount_per_month,
+        "discountedMonthlyAmount": discounted_monthly_amount,
+        "expectedDiscountedAmount": expected_discounted_amount,
+        "matchStatus": promotion_match_status,
+    }
+
+    schedule = migration_billing_schedule(row["billingMode"], effective_date, paid_through)
+    next_cycle_month = schedule["nextBillingDate"][:7]
+    arrear_start = month_value(month_number(paid_through) + 1) if paid_through else ""
+    arrear_end = month_value(month_number(next_cycle_month) - 1)
+    arrear_months = months_inclusive(arrear_start, arrear_end) if arrear_start else []
+    calculated_balance = round(len(arrear_months) * monthly_rate, 2)
+    balance_was_supplied = bool(row.get("outstandingBalanceSupplied"))
+    supplied_balance = float(row.get("outstandingBalance") or 0)
+    balance_variance = round(supplied_balance - calculated_balance, 2) if balance_was_supplied else 0.0
+
+    if balance_was_supplied and abs(balance_variance) > 0.009:
+        classification = "BALANCE_VARIANCE"
+        warnings.append("Outstanding balance differs from the reconstructed unpaid months; choose monthly invoices or one opening balance.")
+    elif arrear_months and paid_through:
+        classification = "VERIFIED_ARREARS" if coverage_source == "EXPLICIT" else "INFERRED_COVERAGE" if coverage_source else "CALCULATED_ARREARS"
+    elif supplied_balance > 0 and not paid_through:
+        classification = "INSUFFICIENT_INFORMATION"
+        warnings.append("A balance exists without a paid-through month; use a reviewed opening balance.")
+    elif supplied_balance <= 0 and not arrear_months:
+        classification = "NO_ARREARS"
+    else:
+        classification = "INSUFFICIENT_INFORMATION"
+
+    default_resolution = "OPENING_BALANCE" if classification in {"BALANCE_VARIANCE", "INSUFFICIENT_INFORMATION"} and supplied_balance > 0 else "MONTHLY_INVOICES"
+    return {
+        "classification": classification,
+        "coverageFromMonth": coverage_from,
+        "paidThroughMonth": paid_through,
+        "coverageSource": coverage_source,
+        "coveredMonthCount": covered_month_count,
+        "arrearMonths": arrear_months,
+        "calculatedBalance": calculated_balance,
+        "suppliedBalance": supplied_balance,
+        "balanceVariance": balance_variance,
+        "defaultResolution": default_resolution,
+        "paymentAmountInterpretation": "PROMOTION_DISCOUNTED" if promotion_match_status == "MATCHED" else "REGULAR_RATE",
+        "legacyPaymentPromotion": legacy_promotion,
+        **schedule,
+        "warnings": warnings,
+    }
+
+
+def duplicate_candidates(row: dict[str, Any]) -> list[dict[str, Any]]:
+    row_contact = re.sub(r"\D", "", str(row.get("contactNumber") or ""))
+    row_name = f"{normalize_upper(row.get('firstName'))}|{normalize_upper(row.get('lastName'))}"
+    row_address = f"{normalize_upper(row.get('addressLine1') or row.get('landmark'))}|{normalize_upper(row.get('barangay'))}|{normalize_upper(row.get('city'))}"
+    matches: list[dict[str, Any]] = []
+    for customer in visible_customers():
+        score = 0
+        reasons: list[str] = []
+        customer_contact = re.sub(r"\D", "", str(customer.get("contactNumber") or ""))
+        if row_contact and row_contact == customer_contact:
+            score += 60
+            reasons.append("same contact number")
+        if row_name == f"{normalize_upper(customer.get('firstName'))}|{normalize_upper(customer.get('lastName'))}":
+            score += 30
+            reasons.append("same name")
+        customer_address = f"{normalize_upper(customer.get('addressLine1') or customer.get('landmark'))}|{normalize_upper(customer.get('barangay'))}|{normalize_upper(customer.get('city'))}"
+        if row_address.strip("|") and row_address == customer_address:
+            score += 20
+            reasons.append("same address")
+        if score >= 30:
+            matches.append({"id": customer["id"], "accountNumber": customer.get("accountNumber", ""), "fullName": customer_full_name(customer), "contactNumber": customer.get("contactNumber", ""), "address": customer_location_address(customer), "score": score, "reasons": reasons})
+    return sorted(matches, key=lambda item: (-item["score"], item["fullName"]))[:5]
+
+
+def normalize_migration_row(
+    raw_row: dict[str, Any],
+    row_number: int,
+    effective_date: str | None = None,
+    promotion_catalog: list[dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    row = {header: str(raw_row.get(header) if raw_row.get(header) is not None else "").strip() for header in EXISTING_SUBSCRIBER_MIGRATION_HEADERS}
+    errors: list[str] = []
+    for field in REQUIRED_EXISTING_SUBSCRIBER_HEADERS:
+        if not row.get(field):
+            errors.append(f"{field} is required")
+    try:
+        row["monthlyRate"] = money_value(row.get("monthlyRate"), "monthlyRate", required=True)
+        row["lastPaymentAmount"] = money_value(row.get("lastPaymentAmount"), "lastPaymentAmount")
+        row["outstandingBalanceSupplied"] = bool(row.get("outstandingBalance"))
+        row["outstandingBalance"] = money_value(row.get("outstandingBalance"), "outstandingBalance")
+        row["serviceStartDate"] = parse_iso_date(row.get("serviceStartDate"), "serviceStartDate", required=True)
+        row["lastPaymentDate"] = parse_iso_date(row.get("lastPaymentDate"), "lastPaymentDate")
+        row["balanceAsOfDate"] = parse_iso_date(row.get("balanceAsOfDate"), "balanceAsOfDate")
+        row["paymentCoverageFromMonth"] = parse_month(row.get("paymentCoverageFromMonth"), "paymentCoverageFromMonth")
+        row["lastPaidThroughMonth"] = parse_month(row.get("lastPaidThroughMonth"), "lastPaidThroughMonth")
+    except ValueError as exc:
+        errors.append(str(exc))
+    for amount_field in ["monthlyRate", "lastPaymentAmount", "outstandingBalance"]:
+        if not isinstance(row.get(amount_field), (int, float)):
+            row[amount_field] = 0.0
+    row["billingMode"] = normalize_upper(row.get("billingMode"))
+    row["serviceStatus"] = normalize_upper(row.get("serviceStatus") or "ACTIVE")
+    row["qualifiedPromotionCodes"] = parse_promotion_codes(row.get("qualifiedPromotionCodes"))
+    row["lastPaymentPromotionCode"] = normalize_promotion_code(row.get("lastPaymentPromotionCode"))
+    if row["billingMode"] not in {"PREPAID", "POSTPAID"}:
+        errors.append("billingMode must be PREPAID or POSTPAID")
+    if row["serviceStatus"] not in MIGRATION_STATUSES:
+        errors.append("serviceStatus must be ACTIVE or SUSPENDED")
+    row["planName"] = migration_plan_label(row)
+    row["planReferenceSource"] = "MONTHLY_RATE_AND_BILLING_MODE"
+    row["rowNumber"] = row_number
+    row["planKey"] = migration_plan_key(row)
+    row["groupKey"] = migration_identity_key(row)
+    row["fingerprint"] = migration_row_fingerprint(row)
+    row["duplicates"] = duplicate_candidates(row)
+    if not errors:
+        promotion_by_code = {
+            normalize_promotion_code(promotion.get("promoCode")): promotion
+            for promotion in promotion_catalog or []
+        }
+        last_payment_promotion = promotion_by_code.get(row["lastPaymentPromotionCode"])
+        if last_payment_promotion and not migration_promotion_is_compatible(last_payment_promotion, row["billingMode"]):
+            last_payment_promotion = None
+        preview = payment_and_balance_preview(
+            row,
+            effective_date or subscriber_migration_business_date(),
+            last_payment_promotion,
+        )
+        row["billingDay"] = preview["billingDay"]
+        row["nextBillingDate"] = preview["nextBillingDate"]
+        row["billingPreview"] = preview
+    else:
+        row["billingPreview"] = {"classification": "INVALID", "warnings": []}
+    return row, errors
+
+
 def find_customer(customer_id: str) -> dict[str, Any]:
     for customer in all_customers():
         if customer["id"] == customer_id and not customer.get("deletedAt"):
@@ -607,25 +1056,66 @@ def build_duplicate_fingerprint(data: dict[str, Any]) -> str:
     )
 
 
-def ensure_customer_location(record: dict[str, Any], admin: dict[str, Any] | None = None) -> None:
+def customer_location_address(record: dict[str, Any]) -> str:
+    address_parts: list[str] = []
+    seen_parts: set[str] = set()
+    for field in ["addressLine1", "addressLine2", "barangay", "city", "province"]:
+        value = str(record.get(field) or "").strip()
+        value_key = value.upper()
+        if value and value_key not in seen_parts:
+            address_parts.append(value)
+            seen_parts.add(value_key)
+    return ", ".join(address_parts)
+
+
+def ensure_customer_location(record: dict[str, Any], admin: dict[str, Any] | None = None) -> bool:
     if ensure_location_record is None:
-        return
+        return False
+    previous_location_id = record.get("locationId") or ""
+    previous_location_name = record.get("locationName") or ""
     location_data = {
         "locationId": record.get("locationId"),
         "location_name": record.get("locationName") or record.get("landmark") or record.get("barangay") or record.get("city") or record.get("addressLine1"),
-        "address": record.get("addressLine1"),
+        "address": customer_location_address(record),
         "municipality": record.get("city"),
         "barangay": record.get("barangay"),
         "province": record.get("province"),
         "latitude": record.get("latitude") or None,
         "longitude": record.get("longitude") or None,
-        "geocode_source": "CUSTOMER_PROFILING",
-        "notes": f"Created or linked from Customer Profiling. Landmark: {record.get('landmark') or 'Not specified'}. Complete missing details in System Settings > Location Management.",
+        "notes": "Manual location linked from Customer Profiling.",
     }
     location = ensure_location_record(location_data, actor=admin)
     if location:
         record["locationId"] = location.get("id") or record.get("locationId") or ""
         record["locationName"] = location.get("location_name") or record.get("locationName") or ""
+    return (
+        (record.get("locationId") or "") != previous_location_id
+        or (record.get("locationName") or "") != previous_location_name
+    )
+
+
+def sync_customer_manual_locations(actor: dict[str, Any] | None = None) -> dict[str, int]:
+    global _customer_location_backfill_complete
+    if _customer_location_backfill_complete or ensure_location_record is None:
+        return {"scanned": 0, "linked": 0}
+
+    sync_actor = actor or {"id": "system", "username": "system"}
+    rows = visible_customers()
+    linked_count = 0
+    for customer in rows:
+        if ensure_customer_location(customer, sync_actor):
+            save_customer_record(customer)
+            linked_count += 1
+    _customer_location_backfill_complete = True
+    if rows:
+        add_audit(
+            "customer_locations_linked_to_manual_catalog",
+            "CustomerLocation",
+            "bulk",
+            {"scanned_count": len(rows), "linked_count": linked_count},
+            sync_actor.get("username") or "system",
+        )
+    return {"scanned": len(rows), "linked": linked_count}
 
 
 def assert_no_duplicate_customer(candidate: dict[str, Any], ignore_id: str | None = None) -> None:
@@ -713,8 +1203,10 @@ def customer_payload_to_record(payload: CustomerPayload, current: dict[str, Any]
 
 def seed_customer_data() -> None:
     if all_customers():
+        sync_customer_manual_locations()
         return
     if not CUSTOMER_SEED_DEMO:
+        sync_customer_manual_locations()
         return
     created_at = now_iso()
     seed_rows = [
@@ -836,6 +1328,9 @@ def seed_customer_data() -> None:
                 **row,
             },
         )
+    sync_customer_manual_locations()
+
+
 @router.get("/meta")
 def customer_profiling_meta(admin=Depends(require_admin)):
     cities = sorted({city for cities in MUNICIPALITIES_BY_PROVINCE.values() for city in cities})
@@ -849,6 +1344,11 @@ def customer_profiling_meta(admin=Depends(require_admin)):
         "citiesByProvince": MUNICIPALITIES_BY_PROVINCE,
         "barangays": barangays,
         "barangaysByProvinceCity": BARANGAYS_BY_PROVINCE_CITY,
+        "locationCatalog": {
+            "source": LOCATION_CATALOG.get("source"),
+            "sourceUrl": LOCATION_CATALOG.get("sourceUrl"),
+            "retrievedDate": LOCATION_CATALOG.get("retrievedDate"),
+        },
         "bulkUploadHeaders": BULK_UPLOAD_HEADERS,
         "requiredBulkUploadHeaders": REQUIRED_BULK_UPLOAD_HEADERS,
     }
@@ -1019,10 +1519,562 @@ def customer_bulk_upload_template(admin=Depends(require_admin)):
         "allowedValues": {
             "gender": CUSTOMER_GENDERS,
             "province": PROVINCES,
+            "city": sorted({city for cities in MUNICIPALITIES_BY_PROVINCE.values() for city in cities}),
+            "citiesByProvince": MUNICIPALITIES_BY_PROVINCE,
             "barangay": sorted({barangay for barangays in BARANGAYS_BY_PROVINCE_CITY.values() for barangay in barangays}),
             "barangaysByProvinceCity": BARANGAYS_BY_PROVINCE_CITY,
         },
     }
+
+
+@router.get("/customers/existing-subscriber-template")
+def existing_subscriber_template(admin=Depends(require_admin)):
+    promotions = migration_promotions()
+    sample_promotion = next(
+        (promotion for promotion in promotions if normalize_upper(promotion.get("paymentRule")) == "EARLY_BIRD"),
+        None,
+    )
+    sample_promotion_code = str((sample_promotion or {}).get("promoCode") or "")
+    sample_discounted_amount = round(1000 - migration_promotion_discount_amount(sample_promotion, 1000), 2) if sample_promotion else 2000
+    base = {
+        "middleName": "",
+        "birthDate": "",
+        "alternateMobileNumber": "",
+        "facebookAccountName": "",
+        "facebookProfileLink": "",
+        "email": "",
+        "addressLine2": "",
+        "latitude": "",
+        "longitude": "",
+        "balanceAsOfDate": "2026-10-01",
+        "qualifiedPromotionCodes": "",
+        "lastPaymentPromotionCode": "",
+    }
+    return {
+        "filename": "existing-subscribers-migration-template.xlsx",
+        "headers": EXISTING_SUBSCRIBER_MIGRATION_HEADERS,
+        "requiredHeaders": REQUIRED_EXISTING_SUBSCRIBER_HEADERS,
+        "columnGuide": [
+            {
+                "column": header,
+                "required": "Yes" if header in REQUIRED_EXISTING_SUBSCRIBER_HEADERS else "No",
+                **EXISTING_SUBSCRIBER_COLUMN_GUIDE[header],
+            }
+            for header in EXISTING_SUBSCRIBER_MIGRATION_HEADERS
+        ],
+        "allowedValues": {
+            "gender": CUSTOMER_GENDERS,
+            "billingMode": ["PREPAID", "POSTPAID"],
+            "serviceStatus": sorted(MIGRATION_STATUSES),
+            "promotionCode": [promotion.get("promoCode") for promotion in promotions if promotion.get("promoCode")],
+            "province": PROVINCES,
+            "citiesByProvince": MUNICIPALITIES_BY_PROVINCE,
+            "barangaysByProvinceCity": BARANGAYS_BY_PROVINCE_CITY,
+        },
+        "locationCatalog": {
+            "source": LOCATION_CATALOG.get("source"),
+            "sourceUrl": LOCATION_CATALOG.get("sourceUrl"),
+            "retrievedDate": LOCATION_CATALOG.get("retrievedDate"),
+        },
+        "promotions": promotions,
+        "samples": [
+            {
+                **base,
+                "firstName": "JUAN", "lastName": "DELA CRUZ", "contactNumber": "09171234567",
+                "addressLine1": "PUROK 1", "landmark": "NEAR BARANGAY HALL",
+                "province": "CAGAYAN", "city": "ENRILE", "barangay": "ALIBAGO", "gender": "MALE",
+                "latitude": "17.559311", "longitude": "121.684928", "monthlyRate": "1000", "billingMode": "PREPAID",
+                "serviceStartDate": "2024-01-15", "serviceStatus": "ACTIVE",
+                "qualifiedPromotionCodes": sample_promotion_code, "lastPaymentPromotionCode": sample_promotion_code,
+                "lastPaymentDate": "2026-08-05", "lastPaymentAmount": str(sample_discounted_amount),
+                "paymentCoverageFromMonth": "2026-08" if sample_promotion else "",
+                "lastPaidThroughMonth": "2026-08" if sample_promotion else "2026-07", "outstandingBalance": "1000" if sample_promotion else "2000",
+            },
+            {
+                **base,
+                "firstName": "MARIA", "lastName": "SANTOS", "contactNumber": "09181234567",
+                "addressLine1": "ZONE 2", "landmark": "PUBLIC MARKET",
+                "province": "ISABELA", "city": "CABAGAN", "barangay": "CENTRO", "gender": "FEMALE",
+                "latitude": "17.425624", "longitude": "121.769104", "monthlyRate": "1500", "billingMode": "POSTPAID",
+                "serviceStartDate": "2025-03-01", "serviceStatus": "ACTIVE",
+                "lastPaymentDate": "2026-09-15", "lastPaymentAmount": "1500", "paymentCoverageFromMonth": "2026-09",
+                "lastPaidThroughMonth": "2026-09", "outstandingBalance": "0",
+            },
+            {
+                **base,
+                "firstName": "PEDRO", "lastName": "REYES", "contactNumber": "09191234567",
+                "addressLine1": "PUROK 4", "landmark": "ELEMENTARY SCHOOL",
+                "province": "CAGAYAN", "city": "ENRILE", "barangay": "SAN ANTONIO", "gender": "MALE",
+                "latitude": "17.574188", "longitude": "121.695244", "monthlyRate": "900", "billingMode": "PREPAID",
+                "serviceStartDate": "2023-06-10", "serviceStatus": "SUSPENDED",
+                "lastPaymentDate": "2026-06-10", "lastPaymentAmount": "900", "paymentCoverageFromMonth": "",
+                "lastPaidThroughMonth": "", "outstandingBalance": "2750",
+            },
+        ],
+        "notes": [
+            "Each Subscribers worksheet row is one already-installed internet line.",
+            "Account and Service Account numbers are generated during import.",
+            "Location ID and location name are generated by the system from the imported address and coordinates.",
+            "Imported monthly rate and billing mode are used to find or create the Service Catalog plan during review.",
+            "Use qualifiedPromotionCodes for future promotion eligibility and lastPaymentPromotionCode only when that promotion explains the imported historical payment amount.",
+            "Separate multiple qualified promotion codes with semicolons. Every combined promotion must be stackable in Billing.",
+            "Billing day and next billing date are derived from billing mode, the migration effective date, and the paid-through month.",
+            "The Province, City, and Barangay columns contain dependent dropdowns for Cagayan and Isabela.",
+            "A discounted last payment is reconciled against its mapped promotion and paid-through coverage; it does not create a remaining balance for the discount.",
+            "Legacy payment rows are reference evidence and are excluded from current cash reports.",
+        ],
+    }
+
+
+def migration_catalogs() -> list[dict[str, Any]]:
+    if _service_catalog_provider is None:
+        return []
+    return _service_catalog_provider()
+
+
+def migration_promotions() -> list[dict[str, Any]]:
+    if _billing_promotion_provider is None:
+        return []
+    return _billing_promotion_provider()
+
+
+def migration_plan_groups(rows: list[dict[str, Any]], catalogs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        plan_key = row["planKey"]
+        if plan_key not in groups:
+            suggestions = [
+                catalog for catalog in catalogs
+                if round(float(catalog.get("monthlyRate") or 0), 2) == round(float(row.get("monthlyRate") or 0), 2)
+                and normalize_upper(catalog.get("billingMode")) == row.get("billingMode")
+            ]
+            exact = suggestions[0] if len(suggestions) == 1 else None
+            groups[plan_key] = {
+                "planKey": plan_key,
+                "planName": row.get("planName"),
+                "planReferenceSource": "MONTHLY_RATE_AND_BILLING_MODE",
+                "monthlyRate": row.get("monthlyRate"),
+                "billingMode": row.get("billingMode"),
+                "rowCount": 0,
+                "suggestions": suggestions[:5],
+                "suggestedMapping": {"action": "MAP_EXISTING", "catalogId": exact["id"]} if exact else {"action": "REVIEW"},
+            }
+        groups[plan_key]["rowCount"] += 1
+    return list(groups.values())
+
+
+def migration_promotion_groups(rows: list[dict[str, Any]], promotions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {}
+    promotions_by_code = {
+        normalize_promotion_code(promotion.get("promoCode")): promotion
+        for promotion in promotions
+    }
+    for row in rows:
+        qualified_codes = list(row.get("qualifiedPromotionCodes") or [])
+        last_payment_code = normalize_promotion_code(row.get("lastPaymentPromotionCode"))
+        for code in dict.fromkeys([*qualified_codes, *([last_payment_code] if last_payment_code else [])]):
+            if code not in groups:
+                exact = promotions_by_code.get(code)
+                groups[code] = {
+                    "importedCode": code,
+                    "qualificationRowCount": 0,
+                    "lastPaymentRowCount": 0,
+                    "billingModes": [],
+                    "suggestedMapping": (
+                        {"action": "MAP_EXISTING", "promotionId": exact["id"]}
+                        if exact and migration_promotion_is_compatible(exact, row.get("billingMode"))
+                        else {"action": "REVIEW"}
+                    ),
+                }
+            group = groups[code]
+            if code in qualified_codes:
+                group["qualificationRowCount"] += 1
+            if code == last_payment_code:
+                group["lastPaymentRowCount"] += 1
+            if row.get("billingMode") and row["billingMode"] not in group["billingModes"]:
+                group["billingModes"].append(row["billingMode"])
+            mapped = promotions_by_code.get(code)
+            if mapped and not all(migration_promotion_is_compatible(mapped, mode) for mode in group["billingModes"]):
+                group["suggestedMapping"] = {"action": "REVIEW"}
+    return list(groups.values())
+
+
+def mapped_migration_promotion(
+    imported_code: str,
+    promotion_mappings: dict[str, dict[str, Any]],
+    promotions: list[dict[str, Any]],
+    billing_mode: str,
+) -> dict[str, Any] | None:
+    code = normalize_promotion_code(imported_code)
+    mapping = dict(promotion_mappings.get(code) or {})
+    action = normalize_upper(mapping.get("action"))
+    if action == "IGNORE":
+        return None
+    if action != "MAP_EXISTING" or not mapping.get("promotionId"):
+        raise HTTPException(status_code=400, detail=f"Resolve imported promotion {code}")
+    promotion = next((item for item in promotions if item.get("id") == mapping.get("promotionId")), None)
+    if promotion is None:
+        raise HTTPException(status_code=400, detail=f"Choose an active Billing promotion for {code}")
+    if not migration_promotion_is_compatible(promotion, billing_mode):
+        raise HTTPException(status_code=400, detail=f"Promotion {promotion.get('promoCode') or promotion.get('name')} is not compatible with {billing_mode} billing")
+    return promotion
+
+
+def resolve_row_migration_promotions(
+    normalized: dict[str, Any],
+    promotion_mappings: dict[str, dict[str, Any]],
+    promotions: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None, bool]:
+    qualified: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for code in normalized.get("qualifiedPromotionCodes") or []:
+        promotion = mapped_migration_promotion(code, promotion_mappings, promotions, normalized.get("billingMode"))
+        if promotion and promotion.get("id") not in seen_ids:
+            qualified.append(promotion)
+            seen_ids.add(str(promotion.get("id")))
+    if len(qualified) > 1 and any(not bool(promotion.get("stackable")) for promotion in qualified):
+        raise HTTPException(status_code=400, detail="Multiple imported promotions require every selected promotion to be stackable")
+
+    last_payment_code = normalize_promotion_code(normalized.get("lastPaymentPromotionCode"))
+    last_payment_mapping = dict(promotion_mappings.get(last_payment_code) or {}) if last_payment_code else {}
+    last_payment_ignored = bool(last_payment_code and normalize_upper(last_payment_mapping.get("action")) == "IGNORE")
+    last_payment_promotion = (
+        mapped_migration_promotion(last_payment_code, promotion_mappings, promotions, normalized.get("billingMode"))
+        if last_payment_code
+        else None
+    )
+    return qualified, last_payment_promotion, last_payment_ignored
+
+
+def migration_batch_response(batch: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        **batch,
+        "rows": rows,
+        "summary": {
+            "total": len(rows),
+            "ready": sum(1 for row in rows if not row.get("validationErrors") and not row.get("duplicates")),
+            "needsReview": sum(1 for row in rows if row.get("duplicates") or (row.get("billingPreview") or {}).get("classification") in {"BALANCE_VARIANCE", "INSUFFICIENT_INFORMATION"}),
+            "invalid": sum(1 for row in rows if row.get("validationErrors")),
+            "imported": sum(1 for row in rows if row.get("status") == "IMPORTED"),
+            "failed": sum(1 for row in rows if row.get("status") == "FAILED"),
+            "skipped": sum(1 for row in rows if row.get("status") in {"SKIPPED", "DUPLICATE_IMPORTED"}),
+        },
+    }
+
+
+@router.post("/subscriber-migrations")
+def create_subscriber_migration_batch(payload: ExistingSubscriberMigrationBatchPayload, admin=Depends(require_admin)):
+    seed_customer_data()
+    if not payload.rows:
+        raise HTTPException(status_code=400, detail="The CSV has no subscriber rows")
+    if len(payload.rows) > 5000:
+        raise HTTPException(status_code=400, detail="A migration batch may contain at most 5000 installed lines")
+    timestamp = now_iso()
+    pending_effective_date = subscriber_migration_business_date(datetime.fromisoformat(timestamp))
+    batch_id = str(uuid4())
+    promotions = migration_promotions()
+    normalized_rows: list[dict[str, Any]] = []
+    for index, raw_row in enumerate(payload.rows, start=2):
+        normalized, errors = normalize_migration_row(raw_row, index, pending_effective_date, promotions)
+        normalized_rows.append(
+            {
+                "id": str(uuid4()), "batchId": batch_id, "rowNumber": index,
+                "fingerprint": normalized["fingerprint"], "status": "INVALID" if errors else "READY",
+                "raw": dict(raw_row), "normalized": normalized, "planKey": normalized["planKey"],
+                "groupKey": normalized["groupKey"], "duplicates": normalized["duplicates"],
+                "billingPreview": normalized["billingPreview"], "validationErrors": errors,
+                "result": {}, "error": "", "createdAt": timestamp, "updatedAt": timestamp,
+            }
+        )
+    file_hash = hashlib.sha256(str(payload.rows).encode("utf-8")).hexdigest()
+    catalogs = migration_catalogs()
+    batch = {
+        "id": batch_id, "filename": payload.filename, "fileHash": file_hash, "cutoverDate": pending_effective_date,
+        "effectiveDateStatus": "PENDING_COMMIT", "effectiveDateTimezone": SUBSCRIBER_MIGRATION_TIMEZONE, "migrationCommittedAt": "",
+        "status": "REVIEW", "catalogs": catalogs, "planGroups": migration_plan_groups([row["normalized"] for row in normalized_rows], catalogs),
+        "promotions": promotions, "promotionGroups": migration_promotion_groups([row["normalized"] for row in normalized_rows], promotions),
+        "createdAt": timestamp, "updatedAt": timestamp, "createdByUserId": admin.get("id", ""), "updatedByUserId": admin.get("id", ""),
+    }
+    subscriber_migration_store.save_batch(batch)
+    for row in normalized_rows:
+        subscriber_migration_store.save_row(row)
+    add_audit("existing_subscriber_migration_preview_created", "SubscriberMigrationBatch", batch_id, {"filename": payload.filename, "rowCount": len(normalized_rows), "fileHash": file_hash}, admin.get("username") or "system")
+    return migration_batch_response(batch, normalized_rows)
+
+
+@router.get("/subscriber-migrations/{batch_id}")
+def get_subscriber_migration_batch(batch_id: str, admin=Depends(require_admin)):
+    batch = subscriber_migration_store.get_batch(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Migration batch not found")
+    return migration_batch_response(batch, subscriber_migration_store.list_rows(batch_id))
+
+
+@router.get("/subscriber-migrations/{batch_id}/current-customers")
+def subscriber_migration_current_customers(batch_id: str, admin=Depends(require_admin)):
+    """Resolve imported customer status from current profiles in one read."""
+    batch = subscriber_migration_store.get_batch(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Migration batch not found")
+    customer_ids = {
+        (row.get("result") or {}).get("customerId")
+        for row in subscriber_migration_store.list_rows(batch_id)
+        if row.get("status") == "IMPORTED"
+    }
+    return [
+        {"id": customer["id"], "status": customer.get("status", ""),
+         "firstName": customer.get("firstName", ""), "lastName": customer.get("lastName", "")}
+        for customer in all_customers()
+        if customer["id"] in customer_ids and not customer.get("deletedAt")
+    ]
+
+
+def migration_customer(row: dict[str, Any], decision: dict[str, Any], batch: dict[str, Any], admin: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("customerId"):
+        customer = find_customer(result["customerId"])
+        migration = dict(customer.get("migration") or {})
+        fingerprints = list(dict.fromkeys([*(migration.get("lineFingerprints") or []), row["fingerprint"]]))
+        if fingerprints != migration.get("lineFingerprints"):
+            migration["lineFingerprints"] = fingerprints
+            customer["migration"] = migration
+            customer["updatedAt"] = now_iso()
+            customer["updatedByUserId"] = admin.get("id", "")
+            save_customer_record(customer)
+        return customer
+    action = normalize_upper(decision.get("customerAction"))
+    duplicates = row.get("duplicates") or []
+    if not action:
+        action = "REVIEW" if duplicates else "CREATE"
+    if action == "REVIEW":
+        raise HTTPException(status_code=400, detail="Review the possible existing customer before importing this line")
+    if action in {"LINK", "LINK_UPDATE"}:
+        customer_id = str(decision.get("customerId") or "").strip()
+        if not customer_id:
+            raise HTTPException(status_code=400, detail="Choose the existing customer to link")
+        customer = find_customer(customer_id)
+        if action == "LINK_UPDATE":
+            profile_values = {field: row["normalized"].get(field) for field in MIGRATION_PROFILE_FIELDS if row["normalized"].get(field) not in [None, ""]}
+            record = customer_payload_to_record(CustomerPayload(**profile_values), customer)
+            customer.update(record)
+    elif action == "CREATE":
+        profile_values = {field: row["normalized"].get(field) for field in MIGRATION_PROFILE_FIELDS}
+        record = customer_payload_to_record(CustomerPayload(**profile_values))
+        record["status"] = "PENDING"
+        record["accountNumber"] = generate_account_number()
+        assert_no_duplicate_customer(record)
+        timestamp = now_iso()
+        customer = {"id": str(uuid4()), "createdAt": timestamp, "updatedAt": timestamp, "deletedAt": None, "createdByUserId": admin.get("id", ""), "updatedByUserId": admin.get("id", ""), **record}
+    else:
+        raise HTTPException(status_code=400, detail="customerAction must be CREATE, LINK, LINK_UPDATE, or SKIP")
+
+    migration = dict(customer.get("migration") or {})
+    fingerprints = list(dict.fromkeys([*(migration.get("lineFingerprints") or []), row["fingerprint"]]))
+    migration.update({"existingSubscriber": True, "source": "EXISTING_SUBSCRIBER_CSV", "batchId": batch["id"], "lineFingerprints": fingerprints, "installationWorkflow": "NOT_REQUIRED", "migratedAt": now_iso(), "migratedBy": admin.get("username") or "system"})
+    customer["migration"] = migration
+    customer["updatedAt"] = now_iso()
+    customer["updatedByUserId"] = admin.get("id", "")
+    ensure_customer_location(customer, admin)
+    save_customer_record(customer)
+    return customer
+
+
+@router.post("/subscriber-migrations/{batch_id}/commit")
+def commit_subscriber_migration_batch(batch_id: str, payload: ExistingSubscriberMigrationCommitPayload, admin=Depends(require_admin)):
+    if _service_migration_provider is None or _billing_migration_provider is None:
+        raise HTTPException(status_code=503, detail="Service and Billing migration providers are not configured")
+    batch = subscriber_migration_store.get_batch(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Migration batch not found")
+    rows = subscriber_migration_store.list_rows(batch_id)
+    commit_timestamp = now_iso()
+    if not batch.get("migrationCommittedAt"):
+        if batch.get("status") == "REVIEW":
+            batch["cutoverDate"] = subscriber_migration_business_date(datetime.fromisoformat(commit_timestamp))
+            batch["migrationCommittedAt"] = commit_timestamp
+        else:
+            batch["migrationCommittedAt"] = batch.get("updatedAt") or commit_timestamp
+        batch["effectiveDateStatus"] = "ASSIGNED"
+        batch["effectiveDateTimezone"] = SUBSCRIBER_MIGRATION_TIMEZONE
+    batch["status"] = "IMPORTING"
+    batch["updatedAt"] = commit_timestamp
+    batch["updatedByUserId"] = admin.get("id", "")
+    subscriber_migration_store.save_batch(batch)
+    actor = admin.get("username") or "system"
+    group_customers: dict[str, str] = {
+        row.get("groupKey", ""): (row.get("result") or {}).get("customerId", "")
+        for row in rows if (row.get("result") or {}).get("customerId")
+    }
+
+    for row in rows:
+        if row.get("status") in {"IMPORTED", "SKIPPED", "DUPLICATE_IMPORTED", "INVALID"}:
+            continue
+        decision = dict(payload.rowDecisions.get(row["id"]) or {})
+        if normalize_upper(decision.get("customerAction")) == "SKIP":
+            row.update({"status": "SKIPPED", "updatedAt": now_iso(), "error": ""})
+            subscriber_migration_store.save_row(row)
+            continue
+        prior = subscriber_migration_store.find_imported_fingerprint(row["fingerprint"])
+        if prior and prior.get("id") != row["id"]:
+            row.update({"status": "DUPLICATE_IMPORTED", "result": prior.get("result") or {}, "updatedAt": now_iso(), "error": "This installed line was already imported in another batch."})
+            subscriber_migration_store.save_row(row)
+            continue
+        normalized = dict(row["normalized"])
+        result = dict(row.get("result") or {})
+        try:
+            qualified_promotions, last_payment_promotion, last_payment_promotion_ignored = resolve_row_migration_promotions(
+                normalized,
+                payload.promotionMappings,
+                list(batch.get("promotions") or []),
+            )
+            preview_row = {
+                **normalized,
+                "lastPaymentPromotionCode": "" if last_payment_promotion_ignored else normalized.get("lastPaymentPromotionCode"),
+            }
+            preview = payment_and_balance_preview(preview_row, batch["cutoverDate"], last_payment_promotion)
+            normalized["billingDay"] = preview["billingDay"]
+            normalized["nextBillingDate"] = preview["nextBillingDate"]
+            normalized["qualifiedPromotionIds"] = [promotion["id"] for promotion in qualified_promotions]
+            normalized["resolvedQualifiedPromotions"] = [
+                {
+                    "id": promotion.get("id"),
+                    "promoCode": promotion.get("promoCode"),
+                    "name": promotion.get("name"),
+                    "paymentRule": promotion.get("paymentRule"),
+                }
+                for promotion in qualified_promotions
+            ]
+            row["normalized"] = normalized
+            row["billingPreview"] = preview
+            subscriber_migration_store.save_row(row)
+
+            plan_mapping = dict(payload.planMappings.get(row["planKey"]) or {})
+            plan_action = normalize_upper(plan_mapping.get("action"))
+            if plan_action not in {"MAP_EXISTING", "CREATE_LEGACY"}:
+                raise HTTPException(status_code=400, detail=f"Resolve imported rate {normalized.get('monthlyRate'):.2f} ({normalized.get('billingMode')})")
+            if plan_action == "MAP_EXISTING" and not plan_mapping.get("catalogId"):
+                raise HTTPException(status_code=400, detail=f"Choose a Service Catalog plan for rate {normalized.get('monthlyRate'):.2f} ({normalized.get('billingMode')})")
+            row.update({"status": "IMPORTING", "updatedAt": now_iso(), "error": ""})
+            subscriber_migration_store.save_row(row)
+
+            group_customer_id = group_customers.get(row.get("groupKey", ""))
+            if group_customer_id and not result.get("customerId"):
+                result["customerId"] = group_customer_id
+            customer = migration_customer(row, decision, batch, admin, result)
+            result.update({"customerId": customer["id"], "accountNumber": customer.get("accountNumber", "")})
+            group_customers[row.get("groupKey", "")] = customer["id"]
+            row["result"] = result
+            subscriber_migration_store.save_row(row)
+
+            service_payload = {
+                **normalized, **plan_mapping,
+                "planAction": plan_action, "customerId": customer["id"], "serviceAddress": customer_location_address(customer),
+                "migrationFingerprint": row["fingerprint"], "batchId": batch_id, "rowId": row["id"], "cutoverDate": batch["cutoverDate"],
+            }
+            service_result = _service_migration_provider(service_payload, actor)
+            account = dict(service_result.get("account") or {})
+            catalog = dict(service_result.get("catalog") or {})
+            result.update({"serviceAccountId": account.get("id", ""), "serviceAccountNumber": account.get("serviceAccountNumber", ""), "catalogId": catalog.get("id", ""), "catalogName": catalog.get("name", "")})
+            row["result"] = result
+            subscriber_migration_store.save_row(row)
+
+            resolution = normalize_upper(decision.get("balanceResolution") or preview.get("defaultResolution") or "MONTHLY_INVOICES")
+            if resolution not in {"MONTHLY_INVOICES", "OPENING_BALANCE"}:
+                raise HTTPException(status_code=400, detail="balanceResolution must be MONTHLY_INVOICES or OPENING_BALANCE")
+            if resolution == "OPENING_BALANCE" and float(normalized.get("outstandingBalance") or 0) <= 0:
+                raise HTTPException(status_code=400, detail="A positive supplied outstanding balance is required for opening-balance resolution")
+            billing_result = _billing_migration_provider(
+                {
+                    **normalized,
+                    "customerId": customer["id"], "serviceAccount": account, "catalog": catalog,
+                    "planName": catalog.get("name") or normalized.get("planName"),
+                    "migrationFingerprint": row["fingerprint"], "batchId": batch_id, "rowId": row["id"], "cutoverDate": batch["cutoverDate"],
+                    "balanceResolution": resolution, "arrearMonths": preview.get("arrearMonths") or [],
+                    "paymentCoverageFromMonth": preview.get("coverageFromMonth") or normalized.get("paymentCoverageFromMonth"),
+                    "lastPaidThroughMonth": preview.get("paidThroughMonth") or normalized.get("lastPaidThroughMonth"),
+                    "coverageSource": preview.get("coverageSource") or "",
+                    "qualifiedPromotionIds": normalized.get("qualifiedPromotionIds") or [],
+                    "qualifiedPromotionCodes": normalized.get("qualifiedPromotionCodes") or [],
+                    "lastPaymentRegularMonthlyRate": (preview.get("legacyPaymentPromotion") or {}).get("regularMonthlyRate") or normalized.get("monthlyRate"),
+                    "lastPaymentPromotionId": (preview.get("legacyPaymentPromotion") or {}).get("id") or "",
+                    "lastPaymentPromotionCode": (preview.get("legacyPaymentPromotion") or {}).get("code") or "",
+                    "lastPaymentPromotionName": (preview.get("legacyPaymentPromotion") or {}).get("name") or "",
+                    "lastPaymentPromotionDiscountPerMonth": (preview.get("legacyPaymentPromotion") or {}).get("discountPerMonth") or 0,
+                    "lastPaymentExpectedDiscountedAmount": (preview.get("legacyPaymentPromotion") or {}).get("expectedDiscountedAmount") or 0,
+                    "lastPaymentPromotionMatchStatus": (preview.get("legacyPaymentPromotion") or {}).get("matchStatus") or "NONE",
+                },
+                actor,
+            )
+            subscription = dict(billing_result.get("subscription") or {})
+            imported_invoices = list(billing_result.get("invoices") or [])
+            result.update({
+                "subscriptionId": subscription.get("id", ""),
+                "invoiceNumbers": [invoice.get("invoiceNumber", "") for invoice in imported_invoices],
+                "invoiceCount": len(imported_invoices),
+                "balanceResolution": resolution,
+                "qualifiedPromotionCodes": [promotion.get("promoCode") for promotion in qualified_promotions if promotion.get("promoCode")],
+                "lastPaymentPromotionCode": (preview.get("legacyPaymentPromotion") or {}).get("code") or "",
+                "lastPaymentPromotionMatchStatus": (preview.get("legacyPaymentPromotion") or {}).get("matchStatus") or "NONE",
+            })
+            row.update({"status": "IMPORTED", "result": result, "updatedAt": now_iso(), "error": ""})
+            subscriber_migration_store.save_row(row)
+        except Exception as exc:
+            detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+            row.update({"status": "FAILED", "result": result, "updatedAt": now_iso(), "error": str(detail)})
+            subscriber_migration_store.save_row(row)
+
+    rows = subscriber_migration_store.list_rows(batch_id)
+    imported_count = sum(1 for row in rows if row.get("status") == "IMPORTED")
+    failed_count = sum(1 for row in rows if row.get("status") == "FAILED")
+    batch["status"] = "COMPLETED" if failed_count == 0 else "PARTIAL" if imported_count else "FAILED"
+    batch["updatedAt"] = now_iso()
+    subscriber_migration_store.save_batch(batch)
+    add_audit(
+        "existing_subscriber_migration_committed",
+        "SubscriberMigrationBatch",
+        batch_id,
+        {
+            "status": batch["status"],
+            "importedCount": imported_count,
+            "failedCount": failed_count,
+            "effectiveDate": batch.get("cutoverDate"),
+            "effectiveDateTimezone": batch.get("effectiveDateTimezone"),
+        },
+        actor,
+    )
+    return migration_batch_response(batch, rows)
+
+
+@router.get("/subscriber-migrations/{batch_id}/result")
+def subscriber_migration_result(batch_id: str, admin=Depends(require_admin)):
+    batch = subscriber_migration_store.get_batch(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Migration batch not found")
+    rows = subscriber_migration_store.list_rows(batch_id)
+    headers = ["rowNumber", "status", "firstName", "lastName", "contactNumber", "planName", "qualifiedPromotionCodes", "lastPaymentPromotionCode", "lastPaymentPromotionMatchStatus", "accountNumber", "serviceAccountNumber", "subscriptionId", "invoiceNumbers", "balanceResolution", "error"]
+    output_rows = []
+    for row in rows:
+        normalized = row.get("normalized") or {}
+        result = row.get("result") or {}
+        qualified_promotion_codes = (
+            result.get("qualifiedPromotionCodes")
+            if "qualifiedPromotionCodes" in result
+            else normalized.get("qualifiedPromotionCodes")
+        ) or []
+        last_payment_promotion_code = (
+            result.get("lastPaymentPromotionCode")
+            if "lastPaymentPromotionCode" in result
+            else normalized.get("lastPaymentPromotionCode", "")
+        )
+        output_rows.append({
+            "rowNumber": row.get("rowNumber"), "status": row.get("status"), "firstName": normalized.get("firstName"), "lastName": normalized.get("lastName"),
+            "contactNumber": normalized.get("contactNumber"), "planName": result.get("catalogName") or normalized.get("planName"), "accountNumber": result.get("accountNumber", ""),
+            "qualifiedPromotionCodes": ";".join(qualified_promotion_codes),
+            "lastPaymentPromotionCode": last_payment_promotion_code,
+            "lastPaymentPromotionMatchStatus": result.get("lastPaymentPromotionMatchStatus", ""),
+            "serviceAccountNumber": result.get("serviceAccountNumber", ""), "subscriptionId": result.get("subscriptionId", ""),
+            "invoiceNumbers": ";".join(result.get("invoiceNumbers") or []), "balanceResolution": result.get("balanceResolution", ""), "error": row.get("error", ""),
+        })
+    return {"filename": f"existing-subscriber-import-{batch_id[:8]}-results.csv", "headers": headers, "rows": output_rows}
 
 
 @router.get("/customers/{customer_id}")

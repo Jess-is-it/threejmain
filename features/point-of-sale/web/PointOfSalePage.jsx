@@ -1308,6 +1308,7 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
   const [officeMode, setOfficeMode] = useState('ISSUE');
   const [officeStockForm, setOfficeStockForm] = useState(blankOfficeStockForm);
   const [officeCart, setOfficeCart] = useState([]);
+  const [officePostingKey, setOfficePostingKey] = useState(() => newIdempotencyKey('office-stock'));
   const [officeMovements, setOfficeMovements] = useState([]);
   const [billingMeta, setBillingMeta] = useState({ paymentMethods: [] });
   const [billingInvoices, setBillingInvoices] = useState([]);
@@ -1862,6 +1863,7 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
   function resetOfficeStock() {
     setOfficeCart([]);
     setOfficeStockForm(blankOfficeStockForm);
+    setOfficePostingKey(newIdempotencyKey('office-stock'));
   }
 
   function setOfficeLine(index, patch) {
@@ -2213,11 +2215,12 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
     ].filter(Boolean);
 
     try {
-      await Promise.all(officeCartLines.map((line) => {
+      await Promise.all(officeCartLines.map((line, index) => {
         const item = officeItemById.get(line.itemId);
         const stockLocation = officeStockForm.location.trim() || item?.location || 'Main stockroom';
         return request('/inventory/movements', {
           method: 'POST',
+          headers: { 'Idempotency-Key': `${officePostingKey}:${index}` },
           body: JSON.stringify({
             itemId: line.itemId,
             type: officeMode,
@@ -2363,7 +2366,7 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
       )}
 
       <ul className="nav nav-tabs mb-3">
-        {['Register', 'Invoice Payments', 'Office Stock', 'Sales', 'Catalog'].map((tab) => (
+        {['Register', 'Invoice Payments', 'Office Stock', 'Sales'].map((tab) => (
           <li className="nav-item" key={tab}>
             <button className={`nav-link ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>{tab}</button>
           </li>
@@ -2815,38 +2818,6 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
               </div>
             </form>
           </Card>
-        </div>
-      )}
-
-      {activeTab === 'Catalog' && (
-        <div className="row row-cards">
-          <div className="col-12">
-            <Card title="Sellable Inventory Catalog" icon={IconPackage} actions={
-              <form className="d-flex gap-2" onSubmit={(e) => { e.preventDefault(); load(customerSearch, itemSearch); }}>
-                <input className="form-control form-control-sm" value={itemSearch} onChange={(e) => setItemSearch(e.target.value)} placeholder="Search items" />
-                <button className="btn btn-sm"><IconSearch size={16} /></button>
-              </form>
-            }>
-              <p className="text-muted mb-3">Items are maintained in Inventory. POS only sells active inventory items marked as sellable in POS.</p>
-              <div className="table-responsive">
-                <table className="table card-table table-vcenter">
-                  <thead><tr><th>SKU</th><th>Name</th><th>Category</th><th>Price</th><th>Available</th><th>Tracking</th><th>Status</th><th /></tr></thead>
-                  <tbody>
-                    {items.map((item) => (
-                      <tr key={item.id}>
-                        <td>{item.sku}</td><td>{item.name}</td><td>{item.category?.replaceAll('_', ' ')}</td><td>{currency(item.unitPrice)}</td><td>{item.stockTracked ? `${item.stockOnHand} ${item.unit || ''}` : 'Not tracked'}</td><td>{item.trackingType?.replaceAll('_', ' ')}</td>
-                        <td><span className={`badge ${statusClass(item.status)}`}>{item.status}</span></td>
-                        <td className="text-end">
-                          <button className="btn btn-sm" onClick={() => addCatalogItemToCart(item)}>Add</button>
-                        </td>
-                      </tr>
-                    ))}
-                    {!items.length && <tr><td colSpan="8" className="text-muted">No sellable inventory items yet.</td></tr>}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-          </div>
         </div>
       )}
 

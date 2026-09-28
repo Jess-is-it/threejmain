@@ -1,5 +1,9 @@
 # Service
 
+## Existing installed lines
+
+The existing-subscriber migration provider creates an audited Service Account directly from a reviewed Customer Profiling batch. The operator must map the imported plan to an active catalog record or approve creation of a migration-only legacy plan. The provider is fingerprint-idempotent and intentionally creates no installation order or ticket because the physical installation already happened before system cutover.
+
 Service owns the ISP-facing definition of offered internet services, customer service accounts/subscriptions, and the customer-facing order records for service-related requests.
 
 ## Routes

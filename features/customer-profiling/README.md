@@ -31,6 +31,7 @@ Restored workflows from the previous standalone Customer Profiling module:
 - Customer gender tracking for System Settings male/female avatar selection
 - Primary contact, alternate mobile, Facebook account/link, email, service address, and GPS fields
 - Service location selector connected to System Settings -> Location Management, with manual customer locations added to Location Management when no saved record matches
+- The create/edit Location stage uses dependent selects backed by a checked-in PSGC snapshot: Province is limited to Cagayan and Isabela, Cagayan defaults to Enrile, and City/Municipality controls the available Barangay values. The snapshot contains 29 Cagayan cities/municipalities with 820 barangays and 37 Isabela cities/municipalities with 1,055 barangays.
 - Customer table and detail drawer display System Settings emotion avatars using the reusable `CustomerEmotionAvatar` component
 - Customer 360 replaces the old compact detail drawer as the canonical customer inspection experience. Opening a customer from the list, or opening `/customer-profiling?customerId=<id>`, shows a full module-owned detail workspace with a compact identity header and tabs for Overview, Subscriptions, Billing, Payments, Tickets, Equipment, and Activity.
 - New customer creation returns to the customer list and opens the onboarding modal for the saved customer. The Pending list/KPI wording remains Needs Onboarding.
@@ -111,6 +112,34 @@ Remaining integration contracts:
 - Ticketing should support a query-link contract for opening a specific ticket detail directly from Customer 360, such as `/ticketing?ticketId=<ticketId>`.
 - Network Settings should expose a persisted customer serviceability assessment keyed by `customerId`, including outcome, NAP/port or topology reference, assessor, assessed timestamp, evidence, and review state. Once available, replace the Customer Profiling manual serviceability attestation with that authoritative read.
 - Network/Account Access Management should expose customer/service-account provisioning readiness for PPPoE and ONU mapping. Inventory should expose authoritative customer/service-account equipment assignment. Once both are available, replace manual Activation Verification with derived reads.
+
+## Importing Already-Installed Subscribers
+
+Use **Import Existing Subscribers** for the initial cutover of live internet lines. Keep **Bulk Upload** for profile-only intake. Each migration Excel or CSV row is one installed line; multiple lines may link to one reviewed customer profile.
+
+The downloadable `.xlsx` workbook includes Instructions, a Column Guide with every field's purpose/required status/format/example, an Active Promotions reference sheet, three sample rows, and dependent Province, City/Municipality, and Barangay dropdowns for Cagayan and Isabela. It omits system-owned `locationId` and `locationName`; the import sends address, latitude, and longitude to Location Management, which creates and links those values. It also omits `planName`. `monthlyRate` and `billingMode` form the imported plan reference, and review maps that rate to one current Service Catalog plan or a migration-only legacy plan. A single matching rate/mode is suggested automatically, while multiple matches require a choice. The importer accepts the workbook and retains CSV compatibility.
+
+`lastPaymentAmount` never becomes a new receipt. When the amount is an exact multiple of `monthlyRate` and either `paymentCoverageFromMonth` or `lastPaidThroughMonth` is supplied, preview may infer the other boundary. Example: `2000 / 1000 = 2` months; if the paid-through month is `2026-07`, coverage is inferred as `2026-06` through `2026-07`.
+
+Use `qualifiedPromotionCodes` for the Billing promotions the installed line should qualify for on future invoices; multiple codes are separated by semicolons. Use `lastPaymentPromotionCode` only to explain a promotion already applied to the imported last payment. Review maps imported codes to the current active Billing catalog or explicitly ignores them. If a PHP 1,000 line has a PHP 800 last payment and the mapped Early Bird rule gives PHP 200 off, the payment reconciles as one fully covered month and creates no PHP 200 residual. The historical payment remains reference evidence, historical arrears receive no imported promotion, and future invoices use Billing's normal promotion checks.
+
+The file does not contain `billingDay` or `nextBillingDate`. Billing uses calendar-month rules. For a prepaid line, the base next cycle is the first day of the month after migration; for a postpaid line, it is the first day of the migration month so that month can be generated at month end. A later paid-through month moves the next cycle to the first day of the following month. Reconstructed unpaid months begin after the paid-through month and stop before that derived next cycle.
+
+Rows with a supplied balance that differs from the month reconstruction require an explicit choice between monthly invoices and one audited opening balance. Rows can also be linked to a possible existing profile, skipped, retried, or resumed by batch ID. Successful import generates Customer and Service Account numbers, accepts historical installation as `Not Required`, and starts recurring Billing at the derived next billing date.
+
+The assessment modal keeps review in three focused views: **Plan mapping**, **Promotions**, and **Subscriber review**. The Promotions view groups repeated imported codes and shows whether each code is used for future qualification, historical payment explanation, or both. Subscriber review starts with compact one-line records that show identity, rate, status, and any item requiring attention. Customer matching, legacy payment coverage, promotion reconciliation, balance resolution, warnings, and import results appear only when the operator opens that subscriber.
+
+After **Import reviewed lines** returns, the review modal closes and a result dialog shows the imported and not-imported row counts. Failed, invalid, skipped, duplicate, or still-pending rows are counted as not imported, with row-level reasons shown in the dialog and the full result available as CSV. A persistent page notice lets the operator reopen the result after closing the dialog; partial batches can be reopened for review or retry.
+
+The operator does not choose a billing cutover date. The server assigns one migration effective date to the batch when **Import reviewed lines** is first committed, using `BILLING_TIMEZONE` (`Asia/Manila` by default). Previewing or uploading the file does not finalize the date. Retries and resumed partial batches retain the original effective date.
+
+```text
+GET  /api/customer-profiling/customers/existing-subscriber-template
+POST /api/customer-profiling/subscriber-migrations
+GET  /api/customer-profiling/subscriber-migrations/{batchId}
+POST /api/customer-profiling/subscriber-migrations/{batchId}/commit
+GET  /api/customer-profiling/subscriber-migrations/{batchId}/result
+```
 
 ## Real-Data Readiness
 

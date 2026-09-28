@@ -1,9 +1,9 @@
 {
   "slug": "inventory",
   "name": "Inventory",
-  "status": "functional-shell",
+  "status": "functional",
   "owner": "threejmain",
-  "description": "Inventory items, stock movements, asset assignments, serialized CPE tracking placeholders, and reorder alerts.",
+  "description": "PostgreSQL-backed inventory items, warehouses and locations, per-location balances, immutable stock movement ledger, assignments, POS posting, and reorder alerts.",
   "app_shell_route": "/inventory",
   "api_prefix": "/api/inventory",
   "frontend_entry": "features/inventory/web/InventoryPage.jsx",

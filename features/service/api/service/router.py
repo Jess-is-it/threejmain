@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 from datetime import date, datetime, timezone
@@ -831,6 +832,150 @@ def service_account_snapshot(account: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def migration_catalog_options() -> list[dict[str, Any]]:
+    """Return active plans that the Customer Profiling migration wizard may map to."""
+    seed_service_data()
+    return [catalog_snapshot(item) for item in visible_catalog() if item.get("status") == "ACTIVE"]
+
+
+def ensure_migration_catalog(payload: dict[str, Any], actor: str) -> dict[str, Any]:
+    seed_service_data()
+    catalog_id = clean_text(payload.get("catalogId"))
+    if catalog_id:
+        catalog = find_catalog(catalog_id)
+        if catalog.get("status") != "ACTIVE":
+            raise HTTPException(status_code=400, detail="Mapped Service Catalog plan must be active")
+        return catalog
+
+    if normalize_upper(payload.get("planAction")) != "CREATE_LEGACY":
+        raise HTTPException(status_code=400, detail="Resolve the imported plan before creating the Service Account")
+
+    plan_key = clean_text(payload.get("planKey"))
+    existing = next(
+        (item for item in visible_catalog() if clean_text(item.get("migrationPlanKey")) == plan_key),
+        None,
+    )
+    if existing:
+        return existing
+
+    digest = hashlib.sha256(plan_key.encode("utf-8")).hexdigest()[:10].upper()
+    catalog_payload = CatalogPayload(
+        code=f"LEGACY-{digest}",
+        name=clean_text(payload.get("planName")) or "Legacy Internet Plan",
+        serviceType="FIBER_INTERNET",
+        segment="ALL",
+        monthlyRate=money(payload.get("monthlyRate"), "Monthly Rate"),
+        installFee=0,
+        billingMode=normalize_upper(payload.get("billingMode") or "PREPAID"),
+        status="ACTIVE",
+        contractMonths=0,
+        description="Legacy plan created during existing-subscriber migration.",
+        notes="Migration-only catalog baseline; review before offering to new customers.",
+    )
+    record = catalog_payload_to_record(catalog_payload)
+    timestamp = now_iso()
+    catalog = {
+        "id": str(uuid4()),
+        "createdAt": timestamp,
+        "updatedAt": timestamp,
+        "deletedAt": "",
+        "createdByUserId": actor,
+        "updatedByUserId": actor,
+        "migrationPlanKey": plan_key,
+        "migrationSource": "EXISTING_SUBSCRIBER_CSV",
+        **record,
+    }
+    service_catalog.append(catalog)
+    add_audit(
+        "service_catalog_legacy_plan_created",
+        "ServiceCatalog",
+        catalog["id"],
+        {"planKey": plan_key, "monthlyRate": catalog["monthlyRate"], "billingMode": catalog["billingMode"]},
+        actor,
+    )
+    return catalog
+
+
+def migrate_existing_service_line(payload: dict[str, Any], actor: str) -> dict[str, Any]:
+    """Create an audited active Service Account without inventing an installation order."""
+    seed_service_data()
+    migration_fingerprint = clean_text(payload.get("migrationFingerprint"))
+    if not migration_fingerprint:
+        raise HTTPException(status_code=400, detail="migrationFingerprint is required")
+
+    existing = next(
+        (
+            account
+            for account in visible_accounts()
+            if clean_text((account.get("migration") or {}).get("fingerprint")) == migration_fingerprint
+        ),
+        None,
+    )
+    if existing:
+        return {"account": account_summary(existing), "catalog": existing.get("catalog") or {}}
+
+    catalog = ensure_migration_catalog(payload, actor)
+    customer_id = clean_text(payload.get("customerId"))
+    activation_date = clean_text(payload.get("serviceStartDate")) or clean_text(payload.get("cutoverDate")) or today_iso()
+    service_status = validate_account_status(payload.get("serviceStatus") or "ACTIVE")
+    if service_status not in {"ACTIVE", "SUSPENDED"}:
+        raise HTTPException(status_code=400, detail="Existing subscriber serviceStatus must be ACTIVE or SUSPENDED")
+    account_payload = ServiceAccountPayload(
+        customerId=customer_id,
+        catalogId=catalog["id"],
+        serviceAddress=clean_text(payload.get("serviceAddress")),
+        status=service_status,
+        activationDate=activation_date,
+        suspensionDate=clean_text(payload.get("cutoverDate")) if service_status == "SUSPENDED" else "",
+        statusReason="Existing installed service migrated from the legacy subscriber list.",
+        billingCycle="MONTHLY",
+        billingStartDate=activation_date,
+        billingStatus="CURRENT" if service_status == "ACTIVE" else "SUSPENDED",
+        monthlyRecurringCharge=money(payload.get("monthlyRate"), "Monthly Rate"),
+        outstandingBalance=money(payload.get("outstandingBalance"), "Outstanding Balance"),
+        lastPaymentDate=clean_text(payload.get("lastPaymentDate")),
+        nextBillingDate=clean_text(payload.get("nextBillingDate")),
+        installationDate=activation_date,
+        installationRemarks="Historical installation accepted during existing-subscriber migration.",
+        notes="Migrated existing installed internet line; no installation order was created.",
+    )
+    record = account_payload_to_record(account_payload)
+    timestamp = now_iso()
+    account = {
+        "id": str(uuid4()),
+        "serviceAccountNumber": next_number("SA", service_accounts),
+        "createdAt": timestamp,
+        "updatedAt": timestamp,
+        "deletedAt": "",
+        "createdByUserId": actor,
+        "updatedByUserId": actor,
+        "migration": {
+            "fingerprint": migration_fingerprint,
+            "batchId": clean_text(payload.get("batchId")),
+            "rowId": clean_text(payload.get("rowId")),
+            "source": "EXISTING_SUBSCRIBER_CSV",
+            "migratedAt": timestamp,
+            "migratedBy": actor,
+        },
+        **record,
+    }
+    service_accounts.append(account)
+    sync_customer_profile_status(
+        customer_id,
+        actor,
+        {"source": "existing_subscriber_migration", "serviceAccountId": account["id"], "migrationFingerprint": migration_fingerprint},
+    )
+    add_audit(
+        "service_account_migrated",
+        "ServiceAccount",
+        account["id"],
+        {"customerId": customer_id, "catalogId": catalog["id"], "migrationFingerprint": migration_fingerprint},
+        actor,
+    )
+    persist_service_state()
+    return {"account": account_summary(account), "catalog": catalog_snapshot(catalog)}
+
+
 def attach_service_account(order: dict[str, Any], account: dict[str, Any]) -> None:
     order["serviceAccountId"] = account["id"]
     order["serviceAccount"] = service_account_snapshot(account)
@@ -1506,6 +1651,17 @@ def list_accounts(
     if activeOnly:
         rows = [account for account in rows if account.get("status") == "ACTIVE"]
     return [account_summary(account) for account in sorted(rows, key=lambda item: item["createdAt"], reverse=True)]
+
+
+@router.get("/subscriber-migrations/{batch_id}/accounts")
+def subscriber_migration_accounts(batch_id: str, admin=Depends(require_admin)):
+    """Return only this batch's Service Accounts for reconciliation."""
+    seed_service_data()
+    rows = [
+        account for account in visible_accounts()
+        if (account.get("migration") or {}).get("batchId") == batch_id
+    ]
+    return [account_summary(account) for account in rows]
 
 
 @router.post("/accounts")

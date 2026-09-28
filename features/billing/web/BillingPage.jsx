@@ -142,6 +142,21 @@ function currency(value) {
   return new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP' }).format(Number(value || 0));
 }
 
+function wholePesoCurrency(value) {
+  return new Intl.NumberFormat('en-PH', {
+    style: 'currency',
+    currency: 'PHP',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0
+  }).format(Math.floor(Math.max(0, Number(value || 0))));
+}
+
+function adjustmentCurrency(adjustment, value) {
+  return adjustment?.adjustmentSource === 'SERVICE_REBATE'
+    ? wholePesoCurrency(value)
+    : currency(value);
+}
+
 function smsCurrency(value) {
   return `PHP ${new Intl.NumberFormat('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(value || 0))}`;
 }
@@ -303,6 +318,10 @@ function installationFeeDecisionLabel(status) {
   if (normalized === 'NO_FEE') return 'No installation fee';
   if (normalized === 'VOID') return 'Voided';
   return 'Pending decision';
+}
+
+function isImportedInstallationDecision(charge) {
+  return charge?.migration?.source === 'EXISTING_SUBSCRIBER_CSV';
 }
 
 function invoiceTypeLabel(type) {
@@ -786,6 +805,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
   const [invoicePageSize, setInvoicePageSize] = useState(DEFAULT_INVOICE_PAGE_SIZE);
   const [subscriptions, setSubscriptions] = useState([]);
   const [installationCharges, setInstallationCharges] = useState([]);
+  const [installationDecisionView, setInstallationDecisionView] = useState('CURRENT');
   const [promotions, setPromotions] = useState([]);
   const [invoices, setInvoices] = useState([]);
   const [adjustments, setAdjustments] = useState([]);
@@ -828,6 +848,8 @@ export default function BillingPage({ refreshShell = () => {} }) {
 
   const subscriptionByServiceAccountId = useMemo(() => new Map(subscriptions.filter((subscription) => subscription.serviceAccountId).map((subscription) => [subscription.serviceAccountId, subscription])), [subscriptions]);
   const installationChargeByServiceAccountId = useMemo(() => new Map(installationCharges.filter((charge) => charge.serviceAccountId && charge.status !== 'VOID').map((charge) => [charge.serviceAccountId, charge])), [installationCharges]);
+  const currentInstallationCharges = useMemo(() => installationCharges.filter((charge) => !isImportedInstallationDecision(charge)), [installationCharges]);
+  const historicalInstallationCharges = useMemo(() => installationCharges.filter(isImportedInstallationDecision), [installationCharges]);
   const customerById = useMemo(() => new Map(customers.map((customer) => [customer.id, customer])), [customers]);
   const serviceAccountById = useMemo(() => new Map(serviceAccounts.map((account) => [account.id, account])), [serviceAccounts]);
   const recurringServiceOrders = useMemo(() => serviceOrders.filter((order) => order.catalog?.billingMode !== 'ONE_TIME'), [serviceOrders]);
@@ -1957,7 +1979,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
       const availableCreditMessage = Number(batch.totalAvailableCredit || 0) > 0
         ? ` ${currency(batch.totalAvailableCredit)} remains available for future invoices.`
         : '';
-      showMessage(`${batch.customerCount} customer rebate${batch.customerCount === 1 ? '' : 's'} totaling ${currency(batch.totalRebateAmount)} posted.${availableCreditMessage}`);
+      showMessage(`${batch.customerCount} customer rebate${batch.customerCount === 1 ? '' : 's'} totaling ${wholePesoCurrency(batch.totalRebateAmount)} posted.${availableCreditMessage}`);
       await load();
       refreshShell();
     } catch (submitError) {
@@ -2274,12 +2296,36 @@ export default function BillingPage({ refreshShell = () => {} }) {
         <div className="row row-cards">
           <div className="col-12">
             <Card title="Installation Fee Decisions" icon={IconReceipt}>
+              <div className="btn-group mb-3" role="group" aria-label="Installation fee decision view">
+                <button
+                  className={`btn btn-sm ${installationDecisionView === 'CURRENT' ? 'btn-primary' : 'btn-outline-primary'}`}
+                  type="button"
+                  aria-pressed={installationDecisionView === 'CURRENT'}
+                  onClick={() => setInstallationDecisionView('CURRENT')}
+                >
+                  New installation decisions ({currentInstallationCharges.length})
+                </button>
+                <button
+                  className={`btn btn-sm ${installationDecisionView === 'HISTORICAL_IMPORTS' ? 'btn-primary' : 'btn-outline-primary'}`}
+                  type="button"
+                  aria-pressed={installationDecisionView === 'HISTORICAL_IMPORTS'}
+                  onClick={() => setInstallationDecisionView('HISTORICAL_IMPORTS')}
+                >
+                  Historical imports ({historicalInstallationCharges.length})
+                </button>
+              </div>
+              {installationDecisionView === 'HISTORICAL_IMPORTS' && (
+                <p className="text-muted small">These subscribers were already installed before migration. Their records preserve the no-new-fee decision for audit and are read-only.</p>
+              )}
               <InstallationChargeTable
-                rows={installationCharges}
+                rows={installationDecisionView === 'HISTORICAL_IMPORTS' ? historicalInstallationCharges : currentInstallationCharges}
                 serviceAccountById={serviceAccountById}
                 onEdit={(charge) => openInstallationChargeForm(serviceAccountById.get(charge.serviceAccountId), charge)}
                 onVoid={voidInstallationCharge}
                 avatarConfig={avatarConfig}
+                emptyMessage={installationDecisionView === 'HISTORICAL_IMPORTS'
+                  ? 'No historical imported installation decisions.'
+                  : 'No new installation fee decisions.'}
               />
             </Card>
           </div>
@@ -3077,8 +3123,8 @@ function ServiceAccountBillingTable({ rows, subscriptionByServiceAccountId, inst
   );
 }
 
-function InstallationChargeTable({ rows, serviceAccountById, onEdit, onVoid, avatarConfig }) {
-  if (!rows.length) return <Empty />;
+function InstallationChargeTable({ rows, serviceAccountById, onEdit, onVoid, avatarConfig, emptyMessage }) {
+  if (!rows.length) return <Empty message={emptyMessage} />;
   return (
     <div className="table-responsive">
       <table className="table card-table table-vcenter">
@@ -3097,6 +3143,7 @@ function InstallationChargeTable({ rows, serviceAccountById, onEdit, onVoid, ava
         <tbody>
           {rows.map((row) => {
             const account = serviceAccountById?.get(row.serviceAccountId);
+            const historicalImport = isImportedInstallationDecision(row);
             return (
               <tr key={row.id}>
                 <td>
@@ -3109,7 +3156,12 @@ function InstallationChargeTable({ rows, serviceAccountById, onEdit, onVoid, ava
                   <div className="billing-service-main">{row.serviceAccountNumber || account?.serviceAccountNumber || '-'}</div>
                   <div className="text-muted small">{row.serviceId || accountReference(account) || '-'}</div>
                 </td>
-                <td><span className={`badge ${statusClass(row.status)}`}>{installationFeeDecisionLabel(row.status)}</span></td>
+                <td>
+                  <span className={`badge ${statusClass(row.status)}`}>
+                    {historicalImport && row.status === 'NO_FEE' ? 'Already installed' : installationFeeDecisionLabel(row.status)}
+                  </span>
+                  {historicalImport && row.status === 'NO_FEE' && <div className="text-muted small">No new installation fee due</div>}
+                </td>
                 <td>{currency(row.standardAmount)}</td>
                 <td>{currency(row.chargedAmount)}</td>
                 <td>
@@ -3122,10 +3174,11 @@ function InstallationChargeTable({ rows, serviceAccountById, onEdit, onVoid, ava
                   {row.invoiceStatus && <div className="text-muted small">{row.invoiceStatus.replaceAll('_', ' ')} · {currency(row.invoiceBalance)}</div>}
                 </td>
                 <td className="text-end">
-                  {!row.invoiceId && row.status !== 'VOID' && (
+                  {historicalImport ? <span className="text-muted small">Read-only history</span> : null}
+                  {!historicalImport && !row.invoiceId && row.status !== 'VOID' && (
                     <button className="btn btn-sm me-1" type="button" title="Edit fee decision" aria-label="Edit fee decision" onClick={() => onEdit(row)}><IconEdit size={14} /></button>
                   )}
-                  {row.status !== 'VOID' && (
+                  {!historicalImport && row.status !== 'VOID' && (
                     <button className="btn btn-sm btn-outline-danger" type="button" title="Void fee decision" aria-label="Void fee decision" onClick={() => onVoid(row.id)}><IconTrash size={14} /></button>
                   )}
                 </td>
@@ -4308,7 +4361,7 @@ function InvoiceDetail({ invoice, pdfBusy, onDownload, onEdit, onVoid, onClose }
                     <td>{adjustment.adjustmentLabel || adjustmentEntryLabel(adjustment)}</td>
                     <td>{adjustment.reason || '-'}</td>
                     <td><span className={`badge ${statusClass(adjustment.status)}`}>{String(adjustment.status || '').replaceAll('_', ' ')}</span></td>
-                    <td className="text-end">{adjustment.type === 'CREDIT' ? '-' : '+'}{currency(adjustment.amount)}</td>
+                    <td className="text-end">{adjustment.type === 'CREDIT' ? '-' : '+'}{adjustmentCurrency(adjustment, adjustment.amount)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -4671,7 +4724,7 @@ function OutageRebatePreview({ preview, busy, error }) {
             </div>
             <div>
               <span>Total Rebate</span>
-              <strong>{currency(preview.totalRebateAmount)}</strong>
+              <strong>{wholePesoCurrency(preview.totalRebateAmount)}</strong>
             </div>
           </div>
           <div className="table-responsive billing-rebate-preview-table-wrap">
@@ -4717,7 +4770,7 @@ function OutageRebatePreview({ preview, busy, error }) {
                     </td>
                     <td className="text-end" data-label="Rebate">
                       <strong className={row.eligible ? 'text-green' : 'text-muted'}>
-                        {row.eligible ? currency(row.rebateAmount) : '-'}
+                        {row.eligible ? wholePesoCurrency(row.rebateAmount) : '-'}
                       </strong>
                       {row.eligible && !row.invoiceNumber && (
                         <div><span className="badge bg-blue-lt text-blue mt-1">For next bill</span></div>
@@ -4775,7 +4828,7 @@ function AdjustmentTable({ rows, onVoid }) {
                 </td>
                 <td>{customerLabel(row.customer)}</td>
                 <td><span className={`badge ${row.adjustmentSource === 'SERVICE_REBATE' ? 'bg-green-lt text-green' : statusClass(row.type)}`}>{adjustmentEntryLabel(row)}</span></td>
-                <td>{row.type === 'CREDIT' ? '-' : '+'}{currency(row.amount)}</td>
+                <td>{row.type === 'CREDIT' ? '-' : '+'}{adjustmentCurrency(row, row.amount)}</td>
                 <td>
                   <div>{row.reason}</div>
                   {row.outageStart && (

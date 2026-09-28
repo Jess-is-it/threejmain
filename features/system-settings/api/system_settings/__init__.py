@@ -6,7 +6,6 @@ from .router import (
     public_branding_asset_response,
     public_branding_payload,
     router,
-    seed_default_locations,
     send_a2p_sms_message,
     update_access_session_user,
 )
@@ -19,7 +18,6 @@ __all__ = [
     "public_branding_asset_response",
     "public_branding_payload",
     "router",
-    "seed_default_locations",
     "send_a2p_sms_message",
     "update_access_session_user",
 ]

@@ -48,6 +48,8 @@ from billing import (
     billing_metrics,
     collector_aging_accounts,
     configure_billing,
+    migration_promotion_catalog,
+    migrate_existing_subscriber_billing,
     post_collector_payment,
     router as billing_router,
     seed_billing_data,
@@ -75,7 +77,7 @@ from network_settings import (
 from point_of_sale import configure_point_of_sale, point_of_sale_metrics, router as point_of_sale_router, seed_point_of_sale_data
 from process_flow import configure_process_flow, process_flow_metrics, router as process_flow_router
 from logs import configure_logs, router as logs_router
-from service import configure_service, router as service_router, seed_service_data, service_metrics, update_service_order_from_ticket
+from service import configure_service, migrate_existing_service_line, migration_catalog_options, router as service_router, seed_service_data, service_metrics, update_service_order_from_ticket
 from system_settings import (
     authenticate_access_user,
     change_access_session_password,
@@ -693,7 +695,14 @@ def port_registry() -> list[dict[str, Any]]:
     ]
 
 
-configure_customer_profiling(current_admin, add_audit)
+configure_customer_profiling(
+    current_admin,
+    add_audit,
+    migration_catalog_options,
+    migrate_existing_service_line,
+    migrate_existing_subscriber_billing,
+    migration_promotion_catalog,
+)
 configure_billing(
     current_admin,
     add_audit,

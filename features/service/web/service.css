@@ -1144,6 +1144,12 @@
   padding: 0.65rem 0.75rem;
 }
 
+.service-account-live-billing {
+  display: grid;
+  gap: 0.15rem;
+  margin-top: 0.5rem;
+}
+
 .service-customer-order-item {
   overflow: hidden;
   border: 1px solid var(--tblr-border-color);

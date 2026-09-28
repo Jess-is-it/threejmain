@@ -1,17 +1,18 @@
 # Inventory Module Context
 
-This file is the module-local source of truth for the Inventory module. Use it for Inventory-specific implementation notes, contracts, risks, and integration handoff details. Do not use the root `Project_Context.md` for ordinary Inventory progress.
+This is the module-local source of truth for Inventory implementation details, contracts, tests, and risks.
 
-## Module Layout
+## Layout
 
 ```text
-inventory/
+features/inventory/
   api/inventory/
     __init__.py
     router.py
-  web/
-    InventoryPage.jsx
-    inventory.css
+    storage.py
+  api/tests/test_inventory_foundation.py
+  web/InventoryPage.jsx
+  web/inventory.css
   README.md
   module.json
   PROJECT_MODULE_CONTEXT.md
@@ -19,199 +20,106 @@ inventory/
 
 ## Current Scope
 
-Inventory is a first-pass in-memory CRUD module for ISP stock and customer-assigned equipment.
+Inventory is a PostgreSQL-backed item, warehouse/location, balance, movement-ledger, and assignment module. It falls back to memory only when PostgreSQL is not configured; that fallback is for local development and is reported as not real-data ready.
 
-Implemented surfaces:
+Implemented:
 
-- Inventory item CRUD
-- Stock movement CRUD
-- Asset assignment CRUD
-- POS sellable-item fields on inventory items
-- POS catalog helper functions and sale movement posting helpers for module-to-module integration
-- Overview metrics for total items, active items, low stock, out-of-stock lines, assigned assets, and stock value
-- Low-stock and active-assignment summary data
+- Item master CRUD and POS sellable-item fields.
+- Relational warehouses/locations and per-item/per-location balances.
+- Append-only receipt, issue, adjustment, transfer, and return movements.
+- Reversals as new ledger entries; original ledger rows are never changed.
+- Idempotent movement posting with payload fingerprints.
+- PostgreSQL advisory locks, row locks, balance constraints, and shared-connection transaction participation.
+- Asset assignments and overview metrics.
+- POS catalog, stock validation, atomic sale issue, and void return helpers.
 
-The current implementation is in-memory and module-local, but the shared shell can import Inventory helpers so Point of Sale can use Inventory as the canonical item source.
+## PostgreSQL Schema
 
-## API Contract
+Migration `2026080302_inventory_foundation` in `app-shell/api/app/db_migrations.py` creates:
 
-FastAPI router:
+- `inventory_locations`: hierarchical warehouse, stockroom, bin, vehicle, transit, customer, damaged, and virtual locations.
+- `inventory_items`: item master data and default location.
+- `inventory_stock_balances`: `(item_id, location_id)` quantities with a non-negative check and incrementing version.
+- `inventory_stock_movements`: append-only stock event ledger with source/destination, reference, actor, reversal link, idempotency key, and request fingerprint.
+- `inventory_assignments`: customer/technician/office/internal custody records.
 
-- Python package: `features/inventory/api/inventory`
-- Router export: `router`
-- Configuration export: `configure_inventory`
-- Metrics export: `inventory_metrics`
-- Seed export: `seed_inventory_data`
-- POS helper exports: `list_pos_catalog_items`, `get_pos_catalog_item`, `validate_pos_sale_inventory`, `record_pos_sale_movements`
-- API prefix: `/api/inventory`
+PostgreSQL trigger `trg_inventory_movements_immutable` rejects all `UPDATE` and `DELETE` operations against `inventory_stock_movements`. Corrections must post a reversal.
 
-Routes:
+The migration seeds stable system locations:
 
-- `GET /api/inventory/meta`
-- `GET /api/inventory/overview`
-- `GET /api/inventory/items`
-- `POST /api/inventory/items`
-- `PATCH /api/inventory/items/{item_id}`
-- `DELETE /api/inventory/items/{item_id}`
-- `GET /api/inventory/movements`
-- `POST /api/inventory/movements`
-- `PATCH /api/inventory/movements/{movement_id}`
-- `DELETE /api/inventory/movements/{movement_id}`
-- `GET /api/inventory/assignments`
-- `POST /api/inventory/assignments`
-- `PATCH /api/inventory/assignments/{assignment_id}`
-- `DELETE /api/inventory/assignments/{assignment_id}`
+- `MAIN` / `inventory-location-main`
+- `TRANSIT` / `inventory-location-transit`
+- `DAMAGED` / `inventory-location-damaged`
 
-The router expects Integration Codex to call:
+`INVENTORY_STORAGE=postgres` can explicitly select PostgreSQL. When it is not set, the module selects PostgreSQL automatically if `DATABASE_URL` exists.
 
-```python
-configure_inventory(current_admin, add_audit)
-app.include_router(inventory_router)
-```
+## Transaction and Idempotency Contract
 
-## CRUD Data Model
+- Every Inventory write uses a PostgreSQL transaction and `pg_advisory_xact_lock('threejmain.inventory.stock-ledger')`.
+- Affected item and balance rows are locked before quantities change.
+- The database rejects negative balances.
+- `POST /api/inventory/movements` and `POST /api/inventory/movements/{id}/reverse` require `Idempotency-Key`.
+- Movement idempotency keys are globally unique. A same-key/same-fingerprint retry returns the original row with `idempotentReplay=true`; a same-key/different-fingerprint request returns HTTP 409.
+- POS exposes its active PostgreSQL connection to Inventory helpers. POS records, sale payments, Inventory movement rows, and balance updates commit or roll back together.
+- Posted POS sale line items are immutable; correction is void plus replacement sale.
 
-Inventory items include:
+## API
 
-- `sku`
-- `name`
-- `category`
-- `trackingType`
-- `unit`
-- `quantityOnHand`
-- `reorderPoint`
-- `location`
-- `supplier`
-- `unitCost`
-- `salePrice`
-- `taxable`
-- `sellableInPos`
-- `barcode`
-- `status`
-- `serialNumbers`
-- `notes`
+Prefix: `/api/inventory`
 
-Stock movements include:
+- `GET /meta`
+- `GET /readiness`
+- `GET /overview`
+- `GET|POST /items`
+- `PATCH|DELETE /items/{item_id}`
+- `GET|POST /movements`
+- `POST /movements/{movement_id}/reverse`
+- `PATCH|DELETE /movements/{movement_id}` return HTTP 405 because the ledger is immutable.
+- `GET|POST /locations`
+- `PATCH|DELETE /locations/{location_id}`
+- `GET /balances`
+- `GET|POST /assignments`
+- `PATCH|DELETE /assignments/{assignment_id}`
 
-- `itemId`
-- `type`
-- `quantity`
-- `serialNumber`
-- `fromLocation`
-- `toLocation`
-- `referenceType`
-- `referenceId`
-- `notes`
+Movement rules:
 
-Asset assignments include:
+- `RECEIVE`/`RETURN`: destination only, positive destination delta.
+- `ISSUE`: source only, negative source delta.
+- `TRANSFER`: different source and destination, atomic negative/positive deltas.
+- `ADJUST`: exactly one source or destination; source is adjustment-out and destination is adjustment-in.
 
-- `itemId`
-- `serialNumber`
-- `quantity`
-- `assigneeType`
-- `assignedToName`
-- `customerId`
-- `serviceId`
-- `ticketId`
-- `location`
-- `status`
-- `assignedDate`
-- `dueDate`
-- `returnedDate`
-- `notes`
+## Frontend
 
-Supported item categories include ISP sale items, customer equipment, and internal-use assets: `ROUTER`, `ONU_CPE`, `CABLE`, `INSTALLATION_MATERIAL`, `CONSUMABLE`, `TOOL`, `OFFICE_SUPPLY`, `SERVICE`, and `OTHER`.
-
-Tracking types:
-
-- `STOCK`: quantity-tracked consumables or bulk materials.
-- `SERIALIZED`: individually tracked assets such as routers, ONUs/CPE, and technician tools.
-- `NON_STOCK`: non-inventory services or fees, such as installation charges.
-
-Assignment assignee types:
-
-- `CUSTOMER`
-- `TECHNICIAN`
-- `OFFICE`
-- `INTERNAL`
-- `OTHER`
-
-## POS Integration Contract
-
-Inventory is the canonical source for sellable POS items.
-
-- Set `sellableInPos=true` on an item to expose it to POS checkout.
-- POS uses `salePrice` as `unitPrice`.
-- Stock-tracked POS items use `availableQuantity`, which subtracts active assignments from on-hand stock.
-- Serialized POS items require one unit per sale line with a valid, unassigned serial number. POS movements store the serial number so duplicate sale attempts can be blocked until the serial is returned.
-- `NON_STOCK` items can be sold in POS without inventory movements.
-- Completed POS sales should call `record_pos_sale_movements(..., reverse=False)` to create `ISSUE` movements.
-- Voids/reversals should call `record_pos_sale_movements(..., reverse=True)` to create `RETURN` movements.
-- POS-created movements use `referenceType` values `POS_SALE` and `POS_VOID`.
-
-## ISP Business Model Notes
-
-- Customer-sold hardware and materials are POS-sellable Inventory items.
-- Customer premises equipment that remains company-owned should be assigned through Inventory assignments and later linked to Customer/Service/Ticketing, not treated as a POS sale by default.
-- Technician tools and office equipment should use `assigneeType=TECHNICIAN`, `OFFICE`, or `INTERNAL` with due/return tracking.
-- Office consumables can remain stock-tracked but not POS-sellable unless the business explicitly sells them over the counter.
-
-## Frontend Contract
-
-React page:
-
-- File: `features/inventory/web/InventoryPage.jsx`
-- Styles: `features/inventory/web/inventory.css`
-- Export: default `InventoryPage`
-
-The page expects an authenticated shared shell with bearer token stored as `threejmain_token`, matching the current customer-profiling and billing page pattern.
-
-Tabs:
+`InventoryPage.jsx` exposes:
 
 - Overview
-- Items: table-first layout; item create/edit opens in a modal from the table header `New item` action or row edit action
-- Movements
+- Items
+- Movements: create-only posting form and reversal actions; no edit/delete actions.
+- Locations: create/edit/archive warehouse/location records and view item/quantity totals.
 - Assignments
 
-## Dependencies And Placeholders
+Movement and item forms use active Inventory locations. The movement form generates a fresh idempotency key for every operator posting or reversal.
 
-Current hard dependencies:
+## POS Integration
 
-- FastAPI
-- Pydantic
-- React
-- Tabler CSS/classes
-- `@tabler/icons-react`
+Exports from `inventory`:
 
-Deferred integration placeholders:
+- `list_pos_catalog_items`
+- `get_pos_catalog_item`
+- `validate_pos_sale_inventory`
+- `record_pos_sale_movements`
 
-- `customerId`: future Customer Profiling link
-- `serviceId`: future customer service assignment link
-- `ticketId`: future Ticketing/field job link
-- `referenceType` and `referenceId`: POS receipts, billing, purchasing, ticketing, or manual document references
+These helpers accept an optional shared database connection. POS passes its current connection and a stable operation prefix so sale checkout and stock posting are atomic and duplicate-safe.
 
-No direct calls to Customer Profiling, Billing, Ticketing, Account Admin, or Customer Service Management are made in this module version. POS may import Inventory helper functions in-process.
+## Tests and Verification
 
-## Risks And Known Limits
+- `api/tests/test_inventory_foundation.py` covers required idempotency, duplicate replay, immutable movement APIs, reversal balance restoration, location code uniqueness, and migration controls in memory/static mode.
+- Production-path verification should also inspect the PostgreSQL tables and attempt a direct ledger update to confirm the database trigger rejects it.
+- Run focused tests with `python3 -m unittest -v features.inventory.api.tests.test_inventory_foundation`.
 
-- Data is in-memory only and resets on API restart.
-- No PostgreSQL schema or migrations exist yet.
-- No dedicated permission model exists yet beyond the shared admin dependency that Integration Codex should inject.
-- Serialized item enforcement is basic. It validates configured serial numbers but does not yet maintain per-serial lifecycle history.
-- Movement edits and deletes reverse/reapply stock deltas, but there is no immutable inventory ledger yet.
-- Assignment return currently soft-deletes the assignment record and marks it returned; production may need a persistent visible return history.
-- POS movement posting is not database-transactional yet.
+## Remaining Limits
 
-## Integration Notes
-
-Integration Codex should:
-
-- Add `features/inventory/api` to API import paths.
-- Import `configure_inventory`, `inventory_metrics`, `router`, and `seed_inventory_data`.
-- Keep Inventory loaded before Point of Sale when POS should import the Inventory helper functions.
-- Configure and include the router in app-shell.
-- Import `InventoryPage.jsx` in the shell frontend and render it for `/inventory`.
-- Add `inventory` to Docker copy paths and Vite filesystem allowlist if the shared shell still requires explicit module paths.
-- Use `inventory_metrics()` for dashboard and module card counts.
-
-Do not move Inventory-specific CRUD logic into `app-shell`.
+- Serial numbers are still item-level arrays; normalized serial/lot lifecycle is a later phase.
+- Assignment returns preserve their durable database row but the default visible API omits returned soft-deleted rows.
+- Procurement/replenishment, reservations/kitting, cycle counts, barcode workflows, RMA/repair, and advanced costing remain future phases.
+- Inventory still uses shared admin authentication; dedicated inventory roles, approval limits, and segregation of duties remain future work.

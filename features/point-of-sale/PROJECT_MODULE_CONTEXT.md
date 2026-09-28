@@ -22,11 +22,12 @@ FastAPI router:
 - Package: `point_of_sale`
 - Router file: `api/point_of_sale/router.py`
 - Prefix: `/api/point-of-sale`
-- Storage: in-memory lists for sales and payments. Sellable items come from the Inventory module when available. A hidden system-managed register record may be created per logged-in POS user to preserve backend compatibility, but sessions are not a user-facing workflow.
+- Storage: shared PostgreSQL via the `pos_records` JSONB table when `POINT_OF_SALE_STORAGE=postgres` or `DATABASE_URL` is configured; falls back to in-memory only when PostgreSQL is not configured. POS stores fallback items, system cashier sessions, register sales, and register payment records. Billing invoice payments remain stored in Billing. Sellable items come from the Inventory module when available. A hidden system-managed register record may be created per logged-in POS user to preserve backend compatibility, but sessions are not a user-facing workflow.
 
 Local routes:
 
 - `GET /api/point-of-sale/meta`
+- `GET /api/point-of-sale/readiness`
 - `GET /api/point-of-sale/overview`
 - `GET /api/point-of-sale/customers`
 - `GET /api/point-of-sale/items` reads active Inventory items marked `sellableInPos`
@@ -40,7 +41,7 @@ Local routes:
 - `DELETE /api/point-of-sale/sessions/{session_id}` legacy/internal compatibility route
 - `GET /api/point-of-sale/sales`
 - `POST /api/point-of-sale/sales` requires a stable `Idempotency-Key` header for duplicate-safe register checkout. Matching duplicate submissions replay the existing sale with `idempotentReplay=true`; reused keys with different payloads are rejected.
-- `PATCH /api/point-of-sale/sales/{sale_id}`
+- `PATCH /api/point-of-sale/sales/{sale_id}` permits metadata/status changes but rejects `lineItems` with HTTP 409. Posted line corrections must void the sale and create a replacement.
 - `DELETE /api/point-of-sale/sales/{sale_id}`
 - `GET /api/point-of-sale/payments`
 - `POST /api/point-of-sale/payments`
@@ -52,7 +53,7 @@ Office Stock frontend tab uses Inventory routes directly:
 
 - `GET /api/inventory/items?status=ACTIVE&search=...` for active stock-tracked office/internal items
 - `GET /api/inventory/movements` for the Sales tab Office Stock movement history filtered in the POS UI to `referenceType=OFFICE_STOCK`
-- `POST /api/inventory/movements` with `ISSUE` for check-out and `RETURN` for check-in, using `referenceType=OFFICE_STOCK`
+- `POST /api/inventory/movements` with `ISSUE` for check-out and `RETURN` for check-in, using `referenceType=OFFICE_STOCK`. The form retains a stable per-line `Idempotency-Key` until reset/success so partial request retries do not duplicate movements.
 
 Invoice Payments frontend tab uses Billing routes directly:
 
@@ -65,11 +66,11 @@ Invoice Payments frontend tab uses Billing routes directly:
 
 ## CRUD Scope
 
-Current in-memory CRUD scope:
+Current CRUD scope:
 
 - Sellable catalog: read-only in POS, sourced from Inventory item master by `sellableInPos`, status, sale price, barcode, tracking type, and available stock
 - POS operator attribution: sales store the logged-in account username/display name; the frontend no longer asks users to open or choose a cashier session.
-- Sales: sale number, receipt number, logged-in POS user, optional customer, walk-in support, sale date, line items, discount, tax, payment status, void flow, Inventory movement posting, and in-memory idempotency metadata for duplicate checkout protection
+- Sales: sale number, receipt number, logged-in POS user, optional customer, walk-in support, sale date, line items, discount, tax, payment status, void flow, Inventory movement posting, and durable idempotency metadata for duplicate checkout protection when PostgreSQL is enabled
 - Payments: backend sale-payment records created during checkout; no standalone frontend workspace. Register payments now store allocated `amount`, optional cash `tenderedAmount`, computed `changeAmount`, method, reference, status, and immutable server `postedAt` timestamp for the exact date/time the payment was posted. Non-cash POS payments require a reference number and allocated payment amount cannot exceed the remaining sale balance.
 - Office Stock: frontend-only POS workspace for non-sales stock check-out/check-in. It creates Inventory movements, does not create POS sales, does not capture payments, and does not generate receipts.
 - Invoice Payments: POS-owned customer invoice settlement workspace. It reads Billing invoices, groups payable invoices by customer, refreshes all payable invoices for the selected customer before posting, lets the cashier select one or more open invoices, and auto-applies each Billing-recommended promotion bundle. POS displays the combined discount/payable per invoice and submits Billing's ordered `promotionIds`; Billing revalidates the bundle and posts separate auditable credits. Cash over-tender is returned as change. Service rebates, waived fees, and other accounting credits remain Billing records before POS collects the balance.
@@ -77,7 +78,7 @@ Current in-memory CRUD scope:
 ## Dependencies
 
 - Customer Profiling: optional lookup provider for named customers. Walk-in sales must remain valid without a customer.
-- Inventory: canonical item master and stock ledger. POS reads sellable catalog items from Inventory and posts `ISSUE` movements on checkout, `RETURN` movements on sale void/reversal.
+- Inventory: canonical item master and append-only stock ledger. POS reads sellable catalog items from Inventory and posts `ISSUE` movements on checkout and `RETURN` movements on sale void/reversal. PostgreSQL-backed checkout passes the POS transaction connection and deterministic operation key into Inventory so POS records, payments, Inventory balances, and movement rows commit or roll back atomically. Posted sale lines cannot be edited; void and replacement is the correction workflow.
 - Billing: canonical invoice, promotion, and billing-payment ledger. POS reads Billing invoices, asks Billing for eligible payment-time promotions, and posts Billing payment records for customer invoice settlement.
 - Account Admin/shared auth: current source of POS operator identity. Sale records store the authenticated account username/display name.
 
@@ -94,7 +95,7 @@ Current in-memory CRUD scope:
 - Invoice payment posting disables the payment desk while the Billing payment request is in flight, keeps a stable Billing payment idempotency key per selected payment form, requires reference numbers for non-cash payments, and shows compact totals for selected invoice total, automatic discount, amount due, amount received, change/shortfall, and remaining account balance. The payment date control is capped at today, and Billing independently rejects a future `paymentDate` before quoting promotions or posting. Billing returns server `postedAt` on the posted receipt; POS displays that exact payment date/time in receipt details and invoice-payment history while preserving `paymentDate` as the date-only business/promo date. POS sends allocation-level `promotionIds` bundles for Billing-recommended qualified discounts, so a multi-invoice receipt can close each selected invoice at its combined discounted payable amount. Cash over-tender is returned as change in this modal; it is not stored as Billing advance credit from POS.
 - After Billing confirms a POS invoice payment, the frontend calls POS `invoice-payment-confirmations` to attempt an A2P SMS to the customer's `contactNumber` using sender ID `3J BILL`. The SMS follows the Collector-style customer-facing wording: amount received, applied amount, remaining balance, and returned excess or advance credit, without exposing the receipt number in the SMS body. The visible checkout popup shows whether SMS was sent, skipped because no number exists, or failed due to A2P/provider configuration, but the printable/downloadable official receipt omits SMS notification details because it is customer-facing. SMS failure never reverses the posted Billing receipt.
 - `Office Stock` mirrors the Register layout for internal stock movement. It lists active stock-tracked Inventory items, supports check-out/check-in cart lines, serialized item serial entry, person/team reference, location, notes, and posts Inventory `ISSUE`/`RETURN` movements.
-- `Catalog` is a read-only POS view of Inventory sellable items. Item creation and maintenance happen in Inventory.
+- POS no longer exposes a separate `Catalog` tab. The sellable catalog remains inside the Register checkout menu, and item creation/maintenance happens in Inventory.
 - `Sales` combines the old overview dashboard metrics with three separated history tabs: Register receipts, Invoice Payment receipts, and Office Stock movements. It also shows a Today Cashier Collections summary that combines POS register payment rows with Billing invoice payment receipts by cashier, split into cash/non-cash, register/invoice, receipts, and voids. Each history table has local search, filter, show-entries, and pagination controls. Invoice Payment receipts open as a customer-facing official receipt sheet branded as `3J COMPUTER AND INTERNET INSTALLATION SERVICES` with the Roma Norte address, invoice-period particulars, remaining-balance period detail, internal SMS notification details omitted from the printable/downloadable receipt, sheet-style PDF download matching the on-screen receipt structure, and 80 mm print output. Voiding still requires a typed reason before reversal. Register and Invoice Payment histories retain void actions; Office Stock is read-only history sourced from Inventory movements with `referenceType=OFFICE_STOCK`. The Low Stock KPI opens a right-side panel with low-stock items instead of rendering a persistent table in the Sales page.
 - There is no standalone `Payments` tab. Payment capture belongs in `Register`; payment status/balance belongs in `Sales`.
 - There is no standalone `Sessions` tab. Register checkout is attributed to the logged-in account automatically.
@@ -117,8 +118,8 @@ Current in-memory CRUD scope:
 
 ## Risks
 
-- Data is not durable; all POS data resets when the API process restarts.
-- Register checkout idempotency is currently in-memory with POS sales. It prevents duplicate clicks within the running API process, but it must move to durable storage with POS sales before production-grade restart safety.
+- POS register data is durable when PostgreSQL is configured. If `POINT_OF_SALE_STORAGE=memory` is forced or `DATABASE_URL` is missing, fallback POS items, sessions, register sales, and register payments reset on API restart.
+- Register checkout idempotency is durable with POS sales when PostgreSQL is enabled and is protected by the `pos_records` sale idempotency index plus an advisory transaction lock.
 - POS invoice-payment SMS duplicate suppression is currently in-memory and keyed by Billing payment id/receipt number. A durable SMS outbox keyed by Billing payment id is needed before production-grade restart/retry safety.
 - Inventory movement posting is still in-memory and not transactional across modules. A database-backed ledger is needed before production.
 - Register payment records do not integrate with Billing, cash drawer hardware, receipt printing, or external gateways yet. Invoice Payments post into Billing's durable payment ledger when Billing PostgreSQL storage is enabled.
