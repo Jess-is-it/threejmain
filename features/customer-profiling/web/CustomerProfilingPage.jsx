@@ -4146,7 +4146,6 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                   <th>Cashier / Collector</th>
                   <th>Allocations</th>
                   <th>Void / Refund</th>
-                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -4160,7 +4159,6 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                     <td>{payment.postedByName || payment.postedByUsername || '-'}</td>
                     <td>{formatPaymentAllocations(payment)}</td>
                     <td>{payment.status === 'VOID' ? payment.voidReason || 'Voided' : payment.refundStatus || '-'}</td>
-                    <td><span className="customer-360-muted-action" title="Receipt document endpoint is not currently exposed">No receipt file</span></td>
                   </tr>
                 ))}
               </tbody>
