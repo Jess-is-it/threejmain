@@ -1292,6 +1292,23 @@
   font-size: 0.9rem;
 }
 
+.pos-customer-detail-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.pos-customer-detail-heading h4 {
+  margin: 0;
+}
+
+.pos-customer-detail-heading a {
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
 .pos-customer-detail-list {
   margin: 0;
   display: grid;
@@ -1342,6 +1359,14 @@
 
 .pos-customer-service-row small {
   color: var(--tblr-muted);
+}
+
+.pos-customer-payment-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.5rem;
 }
 
 .pos-customer-drawer-footer {

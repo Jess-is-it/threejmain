@@ -1091,6 +1091,7 @@ function CustomerQuickViewDrawer({ view, onClose }) {
   if (!view) return null;
   const customer = view.customer || view.group.customer || {};
   const profileLink = `/customer-profiling?customerId=${encodeURIComponent(view.customerId)}`;
+  const paymentHistoryLink = `${profileLink}&tab=payments`;
 
   return (
     <div className="pos-drawer-backdrop pos-customer-drawer-backdrop" onClick={onClose}>
@@ -1139,6 +1140,31 @@ function CustomerQuickViewDrawer({ view, onClose }) {
                 ))}
               </div>
             ) : <div className="text-muted">No service accounts found.</div>}
+          </section>
+          <section className="pos-customer-detail-section" aria-label="Recent payments">
+            <div className="pos-customer-detail-heading">
+              <h4>Recent payments</h4>
+              <a href={paymentHistoryLink} target="_blank" rel="noopener noreferrer">Full history</a>
+            </div>
+            {view.loading ? <div className="text-muted" role="status">Loading payments…</div> : view.paymentsError ? (
+              <div className="text-muted" role="status">Recent payments are unavailable.</div>
+            ) : view.payments.length ? (
+              <div className="pos-customer-service-list">
+                {view.payments.map((payment) => (
+                  <div className="pos-customer-service-row" key={payment.id}>
+                    <div className="pos-customer-service-heading">
+                      <strong>{payment.receiptNumber || 'Receipt'}</strong>
+                      <span className={`badge ${statusClass(payment.status)}`}>{labelize(payment.status || 'Unknown')}</span>
+                    </div>
+                    <span>{paymentRecordedAt(payment) ? formatDateTime(paymentRecordedAt(payment)) : (payment.paymentDate || '-')}</span>
+                    <div className="pos-customer-payment-meta">
+                      <small>{labelize(payment.collectionChannel || 'Billing')} · {labelize(payment.method || 'Unknown method')}</small>
+                      <strong>{currency(payment.amount)}</strong>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : <div className="text-muted">No payments recorded in this system.</div>}
           </section>
         </div>
         <div className="pos-customer-drawer-footer">
@@ -2039,18 +2065,21 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
     const customerId = billingGroupCustomerId(group);
     if (!customerId) return;
     const requestKey = newIdempotencyKey('customer-quick-view');
-    setCustomerQuickView({ customerId, requestKey, group, customer: group.customer, serviceAccounts: [], loading: true, profileError: '', serviceError: '' });
-    const [profileResult, serviceResult] = await Promise.allSettled([
+    setCustomerQuickView({ customerId, requestKey, group, customer: group.customer, serviceAccounts: [], payments: [], loading: true, profileError: '', serviceError: '', paymentsError: '' });
+    const [profileResult, serviceResult, paymentsResult] = await Promise.allSettled([
       request(`/customer-profiling/customers/${encodeURIComponent(customerId)}`),
-      request(`/service/accounts?customerId=${encodeURIComponent(customerId)}`)
+      request(`/service/accounts?customerId=${encodeURIComponent(customerId)}`),
+      request(`/billing/payments?customerId=${encodeURIComponent(customerId)}`)
     ]);
     setCustomerQuickView((current) => current?.requestKey === requestKey ? {
       ...current,
       customer: profileResult.status === 'fulfilled' ? profileResult.value : current.customer,
       serviceAccounts: serviceResult.status === 'fulfilled' && Array.isArray(serviceResult.value) ? serviceResult.value : [],
+      payments: paymentsResult.status === 'fulfilled' && Array.isArray(paymentsResult.value) ? paymentsResult.value.slice(0, 5) : [],
       loading: false,
       profileError: profileResult.status === 'rejected' ? String(profileResult.reason?.message || 'Could not load customer profile') : '',
-      serviceError: serviceResult.status === 'rejected' ? String(serviceResult.reason?.message || 'Could not load service accounts') : ''
+      serviceError: serviceResult.status === 'rejected' ? String(serviceResult.reason?.message || 'Could not load service accounts') : '',
+      paymentsError: paymentsResult.status === 'rejected' ? String(paymentsResult.reason?.message || 'Could not load payments') : ''
     } : current);
   }
 

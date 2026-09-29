@@ -7,7 +7,7 @@ The working shell exposes this module at `/point-of-sale`. Register checkout aut
 Current scope:
 
 - Register checkout screen with a sellable Inventory menu, cart, customer/walk-in selection, discount/tax, and payment capture
-- Invoice Payments workspace for customer Billing invoice settlement, with a customer-grouped payable queue, in-page customer quick view, selectable open invoices, automatic Billing-eligible discounts, payment capture, and Billing ledger posting
+- Invoice Payments workspace for customer Billing invoice settlement, with a customer-grouped payable queue, in-page customer quick view with recent Billing receipts, selectable open invoices, automatic Billing-eligible discounts, payment capture, and Billing ledger posting
 - Office Stock tab for non-sales check-out/check-in of active stock-tracked Inventory items through Inventory `ISSUE` and `RETURN` movements
 - Sellable catalog data from Inventory items marked `sellableInPos`, shown inside the Register checkout menu instead of a separate Catalog tab
 - Sales dashboard/history with today's sales metrics, low-stock KPI side panel, and separated history tabs for Register receipts, Invoice Payment receipts, and Office Stock movements. Invoice Payment receipts open as branded official receipt sheets with invoice-period particulars, remaining-balance period detail, a sheet-style PDF download, and 80 mm print output. Each history view has local search, filter, show-entries, and pagination controls.
