@@ -627,19 +627,21 @@
 
 .pos-customer-name-row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   flex-wrap: wrap;
-  gap: 0.25rem 0.5rem;
+  gap: 0.35rem;
 }
 
 .pos-customer-view-button {
   display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
+  justify-content: center;
+  align-self: center;
+  flex: 0 0 1.6rem;
+  width: 1.6rem;
+  height: 1.6rem;
   padding: 0;
-  min-height: auto;
-  font-size: 0.78rem;
-  white-space: nowrap;
+  min-height: 1.6rem;
 }
 
 .pos-invoice-location-cell {

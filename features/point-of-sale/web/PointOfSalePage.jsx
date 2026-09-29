@@ -2658,12 +2658,12 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                         <tr key={group.key} className={selectedBillingCustomerGroup?.key === group.key ? 'is-selected' : ''}>
                           <td>
                             <div className="pos-customer-name-row">
-                              <strong>{customerNameOnly(group.customer)}</strong>
                               {billingGroupCustomerId(group) && (
-                                <button type="button" className="btn btn-link btn-sm pos-customer-view-button" disabled={invoicePaymentSubmitting} aria-label={`View details for ${customerNameOnly(group.customer)}`} onClick={() => openCustomerQuickView(group)}>
-                                  <IconEye size={15} />View details
+                                <button type="button" className="btn btn-link btn-sm pos-customer-view-button" disabled={invoicePaymentSubmitting} aria-label={`View details for ${customerNameOnly(group.customer)}`} title="View customer details" onClick={() => openCustomerQuickView(group)}>
+                                  <IconEye size={16} />
                                 </button>
                               )}
+                              <strong>{customerNameOnly(group.customer)}</strong>
                             </div>
                             <div className="text-muted small">
                               {group.customer?.accountNumber || group.serviceLabels.slice(0, 2).join(', ') || 'Billing customer'}
@@ -2709,12 +2709,12 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                       <div>
                         <span className="pos-modal-eyebrow">Customer Invoice Payment</span>
                         <div className="pos-modal-title-row">
-                          <h3 id="pos-payment-title">{customerNameOnly(selectedBillingCustomerGroup.customer)}</h3>
                           {selectedBillingCustomerActualId && (
-                            <button type="button" className="btn btn-link btn-sm pos-customer-view-button" disabled={invoicePaymentSubmitting} aria-label={`View details for ${customerNameOnly(selectedBillingCustomerGroup.customer)}`} onClick={() => openCustomerQuickView(selectedBillingCustomerGroup)}>
-                              <IconEye size={15} />View details
+                            <button type="button" className="btn btn-link btn-sm pos-customer-view-button" disabled={invoicePaymentSubmitting} aria-label={`View details for ${customerNameOnly(selectedBillingCustomerGroup.customer)}`} title="View customer details" onClick={() => openCustomerQuickView(selectedBillingCustomerGroup)}>
+                              <IconEye size={16} />
                             </button>
                           )}
+                          <h3 id="pos-payment-title">{customerNameOnly(selectedBillingCustomerGroup.customer)}</h3>
                           <span className="pos-modal-location">
                             <IconMapPin size={15} />
                             <span>{billingGroupLocationLabel(selectedBillingCustomerGroup)}</span>
