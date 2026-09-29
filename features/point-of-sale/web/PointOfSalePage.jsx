@@ -2595,8 +2595,8 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
             </div>
 
             {selectedBillingCustomerGroup && (
-              <div className="pos-modal-backdrop" onClick={invoicePaymentSubmitting ? undefined : resetInvoicePayment}>
-                <section className="pos-modal pos-payment-modal" role="dialog" aria-modal="true" aria-labelledby="pos-payment-title" onClick={(event) => event.stopPropagation()}>
+              <div className="pos-modal-backdrop">
+                <section className="pos-modal pos-payment-modal" role="dialog" aria-modal="true" aria-labelledby="pos-payment-title">
                   <form className="pos-payment-modal-form" onSubmit={saveInvoicePayment}>
                     <div className="pos-modal-header">
                       <div>
