@@ -6,6 +6,8 @@ import {
   IconCircleCheck,
   IconCreditCard,
   IconDownload,
+  IconExternalLink,
+  IconEye,
   IconFileInvoice,
   IconLoader2,
   IconMapPin,
@@ -115,6 +117,15 @@ function compactLocationParts(parts) {
   return parts.map((part) => String(part || '').trim()).filter(Boolean).join(', ');
 }
 
+function customerAddressLabel(customer) {
+  if (!customer) return '-';
+  const parts = [customer.addressLine1, customer.addressLine2, customer.barangay, customer.city, customer.province]
+    .map((part) => String(part || '').trim())
+    .filter(Boolean);
+  return [...new Map(parts.map((part) => [part.toLowerCase(), part])).values()].join(', ')
+    || customerLocationLabel(customer, '-');
+}
+
 function customerLocationLabel(customer, fallback = '') {
   if (!customer) return fallback;
   const locationName = String(
@@ -151,6 +162,10 @@ function billingGroupLocationLabel(group, fallback = '-') {
   return customerLocationLabel(group.customer, '')
     || (group.invoices || []).map((invoice) => invoiceLocationLabel(invoice, '')).find(Boolean)
     || fallback;
+}
+
+function billingGroupCustomerId(group) {
+  return group?.customer?.id || group?.invoices?.[0]?.customerId || '';
 }
 
 function customerSmsNumber(customer) {
@@ -1072,6 +1087,71 @@ function downloadReceiptPdf(payment, invoiceRows = []) {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+function CustomerQuickViewDrawer({ view, onClose }) {
+  if (!view) return null;
+  const customer = view.customer || view.group.customer || {};
+  const profileLink = `/customer-profiling?customerId=${encodeURIComponent(view.customerId)}`;
+
+  return (
+    <div className="pos-drawer-backdrop pos-customer-drawer-backdrop" onClick={onClose}>
+      <aside className="pos-drawer pos-customer-drawer" role="dialog" aria-modal="true" aria-labelledby="pos-customer-quick-view-title" onClick={(event) => event.stopPropagation()}>
+        <div className="pos-drawer-header">
+          <div>
+            <span className="pos-modal-eyebrow">Customer quick view</span>
+            <h3 id="pos-customer-quick-view-title" className="mb-1">{customerNameOnly(customer)}</h3>
+            <div className="text-muted">{customer.accountNumber || 'No account number'}</div>
+          </div>
+          <button type="button" className="btn btn-icon" onClick={onClose} aria-label="Close customer details" autoFocus><IconX size={18} /></button>
+        </div>
+        <div className="pos-drawer-body pos-customer-drawer-body">
+          {view.profileError && <div className="alert alert-warning mb-0" role="status">Customer Profiling details are unavailable. Showing invoice customer details.</div>}
+          <section className="pos-customer-detail-section" aria-label="Customer profile">
+            <h4>Profile</h4>
+            <dl className="pos-customer-detail-list">
+              <div><dt>Status</dt><dd>{labelize(customer.status || '-')}</dd></div>
+              <div><dt>Contact</dt><dd>{customerSmsNumber(customer) || '-'}</dd></div>
+              <div><dt>Service address</dt><dd>{customerAddressLabel(customer)}</dd></div>
+            </dl>
+          </section>
+          <section className="pos-customer-detail-section" aria-label="Invoice summary">
+            <h4>Invoices in this queue</h4>
+            <dl className="pos-customer-detail-list">
+              <div><dt>Open invoices</dt><dd>{view.group.openInvoiceCount}</dd></div>
+              <div><dt>Overdue invoices</dt><dd>{view.group.overdueInvoiceCount}</dd></div>
+              <div><dt>Current balance</dt><dd>{currency(view.group.totalBalance)}</dd></div>
+            </dl>
+          </section>
+          <section className="pos-customer-detail-section" aria-label="Internet service accounts">
+            <h4>Internet lines</h4>
+            {view.loading ? <div className="text-muted" role="status">Loading customer details…</div> : view.serviceError ? (
+              <div className="text-muted" role="status">Service account details are unavailable.</div>
+            ) : view.serviceAccounts.length ? (
+              <div className="pos-customer-service-list">
+                {view.serviceAccounts.map((account) => (
+                  <div className="pos-customer-service-row" key={account.id}>
+                    <div className="pos-customer-service-heading">
+                      <strong>{account.catalogName || account.catalog?.name || 'Internet service'}</strong>
+                      <span className={`badge ${statusClass(account.status)}`}>{labelize(account.status || 'Unknown')}</span>
+                    </div>
+                    <span>{account.serviceAccountNumber || account.serviceReference || 'No service reference'}</span>
+                    {account.serviceAddress && <small>{account.serviceAddress}</small>}
+                  </div>
+                ))}
+              </div>
+            ) : <div className="text-muted">No service accounts found.</div>}
+          </section>
+        </div>
+        <div className="pos-customer-drawer-footer">
+          <a className="btn btn-outline-primary" href={profileLink} target="_blank" rel="noopener noreferrer">
+            <IconExternalLink size={16} className="me-1" />Open Customer 360
+          </a>
+          <button type="button" className="btn" onClick={onClose}>Close</button>
+        </div>
+      </aside>
+    </div>
+  );
+}
+
 function ReceiptDetailModal({ payment, invoiceRows = [], onClose, onVoid }) {
   if (!payment) return null;
   const receipt = receiptViewModel(payment, invoiceRows);
@@ -1315,6 +1395,7 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
   const [billingPayments, setBillingPayments] = useState([]);
   const [billingInvoicePromotionsById, setBillingInvoicePromotionsById] = useState({});
   const [billingSearch, setBillingSearch] = useState('');
+  const [customerQuickView, setCustomerQuickView] = useState(null);
   const [selectedBillingInvoiceId, setSelectedBillingInvoiceId] = useState('');
   const [selectedBillingInvoiceIds, setSelectedBillingInvoiceIds] = useState([]);
   const [selectedBillingCustomerId, setSelectedBillingCustomerId] = useState('');
@@ -1954,6 +2035,25 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
     }
   }
 
+  async function openCustomerQuickView(group) {
+    const customerId = billingGroupCustomerId(group);
+    if (!customerId) return;
+    const requestKey = newIdempotencyKey('customer-quick-view');
+    setCustomerQuickView({ customerId, requestKey, group, customer: group.customer, serviceAccounts: [], loading: true, profileError: '', serviceError: '' });
+    const [profileResult, serviceResult] = await Promise.allSettled([
+      request(`/customer-profiling/customers/${encodeURIComponent(customerId)}`),
+      request(`/service/accounts?customerId=${encodeURIComponent(customerId)}`)
+    ]);
+    setCustomerQuickView((current) => current?.requestKey === requestKey ? {
+      ...current,
+      customer: profileResult.status === 'fulfilled' ? profileResult.value : current.customer,
+      serviceAccounts: serviceResult.status === 'fulfilled' && Array.isArray(serviceResult.value) ? serviceResult.value : [],
+      loading: false,
+      profileError: profileResult.status === 'rejected' ? String(profileResult.reason?.message || 'Could not load customer profile') : '',
+      serviceError: serviceResult.status === 'rejected' ? String(serviceResult.reason?.message || 'Could not load service accounts') : ''
+    } : current);
+  }
+
   function changeInvoicePaymentDate(paymentDate) {
     setInvoicePaymentForm((form) => ({ ...form, paymentDate }));
     if (selectedBillingCustomerGroup?.invoices?.length) {
@@ -2557,7 +2657,14 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                       {visibleBillingCustomerGroups.map((group) => (
                         <tr key={group.key} className={selectedBillingCustomerGroup?.key === group.key ? 'is-selected' : ''}>
                           <td>
-                            <strong>{customerNameOnly(group.customer)}</strong>
+                            <div className="pos-customer-name-row">
+                              <strong>{customerNameOnly(group.customer)}</strong>
+                              {billingGroupCustomerId(group) && (
+                                <button type="button" className="btn btn-link btn-sm pos-customer-view-button" disabled={invoicePaymentSubmitting} aria-label={`View details for ${customerNameOnly(group.customer)}`} onClick={() => openCustomerQuickView(group)}>
+                                  <IconEye size={15} />View details
+                                </button>
+                              )}
+                            </div>
                             <div className="text-muted small">
                               {group.customer?.accountNumber || group.serviceLabels.slice(0, 2).join(', ') || 'Billing customer'}
                             </div>
@@ -2603,6 +2710,11 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                         <span className="pos-modal-eyebrow">Customer Invoice Payment</span>
                         <div className="pos-modal-title-row">
                           <h3 id="pos-payment-title">{customerNameOnly(selectedBillingCustomerGroup.customer)}</h3>
+                          {selectedBillingCustomerActualId && (
+                            <button type="button" className="btn btn-link btn-sm pos-customer-view-button" disabled={invoicePaymentSubmitting} aria-label={`View details for ${customerNameOnly(selectedBillingCustomerGroup.customer)}`} onClick={() => openCustomerQuickView(selectedBillingCustomerGroup)}>
+                              <IconEye size={15} />View details
+                            </button>
+                          )}
                           <span className="pos-modal-location">
                             <IconMapPin size={15} />
                             <span>{billingGroupLocationLabel(selectedBillingCustomerGroup)}</span>
@@ -3115,6 +3227,8 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
           </aside>
         </div>
       )}
+
+      <CustomerQuickViewDrawer view={customerQuickView} onClose={() => setCustomerQuickView(null)} />
 
       <ReceiptDetailModal
         payment={selectedBillingReceipt}

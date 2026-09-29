@@ -625,6 +625,23 @@
   cursor: default;
 }
 
+.pos-customer-name-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.5rem;
+}
+
+.pos-customer-view-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0;
+  min-height: auto;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
 .pos-invoice-location-cell {
   min-width: 150px;
   max-width: 260px;
@@ -1246,6 +1263,91 @@
 .pos-drawer-body {
   padding: 1rem;
   overflow-y: auto;
+}
+
+.pos-customer-drawer-backdrop {
+  z-index: 1080;
+}
+
+.pos-customer-drawer {
+  width: min(480px, 100vw);
+}
+
+.pos-customer-drawer-body {
+  display: grid;
+  align-content: start;
+  gap: 1rem;
+}
+
+.pos-customer-detail-section {
+  border: 1px solid var(--tblr-border-color);
+  border-radius: 8px;
+  padding: 0.9rem;
+}
+
+.pos-customer-detail-section h4 {
+  margin: 0 0 0.75rem;
+  font-size: 0.9rem;
+}
+
+.pos-customer-detail-list {
+  margin: 0;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.pos-customer-detail-list div {
+  display: grid;
+  grid-template-columns: 105px minmax(0, 1fr);
+  gap: 0.5rem;
+}
+
+.pos-customer-detail-list dt {
+  color: var(--tblr-muted);
+  font-weight: 400;
+}
+
+.pos-customer-detail-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+
+.pos-customer-service-list {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.pos-customer-service-row {
+  display: grid;
+  gap: 0.2rem;
+  border-top: 1px solid var(--tblr-border-color);
+  padding-top: 0.65rem;
+  overflow-wrap: anywhere;
+}
+
+.pos-customer-service-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.pos-customer-service-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.pos-customer-service-row small {
+  color: var(--tblr-muted);
+}
+
+.pos-customer-drawer-footer {
+  border-top: 1px solid var(--tblr-border-color);
+  padding: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }
 
 .pos-low-stock-list {
