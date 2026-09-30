@@ -557,6 +557,12 @@ function formatBillingCycle(row = {}) {
     .join(' - ') || '-';
 }
 
+function formatServiceBillingCycle(serviceAccount, subscription) {
+  const cycle = serviceAccount?.billingCycle || subscription?.billingCycle;
+  if (cycle) return cycle.charAt(0).toUpperCase() + cycle.slice(1).toLowerCase();
+  return subscription?.billingCycleAnchor === 'CALENDAR_MONTH' ? 'Monthly' : '-';
+}
+
 function formatPaymentAllocations(payment = {}) {
   const allocations = Array.isArray(payment.allocations) ? payment.allocations : [];
   if (!allocations.length) return payment.invoiceNumber || '-';
@@ -3950,7 +3956,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                     {renderSummaryFact('Service status', activeServiceAccount?.status || activeSubscription?.status)}
                     {renderSummaryFact('Recurring price', formatMoney(activeSubscription?.monthlyRate ?? activeServiceAccount?.monthlyRate))}
                     {renderSummaryFact('Billing mode', activeSubscription?.billingMode)}
-                    {renderSummaryFact('Billing cycle', formatBillingCycle(activeSubscription))}
+                    {renderSummaryFact('Billing cycle', formatServiceBillingCycle(activeServiceAccount, activeSubscription))}
                     {renderSummaryFact('Activation date', formatDisplayDate(activeServiceAccount?.activationDate || activeSubscription?.startDate))}
                     {renderSummaryFact('Service order', activeSubscription?.serviceOrderNumber || activeSubscription?.serviceOrderId || activeOrder?.orderNumber || activeOrder?.id)}
                     {renderSummaryFact('Installation address', activeServiceAccount?.serviceAddress || activeServiceAccount?.installationAddress || activeSubscription?.installationAddress || formatCustomerAddress(selected))}
