@@ -152,6 +152,7 @@ The current module includes:
 - Customer table actions include Check Serviceability, which opens Network Settings -> Serviceability Check with `?customerId=<id>` so the selected customer is shown directly in the serviceability split view.
 - Customer type/status values: `RESIDENTIAL`, `BUSINESS`, `ENTERPRISE`; `ACTIVE`, `INACTIVE`, `SUSPENDED`, `PENDING`
 - Service Orders are owned by the Service module and are not displayed in Customer Profiling
+- Customer 360 keeps service summaries and all internet lines on Overview, with `/service/account?customerId=<id>` opening the Service-owned customer detail. Its other tabs are Billing, Payments, Tickets, Equipment, and Activity; Billing subscription records remain available to Overview and onboarding without a separate Subscriptions tab.
 - Bulk upload CSV modal with template download, preview validation, duplicate checks, guarded import, and required customer upload headers
 
 Current API prefix: `/api/customer-profiling`. Customer Profiling Stage 2 real-data readiness is backed by the shared PostgreSQL database when `CUSTOMER_PROFILING_STORAGE=postgres` and `DATABASE_URL` are configured. The shared API startup migration runner creates and versions the `customer_profiles` table with JSONB payload storage plus indexed customer columns, and `/api/customer-profiling/readiness` reports storage readiness. Demo seed customers are disabled by default and only load when `CUSTOMER_PROFILING_SEED_DEMO=true`.

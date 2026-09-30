@@ -3293,8 +3293,11 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   function renderCustomerDetailsPanel({ onboardingModal = false } = {}) {
     if (!selected) return null;
     const detailsCoordinates = customerCoordinates(selected);
-    const activeSubscription = customer360.subscriptions.find((row) => normalizeUpper(row.status) === 'ACTIVE') || customer360.subscriptions[0] || null;
     const activeServiceAccount = customer360.serviceAccounts.find((row) => normalizeUpper(row.status) === 'ACTIVE') || customer360.serviceAccounts[0] || null;
+    const serviceSubscriptions = activeServiceAccount
+      ? customer360.subscriptions.filter((row) => row.serviceAccountId === activeServiceAccount.id || (!row.serviceAccountId && customer360.serviceAccounts.length === 1))
+      : customer360.subscriptions;
+    const activeSubscription = serviceSubscriptions.find((row) => normalizeUpper(row.status) === 'ACTIVE') || serviceSubscriptions[0] || null;
     const activeOrder = customer360.serviceOrders.find((row) => row.id && row.id === activeSubscription?.serviceOrderId)
       || customer360.serviceOrders.find((row) => row.serviceAccountId && row.serviceAccountId === activeServiceAccount?.id)
       || customer360.serviceOrders[0]
@@ -3307,7 +3310,6 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
         : 'CURRENT';
     const tabCounts = {
       overview: '',
-      subscriptions: customer360.subscriptions.length || customer360.serviceAccounts.length,
       billing: customer360.openInvoices.length || customer360.invoices.length,
       payments: customer360.payments.length + customer360.posSales.length,
       tickets: customer360.tickets.length,
@@ -3889,7 +3891,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       );
     };
     const renderOverview = () => {
-      const currentPlan = activeSubscription?.planName || activeServiceAccount?.catalogName || '-';
+      const currentPlan = activeServiceAccount?.catalogName || activeSubscription?.planName || '-';
       const nextBillingCycle = formatDisplayDate(activeSubscription?.nextInvoiceDate);
       const activeServiceAccountId = activeSubscription?.serviceAccountId || activeServiceAccount?.id;
       const billingBusinessDay = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
@@ -3926,7 +3928,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
               <IconRouter size={20} />
               <span>Current Service</span>
               <strong>{currentPlan}</strong>
-              <small>{activeSubscription?.status || activeServiceAccount?.status || 'No active service linked'}</small>
+              <small>{activeServiceAccount?.status || activeSubscription?.status || 'No active service linked'}</small>
             </div>
             <div className="customer-360-metric">
               <IconCalendarDue size={20} />
@@ -3941,17 +3943,36 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
               {renderOverviewPanelHeading('Service Snapshot', IconHomeSignal, 'Authoritative service data from Service and Billing')}
               {renderState(['serviceAccounts', 'subscriptions'], [activeSubscription || activeServiceAccount].filter(Boolean), 'No subscription or service account is linked to this customer.')}
               {(activeSubscription || activeServiceAccount) && (
-                <div className="customer-360-summary-grid">
-                  {renderSummaryFact('Service account', activeSubscription?.serviceAccountNumber || activeServiceAccount?.serviceAccountNumber)}
-                  {renderSummaryFact('Plan', currentPlan)}
-                  {renderSummaryFact('Service status', activeSubscription?.status || activeServiceAccount?.status)}
-                  {renderSummaryFact('Recurring price', formatMoney(activeSubscription?.monthlyRate ?? activeServiceAccount?.monthlyRate))}
-                  {renderSummaryFact('Billing mode', activeSubscription?.billingMode)}
-                  {renderSummaryFact('Billing cycle', formatBillingCycle(activeSubscription))}
-                  {renderSummaryFact('Activation date', formatDisplayDate(activeServiceAccount?.activationDate || activeSubscription?.startDate))}
-                  {renderSummaryFact('Service order', activeSubscription?.serviceOrderNumber || activeSubscription?.serviceOrderId || activeOrder?.orderNumber || activeOrder?.id)}
-                  {renderSummaryFact('Installation address', activeServiceAccount?.installationAddress || activeSubscription?.installationAddress || formatCustomerAddress(selected))}
-                </div>
+                <>
+                  <div className="customer-360-summary-grid">
+                    {renderSummaryFact('Service account', activeServiceAccount?.serviceAccountNumber || activeSubscription?.serviceAccountNumber)}
+                    {renderSummaryFact('Plan', currentPlan)}
+                    {renderSummaryFact('Service status', activeServiceAccount?.status || activeSubscription?.status)}
+                    {renderSummaryFact('Recurring price', formatMoney(activeSubscription?.monthlyRate ?? activeServiceAccount?.monthlyRate))}
+                    {renderSummaryFact('Billing mode', activeSubscription?.billingMode)}
+                    {renderSummaryFact('Billing cycle', formatBillingCycle(activeSubscription))}
+                    {renderSummaryFact('Activation date', formatDisplayDate(activeServiceAccount?.activationDate || activeSubscription?.startDate))}
+                    {renderSummaryFact('Service order', activeSubscription?.serviceOrderNumber || activeSubscription?.serviceOrderId || activeOrder?.orderNumber || activeOrder?.id)}
+                    {renderSummaryFact('Installation address', activeServiceAccount?.serviceAddress || activeServiceAccount?.installationAddress || activeSubscription?.installationAddress || formatCustomerAddress(selected))}
+                  </div>
+                  {customer360.serviceAccounts.length > 1 && (
+                    <div className="mt-3">
+                      <h5>All Internet Lines</h5>
+                      <div className="customer-360-timeline">
+                        {customer360.serviceAccounts.map((account) => (
+                          <div className="customer-360-event" key={account.id}>
+                            <span className={`badge ${statusClass(account.status)}`}>{account.status || '-'}</span>
+                            <strong>{account.serviceAccountNumber || account.serviceReference || 'Service account'} / {account.catalogName || account.catalog?.name || 'Plan unavailable'}</strong>
+                            <small>{account.serviceAddress || account.installationAddress || formatCustomerAddress(selected)} / Activated {formatDisplayDate(account.activationDate)}</small>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <a className="btn btn-outline-secondary btn-sm mt-3" href={`/service/account?customerId=${encodeURIComponent(selected.id)}`}>
+                    <IconExternalLink size={16} className="me-1" />Open Service Account details
+                  </a>
+                </>
               )}
             </section>
 
@@ -4007,66 +4028,6 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
         </div>
       );
     };
-    const renderSubscriptions = () => (
-      <div className="customer-360-tab-panel">
-        {renderState(['subscriptions', 'serviceAccounts'], [...customer360.subscriptions, ...customer360.serviceAccounts], 'No subscriptions or service accounts found for this customer.')}
-        {!!(customer360.subscriptions.length || customer360.serviceAccounts.length) && (
-          <div className="customer-360-table-wrap">
-            <table className="table table-sm customer-360-table">
-              <thead>
-                <tr>
-                  <th>Service Account</th>
-                  <th>Plan</th>
-                  <th>Price</th>
-                  <th>Status</th>
-                  <th>Address</th>
-                  <th>Activation</th>
-                  <th>Billing</th>
-                  <th>Next Bill</th>
-                  <th>Order</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {(customer360.subscriptions.length ? customer360.subscriptions : customer360.serviceAccounts).map((row) => {
-                  const account = customer360.serviceAccounts.find((item) => item.id === row.serviceAccountId) || row;
-                  const order = customer360.serviceOrders.find((item) => item.id === row.serviceOrderId || item.serviceAccountId === account.id);
-                  return (
-                    <tr key={row.id || account.id}>
-                      <td>{row.serviceAccountNumber || account.serviceAccountNumber || '-'}</td>
-                      <td>{row.planName || account.catalogName || '-'}</td>
-                      <td>{formatMoney(row.monthlyRate ?? account.monthlyRate)}</td>
-                      <td><span className={`badge ${statusClass(row.status || account.status)}`}>{row.status || account.status || '-'}</span></td>
-                      <td>{account.serviceAddress || row.serviceAddress || formatCustomerAddress(selected)}</td>
-                      <td>{formatDisplayDate(account.activationDate || row.startDate)}</td>
-                      <td>{[row.billingMode, row.billingCycleAnchor || row.billingCycle].filter(Boolean).join(' / ') || '-'}</td>
-                      <td>{formatDisplayDate(row.nextInvoiceDate)}</td>
-                      <td>{order?.orderNumber || order?.serviceOrderNumber || row.serviceOrderId || '-'}</td>
-                      <td>{renderModuleLink(`/billing?tab=Subscriptions&subscriptionId=${encodeURIComponent(row.id || '')}`, 'Subscription detail', 'Open in Billing')}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-        <section className="customer-360-panel">
-          <h4>Subscription History</h4>
-          {renderState('serviceOrders', customer360.serviceOrders, 'No service order history is available for this customer.')}
-          {!!customer360.serviceOrders.length && (
-            <div className="customer-360-timeline">
-              {customer360.serviceOrders.map((order) => (
-                <div className="customer-360-event" key={order.id}>
-                  <span className={`badge ${statusClass(order.status)}`}>{order.status || '-'}</span>
-                  <strong>{order.orderNumber || order.serviceOrderNumber || order.orderType || 'Service order'}</strong>
-                  <small>{[order.orderType, order.serviceAccountNumber, formatDisplayDateTime(order.updatedAt || order.createdAt)].filter(Boolean).join(' / ')}</small>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-      </div>
-    );
     const renderBilling = () => (
       <div className="customer-360-tab-panel">
         <div className="customer-360-metrics">
@@ -4280,7 +4241,6 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       </div>
     );
     const renderActiveCustomer360Tab = () => {
-      if (customerDetailTab === 'subscriptions') return renderSubscriptions();
       if (customerDetailTab === 'billing') return renderBilling();
       if (customerDetailTab === 'payments') return renderPayments();
       if (customerDetailTab === 'tickets') return renderTickets();

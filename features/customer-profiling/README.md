@@ -33,7 +33,7 @@ Restored workflows from the previous standalone Customer Profiling module:
 - Service location selector connected to System Settings -> Location Management, with manual customer locations added to Location Management when no saved record matches
 - The create/edit Location stage uses dependent selects backed by a checked-in PSGC snapshot: Province is limited to Cagayan and Isabela, Cagayan defaults to Enrile, and City/Municipality controls the available Barangay values. The snapshot contains 29 Cagayan cities/municipalities with 820 barangays and 37 Isabela cities/municipalities with 1,055 barangays.
 - Customer table and detail drawer display System Settings emotion avatars using the reusable `CustomerEmotionAvatar` component
-- Customer 360 replaces the old compact detail drawer as the canonical customer inspection experience. Opening a customer from the list, or opening `/customer-profiling?customerId=<id>`, shows a full module-owned detail workspace with a compact identity header and tabs for Overview, Subscriptions, Billing, Payments, Tickets, Equipment, and Activity.
+- Customer 360 replaces the old compact detail drawer as the canonical customer inspection experience. Opening a customer from the list, or opening `/customer-profiling?customerId=<id>`, shows a full module-owned detail workspace with a compact identity header and tabs for Overview, Billing, Payments, Tickets, Equipment, and Activity.
 - New customer creation returns to the customer list and opens the onboarding modal for the saved customer. The Pending list/KPI wording remains Needs Onboarding.
 - Customer coordinate capture and detail map preview consume System Settings -> Maps provider settings, including Google Map Tiles session providers when configured, with Google Maps open-link and Street View retained as external helpers
 - Customer table actions are View, Edit, and, while setup remains incomplete, Onboarding. The Onboarding icon includes live `completed/7` progress derived from existing Service, Billing, Ticketing, and Inventory records and is removed when all seven steps are complete; Check Serviceability and Archive are not row actions.
@@ -52,8 +52,7 @@ Customer Profiling owns the Customer 360 interface and customer identity fields 
 
 Customer 360 tabs:
 
-- Overview: identity, account number, contact details, service/billing address, account status/standing, current subscription summary, current balance summary, and important customer/service/billing dates.
-- Subscriptions: Service Account and Billing subscription summaries with plan, recurring price, status, service address, activation, billing mode/cycle, next billing date, and service order history.
+- Overview: identity, account number, contact details, service/billing address, account status/standing, current Service Account and linked Billing subscription summary, current balance summary, and important customer/service/billing dates. Customers with multiple Service Accounts see every internet line here. The Service Account link opens that customer's details on `/service/account?customerId=<id>`.
 - Billing: authoritative Billing balance, account credit, open/overdue invoices, recent invoices, rebates, credits, and adjustments.
 - Payments: Billing payment history plus POS counter receipts filtered by customer id. Sensitive payment details are not displayed.
 - Tickets: Ticketing open and historical tickets, including outage reference, category, status, assigned team/user, opened date, and resolution date.

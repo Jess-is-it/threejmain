@@ -67,6 +67,7 @@ Service manages the ISP service catalog, service accounts, and service orders. T
 - Customer Profiling is the customer identity source. Service calls customer provider hooks from `app-shell/api/app/main.py`.
 - Customer Profiling lifecycle status is system-owned after profile creation and is synchronized from Service Account state by Service through the configured `customer_status_syncer` hook. Service also backfills existing service-account customers on Service data load.
 - Customer Profiling should not create service assignments. It can display Service-owned accounts through `/api/service/accounts?customerId=...` and orders through `/api/service/orders?customerId=...`.
+- `/service/account?customerId=<id>` opens that customer's Service Account detail view from Customer 360 Overview, showing all of their Service Accounts and related Service Orders.
 - Billing subscriptions should eventually use Service Account as the subscription target. Phase 2 still keeps existing Service Order references available for compatibility.
 - Ticketing can use a Service Account plus Service Order to tag the affected line/request. New Service Orders call the Ticketing helper supplied by app-shell and store the linked ticket reference.
 - Inventory and installation/field-job flows should use Service Account and Service Order references when those workflows are expanded.

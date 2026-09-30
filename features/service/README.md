@@ -10,6 +10,7 @@ Service owns the ISP-facing definition of offered internet services, customer se
 
 - Web: `/service/catalog`
 - Web: `/service/account`
+- Customer 360 links to `/service/account?customerId=<id>`; the Service Account page opens that customer's detail view with all of their internet lines and Service Order history.
 - Web: `/service/order`
 - API prefix: `/api/service`
 

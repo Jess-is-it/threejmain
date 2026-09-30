@@ -1,6 +1,5 @@
 export const CUSTOMER_360_TABS = [
   { value: 'overview', label: 'Overview' },
-  { value: 'subscriptions', label: 'Subscriptions' },
   { value: 'billing', label: 'Billing' },
   { value: 'payments', label: 'Payments' },
   { value: 'tickets', label: 'Tickets' },
@@ -140,7 +139,6 @@ export function customer360SectionState({ loading = false, error = null, items =
 export function hasCustomer360TabData(data, tab) {
   if (!data) return false;
   if (tab === 'overview') return true;
-  if (tab === 'subscriptions') return data.subscriptions.length > 0 || data.serviceAccounts.length > 0;
   if (tab === 'billing') return data.invoices.length > 0 || data.adjustments.length > 0 || Boolean(data.balance);
   if (tab === 'payments') return data.payments.length > 0 || data.legacyPaymentEvidence.length > 0 || data.posSales.length > 0;
   if (tab === 'tickets') return data.tickets.length > 0;

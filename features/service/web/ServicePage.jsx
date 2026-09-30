@@ -1180,6 +1180,21 @@ export default function ServicePage({ initialSection = 'catalog', refreshShell =
   useEffect(() => { load(); }, []);
 
   useEffect(() => {
+    if (pageView !== 'accounts' || typeof window === 'undefined') return;
+    const customerId = new URLSearchParams(window.location.search).get('customerId');
+    if (!customerId) return;
+    const row = accountRows.find(({ customer }) => customer.id === customerId);
+    if (!row) return;
+    setAccountServiceTab(row.hasService ? 'WITH_SERVICE' : 'WITHOUT_SERVICE');
+    setCustomerStatusFilter('ALL');
+    setOrderTypeFilter('ALL');
+    setServiceStatusFilter('ALL');
+    setOrderSearch('');
+    setSelectedAccountId(accountRowId(row));
+    setSelectedServiceOrderId('');
+  }, [accountRows, pageView]);
+
+  useEffect(() => {
     if (selectedServiceOrderId && allOrders.length && !allOrders.some((order) => order.id === selectedServiceOrderId)) {
       setSelectedServiceOrderId('');
     }
