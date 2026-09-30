@@ -3308,6 +3308,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       || customer360.serviceOrders.find((row) => row.serviceAccountId && row.serviceAccountId === activeServiceAccount?.id)
       || customer360.serviceOrders[0]
       || null;
+    const serviceOrderReference = activeSubscription?.serviceOrderNumber || activeSubscription?.serviceOrderId || activeOrder?.orderNumber || activeOrder?.id;
     const balance = customer360.balance || {};
     const accountStanding = Number(balance.overdueTotal || 0) > 0
       ? 'OVERDUE'
@@ -3958,7 +3959,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                     {renderSummaryFact('Billing mode', activeSubscription?.billingMode)}
                     {renderSummaryFact('Billing cycle', formatServiceBillingCycle(activeServiceAccount, activeSubscription))}
                     {renderSummaryFact('Activation date', formatDisplayDate(activeServiceAccount?.activationDate || activeSubscription?.startDate))}
-                    {renderSummaryFact('Service order', activeSubscription?.serviceOrderNumber || activeSubscription?.serviceOrderId || activeOrder?.orderNumber || activeOrder?.id)}
+                    {serviceOrderReference && renderSummaryFact('Service order', serviceOrderReference)}
                     {renderSummaryFact('Installation address', activeServiceAccount?.serviceAddress || activeServiceAccount?.installationAddress || activeSubscription?.installationAddress || formatCustomerAddress(selected))}
                   </div>
                   {customer360.serviceAccounts.length > 1 && (
@@ -4027,7 +4028,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                 {renderSummaryFact('Last profile update', formatDisplayDateTime(selected.updatedAt))}
                 {renderSummaryFact('Activation date', formatDisplayDate(activeServiceAccount?.activationDate || activeSubscription?.startDate))}
                 {renderSummaryFact('Next invoice cycle', nextBillingCycle)}
-                {renderSummaryFact('Latest service order activity', formatDisplayDateTime(activeOrder?.updatedAt || activeOrder?.createdAt))}
+                {activeOrder && renderSummaryFact('Latest service order activity', formatDisplayDateTime(activeOrder.updatedAt || activeOrder.createdAt))}
               </div>
             </section>
           </div>
