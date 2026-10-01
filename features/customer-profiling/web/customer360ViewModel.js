@@ -27,6 +27,8 @@ export const CUSTOMER_360_ENDPOINTS = {
 };
 
 const CLOSED_INVOICE_STATUSES = new Set(['PAID', 'VOID', 'DRAFT']);
+const SERVICE_PERIOD_INVOICE_TYPES = new Set(['MONTHLY', 'FIRST_PRORATED', 'FIRST_FULL']);
+const SERVICE_MONTH_FORMATTER = new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
 
 export function emptyCustomer360Data() {
   return {
@@ -55,6 +57,48 @@ export function normalizeArray(value) {
 
 export function normalizeStatus(value) {
   return String(value || '').trim().toUpperCase();
+}
+
+function serviceMonthKey(value) {
+  const match = String(value || '').match(/^(\d{4})-(0[1-9]|1[0-2])(?:-\d{2})?$/);
+  return match ? `${match[1]}-${match[2]}` : '';
+}
+
+function serviceMonthLabel(monthKey) {
+  const [year, month] = monthKey.split('-').map(Number);
+  return SERVICE_MONTH_FORMATTER.format(new Date(Date.UTC(year, month - 1, 1)));
+}
+
+function invoiceServicePeriod(invoice) {
+  if (!SERVICE_PERIOD_INVOICE_TYPES.has(normalizeStatus(invoice?.invoiceType))) return '';
+  const startMonth = serviceMonthKey(invoice.billingCycleStart);
+  if (!startMonth) return '';
+  const endMonth = serviceMonthKey(invoice.billingCycleEnd);
+  return endMonth && endMonth !== startMonth
+    ? `${serviceMonthLabel(startMonth)} – ${serviceMonthLabel(endMonth)}`
+    : serviceMonthLabel(startMonth);
+}
+
+export function paymentAllocationDetails(payment = {}, invoices = []) {
+  const allocations = normalizeArray(payment.allocations);
+  const entries = allocations.length
+    ? allocations
+    : (payment.invoiceId || (payment.invoiceNumber && !Number(payment.advanceAmount)) ? [payment] : []);
+  const invoiceById = new Map(normalizeArray(invoices).map((invoice) => [invoice.id, invoice]));
+  const invoiceByNumber = new Map(normalizeArray(invoices).map((invoice) => [invoice.invoiceNumber, invoice]));
+  const details = entries.map((allocation) => {
+    const invoice = invoiceById.get(allocation.invoiceId) || invoiceByNumber.get(allocation.invoiceNumber);
+    return {
+      period: invoiceServicePeriod(invoice),
+      invoiceReference: invoice?.invoiceNumber || allocation.invoiceNumber || allocation.invoiceId || '',
+      amount: allocations.length ? allocation.amount : null
+    };
+  });
+  const advanceAmount = Number(payment.advanceAmount);
+  if (Number.isFinite(advanceAmount) && advanceAmount > 0) {
+    details.push({ period: 'Advance credit', invoiceReference: '', amount: advanceAmount });
+  }
+  return details;
 }
 
 export function byRecentDate(left, right) {

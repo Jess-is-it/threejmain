@@ -63,7 +63,8 @@ import {
   customer360SectionState,
   emptyCustomer360Data,
   hasCustomer360TabData,
-  onboardingStepSatisfied
+  onboardingStepSatisfied,
+  paymentAllocationDetails
 } from './customer360ViewModel.js';
 import {
   existingSubscriberWorkbookBuffer,
@@ -563,15 +564,19 @@ function formatServiceBillingCycle(serviceAccount, subscription) {
   return subscription?.billingCycleAnchor === 'CALENDAR_MONTH' ? 'Monthly' : '-';
 }
 
-function formatPaymentAllocations(payment = {}) {
-  const allocations = Array.isArray(payment.allocations) ? payment.allocations : [];
-  if (!allocations.length) return payment.invoiceNumber || '-';
-  return allocations
-    .map((allocation) => [
-      allocation.invoiceNumber || allocation.invoiceId,
-      allocation.amount ? formatMoney(allocation.amount) : ''
-    ].filter(Boolean).join(' '))
-    .join(', ');
+function formatPaymentAllocations(payment = {}, invoices = []) {
+  const details = paymentAllocationDetails(payment, invoices);
+  if (!details.length) return '-';
+  return (
+    <div className="d-flex flex-column gap-1">
+      {details.map(({ period, invoiceReference, amount }, index) => (
+        <div key={`${invoiceReference || period}-${index}`}>
+          <span>{period || invoiceReference || '-'}{Number(amount) > 0 ? ` · ${formatMoney(amount)}` : ''}</span>
+          {period && invoiceReference && <small className="d-block text-muted">Invoice {invoiceReference}</small>}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function normalizeRequestError(error) {
@@ -4104,7 +4109,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                   <th>Method</th>
                   <th>Channel</th>
                   <th>Cashier / Collector</th>
-                  <th>Allocations</th>
+                  <th>Payment For</th>
                   <th>Void / Refund</th>
                 </tr>
               </thead>
@@ -4117,7 +4122,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                     <td>{payment.method || '-'}</td>
                     <td>{payment.collectionChannel || 'BILLING'}</td>
                     <td>{payment.postedByName || payment.postedByUsername || '-'}</td>
-                    <td>{formatPaymentAllocations(payment)}</td>
+                    <td>{formatPaymentAllocations(payment, customer360.invoices)}</td>
                     <td>{payment.status === 'VOID' ? payment.voidReason || 'Voided' : payment.refundStatus || '-'}</td>
                   </tr>
                 ))}

@@ -11,7 +11,8 @@ import {
   filterCustomerActivity,
   filterCustomerEquipment,
   hasCustomer360TabData,
-  isOpenInvoice
+  isOpenInvoice,
+  paymentAllocationDetails
 } from '../customer360ViewModel.js';
 
 const customer = {
@@ -87,6 +88,37 @@ test('invoice open-state uses Billing-provided status and balance without recomp
   assert.equal(isOpenInvoice({ status: 'OVERDUE', balance: 10 }), true);
   assert.equal(isOpenInvoice({ status: 'PAID', balance: 0 }), false);
   assert.equal(isOpenInvoice({ status: 'VOID', balance: 100 }), false);
+});
+
+test('payment allocations show each linked service month and keep invoice references', () => {
+  const details = paymentAllocationDetails({
+    allocations: [
+      { invoiceId: 'sep', invoiceNumber: 'INV-SEP', amount: 1000 },
+      { invoiceId: 'oct', invoiceNumber: 'INV-OCT', amount: 800 },
+      { invoiceId: 'installation', invoiceNumber: 'INV-INSTALL', amount: 250 }
+    ],
+    advanceAmount: 100
+  }, [
+    { id: 'sep', invoiceType: 'MONTHLY', billingCycleStart: '2026-09-01', billingCycleEnd: '2026-09-30' },
+    { id: 'oct', invoiceType: 'MONTHLY', billingCycleStart: '2026-10-01', billingCycleEnd: '2026-10-31' },
+    { id: 'installation', invoiceType: 'INSTALLATION_FEE', billingCycleStart: '2026-09-01', billingCycleEnd: '2026-09-01' }
+  ]);
+
+  assert.deepEqual(details, [
+    { period: 'September 2026', invoiceReference: 'INV-SEP', amount: 1000 },
+    { period: 'October 2026', invoiceReference: 'INV-OCT', amount: 800 },
+    { period: '', invoiceReference: 'INV-INSTALL', amount: 250 },
+    { period: 'Advance credit', invoiceReference: '', amount: 100 }
+  ]);
+});
+
+test('payment allocations fall back to invoice references when coverage is unavailable', () => {
+  assert.deepEqual(paymentAllocationDetails({ allocations: [{ invoiceId: 'missing', invoiceNumber: 'INV-MISSING', amount: 500 }] }), [
+    { period: '', invoiceReference: 'INV-MISSING', amount: 500 }
+  ]);
+  assert.deepEqual(paymentAllocationDetails({ invoiceNumber: 'Advance credit', advanceAmount: 500 }), [
+    { period: 'Advance credit', invoiceReference: '', amount: 500 }
+  ]);
 });
 
 test('customer filters tolerate missing integration data', () => {

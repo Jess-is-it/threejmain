@@ -86,6 +86,7 @@ Customer Profiling manages customer records, account identity, service addresses
 - Customer 360 Overview labels Billing's `nextInvoiceDate` as the **next invoice cycle**, shows paid-through coverage and the next open invoice due date separately, and keeps the current amount due sourced from Billing's ledger.
 - Commit generates Customer account numbers, links or updates an explicitly selected existing profile when requested, calls Service to create the installed Service Account without an installation order, and calls Billing for cutover. The server assigns the batch effective date on the first commit using `BILLING_TIMEZONE` (`Asia/Manila` by default); the operator does not select it, and retries keep the original date. Customer JSONB records `migration.existingSubscriber=true`; Customer 360 marks Plan & Installation and Installation Work `Not Required` when the migrated Service/Billing records exist.
 - Customer 360 Payments reads `GET /api/billing/migration-payment-evidence?customerId={customerId}` and displays legacy payment evidence separately from current receipts.
+- Customer 360 Payments labels each receipt allocation by the linked monthly invoice's service month or months and amount, with the invoice number as a secondary reference. Non-service invoices and missing billing periods retain the invoice reference; advance credit is labeled separately.
 
 ## Follow-Up Notes
 
