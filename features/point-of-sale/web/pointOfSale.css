@@ -209,6 +209,15 @@
   gap: 0.75rem;
 }
 
+.pos-partial-payment-note {
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--tblr-warning);
+  border-radius: 8px;
+  background: var(--tblr-yellow-lt);
+  color: var(--tblr-body-color);
+  font-size: 0.85rem;
+}
+
 .pos-payment-invoice-list {
   display: grid;
   gap: 0.5rem;
@@ -259,6 +268,11 @@
 .pos-payment-invoice-total span {
   color: var(--tblr-muted);
   font-size: 0.78rem;
+}
+
+.pos-payment-invoice-main .pos-payment-invoice-preview {
+  color: var(--tblr-body-color);
+  font-weight: 600;
 }
 
 .pos-payment-invoice-total,

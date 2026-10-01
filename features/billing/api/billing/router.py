@@ -7244,6 +7244,23 @@ def create_payment(
         invoice["updatedAt"] = timestamp
     for invoice_id in invoice_ids:
         find_invoice(invoice_id)["updatedAt"] = timestamp
+    remaining_invoices = [
+        summary
+        for open_invoice in visible_invoices()
+        if open_invoice.get("customerId") == customer["id"]
+        for summary in [invoice_summary(open_invoice)]
+        if summary["status"] not in {"DRAFT", "PAID", "VOID"} and money(summary["balance"]) > 0
+    ]
+    payment["remainingBalanceDetails"] = [
+        {
+            "invoiceId": summary["id"],
+            "invoiceNumber": summary["invoiceNumber"],
+            "periodLabel": summary.get("billingPeriodLabel") or "",
+            "amount": money(summary["balance"]),
+        }
+        for summary in remaining_invoices
+    ]
+    payment["remainingAccountBalance"] = money(sum(summary["balance"] for summary in remaining_invoices))
     add_audit(
         "billing_payment_posted",
         "BillingPayment",

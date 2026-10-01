@@ -20,6 +20,7 @@ import {
   IconTrash,
   IconX
 } from '@tabler/icons-react';
+import { planInvoicePayment } from './invoicePaymentPlan.mjs';
 import './pointOfSale.css';
 
 const API = '/api';
@@ -453,12 +454,8 @@ function triggeredPromotionForAllocation(invoice, promotionState, allocationAmou
 }
 
 function paymentDiscountAmount(payment) {
-  return roundMoney(
-    payment?.discountAmount
-    ?? payment?.promotionDiscountAmount
-    ?? payment?.earlyBirdDiscountAmount
-    ?? 0
-  );
+  if (payment?.discountAmount != null) return roundMoney(payment.discountAmount);
+  return roundMoney(Number(payment?.promotionDiscountAmount || 0) + Number(payment?.earlyBirdDiscountAmount || 0));
 }
 
 function paymentDiscountLabel(payment) {
@@ -621,8 +618,9 @@ function normalizeReceiptBalanceDetails(details) {
 }
 
 function receiptRemainingBalanceDetails(payment, invoiceRows = []) {
-  const explicitDetails = normalizeReceiptBalanceDetails(payment?.remainingBalanceDetails);
-  if (explicitDetails.length) return explicitDetails;
+  if (Array.isArray(payment?.remainingBalanceDetails)) {
+    return normalizeReceiptBalanceDetails(payment.remainingBalanceDetails);
+  }
   const customerId = payment?.customerId || payment?.customer?.id || '';
   if (!customerId) return [];
   return normalizeReceiptBalanceDetails(
@@ -637,16 +635,16 @@ function receiptRemainingBalanceDetails(payment, invoiceRows = []) {
   );
 }
 
-function selectedReceiptRemainingDetails(rows, selectedInvoiceIds = []) {
-  const selectedIds = new Set(selectedInvoiceIds);
+function selectedReceiptRemainingDetails(rows, payment) {
+  const allocatedByInvoiceId = new Map((payment?.allocations || []).map((allocation) => [allocation.invoiceId, roundMoney(allocation.amount)]));
+  const discountByInvoiceId = new Map();
+  for (const adjustment of [...(payment?.promotionDiscountAdjustments || []), ...(payment?.earlyBirdDiscountAdjustments || [])]) {
+    discountByInvoiceId.set(adjustment.invoiceId, roundMoney((discountByInvoiceId.get(adjustment.invoiceId) || 0) + adjustment.amount));
+  }
   return normalizeReceiptBalanceDetails(
     (rows || []).map((row) => {
-      const selected = selectedIds.has(row.invoice?.id);
-      const selectedDiscount = selected ? roundMoney(row.promotion?.amount || 0) : 0;
-      const selectedPayment = selected ? roundMoney(row.amountToCollect || 0) : 0;
-      const amount = selected
-        ? roundMoney(Math.max(0, row.currentBalance - selectedPayment - selectedDiscount))
-        : roundMoney(row.currentBalance);
+      const invoiceId = row.invoice?.id;
+      const amount = roundMoney(Math.max(0, row.currentBalance - (allocatedByInvoiceId.get(invoiceId) || 0) - (discountByInvoiceId.get(invoiceId) || 0)));
       if (amount <= 0) return null;
       return {
         invoiceId: row.invoice?.id,
@@ -1484,41 +1482,28 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
     ? selectedCustomerInvoiceRows.reduce((sum, row) => roundMoney(sum + row.currentBalance), 0)
     : roundMoney(selectedBillingCustomerGroup?.totalBalance || 0);
   const selectedInvoiceTotalBeforeDiscount = selectedPaymentInvoiceRows.reduce((sum, row) => roundMoney(sum + row.currentBalance), 0);
-  const invoicePaymentAllocations = useMemo(() => (
-    selectedPaymentInvoiceRows
-      .filter((row) => row.amountToCollect > 0)
-      .map((row) => ({
-        invoiceId: row.invoice.id,
-        invoiceNumber: row.invoice.invoiceNumber,
-        dueDate: row.invoice.dueDate,
-        billingPeriodLabel: invoiceCoverageLabel(row.invoice),
-        billingPeriodMonth: row.invoice.billingPeriodMonth,
-        billingCycleStart: row.invoice.billingCycleStart,
-        billingCycleEnd: row.invoice.billingCycleEnd,
-        service: invoiceServiceLabel(row.invoice),
-        balance: row.currentBalance,
-        amount: row.amountToCollect,
-        remainingAfter: roundMoney(row.currentBalance - row.amountToCollect),
-        promotionIds: row.promotion?.promotionIds || [],
-        promotionCount: row.promotion?.count || 0,
-        promotionAmount: row.promotion?.amount || 0
-      }))
-  ), [selectedPaymentInvoiceRows]);
-  const invoicePaymentAllocatedTotal = invoicePaymentAllocations.reduce((sum, allocation) => roundMoney(sum + allocation.amount), 0);
-  const invoicePaymentAppliedAmount = invoicePaymentAllocatedTotal;
+  const invoicePaymentFullPayoffAmount = selectedPaymentInvoiceRows.reduce((sum, row) => roundMoney(sum + row.amountToCollect), 0);
   const invoicePaymentAmountInput = invoicePaymentForm.exactAmount
-    ? (invoicePaymentAppliedAmount > 0 ? String(invoicePaymentAppliedAmount) : '')
+    ? (invoicePaymentFullPayoffAmount > 0 ? String(invoicePaymentFullPayoffAmount) : '')
     : invoicePaymentForm.amount;
   const invoicePaymentAmount = roundMoney(Number(invoicePaymentAmountInput || 0));
-  const invoicePaymentShortfallAmount = roundMoney(Math.max(0, invoicePaymentAppliedAmount - invoicePaymentAmount));
-  const invoicePaymentExcessAmount = roundMoney(Math.max(0, invoicePaymentAmount - invoicePaymentAppliedAmount));
+  const invoicePaymentPlan = useMemo(() => planInvoicePayment(selectedPaymentInvoiceRows, invoicePaymentAmount), [selectedPaymentInvoiceRows, invoicePaymentAmount]);
+  const invoicePaymentAllocations = invoicePaymentPlan.allocations;
+  const invoicePaymentAllocatedTotal = invoicePaymentPlan.appliedAmount;
+  const invoicePaymentExcessAmount = invoicePaymentPlan.excessAmount;
   const invoicePaymentPromotionByInvoiceId = useMemo(() => {
-    const promotionRows = selectedPaymentInvoiceRows
-      .filter((row) => row.promotion && moneyEquals(row.amountToCollect, row.promotion.payable))
-      .map((row) => [row.invoice.id, row.promotion]);
+    const promotionRows = invoicePaymentAllocations
+      .filter((allocation) => allocation.promotionAmount > 0)
+      .map((allocation) => [allocation.invoiceId, {
+        amount: allocation.promotionAmount,
+        count: allocation.promotionCount,
+        promotionIds: allocation.promotionIds,
+        label: allocation.promotionLabel
+      }]);
     return new Map(promotionRows);
-  }, [selectedPaymentInvoiceRows]);
-  const invoicePaymentDiscountTotal = Array.from(invoicePaymentPromotionByInvoiceId.values()).reduce((sum, promotion) => roundMoney(sum + promotion.amount), 0);
+  }, [invoicePaymentAllocations]);
+  const invoicePaymentDiscountTotal = invoicePaymentPlan.discountAmount;
+  const invoicePaymentPotentialDiscountTotal = roundMoney(selectedInvoiceTotalBeforeDiscount - invoicePaymentFullPayoffAmount);
   const invoicePaymentPromotionCount = Array.from(invoicePaymentPromotionByInvoiceId.values()).reduce((sum, promotion) => (
     sum + Number(promotion.count || promotion.promotionIds?.length || 1)
   ), 0);
@@ -1531,7 +1516,7 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
     ? invoicePaymentExcessAmount : 0;
   const invoicePaymentReturnedAmount = invoicePaymentExcessAmount > 0 && invoicePaymentForm.excessAction === 'CHANGE'
     ? invoicePaymentExcessAmount : 0;
-  const invoicePaymentPostAmount = roundMoney(invoicePaymentAppliedAmount + invoicePaymentAdvanceAmount);
+  const invoicePaymentPostAmount = roundMoney(invoicePaymentAllocatedTotal + invoicePaymentAdvanceAmount);
   const invoicePaymentReferenceRequired = paymentRequiresReference(invoicePaymentForm.method);
   const invoicePaymentIsCash = String(invoicePaymentForm.method || '').toUpperCase() === 'CASH';
   const billingPaymentMethods = useMemo(() => (
@@ -2150,17 +2135,12 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
       return;
     }
     const amountReceived = invoicePaymentAmount;
-    const amountDue = invoicePaymentAppliedAmount;
-    if (amountDue <= 0) {
+    if (invoicePaymentFullPayoffAmount <= 0) {
       setError('Selected invoices have no collectible amount.');
       return;
     }
     if (amountReceived <= 0) {
       setError('Amount received must be greater than zero.');
-      return;
-    }
-    if (amountReceived + 0.001 < amountDue) {
-      setError(`Amount received must be at least ${currency(amountDue)}.`);
       return;
     }
     if (invoicePaymentExcessAmount > 0 && !['CHANGE', 'ADVANCE'].includes(invoicePaymentForm.excessAction)) {
@@ -2235,19 +2215,24 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
           ...(invoiceReceiptContextById.get(allocation.invoiceId) || {})
         }))
       };
+      const remainingBalanceDetails = Array.isArray(postedPayment.remainingBalanceDetails)
+        ? normalizeReceiptBalanceDetails(postedPayment.remainingBalanceDetails)
+        : selectedReceiptRemainingDetails(selectedCustomerInvoiceRows, postedPaymentWithPeriods);
+      const remainingAccountBalance = roundMoney(postedPayment.remainingAccountBalance
+        ?? remainingBalanceDetails.reduce((sum, detail) => sum + detail.amount, 0));
       const paymentSummary = {
         amountReceived,
-        appliedAmount: invoicePaymentAllocatedTotal,
+        appliedAmount: postedPayment.appliedAmount ?? invoicePaymentAllocatedTotal,
         returnedAmount: invoicePaymentReturnedAmount,
         advanceAmount: invoicePaymentAdvanceAmount,
-        discountAmount: paymentDiscountAmount(postedPaymentWithPeriods) || invoicePaymentDiscountTotal,
-        discountLabel: paymentDiscountAmount(postedPaymentWithPeriods) ? paymentDiscountLabel(postedPaymentWithPeriods) : invoicePaymentDiscountLabel,
-        remainingAccountBalance: selectedInvoiceRemaining,
-        remainingBalanceDetails: selectedReceiptRemainingDetails(selectedCustomerInvoiceRows, selectedBillingInvoiceIds)
+        discountAmount: paymentDiscountAmount(postedPaymentWithPeriods),
+        discountLabel: paymentDiscountLabel(postedPaymentWithPeriods) || invoicePaymentDiscountLabel,
+        remainingAccountBalance,
+        remainingBalanceDetails
       };
       const smsResult = await sendInvoicePaymentSms(postedPaymentWithPeriods, selectedPaymentInvoiceRows[0]?.invoice || selectedBillingInvoice, paymentSummary);
       const postedPaymentWithSms = { ...postedPaymentWithPeriods, ...paymentSummary, sms: smsResult };
-      const successMessage = `Payment posted for ${customerNameOnly(selectedBillingCustomerGroup.customer)} across ${invoicePaymentAllocations.length} invoice${invoicePaymentAllocations.length === 1 ? '' : 's'}.`;
+      const successMessage = `${invoicePaymentPlan.isPartial ? 'Partial payment' : 'Payment'} posted for ${customerNameOnly(selectedBillingCustomerGroup.customer)} across ${invoicePaymentAllocations.length} invoice${invoicePaymentAllocations.length === 1 ? '' : 's'}.`;
       const excessDetail = invoicePaymentReturnedAmount > 0
         ? `Returned ${currency(invoicePaymentReturnedAmount)} to the customer.`
         : (invoicePaymentAdvanceAmount > 0 ? `Stored ${currency(invoicePaymentAdvanceAmount)} as advance credit.` : '');
@@ -2259,7 +2244,7 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
       setMessage(`${successMessage} ${discountDetail} ${excessDetail} ${smsDetail}`.trim());
       setCheckoutNotice({
         type: 'success',
-        title: 'Invoice payment posted',
+        title: invoicePaymentPlan.isPartial ? 'Partial invoice payment posted' : 'Invoice payment posted',
         message: successMessage,
         detail: `${discountDetail} ${excessDetail} ${smsDetail}`.trim()
       });
@@ -2773,8 +2758,8 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                             <strong>Enter the payment received</strong>
                           </div>
                           <div className="pos-payment-due">
-                            <span>Amount due</span>
-                            <strong>{currency(invoicePaymentAppliedAmount)}</strong>
+                            <span>Full payment today</span>
+                            <strong>{currency(invoicePaymentFullPayoffAmount)}</strong>
                           </div>
                         </div>
                         <div className="pos-payment-entry-grid">
@@ -2794,7 +2779,7 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                                 disabled={invoicePaymentSubmitting}
                                 onChange={(event) => { setError(''); setInvoicePaymentForm((form) => ({ ...form, amount: event.target.value, exactAmount: false, excessAction: '' })); }}
                               />
-                              <button type="button" className={`btn ${invoicePaymentForm.exactAmount ? 'btn-primary' : 'btn-outline-primary'}`} aria-pressed={invoicePaymentForm.exactAmount} disabled={invoicePaymentSubmitting || invoicePaymentAppliedAmount <= 0} onClick={() => { setError(''); setInvoicePaymentForm((form) => ({ ...form, exactAmount: true, excessAction: '' })); }}>Exact amount</button>
+                              <button type="button" className={`btn ${invoicePaymentForm.exactAmount ? 'btn-primary' : 'btn-outline-primary'}`} aria-pressed={invoicePaymentForm.exactAmount} disabled={invoicePaymentSubmitting || invoicePaymentFullPayoffAmount <= 0} onClick={() => { setError(''); setInvoicePaymentForm((form) => ({ ...form, exactAmount: true, excessAction: '' })); }}>Exact amount</button>
                             </div>
                             <small>Enter the cash handed over or the amount the cashier confirmed with the payment provider.</small>
                           </div>
@@ -2844,11 +2829,18 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                             <span>Open Invoices</span>
                             <strong>{selectedPaymentInvoiceRows.length} selected</strong>
                           </div>
-                          <strong>{currency(invoicePaymentAppliedAmount)}</strong>
+                          <strong>{currency(invoicePaymentFullPayoffAmount)} to settle</strong>
                         </div>
+                        {invoicePaymentPlan.isPartial && (
+                          <div className="pos-partial-payment-note" role="status">
+                            {currency(invoicePaymentAllocatedTotal)} will be applied to the oldest selected invoices first. {currency(selectedInvoiceRemaining)} will remain on this customer's account.
+                            {invoicePaymentPotentialDiscountTotal > invoicePaymentDiscountTotal && ' Discounts on unpaid invoices apply only when those invoices are settled in full.'}
+                          </div>
+                        )}
                         <div className="pos-payment-invoice-list">
                           {selectedCustomerInvoiceRows.map(({ invoice, currentBalance, promotion, amountToCollect }) => {
                             const selected = selectedBillingInvoiceIds.includes(invoice.id);
+                            const plannedAllocation = invoicePaymentAllocations.find((allocation) => allocation.invoiceId === invoice.id);
                             return (
                               <label key={invoice.id} className={`pos-payment-invoice-row ${selected ? 'is-selected' : ''}`}>
                                 <input
@@ -2860,6 +2852,7 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                                 <span className="pos-payment-invoice-main">
                                   <strong>{invoice.invoiceNumber}</strong>
                                   <span>{invoiceCoverageLabel(invoice)}</span>
+                                  {selected && invoicePaymentAmount > 0 && <span className="pos-payment-invoice-preview">Apply {currency(plannedAllocation?.amount || 0)} · Remaining {currency(plannedAllocation?.remainingAfter ?? currentBalance)}</span>}
                                 </span>
                                 <span className="pos-payment-invoice-total">
                                   <strong>{currency(currentBalance)}</strong>
@@ -2868,10 +2861,11 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                                 <span className="pos-payment-invoice-due">
                                   {promotion && (
                                     <span className="badge bg-green-lt text-green">
-                                      {promotion.count > 1 ? `${promotion.count} promotions` : promotion.label} -{currency(promotion.amount)}
+                                      {promotion.count > 1 ? `${promotion.count} promotions` : promotion.label} -{currency(promotion.amount)} on full payoff
                                     </span>
                                   )}
                                   <strong>{currency(amountToCollect)}</strong>
+                                  <span>Full payoff</span>
                                 </span>
                               </label>
                             );
@@ -2885,33 +2879,32 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                           <strong>{currency(selectedInvoiceTotalBeforeDiscount)}</strong>
                         </div>
                         <div>
-                          <span>Less discount</span>
+                          <span>Discount applied</span>
                           <strong className={invoicePaymentDiscountTotal > 0 ? 'text-green' : ''}>{invoicePaymentDiscountTotal > 0 ? `-${currency(invoicePaymentDiscountTotal)}` : currency(0)}</strong>
                         </div>
                         <div>
                           <span>Applied to invoices</span>
-                          <strong>{currency(invoicePaymentAppliedAmount)}</strong>
+                          <strong>{currency(invoicePaymentAllocatedTotal)}</strong>
                         </div>
                         <div>
                           <span>Amount received</span>
                           <strong>{currency(invoicePaymentAmount)}</strong>
                         </div>
-                        {invoicePaymentShortfallAmount > 0 && <div><span>Still needed</span><strong className="text-danger">{currency(invoicePaymentShortfallAmount)}</strong></div>}
                         {invoicePaymentExcessAmount > 0 && !invoicePaymentForm.excessAction && <div><span>Excess to decide</span><strong>{currency(invoicePaymentExcessAmount)}</strong></div>}
                         {invoicePaymentReturnedAmount > 0 && <div><span>Change to return</span><strong>{currency(invoicePaymentReturnedAmount)}</strong></div>}
                         {invoicePaymentAdvanceAmount > 0 && <div><span>Advance credit</span><strong>{currency(invoicePaymentAdvanceAmount)}</strong></div>}
                         <div>
-                          <span>{invoicePaymentShortfallAmount > 0 ? 'Current account balance' : 'Projected remaining balance'}</span>
-                          <strong>{currency(invoicePaymentShortfallAmount > 0 ? selectedCustomerBalance : selectedInvoiceRemaining)}</strong>
+                          <span>Remaining after payment</span>
+                          <strong>{currency(selectedInvoiceRemaining)}</strong>
                         </div>
                       </div>
                     </div>
                     {error && <div className="alert alert-danger pos-payment-validation" role="alert">{error}</div>}
                     <div className="pos-modal-footer">
                       <button type="button" className="btn" disabled={invoicePaymentSubmitting} onClick={resetInvoicePayment}>Cancel</button>
-                      <button type="submit" className="btn btn-primary" disabled={invoicePaymentSubmitting || !selectedPaymentInvoiceRows.length || invoicePaymentAppliedAmount <= 0}>
+                      <button type="submit" className="btn btn-primary" disabled={invoicePaymentSubmitting || !selectedPaymentInvoiceRows.length || invoicePaymentFullPayoffAmount <= 0}>
                         {invoicePaymentSubmitting ? <IconLoader2 size={18} className="me-2 pos-spin" /> : <IconCreditCard size={18} className="me-2" />}
-                        {invoicePaymentSubmitting ? 'Posting Payment' : 'Post Payment'}
+                        {invoicePaymentSubmitting ? 'Posting Payment' : (invoicePaymentPlan.isPartial ? 'Post Partial Payment' : 'Post Payment')}
                       </button>
                     </div>
                   </form>

@@ -565,6 +565,16 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
         self.assertEqual(100.0, sum(row["amount"] for row in billing.invoice_payments("invoice-1")))
         self.assertEqual(50.0, sum(row["amount"] for row in billing.invoice_payments("invoice-2")))
         self.assertEqual(150.0, billing.customer_balance(self.customer["id"])["paidTotal"])
+        self.assertEqual(25.0, payment["remainingAccountBalance"])
+        self.assertEqual(
+            [{
+                "invoiceId": "invoice-2",
+                "invoiceNumber": billing.invoices[1]["invoiceNumber"],
+                "periodLabel": "July 2026",
+                "amount": 25.0,
+            }],
+            payment["remainingBalanceDetails"],
+        )
 
         billing.delete_payment(payment["id"], reason="Cashier correction", admin=self.admin)
 
@@ -594,6 +604,21 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
         self.assertEqual(100.0, billing.invoice_summary(billing.invoices[0])["paidTotal"])
         self.assertEqual(payment["id"], replay["id"])
         self.assertEqual(20.0, replay["returnedAmount"])
+
+    def test_partial_receipt_keeps_its_posting_balance_after_later_settlement(self):
+        self.add_invoice(amount=100)
+        first = billing.create_payment(
+            self.payment_payload(40), idempotency_key="payment:partial-first", admin=self.admin
+        )
+        self.assertEqual(60.0, first["remainingAccountBalance"])
+
+        second = billing.create_payment(
+            self.payment_payload(60), idempotency_key="payment:partial-second", admin=self.admin
+        )
+        self.assertEqual(0.0, second["remainingAccountBalance"])
+        self.assertEqual([], second["remainingBalanceDetails"])
+        self.assertEqual(60.0, first["remainingAccountBalance"])
+        self.assertEqual(60.0, billing.find_payment(first["id"])["remainingBalanceDetails"][0]["amount"])
 
     def test_pos_advance_keeps_excess_and_rejects_non_cash_change(self):
         self.add_invoice(amount=100)
@@ -682,6 +707,8 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
         self.assertEqual(2, len(payment["promotionDiscountAdjustmentIds"]))
         self.assertEqual(0.0, billing.invoice_summary(first_invoice)["balance"])
         self.assertEqual(0.0, billing.invoice_summary(second_invoice)["balance"])
+        self.assertEqual(0.0, payment["remainingAccountBalance"])
+        self.assertEqual([], payment["remainingBalanceDetails"])
         posted_promo_adjustments = [
             adjustment
             for adjustment in billing.adjustments
@@ -1061,12 +1088,14 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
             allocations=[billing.PaymentAllocationPayload(invoiceId="invoice-2", amount=75)],
         )
 
-        billing.create_payment(payload, idempotency_key="payment:selected-invoice", admin=self.admin)
+        payment = billing.create_payment(payload, idempotency_key="payment:selected-invoice", admin=self.admin)
 
         self.assertEqual(100.0, billing.invoice_summary(billing.invoices[0])["balance"])
         selected_summary = billing.invoice_summary(billing.invoices[1])
         self.assertEqual("PARTIALLY_PAID", selected_summary["status"])
         self.assertEqual(125.0, selected_summary["balance"])
+        self.assertEqual(225.0, payment["remainingAccountBalance"])
+        self.assertEqual([100.0, 125.0], [row["amount"] for row in payment["remainingBalanceDetails"]])
 
     def test_advance_credit_requires_current_invoices_to_be_fully_allocated(self):
         self.add_invoice(amount=100)
