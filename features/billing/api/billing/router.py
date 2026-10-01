@@ -2,7 +2,7 @@ import hashlib
 import json
 import logging
 import os
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from functools import wraps
@@ -50,6 +50,7 @@ installation_charges: list[dict[str, Any]] = []
 promotions: list[dict[str, Any]] = []
 billing_runs: list[dict[str, Any]] = []
 legacy_payment_evidence: list[dict[str, Any]] = []
+collection_cases: list[dict[str, Any]] = []
 
 _current_admin: Callable[[str | None], dict[str, Any]] | None = None
 _audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None] | None = None
@@ -57,6 +58,8 @@ _customer_resolver: Callable[[str], dict[str, Any]] | None = None
 _customer_searcher: Callable[[str], list[dict[str, Any]]] | None = None
 _customer_seed: Callable[[], None] | None = None
 _sms_sender: Callable[..., dict[str, Any]] | None = None
+_collector_void_guard: Callable[[], Any] | None = None
+_collector_void_sync: Callable[..., list[str]] | None = None
 
 BILLING_MODES = ["PREPAID", "POSTPAID"]
 PRICING_SOURCES = ["MANUAL", "SERVICE_CATALOG", "PRICE_OVERRIDE"]
@@ -89,6 +92,8 @@ COLLECTION_WORKLIST_STATUSES = {
     "UNPAID",
 }
 COLLECTION_FOLLOW_UP_SMS_SENDER_ID = "3J BILL"
+COLLECTION_FOLLOW_UP_ACTIONS = {"NOTE", "CALL", "VISIT", "PROMISE_TO_PAY", "ASSIGN", "SMS_SENT", "SMS_FAILED"}
+COLLECTION_FOLLOW_UP_FILTERS = {"ALL", "DUE", "SCHEDULED", "UNASSIGNED"}
 BILLING_RECORD_COLLECTIONS = {
     "subscription": subscriptions,
     "invoice": invoices,
@@ -99,6 +104,7 @@ BILLING_RECORD_COLLECTIONS = {
     "promotion": promotions,
     "billing_run": billing_runs,
     "migration_evidence": legacy_payment_evidence,
+    "collection_case": collection_cases,
 }
 BILLING_STORAGE_MODE = os.getenv("BILLING_STORAGE") or ("postgres" if os.getenv("DATABASE_URL") else "memory")
 BILLING_SEED_DEMO = os.getenv("BILLING_SEED_DEMO", "false").strip().lower() in {"1", "true", "yes", "on"}
@@ -225,6 +231,15 @@ class OutageRebateBatchPayload(OutageRebatePreviewPayload):
 class CollectionFollowUpSmsPayload(BaseModel):
     messageText: str = Field(..., min_length=1, max_length=500)
     asOf: str | None = None
+
+
+class CollectionFollowUpPayload(BaseModel):
+    action: str
+    note: str | None = Field(default=None, max_length=1000)
+    assignedToUsername: str | None = Field(default=None, max_length=160)
+    nextActionDate: str | None = None
+    promiseDate: str | None = None
+    promiseAmount: float | None = Field(default=None, gt=0)
 
 
 class InstallationChargePayload(BaseModel):
@@ -592,7 +607,7 @@ class BillingRecordStore:
                 logger.exception("Billing audit event dispatch failed after transaction commit")
 
     @contextmanager
-    def transaction(self) -> Iterator[None]:
+    def transaction(self, prelock_collector: bool = False) -> Iterator[None]:
         if self.in_transaction:
             yield
             return
@@ -607,6 +622,11 @@ class BillingRecordStore:
                     connection = self._connect(autocommit=False)
                     self._state.connection = connection
                     with connection.cursor() as cursor:
+                        if prelock_collector:
+                            cursor.execute(
+                                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                                ("threejmain.collector.operational-records",),
+                            )
                         cursor.execute(
                             "SELECT pg_advisory_xact_lock(hashtext(%s))",
                             ("threejmain.billing.financial-posting",),
@@ -736,6 +756,17 @@ def billing_mutation(function: Callable[..., Any]) -> Callable[..., Any]:
     return wrapped
 
 
+def billing_payment_void_mutation(function: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        guard = _collector_void_guard() if _collector_void_guard is not None else nullcontext()
+        with guard:
+            with billing_store.transaction(prelock_collector=_collector_void_sync is not None):
+                return function(*args, **kwargs)
+
+    return wrapped
+
+
 def billing_read_snapshot(function: Callable[..., Any]) -> Callable[..., Any]:
     @wraps(function)
     def wrapped(*args, **kwargs):
@@ -752,14 +783,19 @@ def configure_billing(
     customer_searcher: Callable[[str], list[dict[str, Any]]] | None = None,
     customer_seed: Callable[[], None] | None = None,
     sms_sender: Callable[..., dict[str, Any]] | None = None,
+    collector_void_guard: Callable[[], Any] | None = None,
+    collector_void_sync: Callable[..., list[str]] | None = None,
 ) -> None:
     global _current_admin, _audit_logger, _customer_resolver, _customer_searcher, _customer_seed, _sms_sender
+    global _collector_void_guard, _collector_void_sync
     _current_admin = current_admin
     _audit_logger = audit_logger
     _customer_resolver = customer_resolver
     _customer_searcher = customer_searcher
     _customer_seed = customer_seed
     _sms_sender = sms_sender
+    _collector_void_guard = collector_void_guard
+    _collector_void_sync = collector_void_sync
 
 
 def require_admin(authorization: str | None = Header(default=None)):
@@ -812,8 +848,9 @@ def round_up_to_peso(value: Any) -> float:
     return float(ceil(float(value or 0)))
 
 
-def clean_text(value: Any) -> str:
-    return str(value or "").strip()
+def clean_text(value: Any, limit: int | None = None) -> str:
+    text = str(value or "").strip()
+    return text[:limit] if limit is not None else text
 
 
 def clean_bool(value: Any) -> bool:
@@ -4354,6 +4391,128 @@ def collection_worklist_status_match(row: dict[str, Any], status: str) -> bool:
     return False
 
 
+def collection_case_for_customer(customer_id: str) -> dict[str, Any] | None:
+    return next(
+        (row for row in collection_cases if row.get("customerId") == customer_id and not row.get("deletedAt")),
+        None,
+    )
+
+
+def collection_follow_up_projection(
+    customer_id: str,
+    include_history: bool = False,
+    case: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    case = case if case is not None else collection_case_for_customer(customer_id) or {}
+    projection = {
+        "assignedToUsername": case.get("assignedToUsername") or "",
+        "nextActionDate": case.get("nextActionDate") or "",
+        "promiseDate": case.get("promiseDate") or "",
+        "promiseAmount": money(case.get("promiseAmount")),
+        "lastOutcome": case.get("lastOutcome") or "",
+        "lastContactAt": case.get("lastContactAt") or "",
+        "updatedAt": case.get("updatedAt") or "",
+        "eventCount": len(case.get("history") or []),
+    }
+    if include_history:
+        projection["history"] = deepcopy(case.get("history") or [])
+    return projection
+
+
+def record_collection_follow_up(
+    customer_id: str,
+    payload: CollectionFollowUpPayload,
+    admin: dict[str, Any],
+    *,
+    message_id: str = "",
+) -> dict[str, Any]:
+    account = collection_account_detail(customer_id, billing_business_date(), "ALL")
+    action = normalize_upper(payload.action)
+    if action not in COLLECTION_FOLLOW_UP_ACTIONS:
+        raise HTTPException(status_code=400, detail="Unknown collection follow-up action")
+    note = clean_text(payload.note, 1000)
+    if action in {"NOTE", "CALL", "VISIT"} and not note:
+        raise HTTPException(status_code=400, detail="A note is required for this follow-up action")
+    if action == "ASSIGN" and not clean_text(payload.assignedToUsername, 160):
+        raise HTTPException(status_code=400, detail="Assigned staff username is required")
+
+    existing = collection_case_for_customer(customer_id)
+    assigned_to = (
+        clean_text(payload.assignedToUsername, 160)
+        if payload.assignedToUsername is not None
+        else clean_text((existing or {}).get("assignedToUsername"), 160)
+    ) or clean_text(admin.get("username"), 160)
+    next_action = (
+        clean_text(payload.nextActionDate, 20)
+        if payload.nextActionDate is not None
+        else clean_text((existing or {}).get("nextActionDate"), 20)
+    )
+    promise_date = clean_text(payload.promiseDate, 20)
+    promise_amount = money(payload.promiseAmount)
+    if action == "PROMISE_TO_PAY":
+        if not promise_date or promise_amount <= 0:
+            raise HTTPException(status_code=400, detail="Promise date and amount are required")
+        if promise_amount > money(account["outstandingBalance"]):
+            raise HTTPException(status_code=400, detail="Promise amount cannot exceed the open balance")
+        promise_day = parse_day(promise_date, "promiseDate")
+        if promise_day < billing_business_date():
+            raise HTTPException(status_code=400, detail="Promise date cannot be in the past")
+        if not next_action:
+            next_action = promise_day.isoformat()
+    elif promise_date or promise_amount:
+        raise HTTPException(status_code=400, detail="Promise details require the Promise to Pay action")
+    if next_action:
+        next_day = parse_day(next_action, "nextActionDate")
+        if next_day < billing_business_date():
+            raise HTTPException(status_code=400, detail="Next action date cannot be in the past")
+        next_action = next_day.isoformat()
+
+    timestamp = now_iso()
+    case = existing or {
+        "id": customer_id,
+        "customerId": customer_id,
+        "createdAt": timestamp,
+        "history": [],
+    }
+    event = {
+        "id": str(uuid4()),
+        "action": action,
+        "note": note,
+        "assignedToUsername": assigned_to,
+        "nextActionDate": next_action,
+        "promiseDate": promise_date if action == "PROMISE_TO_PAY" else "",
+        "promiseAmount": promise_amount if action == "PROMISE_TO_PAY" else 0,
+        "messageId": message_id,
+        "outstandingBalanceAtAction": money(account["outstandingBalance"]),
+        "createdAt": timestamp,
+        "createdByUsername": clean_text(admin.get("username"), 160),
+        "createdByName": clean_text(admin.get("fullName") or admin.get("full_name") or admin.get("username"), 200),
+    }
+    case.update({
+        "assignedToUsername": assigned_to,
+        "nextActionDate": next_action,
+        "lastOutcome": action,
+        "updatedAt": timestamp,
+    })
+    if action in {"CALL", "VISIT", "PROMISE_TO_PAY", "SMS_SENT"}:
+        case["lastContactAt"] = timestamp
+    if action == "PROMISE_TO_PAY":
+        case["promiseDate"] = promise_date
+        case["promiseAmount"] = promise_amount
+    case.setdefault("history", []).insert(0, event)
+    if existing is None:
+        collection_cases.append(case)
+    add_audit(
+        "billing_collection_follow_up_recorded",
+        "BillingCollectionAccount",
+        customer_id,
+        {"action": action, "eventId": event["id"], "assignedToUsername": assigned_to, "nextActionDate": next_action},
+        admin["username"],
+    )
+    persist_billing_state()
+    return collection_follow_up_projection(customer_id, include_history=True)
+
+
 def collection_worklist_report(
     as_of: date | None = None,
     billing_period: str = "",
@@ -4361,6 +4520,7 @@ def collection_worklist_report(
     search: str = "",
     page: int = 1,
     page_size: int = 20,
+    follow_up_status: str = "ALL",
 ) -> dict[str, Any]:
     report_day = as_of or billing_business_date()
     selected_period = collection_billing_period(billing_period)
@@ -4370,7 +4530,22 @@ def collection_worklist_report(
             status_code=400,
             detail="status must be ALL_OPEN, ACTION_REQUIRED, OVERDUE, PARTIALLY_PAID, or UNPAID",
         )
+    normalized_follow_up = normalize_upper(follow_up_status or "ALL")
+    if normalized_follow_up not in COLLECTION_FOLLOW_UP_FILTERS:
+        raise HTTPException(status_code=400, detail="followUpStatus must be ALL, DUE, SCHEDULED, or UNASSIGNED")
     account_rows, available_periods = collection_worklist_accounts(report_day, selected_period)
+    follow_up_day = billing_business_date()
+    cases_by_customer = {
+        row["customerId"]: row
+        for row in collection_cases
+        if row.get("customerId") and not row.get("deletedAt")
+    }
+    for row in account_rows:
+        row["followUp"] = collection_follow_up_projection(
+            row["customerId"], case=cases_by_customer.get(row["customerId"], {})
+        )
+        next_action = row["followUp"]["nextActionDate"]
+        row["followUp"]["isDue"] = bool(next_action and next_action <= follow_up_day.isoformat())
     summary = {
         "openCustomerCount": len(account_rows),
         "actionRequiredCustomerCount": sum(bool(row["actionRequired"]) for row in account_rows),
@@ -4381,12 +4556,20 @@ def collection_worklist_report(
         "overdueAmount": money(sum(row["overdueBalance"] for row in account_rows)),
         "currentAmount": money(sum(row["currentBalance"] for row in account_rows)),
         "oldestDaysOverdue": max((int(row["daysOverdue"]) for row in account_rows), default=0),
+        "dueFollowUpCount": sum(bool(row["followUp"]["isDue"]) for row in account_rows),
     }
 
     search_terms = clean_text(search).lower().split()
     filtered_rows: list[dict[str, Any]] = []
     for row in account_rows:
         if not collection_worklist_status_match(row, normalized_status):
+            continue
+        follow_up = row["followUp"]
+        if normalized_follow_up == "DUE" and not follow_up["isDue"]:
+            continue
+        if normalized_follow_up == "SCHEDULED" and (not follow_up["nextActionDate"] or follow_up["isDue"]):
+            continue
+        if normalized_follow_up == "UNASSIGNED" and follow_up["assignedToUsername"]:
             continue
         searchable = " ".join(
             [
@@ -4398,6 +4581,7 @@ def collection_worklist_report(
                 *row["invoiceNumbers"],
                 *row["billingPeriods"],
                 *row["serviceAccountNumbers"],
+                follow_up["assignedToUsername"],
             ]
         ).lower()
         if search_terms and not all(term in searchable for term in search_terms):
@@ -4427,6 +4611,8 @@ def collection_worklist_report(
         "billingPeriodLabel": period_label,
         "availableBillingPeriods": available_periods,
         "selectedStatus": normalized_status,
+        "followUpStatus": normalized_follow_up,
+        "followUpAsOfDate": follow_up_day.isoformat(),
         "search": clean_text(search),
         "summary": summary,
         "rows": public_rows,
@@ -4458,6 +4644,7 @@ def collection_account_detail(
         raise HTTPException(status_code=404, detail="No open receivables found for this customer and scope")
     return {
         **account,
+        "followUp": collection_follow_up_projection(customer_id, include_history=True),
         "scope": "ALL_OPEN_RECEIVABLES",
         "asOfDate": report_day.isoformat(),
         "timeZone": BILLING_TIMEZONE,
@@ -6087,6 +6274,7 @@ def get_collection_worklist(
     search: str = "",
     page: int = 1,
     pageSize: int = 20,
+    followUpStatus: str = "ALL",
     admin=Depends(require_admin),
 ):
     seed_billing_data()
@@ -6098,6 +6286,7 @@ def get_collection_worklist(
         search=search,
         page=page,
         page_size=pageSize,
+        follow_up_status=followUpStatus,
     )
 
 
@@ -6112,6 +6301,18 @@ def get_collection_account(
     seed_billing_data()
     report_day = parse_day(asOf, "asOf") if asOf else billing_business_date()
     return collection_account_detail(customer_id, report_day, billingPeriod)
+
+
+@router.post("/collections/accounts/{customer_id}/follow-ups")
+@billing_mutation
+def create_collection_follow_up(
+    customer_id: str,
+    payload: CollectionFollowUpPayload,
+    admin=Depends(require_admin),
+):
+    if normalize_upper(payload.action) in {"SMS_SENT", "SMS_FAILED"}:
+        raise HTTPException(status_code=400, detail="SMS events are recorded by the messaging workflow")
+    return record_collection_follow_up(customer_id, payload, admin)
 
 
 @router.post("/collections/accounts/{customer_id}/follow-up-sms")
@@ -6153,8 +6354,23 @@ def send_collection_follow_up_sms(
         request_context=request_context,
         created_by_admin_id=admin.get("id") or admin["username"],
     )
+    sms_status = normalize_upper(sms_result.get("status") or "SUCCESS")
+    sms_accepted = sms_status in {"SUCCESS", "ACCEPTED", "SENT", "QUEUED"}
+    try:
+        with billing_store.transaction():
+            record_collection_follow_up(
+                customer_id,
+                CollectionFollowUpPayload(
+                    action="SMS_SENT" if sms_accepted else "SMS_FAILED",
+                    note="Follow-up SMS accepted by A2P" if sms_accepted else "Follow-up SMS was not accepted by A2P",
+                ),
+                admin,
+                message_id=clean_text(sms_result.get("message_id"), 160),
+            )
+    except Exception:
+        logger.exception("Collection follow-up SMS result could not be saved to the Billing timeline")
     add_audit(
-        "billing_collection_follow_up_sms_sent",
+        "billing_collection_follow_up_sms_sent" if sms_accepted else "billing_collection_follow_up_sms_failed",
         "BillingCollectionAccount",
         customer_id,
         {
@@ -7293,10 +7509,26 @@ def update_payment(payment_id: str, payload: PaymentPayload, admin=Depends(requi
 
 
 @router.delete("/payments/{payment_id}")
-@billing_mutation
+@billing_payment_void_mutation
 def delete_payment(payment_id: str, reason: str = "", admin=Depends(require_admin)):
     current = find_payment(payment_id)
     if current.get("status") == "VOID":
+        if _collector_void_sync is not None:
+            repaired_collections = _collector_void_sync(
+                payment_id=current["id"],
+                voided_at=current.get("voidedAt") or now_iso(),
+                voided_by=current.get("voidedByUsername") or admin["username"],
+                reason=current.get("voidReason") or reason,
+                connection=getattr(billing_store._state, "connection", None),
+            )
+            for collection_id in repaired_collections:
+                add_audit(
+                    "collector_collection_reconciled_with_voided_billing_payment",
+                    "CollectorCollection",
+                    collection_id,
+                    {"billingPaymentId": current["id"]},
+                    admin["username"],
+                )
         return {"status": "ok", "idempotentReplay": True}
     applied_credit_rows = credit_applications_for_payment(current["id"])
     if applied_credit_rows:
@@ -7304,6 +7536,10 @@ def delete_payment(payment_id: str, reason: str = "", admin=Depends(require_admi
             status_code=409,
             detail="This advance receipt has already been applied to an invoice and cannot be voided",
         )
+    if normalize_upper(current.get("collectionChannel")) == "COLLECTOR" and _collector_void_sync is None:
+        raise HTTPException(status_code=503, detail="Collector reversal provider is not configured")
+    if normalize_upper(current.get("collectionChannel")) == "COLLECTOR" and not clean_text(reason):
+        raise HTTPException(status_code=400, detail="A reason is required to void a Collector receipt")
     timestamp = now_iso()
     current["status"] = "VOID"
     current["voidedAt"] = timestamp
@@ -7327,8 +7563,34 @@ def delete_payment(payment_id: str, reason: str = "", admin=Depends(require_admi
         },
         admin["username"],
     )
+    if _collector_void_sync is not None:
+        linked_collections = _collector_void_sync(
+            payment_id=current["id"],
+            voided_at=timestamp,
+            voided_by=admin["username"],
+            reason=current["voidReason"],
+            connection=getattr(billing_store._state, "connection", None),
+        )
+        for collection_id in linked_collections:
+            add_audit(
+                "collector_collection_voided_with_billing_payment",
+                "CollectorCollection",
+                collection_id,
+                {"billingPaymentId": current["id"], "reason": current["voidReason"]},
+                admin["username"],
+            )
     persist_billing_state()
     return {"status": "ok"}
+
+
+def billing_payment_posting_status(payment_id: str) -> str:
+    with billing_store.read_snapshot():
+        try:
+            return normalize_upper(find_payment(payment_id).get("status"))
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                return "MISSING"
+            raise
 
 
 def post_collector_payment(

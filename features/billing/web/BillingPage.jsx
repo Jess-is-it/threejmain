@@ -190,11 +190,12 @@ function collectionPerformancePath({ billingMonth, asOf, status, search, page, p
   return `/billing/collection-performance?${params.toString()}`;
 }
 
-function collectionWorklistPath({ asOf, billingPeriod, status, search, page, pageSize }) {
+function collectionWorklistPath({ asOf, billingPeriod, status, followUpStatus, search, page, pageSize }) {
   const params = new URLSearchParams();
   if (asOf) params.set('asOf', asOf);
   if (billingPeriod && billingPeriod !== 'ALL') params.set('billingPeriod', billingPeriod);
   if (status) params.set('status', status);
+  if (followUpStatus && followUpStatus !== 'ALL') params.set('followUpStatus', followUpStatus);
   if (search) params.set('search', search);
   params.set('page', String(page || 1));
   params.set('pageSize', String(pageSize || 20));
@@ -841,6 +842,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
   const [collectionWorklistAsOf, setCollectionWorklistAsOf] = useState(today());
   const [collectionBillingPeriod, setCollectionBillingPeriod] = useState('ALL');
   const [collectionStatus, setCollectionStatus] = useState('ACTION_REQUIRED');
+  const [collectionFollowUpStatus, setCollectionFollowUpStatus] = useState('ALL');
   const [collectionSearch, setCollectionSearch] = useState('');
   const [collectionPage, setCollectionPage] = useState(1);
   const [collectionPageSize, setCollectionPageSize] = useState(20);
@@ -889,6 +891,8 @@ export default function BillingPage({ refreshShell = () => {} }) {
   const [selectedInvoice, setSelectedInvoice] = useState(null);
   const [selectedCollectionAccount, setSelectedCollectionAccount] = useState(null);
   const [collectionAccountBusy, setCollectionAccountBusy] = useState(false);
+  const [collectionFollowUpBusy, setCollectionFollowUpBusy] = useState(false);
+  const [collectionFollowUpForm, setCollectionFollowUpForm] = useState({ action: 'NOTE', note: '', assignedToUsername: '', nextActionDate: '', promiseDate: '', promiseAmount: '' });
   const [collectionSmsForm, setCollectionSmsForm] = useState(null);
   const [collectionSmsBusy, setCollectionSmsBusy] = useState(false);
   const [invoiceDetailBusy, setInvoiceDetailBusy] = useState(false);
@@ -1216,6 +1220,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
           asOf: collectionWorklistAsOf,
           billingPeriod: collectionBillingPeriod,
           status: collectionStatus,
+          followUpStatus: collectionFollowUpStatus,
           search: collectionSearch,
           page: collectionPage,
           pageSize: collectionPageSize
@@ -1323,6 +1328,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
         asOf: collectionWorklistAsOf,
         billingPeriod: collectionBillingPeriod,
         status: collectionStatus,
+        followUpStatus: collectionFollowUpStatus,
         search: collectionSearch,
         page: collectionPage,
         pageSize: collectionPageSize
@@ -1332,6 +1338,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
       setCollectionWorklistAsOf(report.asOfDate);
       setCollectionBillingPeriod(report.billingPeriod || 'ALL');
       setCollectionStatus(report.selectedStatus || 'ACTION_REQUIRED');
+      setCollectionFollowUpStatus(report.followUpStatus || 'ALL');
       setCollectionPage(report.pagination?.page || 1);
     } catch (err) {
       if (requestId === collectionWorklistRequestSequence.current) {
@@ -1381,6 +1388,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
     collectionWorklistAsOf,
     collectionBillingPeriod,
     collectionStatus,
+    collectionFollowUpStatus,
     collectionSearch,
     collectionPage,
     collectionPageSize
@@ -1754,10 +1762,53 @@ export default function BillingPage({ refreshShell = () => {} }) {
     try {
       const detail = await fetchCollectionAccount(account.customerId);
       setSelectedCollectionAccount(detail);
+      setCollectionFollowUpForm({
+        action: 'NOTE',
+        note: '',
+        assignedToUsername: detail.followUp?.assignedToUsername || '',
+        nextActionDate: detail.followUp?.nextActionDate || '',
+        promiseDate: '',
+        promiseAmount: ''
+      });
     } catch (err) {
       showError(err.message);
     } finally {
       setCollectionAccountBusy(false);
+    }
+  }
+
+  async function submitCollectionFollowUp(event) {
+    event.preventDefault();
+    if (!selectedCollectionAccount?.customerId) return;
+    setCollectionFollowUpBusy(true);
+    try {
+      const followUp = await request(
+        `/billing/collections/accounts/${selectedCollectionAccount.customerId}/follow-ups`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            ...collectionFollowUpForm,
+            promiseDate: collectionFollowUpForm.action === 'PROMISE_TO_PAY' ? collectionFollowUpForm.promiseDate : null,
+            promiseAmount: collectionFollowUpForm.action === 'PROMISE_TO_PAY' ? Number(collectionFollowUpForm.promiseAmount) : null
+          })
+        }
+      );
+      setSelectedCollectionAccount((account) => ({ ...account, followUp }));
+      setCollectionFollowUpForm((form) => ({
+        ...form,
+        action: 'NOTE',
+        note: '',
+        assignedToUsername: followUp.assignedToUsername || '',
+        nextActionDate: followUp.nextActionDate || '',
+        promiseDate: '',
+        promiseAmount: ''
+      }));
+      await loadCollectionWorklist();
+      showMessage('Collection follow-up recorded.');
+    } catch (err) {
+      showError(err.message);
+    } finally {
+      setCollectionFollowUpBusy(false);
     }
   }
 
@@ -2636,6 +2687,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
                   report={collectionWorklist}
                   busy={collectionWorklistBusy}
                   selectedStatus={collectionStatus}
+                  followUpStatus={collectionFollowUpStatus}
                   search={collectionSearch}
                   pageSize={collectionPageSize}
                   avatarConfig={avatarConfig}
@@ -2643,6 +2695,10 @@ export default function BillingPage({ refreshShell = () => {} }) {
                   onStatus={(value) => {
                     setCollectionPage(1);
                     setCollectionStatus(value);
+                  }}
+                  onFollowUpStatus={(value) => {
+                    setCollectionPage(1);
+                    setCollectionFollowUpStatus(value);
                   }}
                   onSearch={(value) => {
                     setCollectionPage(1);
@@ -2938,6 +2994,10 @@ export default function BillingPage({ refreshShell = () => {} }) {
           onViewInvoice={openInvoiceDetail}
           onDownloadInvoice={downloadInvoicePdf}
           onSms={openCollectionSms}
+          followUpForm={collectionFollowUpForm}
+          followUpBusy={collectionFollowUpBusy}
+          onFollowUpChange={setCollectionFollowUpForm}
+          onFollowUpSubmit={submitCollectionFollowUp}
           onClose={closeModal}
         />
       </Modal>
@@ -3801,11 +3861,13 @@ function CollectionWorklist({
   report,
   busy,
   selectedStatus,
+  followUpStatus,
   search,
   pageSize,
   avatarConfig,
   actionBusy,
   onStatus,
+  onFollowUpStatus,
   onSearch,
   onPage,
   onPageSize,
@@ -3864,6 +3926,17 @@ function CollectionWorklist({
             </button>
           )}
         </div>
+        <select
+          className="form-select form-select-sm billing-follow-up-filter"
+          value={followUpStatus}
+          aria-label="Filter collection follow-ups"
+          onChange={(event) => onFollowUpStatus(event.target.value)}
+        >
+          <option value="ALL">All follow-ups</option>
+          <option value="DUE">Action due</option>
+          <option value="SCHEDULED">Scheduled</option>
+          <option value="UNASSIGNED">Unassigned</option>
+        </select>
       </div>
 
       <div className="billing-collection-worklist-updating text-muted small" role="status" aria-live="polite">
@@ -3883,6 +3956,7 @@ function CollectionWorklist({
                 <th>Open Invoices</th>
                 <th>Balance</th>
                 <th>Last Payment</th>
+                <th>Follow-up</th>
                 <th aria-label="Actions" />
               </tr>
             </thead>
@@ -3954,6 +4028,15 @@ function CollectionWorklist({
                           {row.lastPaymentChannel && <div className="text-muted small">{String(row.lastPaymentChannel).replaceAll('_', ' ')}</div>}
                         </>
                       ) : <span className="text-muted">None recorded</span>}
+                    </td>
+                    <td data-label="Follow-up">
+                      <div>{row.followUp?.assignedToUsername || 'Unassigned'}</div>
+                      {row.followUp?.nextActionDate ? (
+                        <div className={`small ${row.followUp.isDue ? 'text-danger' : 'text-muted'}`}>
+                          {row.followUp.isDue ? 'Due ' : 'Next '}{formatDate(row.followUp.nextActionDate)}
+                        </div>
+                      ) : <div className="text-muted small">No next action</div>}
+                      {row.followUp?.promiseDate && <div className="text-muted small">Promise {currency(row.followUp.promiseAmount)} · {formatDate(row.followUp.promiseDate)}</div>}
                     </td>
                     <td data-label="Actions">
                       <div className="billing-collection-worklist-actions">
@@ -4038,6 +4121,10 @@ function CollectionAccountDetail({
   onViewInvoice,
   onDownloadInvoice,
   onSms,
+  followUpForm,
+  followUpBusy,
+  onFollowUpChange,
+  onFollowUpSubmit,
   onClose
 }) {
   if (busy) {
@@ -4099,6 +4186,14 @@ function CollectionAccountDetail({
           <strong>{account.lastPaymentDate ? `${currency(account.lastPaymentAmount)} · ${formatDate(account.lastPaymentDate)}` : 'None recorded'}</strong>
         </div>
       </div>
+
+      <CollectionFollowUpPanel
+        followUp={account.followUp || {}}
+        form={followUpForm}
+        busy={followUpBusy}
+        onChange={onFollowUpChange}
+        onSubmit={onFollowUpSubmit}
+      />
 
       <div className="table-responsive">
         <table className="table table-vcenter billing-collection-account-invoices">
@@ -4169,6 +4264,80 @@ function CollectionAccountDetail({
         <button className="btn" type="button" onClick={onClose}>Close</button>
       </div>
     </div>
+  );
+}
+
+function CollectionFollowUpPanel({ followUp, form, busy, onChange, onSubmit }) {
+  const history = followUp.history || [];
+  const needsNote = ['NOTE', 'CALL', 'VISIT'].includes(form.action);
+  return (
+    <section className="billing-collection-follow-up" aria-label="Collection follow-up">
+      <div className="billing-collection-follow-up-heading">
+        <div>
+          <h4>Follow-up plan</h4>
+          <p className="text-muted small">Keep a record of contacts and the next action for this account.</p>
+        </div>
+        {followUp.nextActionDate && (
+          <span className={`badge ${followUp.nextActionDate <= today() ? 'bg-red-lt' : 'bg-blue-lt'}`}>
+            Next action {formatDate(followUp.nextActionDate)}
+          </span>
+        )}
+      </div>
+      <form className="billing-collection-follow-up-form" onSubmit={onSubmit}>
+        <label>
+          <span className="form-label">Action</span>
+          <select className="form-select" value={form.action} onChange={(event) => onChange({ ...form, action: event.target.value })}>
+            <option value="NOTE">Add note</option>
+            <option value="CALL">Phone call</option>
+            <option value="VISIT">Visit</option>
+            <option value="PROMISE_TO_PAY">Promise to pay</option>
+            <option value="ASSIGN">Assign owner</option>
+          </select>
+        </label>
+        <label>
+          <span className="form-label">Assigned staff username</span>
+          <input className="form-control" value={form.assignedToUsername} maxLength={160} placeholder="Defaults to your account" required={form.action === 'ASSIGN'} onChange={(event) => onChange({ ...form, assignedToUsername: event.target.value })} />
+        </label>
+        <label>
+          <span className="form-label">Next action date</span>
+          <input className="form-control" type="date" value={form.nextActionDate} onChange={(event) => onChange({ ...form, nextActionDate: event.target.value })} />
+        </label>
+        {form.action === 'PROMISE_TO_PAY' && (
+          <>
+            <label>
+              <span className="form-label">Promised amount</span>
+              <input className="form-control" type="number" min="0.01" step="0.01" value={form.promiseAmount} required onChange={(event) => onChange({ ...form, promiseAmount: event.target.value })} />
+            </label>
+            <label>
+              <span className="form-label">Promised date</span>
+              <input className="form-control" type="date" value={form.promiseDate} required onChange={(event) => onChange({ ...form, promiseDate: event.target.value })} />
+            </label>
+          </>
+        )}
+        <label className="billing-collection-follow-up-note">
+          <span className="form-label">{needsNote ? 'Contact note' : 'Note (optional)'}</span>
+          <textarea className="form-control" rows={2} maxLength={1000} value={form.note} required={needsNote} placeholder="What happened, or what should happen next?" onChange={(event) => onChange({ ...form, note: event.target.value })} />
+        </label>
+        <button className="btn btn-primary" type="submit" disabled={busy}>
+          <IconDeviceFloppy size={16} className="me-1" />{busy ? 'Saving...' : 'Record follow-up'}
+        </button>
+      </form>
+      <div className="billing-collection-follow-up-history">
+        <strong>Activity history</strong>
+        {history.length ? (
+          <ol>
+            {history.map((event) => (
+              <li key={event.id}>
+                <div><strong>{String(event.action || '').replaceAll('_', ' ')}</strong><span className="text-muted small">{formatDateTime(event.createdAt)} · {event.createdByName || event.createdByUsername}</span></div>
+                {event.note && <p>{event.note}</p>}
+                {event.action === 'PROMISE_TO_PAY' && <small>Promised {currency(event.promiseAmount)} by {formatDate(event.promiseDate)}</small>}
+                {event.nextActionDate && <small>Next action {formatDate(event.nextActionDate)} · Owner {event.assignedToUsername}</small>}
+              </li>
+            ))}
+          </ol>
+        ) : <p className="text-muted small">No follow-up recorded yet.</p>}
+      </div>
+    </section>
   );
 }
 

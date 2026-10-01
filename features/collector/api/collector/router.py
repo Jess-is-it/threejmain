@@ -40,6 +40,7 @@ _customer_resolver: Callable[[str], dict[str, Any]] | None = None
 _customer_searcher: Callable[[str], list[dict[str, Any]]] | None = None
 _billing_aging_provider: Callable[..., list[dict[str, Any]]] | None = None
 _billing_payment_poster: Callable[..., dict[str, Any]] | None = None
+_billing_payment_status_provider: Callable[[str], str] | None = None
 _sms_sender: Callable[..., dict[str, Any]] | None = None
 
 COLLECTOR_STORAGE_MODE = os.getenv("COLLECTOR_STORAGE") or ("postgres" if os.getenv("DATABASE_URL") else "memory")
@@ -55,7 +56,7 @@ PORTAL_ROLE_NAMES = COLLECTOR_ROLE_NAMES | FINANCE_ROLE_NAMES | SUPERVISOR_ROLE_
 
 PAYMENT_METHODS = ["CASH", "GCASH"]
 CLAIM_STATUSES = ["CLAIMED", "RELEASED", "EXPIRED"]
-COLLECTION_CUSTODY_STATUSES = ["HELD", "SUBMITTED", "UNDER_REVIEW", "SETTLED"]
+COLLECTION_CUSTODY_STATUSES = ["HELD", "SUBMITTED", "UNDER_REVIEW", "SETTLED", "VOID"]
 REMITTANCE_STATUSES = ["SUBMITTED", "VARIANCE", "CLOSED"]
 
 
@@ -106,6 +107,12 @@ class RemittanceConfirmationPayload(BaseModel):
     companyGcashReference: str | None = None
     notes: str | None = None
     acceptVariance: bool = False
+
+
+class ReversalReviewPayload(BaseModel):
+    disposition: str
+    note: str = Field(min_length=3, max_length=1000)
+    referenceNumber: str | None = None
 
 
 def now_iso() -> str:
@@ -212,15 +219,17 @@ def configure_collector(
     billing_aging_provider: Callable[..., list[dict[str, Any]]] | None = None,
     billing_payment_poster: Callable[..., dict[str, Any]] | None = None,
     sms_sender: Callable[..., dict[str, Any]] | None = None,
+    billing_payment_status_provider: Callable[[str], str] | None = None,
 ) -> None:
     global _current_admin, _audit_logger, _customer_resolver, _customer_searcher
-    global _billing_aging_provider, _billing_payment_poster, _sms_sender
+    global _billing_aging_provider, _billing_payment_poster, _billing_payment_status_provider, _sms_sender
     _current_admin = current_admin
     _audit_logger = audit_logger
     _customer_resolver = customer_resolver
     _customer_searcher = customer_searcher
     _billing_aging_provider = billing_aging_provider
     _billing_payment_poster = billing_payment_poster
+    _billing_payment_status_provider = billing_payment_status_provider
     _sms_sender = sms_sender
 
 
@@ -528,6 +537,83 @@ class CollectorRecordStore:
 
 
 collector_store = CollectorRecordStore()
+
+
+def collector_payment_void_guard():
+    """Keep Collector -> Billing lock order consistent with collection posting."""
+    return collector_store._process_lock
+
+
+def synchronize_billing_payment_void(
+    *,
+    payment_id: str,
+    voided_at: str,
+    voided_by: str,
+    reason: str,
+    connection=None,
+) -> list[str]:
+    """Void held custody in the same database transaction as the Billing receipt."""
+    if connection is not None and not collector_store.postgres_enabled:
+        raise HTTPException(status_code=503, detail="Collector and Billing storage modes do not match")
+    if collector_store.postgres_enabled:
+        if connection is None:
+            raise HTTPException(status_code=503, detail="Collector reversal needs the Billing database transaction")
+        collector_store.ensure_schema(connection)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT data FROM collector_records
+                WHERE record_type = 'collection' AND billing_payment_id = %s AND deleted_at IS NULL
+                FOR UPDATE
+                """,
+                (payment_id,),
+            )
+            linked = [dict(row.get("data") or {}) for row in cursor.fetchall()]
+    else:
+        collector_store.ensure_loaded()
+        linked = [
+            row for row in collections
+            if row.get("billingPaymentId") == payment_id and not row.get("deletedAt")
+        ]
+
+    for row in linked:
+        if normalize_upper(row.get("status")) == "VOID":
+            continue
+        if normalize_upper(row.get("status")) != "POSTED" or row.get("custodyStatus") != "HELD" or row.get("remittanceId"):
+            raise HTTPException(
+                status_code=409,
+                detail="Collector receipt is already in remittance; resolve its custody before voiding the Billing payment",
+            )
+
+    updated_ids = []
+    for row in linked:
+        if normalize_upper(row.get("status")) == "VOID":
+            continue
+        row.update({
+            "status": "VOID",
+            "custodyStatus": "VOID",
+            "reversalReviewStatus": "PENDING",
+            "voidedAt": voided_at,
+            "voidedByUsername": voided_by,
+            "voidReason": clean_text(reason, 1000),
+            "updatedAt": voided_at,
+        })
+        if collector_store.postgres_enabled:
+            collector_store.save_record("collection", row, connection=connection)
+        updated_ids.append(row["id"])
+    return updated_ids
+
+
+def require_posted_billing_payments(rows: list[dict[str, Any]]) -> None:
+    if _billing_payment_status_provider is None:
+        return
+    for row in rows:
+        payment_id = clean_text(row.get("billingPaymentId"), 160)
+        if not payment_id or normalize_upper(_billing_payment_status_provider(payment_id)) != "POSTED":
+            raise HTTPException(
+                status_code=409,
+                detail="A linked Billing payment is void or missing; Finance must resolve it before remittance",
+            )
 
 
 def collector_mutation(function: Callable[..., Any]) -> Callable[..., Any]:
@@ -845,6 +931,7 @@ def open_custody_collections(username: str) -> list[dict[str, Any]]:
 
 
 def collection_totals(rows: list[dict[str, Any]]) -> dict[str, float | int]:
+    rows = [row for row in rows if row.get("status") == "POSTED"]
     cash_rows = [row for row in rows if row.get("method") == "CASH"]
     gcash_rows = [row for row in rows if row.get("method") == "GCASH"]
     return {
@@ -1600,6 +1687,8 @@ def record_print_event(
 ):
     record = find_record(collections, collection_id, "Collection")
     public_collection(record, actor)
+    if record.get("status") != "POSTED":
+        raise HTTPException(status_code=409, detail="Voided receipts cannot be reprinted")
     history = record.setdefault("printHistory", [])
     event = {
         "id": str(uuid4()),
@@ -1642,6 +1731,7 @@ def submit_remittance(payload: RemittancePayload, actor=Depends(require_actor)):
         selected = held
     if not selected:
         raise HTTPException(status_code=400, detail="There are no held collections to remit")
+    require_posted_billing_payments(selected)
     totals = collection_totals(selected)
     declared_cash = money(payload.declaredCash if payload.declaredCash is not None else totals["cash"])
     transferred_gcash = money(
@@ -1716,6 +1806,12 @@ def finance_overview(actor=Depends(require_actor)):
     closed_rows = [
         row for row in remittances if row.get("status") == "CLOSED" and not row.get("deletedAt")
     ]
+    pending_reversals = [
+        row for row in collections
+        if row.get("status") == "VOID"
+        and row.get("reversalReviewStatus") != "RESOLVED"
+        and not row.get("deletedAt")
+    ]
     collection_by_id = {
         row.get("id"): row for row in collections if row.get("id") and not row.get("deletedAt")
     }
@@ -1725,6 +1821,8 @@ def finance_overview(actor=Depends(require_actor)):
             "pendingCash": money(sum(row.get("expectedCash", 0) for row in open_rows)),
             "pendingGcash": money(sum(row.get("expectedGcash", 0) for row in open_rows)),
             "varianceBatches": sum(1 for row in open_rows if row.get("status") == "VARIANCE"),
+            "pendingReversals": len(pending_reversals),
+            "pendingReversalAmount": money(sum(row.get("amount", 0) for row in pending_reversals)),
             "closedToday": sum(
                 1
                 for row in closed_rows
@@ -1743,7 +1841,69 @@ def finance_overview(actor=Depends(require_actor)):
                 reverse=True,
             )[:20]
         ],
+        "pendingReversals": [
+            {
+                "id": row.get("id"),
+                "receiptNumber": row.get("receiptNumber"),
+                "customerName": clean_text((row.get("customer") or {}).get("name"), 240),
+                "collectorName": row.get("collectorName") or row.get("collectorUsername") or "",
+                "method": row.get("method") or "",
+                "amount": money(row.get("amount")),
+                "voidedAt": row.get("voidedAt") or "",
+                "voidReason": row.get("voidReason") or "",
+            }
+            for row in sorted(pending_reversals, key=lambda item: item.get("voidedAt") or "", reverse=True)
+        ],
     }
+
+
+@router.post("/finance/reversed-collections/{collection_id}/resolve")
+@collector_mutation
+def resolve_reversed_collection(
+    collection_id: str,
+    payload: ReversalReviewPayload,
+    actor=Depends(require_actor),
+):
+    require_collector_permission(actor, "collector.finance.confirm")
+    record = find_record(collections, collection_id, "Collection")
+    if record.get("status") != "VOID":
+        raise HTTPException(status_code=409, detail="Only a voided collection can be reviewed")
+    disposition = normalize_upper(payload.disposition)
+    if disposition not in {"REFUNDED_TO_CUSTOMER", "DUPLICATE_ENTRY_NO_FUNDS", "OTHER_ACCOUNTED"}:
+        raise HTTPException(status_code=400, detail="Invalid reversal disposition")
+    note = clean_text(payload.note, 1000)
+    if len(note) < 3:
+        raise HTTPException(status_code=400, detail="A Finance review note is required")
+    reference = clean_text(payload.referenceNumber, 160)
+    if disposition == "REFUNDED_TO_CUSTOMER" and record.get("method") == "GCASH" and not reference:
+        raise HTTPException(status_code=400, detail="GCash refund reference is required")
+    if record.get("reversalReviewStatus") == "RESOLVED":
+        if (
+            record.get("reversalDisposition") != disposition
+            or record.get("reversalReviewNote") != note
+            or (record.get("reversalReferenceNumber") or "") != reference
+        ):
+            raise HTTPException(status_code=409, detail="This reversal already has a different Finance disposition")
+        return public_collection(record, actor)
+    timestamp = now_iso()
+    record.update({
+        "reversalReviewStatus": "RESOLVED",
+        "reversalDisposition": disposition,
+        "reversalReviewNote": note,
+        "reversalReferenceNumber": reference,
+        "reversalReviewedAt": timestamp,
+        "reversalReviewedByUsername": actor_username(actor),
+        "updatedAt": timestamp,
+    })
+    collector_store.mark_dirty()
+    add_audit(
+        "collector_reversal_custody_reviewed",
+        "CollectorCollection",
+        record["id"],
+        {"billingPaymentId": record.get("billingPaymentId"), "disposition": disposition, "referenceNumber": reference},
+        actor_username(actor),
+    )
+    return public_collection(record, actor)
 
 
 @router.post("/remittances/{remittance_id}/confirm")
@@ -1759,6 +1919,11 @@ def confirm_remittance(
         return remittance
     if remittance.get("status") not in {"SUBMITTED", "VARIANCE"}:
         raise HTTPException(status_code=409, detail="Remittance is not available for confirmation")
+    linked_ids = set(remittance.get("collectionIds") or [])
+    linked_rows = [row for row in collections if row.get("id") in linked_ids]
+    if any(row.get("status") != "POSTED" for row in linked_rows):
+        raise HTTPException(status_code=409, detail="A linked Collector receipt is void")
+    require_posted_billing_payments(linked_rows)
     reconciliation = finance_remittance_view(remittance)
     if (
         len(reconciliation["collectionItems"]) != int(remittance.get("collectionCount") or 0)

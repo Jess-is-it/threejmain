@@ -2582,6 +2582,115 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
         self.assertEqual("ISSUED", billing.invoices[0]["status"])
         self.assertEqual([], self.audit_events)
 
+    def _enable_collector_reversal(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "collector" / "api"))
+        collector = importlib.import_module("collector.router")
+        for records in collector.COLLECTOR_RECORD_COLLECTIONS.values():
+            records.clear()
+        collector.collector_store.storage_mode = "memory"
+        collector.collector_store.database_url = ""
+        collector.collector_store._loaded = True
+        billing.configure_billing(
+            billing._current_admin,
+            billing._audit_logger,
+            billing._customer_resolver,
+            billing._customer_searcher,
+            sms_sender=billing._sms_sender,
+            collector_void_guard=collector.collector_payment_void_guard,
+            collector_void_sync=collector.synchronize_billing_payment_void,
+        )
+        collector._billing_payment_status_provider = billing.billing_payment_posting_status
+        return collector
+
+    def test_collector_held_receipt_voids_with_billing_payment(self):
+        collector = self._enable_collector_reversal()
+        invoice = self.add_invoice()
+        payload = self.payment_payload()
+        payload.collectionChannel = "COLLECTOR"
+        payment = billing.create_payment(payload, idempotency_key="collector-void-held", admin=self.admin)
+        collector.collections.append({
+            "id": "collection-held",
+            "billingPaymentId": payment["id"],
+            "status": "POSTED",
+            "custodyStatus": "HELD",
+            "collectorUsername": "collector-one",
+            "method": "CASH",
+            "amount": 100,
+        })
+
+        with self.assertRaises(HTTPException) as missing_reason:
+            billing.delete_payment(payment["id"], admin=self.admin)
+        self.assertEqual(400, missing_reason.exception.status_code)
+
+        billing.delete_payment(payment["id"], reason="Receipt entered twice", admin=self.admin)
+
+        self.assertEqual("VOID", billing.payments[0]["status"])
+        self.assertEqual("VOID", collector.collections[0]["status"])
+        self.assertEqual("VOID", collector.collections[0]["custodyStatus"])
+        self.assertEqual("Receipt entered twice", collector.collections[0]["voidReason"])
+        self.assertEqual(0, collector.collection_totals(collector.collections)["total"])
+        self.assertEqual(100, billing.get_invoice(invoice["id"], admin=self.admin)["balance"])
+        self.assertTrue(any(event["action"] == "collector_collection_voided_with_billing_payment" for event in self.audit_events))
+
+    def test_collector_remitted_receipt_blocks_billing_void(self):
+        collector = self._enable_collector_reversal()
+        invoice = self.add_invoice()
+        payload = self.payment_payload()
+        payload.collectionChannel = "COLLECTOR"
+        payment = billing.create_payment(payload, idempotency_key="collector-void-remitted", admin=self.admin)
+        collector.collections.append({
+            "id": "collection-remitted",
+            "billingPaymentId": payment["id"],
+            "status": "POSTED",
+            "custodyStatus": "SUBMITTED",
+            "remittanceId": "remittance-1",
+            "collectorUsername": "collector-one",
+            "method": "CASH",
+            "amount": 100,
+        })
+
+        with self.assertRaises(HTTPException) as raised:
+            billing.delete_payment(payment["id"], reason="Receipt entered twice", admin=self.admin)
+
+        self.assertEqual(409, raised.exception.status_code)
+        self.assertEqual("POSTED", billing.payments[0]["status"])
+        self.assertEqual("POSTED", collector.collections[0]["status"])
+        self.assertEqual(0, billing.get_invoice(invoice["id"], admin=self.admin)["balance"])
+
+    def test_collection_follow_up_persists_owner_promise_and_due_filter(self):
+        self.add_invoice(amount=300)
+        with patch.object(billing, "billing_business_date", return_value=date(2026, 10, 1)):
+            billing.create_collection_follow_up(
+                self.customer["id"],
+                billing.CollectionFollowUpPayload(
+                    action="ASSIGN",
+                    assignedToUsername="finance-one",
+                    nextActionDate="2026-10-01",
+                ),
+                admin=self.admin,
+            )
+            follow_up = billing.create_collection_follow_up(
+                self.customer["id"],
+                billing.CollectionFollowUpPayload(
+                    action="PROMISE_TO_PAY",
+                    note="Customer expects to pay after payday",
+                    assignedToUsername="finance-one",
+                    nextActionDate="2026-10-01",
+                    promiseDate="2026-10-05",
+                    promiseAmount=200,
+                ),
+                admin=self.admin,
+            )
+            due = billing.get_collection_worklist(followUpStatus="DUE", admin=self.admin)
+            detail = billing.get_collection_account(self.customer["id"], admin=self.admin)
+
+        self.assertEqual("finance-one", follow_up["assignedToUsername"])
+        self.assertEqual(200, follow_up["promiseAmount"])
+        self.assertEqual(2, len(follow_up["history"]))
+        self.assertEqual(1, due["pagination"]["totalRows"])
+        self.assertEqual(1, due["summary"]["dueFollowUpCount"])
+        self.assertEqual("PROMISE_TO_PAY", detail["followUp"]["history"][0]["action"])
+
 
 if __name__ == "__main__":
     unittest.main()

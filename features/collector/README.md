@@ -23,6 +23,7 @@ Collector is the mobile field-payment and office-remittance portal for 3J Comput
 - A collector remits all selected held receipts as separate expected cash and GCash totals. GCash batches require the transfer reference to company GCash.
 - Finance reviews every linked customer, receipt, payment method, and payment amount in the remittance before recording the physical cash count and company GCash receipt. Exact batches close as settled; shortages or overages remain a variance unless Finance explicitly accepts them with a note.
 - Cash and GCash variances are evaluated independently, so an overage in one cannot hide a shortage in the other.
+- Billing payment voids synchronize linked held Collector receipts in one PostgreSQL transaction. The Collector receipt remains in history as `VOID`, leaves normal remittance totals, and cannot be reprinted. Finance sees it in a reversal review queue until it records a refund, duplicate-entry/no-funds finding, or another accounted disposition with a note; GCash refunds require a reference. Once a receipt enters a remittance, Billing rejects the void until Finance resolves custody through a separate controlled process. Collector submission and Finance confirmation verify that every linked Billing payment is still posted.
 
 ## Routes
 
@@ -56,6 +57,7 @@ Endpoints:
 - `POST /collections/{collection_id}/print-events`
 - `GET/POST /remittances`
 - `GET /finance/overview`
+- `POST /finance/reversed-collections/{collection_id}/resolve`
 - `POST /remittances/{remittance_id}/confirm`
 
 `POST /collections` requires an `Idempotency-Key` header.
@@ -96,6 +98,7 @@ Provider contracts:
 
 - Customer Profiling supplies identity, contact, address, and coordinates.
 - Billing supplies active accounts, collectible aging, versioned automatic-promotion quotes, account credit, canonical payment posting, and automatic future-invoice credit application.
+- Billing also supplies the payment-posting status check used before remittance and Finance confirmation; Collector supplies a same-transaction held-receipt reversal callback for Billing payment voids.
 - System Settings supplies authentication, permissions, and A2P SMS.
 - Logs receives reservation, customer-unavailable messaging, payment, SMS, print, remittance, settlement, and variance audit events.
 
@@ -128,7 +131,7 @@ The implementation follows the enterprise boundary that payment channels origina
 - [Philippine BIR Revenue Regulation 7-2024](https://bir-cdn.bir.gov.ph/BIR/pdf/RR%20No.%207-%202024.pdf)
 - [Philippine National Privacy Commission principles](https://privacy.gov.ph/gpa-resolution-on-achieving-global-data-protection-standards-principles-to-ensure-high-levels-of-data-protection-and-privacy-worldwide/)
 
-Collector does not store card numbers, PINs, CVVs, or magnetic-stripe data. Promotion discounts are Billing credits and never enter Collector custody or Finance remittance totals. Advance credit cannot coexist with unpaid current invoices: every current invoice must first be settled by its actual payment plus any Billing-posted promotion credit. GPS evidence, offline payment queues, promises-to-pay, permanent collection runs, reversal synchronization, and advanced reports remain deferred.
+Collector does not store card numbers, PINs, CVVs, or magnetic-stripe data. Promotion discounts are Billing credits and never enter Collector custody or Finance remittance totals. Advance credit cannot coexist with unpaid current invoices: every current invoice must first be settled by its actual payment plus any Billing-posted promotion credit. GPS evidence, offline payment queues, Collector-portal promises-to-pay, permanent collection runs, remittance reversal, and advanced reports remain deferred.
 
 ## Tests
 

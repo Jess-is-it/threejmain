@@ -37,6 +37,8 @@
 - Collector custody totals split by cash and GCash
 - Remittance batch submission and personal-to-company GCash transfer reference
 - Finance count/verification, channel-specific variance, accepted resolution note, and settlement
+- Same-transaction reversal of held custody when the linked Billing payment is voided; submitted/under-review/settled custody blocks Billing void. Held reversals remain in Finance's review queue until a documented funds disposition is recorded; GCash refunds require a reference.
+- Billing posting-status checks before remittance submission and Finance confirmation, including older unsynchronized receipts
 - Role/permission enforcement and shared audit events
 
 ## Core Decisions
@@ -70,6 +72,7 @@ Collection:
 status = POSTED
 custodyStatus = HELD -> SUBMITTED -> SETTLED
                                \-> UNDER_REVIEW -> SETTLED
+POSTED / HELD -> VOID / VOID when the linked Billing payment is voided
 ```
 
 Remittance:
@@ -103,6 +106,8 @@ It returns the Collector collection record with the Billing payment id, official
 `POST /api/collector/collections/{id}/print-events` appends `ORIGINAL` for the first print and `REPRINT` for later prints. It does not call Billing or A2P.
 
 `POST /api/collector/remittances` submits held collections. `GET /api/collector/finance/overview` enriches every open/recent remittance with `collectionItems`, containing each linked customer name, account number, receipt number, method, and payment amount plus `listedCollectionTotal` for Finance review. The UI and confirmation API block settlement when the linked item count or total does not match the remittance summary. `POST /api/collector/remittances/{id}/confirm` records Finance count/verification and either closes or flags the batch.
+
+`GET /api/collector/finance/overview` also returns `pendingReversals` and counts/amounts for voided held receipts awaiting funds review. `POST /api/collector/finance/reversed-collections/{id}/resolve` requires Finance confirmation permission and persists an attributed disposition, note, and optional reference; GCash refunds require a reference. It never reposts or changes the Billing payment.
 
 ## Persistence
 
@@ -142,7 +147,7 @@ The first print and every later reprint use the same clean customer-facing recei
 - Browser printing depends on the Android print-service/printer application and cannot guarantee the printer completed a physical print.
 - Billing and Collector use separate durable module transactions. Stable idempotency makes a failed Collector-link retry safe if Billing committed first, but cross-module distributed transactions are not available.
 - An advance receipt that has already funded a future invoice cannot be voided until a controlled credit-application reversal workflow exists.
-- Billing payment reversal synchronization into Collector custody is deferred. Finance must not settle a receipt that Billing has subsequently voided until that contract is added.
+- Remittance reversal and custody correction for a receipt already submitted or settled remain future work. Billing rejects payment voids for those receipts with HTTP 409; Finance confirmation also rejects a linked Billing payment that is void or missing.
 - GPS evidence, signatures, photos, promises-to-pay, permanent collection runs, and advanced reporting are deferred.
 
 ## Verification

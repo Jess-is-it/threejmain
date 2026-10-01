@@ -1,5 +1,6 @@
 from .router import (
     billing_metrics,
+    billing_payment_posting_status,
     collector_aging_accounts,
     configure_billing,
     migration_promotion_catalog,
@@ -13,6 +14,7 @@ from .router import (
 
 __all__ = [
     "billing_metrics",
+    "billing_payment_posting_status",
     "collector_aging_accounts",
     "configure_billing",
     "migration_promotion_catalog",

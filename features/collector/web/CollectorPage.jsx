@@ -335,7 +335,7 @@ function CollectionCard({ collection, onPrint, printing }) {
         </div>
         {collection.referenceNumber && <div className="collector-reference">GCash ref: {collection.referenceNumber}</div>}
         <div className="collector-card-actions">
-          <button className="btn btn-outline-primary ms-auto" type="button" disabled={printing} onClick={() => onPrint(collection)}>
+          <button className="btn btn-outline-primary ms-auto" type="button" disabled={printing || collection.status !== 'POSTED'} onClick={() => onPrint(collection)}>
             <IconPrinter size={17} /> {collection.printHistory?.length ? 'Print again' : 'Print receipt'}
           </button>
         </div>
@@ -477,7 +477,7 @@ export default function CollectorPage({ currentUser = {} }) {
   const [customers, setCustomers] = useState([]);
   const [collections, setCollections] = useState([]);
   const [remittances, setRemittances] = useState([]);
-  const [finance, setFinance] = useState({ metrics: {}, openRemittances: [], recentClosed: [] });
+  const [finance, setFinance] = useState({ metrics: {}, openRemittances: [], recentClosed: [], pendingReversals: [] });
   const [activeTab, setActiveTab] = useState('worklist');
   const [search, setSearch] = useState('');
   const [locationFilter, setLocationFilter] = useState('');
@@ -495,6 +495,7 @@ export default function CollectorPage({ currentUser = {} }) {
     notes: ''
   });
   const [financeDrafts, setFinanceDrafts] = useState({});
+  const [reversalDrafts, setReversalDrafts] = useState({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -855,6 +856,34 @@ export default function CollectorPage({ currentUser = {} }) {
     }
   }
 
+  function reversalDraft(collection) {
+    return reversalDrafts[collection.id] || { disposition: '', note: '', referenceNumber: '' };
+  }
+
+  function updateReversalDraft(collection, key, value) {
+    setReversalDrafts((current) => ({
+      ...current,
+      [collection.id]: { ...reversalDraft(collection), [key]: value }
+    }));
+  }
+
+  async function resolveReversal(collection) {
+    const draft = reversalDraft(collection);
+    setBusy(`reversal-${collection.id}`);
+    try {
+      await request(`/collector/finance/reversed-collections/${collection.id}/resolve`, {
+        method: 'POST',
+        body: JSON.stringify(draft)
+      });
+      showNotice(`${collection.receiptNumber} custody review recorded.`);
+      await load();
+    } catch (err) {
+      showError(err.message);
+    } finally {
+      setBusy('');
+    }
+  }
+
   const tabs = [
     meta.canCollect && { id: 'worklist', label: 'Customers', icon: IconMapPin },
     { id: 'collections', label: 'Receipts', icon: IconReceipt },
@@ -1021,6 +1050,57 @@ export default function CollectorPage({ currentUser = {} }) {
             <Metric icon={IconAlertTriangle} label="Variance batches" value={finance.metrics?.varianceBatches || 0} tone="red" />
           </div>
           <div className="collector-section-heading"><div><h3>Finance reconciliation</h3><p>Review the included customer payments, count physical cash, and verify company GCash transfers.</p></div></div>
+          {(finance.pendingReversals || []).length > 0 && (
+            <div className="collector-reversal-review">
+              <div className="collector-section-heading">
+                <div>
+                  <h3>Reversed receipts to review</h3>
+                  <p>{finance.metrics?.pendingReversals || 0} receipt(s) · {money(finance.metrics?.pendingReversalAmount)} removed from remittance totals. Record what happened to the funds.</p>
+                </div>
+              </div>
+              <div className="collector-finance-list">
+                {(finance.pendingReversals || []).map((collection) => {
+                  const draft = reversalDraft(collection);
+                  return (
+                    <article className="card collector-reversal-card" key={collection.id}>
+                      <div className="card-body">
+                        <div className="collector-card-top">
+                          <div>
+                            <h3>{collection.receiptNumber} · {money(collection.amount)}</h3>
+                            <span>{collection.customerName || 'Customer'} · {collection.collectorName} · {collection.method}</span>
+                          </div>
+                          <StatusChip value="VOID" />
+                        </div>
+                        <p className="text-muted small mt-2">Voided {dateTimeLabel(collection.voidedAt)} · {collection.voidReason || 'No reason recorded'}</p>
+                        <div className="collector-reversal-fields">
+                          <label>
+                            <span>Funds disposition</span>
+                            <select className="form-select" value={draft.disposition} onChange={(event) => updateReversalDraft(collection, 'disposition', event.target.value)}>
+                              <option value="">Choose disposition</option>
+                              <option value="REFUNDED_TO_CUSTOMER">Refunded to customer</option>
+                              <option value="DUPLICATE_ENTRY_NO_FUNDS">Duplicate entry; no funds received</option>
+                              <option value="OTHER_ACCOUNTED">Other accounted disposition</option>
+                            </select>
+                          </label>
+                          <label>
+                            <span>Reference (required for GCash refund)</span>
+                            <input className="form-control" value={draft.referenceNumber} onChange={(event) => updateReversalDraft(collection, 'referenceNumber', event.target.value)} />
+                          </label>
+                          <label className="collector-reversal-note">
+                            <span>Finance note</span>
+                            <textarea className="form-control" rows={2} value={draft.note} onChange={(event) => updateReversalDraft(collection, 'note', event.target.value)} />
+                          </label>
+                        </div>
+                        <button className="btn btn-primary mt-2" type="button" disabled={busy === `reversal-${collection.id}` || !draft.disposition || draft.note.trim().length < 3} onClick={() => resolveReversal(collection)}>
+                          {busy === `reversal-${collection.id}` ? 'Saving...' : 'Record custody review'}
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           <div className="collector-finance-list">
             {(finance.openRemittances || []).map((remittance) => (
               <FinanceRemittanceCard
@@ -1308,7 +1388,7 @@ export default function CollectorPage({ currentUser = {} }) {
               <div><span>SMS confirmation</span><StatusChip value={selectedReceipt.sms?.status || 'PENDING'} /></div>
               <div><span>Custody</span><StatusChip value={selectedReceipt.custodyStatus} /></div>
             </div>
-            <button className="btn btn-primary w-100" type="button" disabled={busy === `print-${selectedReceipt.id}`} onClick={() => printCollection(selectedReceipt)}>
+            <button className="btn btn-primary w-100" type="button" disabled={busy === `print-${selectedReceipt.id}` || selectedReceipt.status !== 'POSTED'} onClick={() => printCollection(selectedReceipt)}>
               <IconPrinter size={19} /> {selectedReceipt.printHistory?.length ? 'Print again' : 'Print thermal receipt'}
             </button>
             <button className="btn btn-outline-secondary w-100" type="button" onClick={() => setSelectedReceipt(null)}>Done</button>

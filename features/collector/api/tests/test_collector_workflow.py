@@ -745,6 +745,74 @@ class CollectorWorkflowTests(unittest.TestCase):
             raised.exception.detail,
         )
 
+    def test_voided_billing_payment_blocks_remittance_and_finance_confirmation(self):
+        self.claim()
+        posted = self.post_cash()
+        collector._billing_payment_status_provider = lambda payment_id: "VOID"
+        with self.assertRaises(HTTPException) as submission:
+            collector.submit_remittance(
+                collector.RemittancePayload(declaredCash=150),
+                actor=self.collector_actor,
+            )
+        self.assertEqual(409, submission.exception.status_code)
+        self.assertEqual("HELD", collector.collections[0]["custodyStatus"])
+
+        collector._billing_payment_status_provider = lambda payment_id: "POSTED"
+        submitted = collector.submit_remittance(
+            collector.RemittancePayload(declaredCash=150),
+            actor=self.collector_actor,
+        )
+        collector._billing_payment_status_provider = lambda payment_id: "VOID"
+        with self.assertRaises(HTTPException) as confirmation:
+            collector.confirm_remittance(
+                submitted["id"],
+                collector.RemittanceConfirmationPayload(countedCash=150, confirmedGcashAmount=0),
+                actor=self.finance_actor,
+            )
+        self.assertEqual(409, confirmation.exception.status_code)
+        self.assertEqual("SUBMITTED", collector.find_record(collector.collections, posted["id"], "Collection")["custodyStatus"])
+
+    def test_held_reversal_stays_in_finance_review_until_disposition_is_recorded(self):
+        self.claim()
+        posted = self.post_cash()
+        collector.synchronize_billing_payment_void(
+            payment_id=posted["billingPaymentId"],
+            voided_at=collector.now_iso(),
+            voided_by="finance-admin",
+            reason="Duplicate receipt",
+        )
+        overview = collector.finance_overview(actor=self.finance_actor)
+        self.assertEqual(1, overview["metrics"]["pendingReversals"])
+        self.assertEqual(150, overview["metrics"]["pendingReversalAmount"])
+        self.assertEqual(posted["id"], overview["pendingReversals"][0]["id"])
+
+        with self.assertRaises(HTTPException) as printing:
+            collector.record_print_event(
+                posted["id"], collector.PrintEventPayload(), actor=self.finance_actor
+            )
+        self.assertEqual(409, printing.exception.status_code)
+
+        resolved = collector.resolve_reversed_collection(
+            posted["id"],
+            collector.ReversalReviewPayload(
+                disposition="DUPLICATE_ENTRY_NO_FUNDS",
+                note="Duplicate posting; no second payment was collected",
+            ),
+            actor=self.finance_actor,
+        )
+        self.assertEqual("RESOLVED", resolved["reversalReviewStatus"])
+        self.assertEqual(0, collector.finance_overview(actor=self.finance_actor)["metrics"]["pendingReversals"])
+        with self.assertRaises(HTTPException) as changed_disposition:
+            collector.resolve_reversed_collection(
+                posted["id"],
+                collector.ReversalReviewPayload(
+                    disposition="OTHER_ACCOUNTED",
+                    note="Different explanation",
+                ),
+                actor=self.finance_actor,
+            )
+        self.assertEqual(409, changed_disposition.exception.status_code)
+
 
 if __name__ == "__main__":
     unittest.main()

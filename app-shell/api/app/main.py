@@ -46,6 +46,7 @@ for parent in Path(__file__).resolve().parents:
 from account_access_management import account_access_management_metrics, configure_account_access_management, router as account_access_management_router, seed_account_access_management_data
 from billing import (
     billing_metrics,
+    billing_payment_posting_status,
     collector_aging_accounts,
     configure_billing,
     migration_promotion_catalog,
@@ -56,7 +57,14 @@ from billing import (
     start_billing_scheduler,
     stop_billing_scheduler,
 )
-from collector import collector_metrics, configure_collector, router as collector_router, seed_collector_data
+from collector import (
+    collector_metrics,
+    collector_payment_void_guard,
+    configure_collector,
+    router as collector_router,
+    seed_collector_data,
+    synchronize_billing_payment_void,
+)
 from customer_profiling import configure_customer_profiling, customer_metrics, router as customer_profiling_router, seed_customer_data, sync_customer_lifecycle_status
 from customer_profiling.router import find_customer, list_customers
 from customer_service_management import (
@@ -710,6 +718,8 @@ configure_billing(
     search_customers_for_modules,
     seed_customer_data,
     send_a2p_sms_message,
+    collector_void_guard=collector_payment_void_guard,
+    collector_void_sync=synchronize_billing_payment_void,
 )
 configure_point_of_sale(
     current_admin,
@@ -750,6 +760,7 @@ configure_collector(
     collector_aging_accounts,
     post_collector_payment,
     send_a2p_sms_message,
+    billing_payment_status_provider=billing_payment_posting_status,
 )
 configure_logs(current_admin, audit_logs)
 configure_techportal(
