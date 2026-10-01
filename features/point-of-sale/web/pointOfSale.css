@@ -1077,6 +1077,12 @@
   overflow: hidden;
 }
 
+.pos-payment-validation {
+  flex: 0 0 auto;
+  margin: 0;
+  border-radius: 0;
+}
+
 .pos-modal-header,
 .pos-modal-footer {
   padding: 1rem;

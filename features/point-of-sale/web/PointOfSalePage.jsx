@@ -2766,7 +2766,6 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                       <button type="button" className="btn btn-icon btn-sm" disabled={invoicePaymentSubmitting} onClick={resetInvoicePayment} aria-label="Close payment desk"><IconX size={18} /></button>
                     </div>
                     <div className="pos-modal-body pos-payment-modal-body">
-                      {error && <div className="alert alert-danger mb-0" role="alert">{error}</div>}
                       <section className="pos-payment-section pos-payment-entry-section" aria-label="Payment details">
                         <div className="pos-payment-section-header">
                           <div>
@@ -2902,11 +2901,12 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                         {invoicePaymentReturnedAmount > 0 && <div><span>Change to return</span><strong>{currency(invoicePaymentReturnedAmount)}</strong></div>}
                         {invoicePaymentAdvanceAmount > 0 && <div><span>Advance credit</span><strong>{currency(invoicePaymentAdvanceAmount)}</strong></div>}
                         <div>
-                          <span>Remaining balance</span>
-                          <strong>{currency(selectedInvoiceRemaining)}</strong>
+                          <span>{invoicePaymentShortfallAmount > 0 ? 'Current account balance' : 'Projected remaining balance'}</span>
+                          <strong>{currency(invoicePaymentShortfallAmount > 0 ? selectedCustomerBalance : selectedInvoiceRemaining)}</strong>
                         </div>
                       </div>
                     </div>
+                    {error && <div className="alert alert-danger pos-payment-validation" role="alert">{error}</div>}
                     <div className="pos-modal-footer">
                       <button type="button" className="btn" disabled={invoicePaymentSubmitting} onClick={resetInvoicePayment}>Cancel</button>
                       <button type="submit" className="btn btn-primary" disabled={invoicePaymentSubmitting || !selectedPaymentInvoiceRows.length || invoicePaymentAppliedAmount <= 0}>
