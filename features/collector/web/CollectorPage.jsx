@@ -5,6 +5,7 @@ import {
   IconCash,
   IconCheck,
   IconClock,
+  IconClipboardText,
   IconCoin,
   IconExternalLink,
   IconMapPin,
@@ -25,6 +26,12 @@ import './collector.css';
 const API = '/api';
 const PAYMENT_POST_TIMEOUT_MS = 20000;
 const PAYMENT_LOOKUP_TIMEOUT_MS = 10000;
+const VISIT_OUTCOMES = [
+  { code: 'NO_ONE_HOME', label: 'No one home' },
+  { code: 'PROMISED_TO_PAY', label: 'Promised to pay' },
+  { code: 'REQUESTED_REVISIT', label: 'Asked for another visit' },
+  { code: 'ACCOUNT_ISSUE', label: 'Account or address issue' }
+];
 
 function token() {
   return localStorage.getItem('threejmain_token');
@@ -164,6 +171,15 @@ function pendingPaymentStorageKey(username) {
   return `threejmain_collector_pending_payment:${username}`;
 }
 
+function pendingVisitStorageKey(username) {
+  return `threejmain_collector_pending_visit:${username}`;
+}
+
+function visitOutcomeLabel(code) {
+  return VISIT_OUTCOMES.find((row) => row.code === code)?.label
+    || (code === 'PAYMENT_RECEIVED' ? 'Payment received' : 'Visited');
+}
+
 function invoicePromotionQuote(invoice = {}) {
   const balance = Number(invoice.balance || 0);
   const quote = invoice.promotionQuote || {};
@@ -273,7 +289,7 @@ function Metric({ icon: Icon, label, value, tone = 'blue' }) {
   );
 }
 
-function CustomerCard({ account, currentUser, onCollect, onMessage, collecting, messaging }) {
+function CustomerCard({ account, currentUser, onCollect, onMessage, onVisit, collecting, messaging }) {
   const customer = account.customer || {};
   const claim = account.claim;
   const mine = claim && claim.collectorUsername === currentUser?.username;
@@ -302,6 +318,12 @@ function CustomerCard({ account, currentUser, onCollect, onMessage, collecting, 
           <IconMapPin size={17} />
           <span>{customer.address || 'No saved customer address'}</span>
         </div>
+        {account.lastFieldVisit?.at && (
+          <div className="collector-last-visit">
+            <IconClipboardText size={16} />
+            <span>{visitOutcomeLabel(account.lastFieldVisit.outcome)} · {dateTimeLabel(account.lastFieldVisit.at)}{account.lastFieldVisit.collectorName ? ` · ${account.lastFieldVisit.collectorName}` : ''}</span>
+          </div>
+        )}
         {claim && (
           <div className={`collector-claim-note ${mine ? 'is-mine' : ''}`}>
             <IconUserCheck size={16} />
@@ -322,6 +344,9 @@ function CustomerCard({ account, currentUser, onCollect, onMessage, collecting, 
             onClick={() => onMessage(account)}
           >
             <IconMessage size={17} /> {messaging ? 'Sending…' : 'Message'}
+          </button>
+          <button className="btn btn-outline-primary" type="button" disabled={unavailable} title={unavailable ? 'Another collector is handling this customer' : 'Record a door-to-door visit'} onClick={() => onVisit(account)}>
+            <IconClipboardText size={17} /> Log visit
           </button>
           <button className="btn btn-primary" type="button" disabled={collecting || unavailable} onClick={() => onCollect(account)}>
             {claim && !mine ? <IconClock size={17} /> : <IconCash size={17} />}
@@ -503,6 +528,10 @@ export default function CollectorPage({ currentUser = {} }) {
   const [locationFilter, setLocationFilter] = useState('');
   const [messageCustomer, setMessageCustomer] = useState(null);
   const [messageSent, setMessageSent] = useState(null);
+  const [visitCustomer, setVisitCustomer] = useState(null);
+  const [visitForm, setVisitForm] = useState({ outcome: '', note: '', promiseDate: '', promiseAmount: '' });
+  const [visitAttempt, setVisitAttempt] = useState(null);
+  const [visitRecoveryMessage, setVisitRecoveryMessage] = useState('');
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [selectedReceipt, setSelectedReceipt] = useState(null);
   const [payment, setPayment] = useState(null);
@@ -524,6 +553,7 @@ export default function CollectorPage({ currentUser = {} }) {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const paymentPostingRef = useRef(false);
+  const visitPostingRef = useRef(false);
 
   const activeClaimMine = selectedCustomer?.claim?.collectorUsername === currentUser?.username;
   const paymentBreakdown = useMemo(
@@ -639,6 +669,30 @@ export default function CollectorPage({ currentUser = {} }) {
     }
   }, [currentUser?.username]);
 
+  useEffect(() => {
+    if (!currentUser?.username) return;
+    try {
+      const saved = JSON.parse(window.sessionStorage.getItem(pendingVisitStorageKey(currentUser.username)) || 'null');
+      if (!saved?.idempotencyKey || !saved?.payload || !saved?.customer?.customerId) return;
+      setVisitAttempt(saved);
+      setVisitCustomer(saved.customer);
+      setVisitForm({
+        outcome: saved.payload.outcome || '',
+        note: saved.payload.note || '',
+        promiseDate: saved.payload.promiseDate || '',
+        promiseAmount: String(saved.payload.promiseAmount || '')
+      });
+      setVisitRecoveryMessage('Checking the visit saved in this browser session.');
+      checkVisitStatus(saved);
+    } catch {
+      try {
+        window.sessionStorage.removeItem(pendingVisitStorageKey(currentUser.username));
+      } catch {
+        // Browser storage can be unavailable in restricted modes.
+      }
+    }
+  }, [currentUser?.username]);
+
   function savePendingPaymentAttempt(attempt) {
     if (!currentUser?.username) return;
     try {
@@ -652,6 +706,24 @@ export default function CollectorPage({ currentUser = {} }) {
     if (!currentUser?.username) return;
     try {
       window.sessionStorage.removeItem(pendingPaymentStorageKey(currentUser.username));
+    } catch {
+      // Browser storage can be unavailable in restricted modes.
+    }
+  }
+
+  function savePendingVisitAttempt(attempt) {
+    if (!currentUser?.username) return;
+    try {
+      window.sessionStorage.setItem(pendingVisitStorageKey(currentUser.username), JSON.stringify(attempt));
+    } catch {
+      // Retry remains available in the open form when storage is restricted.
+    }
+  }
+
+  function clearPendingVisitAttempt() {
+    if (!currentUser?.username) return;
+    try {
+      window.sessionStorage.removeItem(pendingVisitStorageKey(currentUser.username));
     } catch {
       // Browser storage can be unavailable in restricted modes.
     }
@@ -696,6 +768,110 @@ export default function CollectorPage({ currentUser = {} }) {
     } catch (err) {
       showError(err.message);
     } finally {
+      setBusy('');
+    }
+  }
+
+  function openVisit(account) {
+    if (visitAttempt) {
+      setVisitCustomer(visitAttempt.customer);
+      return;
+    }
+    setVisitCustomer(account);
+    setVisitForm({ outcome: '', note: '', promiseDate: '', promiseAmount: '' });
+    setVisitAttempt(null);
+    setVisitRecoveryMessage('');
+  }
+
+  async function completeVisit(event, customer) {
+    clearPendingVisitAttempt();
+    setVisitAttempt(null);
+    setVisitRecoveryMessage('');
+    setVisitCustomer(null);
+    showNotice(`${visitOutcomeLabel(event.fieldVisitOutcome)} recorded for ${customerName(customer.customer)}.`);
+    await load();
+  }
+
+  async function checkVisitStatus(attempt) {
+    if (!attempt) return;
+    setBusy('visit-status');
+    try {
+      const result = await requestWithTimeout(
+        `/billing/collections/accounts/${encodeURIComponent(attempt.customer.customerId)}/field-visits/by-idempotency-key/${encodeURIComponent(attempt.idempotencyKey)}`,
+        {}, PAYMENT_LOOKUP_TIMEOUT_MS
+      );
+      if (result.status === 'RECORDED' && result.event) {
+        await completeVisit(result.event, attempt.customer);
+        return 'RECORDED';
+      }
+      setVisitRecoveryMessage(
+        attempt.needsOffice
+          ? 'This visit could not be confirmed. Contact the office before entering it again.'
+          : 'The visit is not confirmed yet. Retry saving with the same attempt.'
+      );
+      return 'UNCONFIRMED';
+    } catch {
+      setVisitRecoveryMessage('Could not check the visit. Keep this form open and check again when connected.');
+      return 'UNKNOWN';
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function submitVisit(event) {
+    event.preventDefault();
+    if (!visitCustomer || visitPostingRef.current) return;
+    const attempt = visitAttempt || {
+      idempotencyKey: createIdempotencyKey(),
+      customer: {
+        customerId: visitCustomer.customerId,
+        payableToday: accountPayableToday(visitCustomer),
+        customer: {
+          name: customerName(visitCustomer.customer),
+          accountNumber: visitCustomer.customer?.accountNumber || ''
+        }
+      },
+      payload: {
+        outcome: visitForm.outcome,
+        note: visitForm.note.trim(),
+        ...(visitForm.outcome === 'PROMISED_TO_PAY' ? {
+          promiseDate: visitForm.promiseDate,
+          promiseAmount: Number(visitForm.promiseAmount)
+        } : {})
+      }
+    };
+    if (!attempt.payload.outcome) return;
+    visitPostingRef.current = true;
+    setVisitAttempt(attempt);
+    savePendingVisitAttempt(attempt);
+    setBusy('visit');
+    try {
+      const saved = await requestWithTimeout(
+        `/billing/collections/accounts/${encodeURIComponent(attempt.customer.customerId)}/field-visits`,
+        {
+          method: 'POST',
+          headers: { 'Idempotency-Key': attempt.idempotencyKey },
+          body: JSON.stringify(attempt.payload)
+        }, PAYMENT_POST_TIMEOUT_MS
+      );
+      await completeVisit(saved, attempt.customer);
+    } catch (err) {
+      if (err.status && err.status < 500 && err.status !== 409) {
+        clearPendingVisitAttempt();
+        setVisitAttempt(null);
+        setVisitRecoveryMessage('');
+        showError(err.message);
+      } else {
+        const status = await checkVisitStatus(attempt);
+        if (err.status === 409 && status === 'UNCONFIRMED') {
+          const needsOffice = { ...attempt, needsOffice: true };
+          setVisitAttempt(needsOffice);
+          savePendingVisitAttempt(needsOffice);
+          setVisitRecoveryMessage('This visit could not be confirmed. Contact the office before entering it again.');
+        }
+      }
+    } finally {
+      visitPostingRef.current = false;
       setBusy('');
     }
   }
@@ -1059,6 +1235,13 @@ export default function CollectorPage({ currentUser = {} }) {
 
       {error && <div className="collector-toast alert alert-danger"><IconAlertTriangle size={19} /><span>{error}</span><button type="button" onClick={() => setError('')}><IconX size={18} /></button></div>}
       {notice && <div className="collector-toast alert alert-success"><IconCheck size={19} /><span>{notice}</span><button type="button" onClick={() => setNotice('')}><IconX size={18} /></button></div>}
+      {visitAttempt && !visitCustomer && (
+        <div className="alert alert-warning collector-visit-pending">
+          <IconAlertTriangle size={19} />
+          <span>Visit for {customerName(visitAttempt.customer.customer)} needs confirmation.</span>
+          <button className="btn btn-outline-warning" type="button" onClick={() => setVisitCustomer(visitAttempt.customer)}>Resume</button>
+        </div>
+      )}
 
       <div className="collector-metrics">
         <Metric icon={IconCoin} label="Collected today" value={money(overview.today?.total)} tone="green" />
@@ -1113,6 +1296,7 @@ export default function CollectorPage({ currentUser = {} }) {
                 currentUser={currentUser}
                 onCollect={startCollection}
                 onMessage={openUnavailableMessage}
+                onVisit={openVisit}
                 collecting={busy === `collect-${account.customerId}`}
                 messaging={busy === `message-${account.customerId}`}
               />
@@ -1267,6 +1451,66 @@ export default function CollectorPage({ currentUser = {} }) {
           </div>
           {!finance.openRemittances?.length && <div className="collector-empty card"><IconShieldCheck size={30} />No remittances are waiting for Finance.</div>}
         </section>
+      )}
+
+      {visitCustomer && (
+        <div className="collector-modal-backdrop" role="presentation">
+          <section className="collector-message-modal collector-visit-modal" role="dialog" aria-modal="true" aria-label="Log customer visit">
+            <header>
+              <span className="collector-message-icon"><IconClipboardText size={23} /></span>
+              <div><h3>Log visit</h3><span>{customerName(visitCustomer.customer)} · {visitCustomer.customer?.accountNumber || 'No account number'}</span></div>
+              <button type="button" aria-label="Close visit form" disabled={busy === 'visit' || busy === 'visit-status'} onClick={() => setVisitCustomer(null)}><IconX size={20} /></button>
+            </header>
+            <form className="collector-message-body" onSubmit={submitVisit}>
+              <div className="collector-visit-summary">
+                <span>Amount due shown on worklist</span>
+                <strong>{money(accountPayableToday(visitCustomer))}</strong>
+              </div>
+              <div>
+                <strong className="collector-visit-label">What happened at the door?</strong>
+                <div className="collector-visit-options">
+                  {VISIT_OUTCOMES.map((outcome) => (
+                    <button
+                      key={outcome.code}
+                      className={`collector-visit-option ${visitForm.outcome === outcome.code ? 'is-selected' : ''}`}
+                      type="button"
+                      aria-pressed={visitForm.outcome === outcome.code}
+                      disabled={Boolean(visitAttempt) || busy === 'visit'}
+                      onClick={() => setVisitForm((current) => ({ ...current, outcome: outcome.code, promiseDate: '', promiseAmount: '' }))}
+                    >
+                      {outcome.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {visitForm.outcome === 'PROMISED_TO_PAY' && (
+                <div className="collector-visit-promise">
+                  <label><span>Promised amount</span><input className="form-control" type="number" min="0.01" step="0.01" required disabled={Boolean(visitAttempt)} value={visitForm.promiseAmount} onChange={(event) => setVisitForm((current) => ({ ...current, promiseAmount: event.target.value }))} /></label>
+                  <label><span>Promised date</span><input className="form-control" type="date" required disabled={Boolean(visitAttempt)} value={visitForm.promiseDate} onChange={(event) => setVisitForm((current) => ({ ...current, promiseDate: event.target.value }))} /></label>
+                </div>
+              )}
+              <label className="collector-visit-note">
+                <span>{visitForm.outcome === 'ACCOUNT_ISSUE' ? 'Describe the issue' : 'Note (optional)'}</span>
+                <textarea className="form-control" rows="2" maxLength="1000" minLength={visitForm.outcome === 'ACCOUNT_ISSUE' ? 3 : undefined} required={visitForm.outcome === 'ACCOUNT_ISSUE'} disabled={Boolean(visitAttempt)} value={visitForm.note} onChange={(event) => setVisitForm((current) => ({ ...current, note: event.target.value }))} placeholder={visitForm.outcome === 'ACCOUNT_ISSUE' ? 'What should the office check?' : 'Anything useful for the office'} />
+              </label>
+              {visitAttempt && (
+                <div className="alert alert-warning collector-visit-recovery">
+                  <IconAlertTriangle size={18} />
+                  <span>{visitRecoveryMessage || 'Checking whether the visit was saved.'}</span>
+                  <div className="collector-visit-recovery-actions">
+                    <button className="btn btn-outline-secondary" type="button" disabled={Boolean(busy)} onClick={() => checkVisitStatus(visitAttempt)}>Check status</button>
+                    {!visitAttempt.needsOffice && <button className="btn btn-outline-primary" type="button" disabled={Boolean(busy)} onClick={submitVisit}>Retry same visit</button>}
+                  </div>
+                </div>
+              )}
+              {!visitAttempt && (
+                <button className="btn btn-primary w-100 collector-visit-save" type="submit" disabled={!visitForm.outcome || Boolean(busy)}>
+                  <IconCheck size={18} /> Save visit
+                </button>
+              )}
+            </form>
+          </section>
+        </div>
       )}
 
       {messageCustomer && (

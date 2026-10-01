@@ -16,6 +16,8 @@ Migration may assign active monthly-service promotion qualifications to the new 
 
 Billing owns ISP subscriptions, invoice generation, adjustments, customer balances, billing cycles, and the accounting ledger for invoice payments.
 
+Collector door-to-door visits are saved in Billing's durable `collection_case` follow-up history. The collector-scoped `POST /api/billing/collections/accounts/{customer_id}/field-visits` records a structured no-payment outcome with an idempotency key; the matching GET by key supports timeout recovery. Promise visits require a promised amount/date, while field visits never require or set a next-action date. A posted Collector payment automatically adds a receipt-linked `PAYMENT_RECEIVED` visit in its Billing transaction. `collector_aging_accounts` exposes the latest visit for the mobile worklist.
+
 Billing persists module records to the shared PostgreSQL database through the `billing_records` JSONB table when `DATABASE_URL` is configured. Financial posting operations use a cross-worker PostgreSQL transaction lock, native invoice/receipt sequences, database uniqueness constraints, and durable `billing_posting_events`. It falls back to in-memory state only when PostgreSQL is not configured.
 
 - Frontend page/styles: `features/billing/web/`

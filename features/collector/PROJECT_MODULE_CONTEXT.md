@@ -17,6 +17,8 @@
 - Instant client-side worklist search across customer, account, contact, address, service, and invoice fields
 - Worklist location filter built from each customer's saved barangay/city/province, with saved-address fallback
 - Worklist `Message` action beside Map and Collect for a confirmation-gated, fixed customer-unavailable A2P notice; the API reloads Billing, uses the current promotion-adjusted amount due, sends from `3J BILL` to the saved primary/alternate mobile, and writes success/failure audit context. Accepted sends show a dedicated completion popup rather than the page-level inline notice.
+- Worklist `Log visit` action records No one home, Promised to pay, Asked for another visit, or Account/address issue directly in Billing's durable follow-up history. A promise requires amount/date and an issue requires a note. The form has no next-action date. Billing automatically records a linked Payment received visit after successful Collector payment posting, in the same transaction; the worklist displays the latest visit outcome/time.
+- Field visit saves use an idempotency key, a read-only status lookup, same-key retry after uncertain network failures, and current-tab session recovery. SMS remains a separate, explicitly confirmed action.
 - Page shell uses the shared app-shell `container-xl` width and left/right boundaries exactly like Billing; Collector must not add an inner centered max-width or mobile negative margins.
 - Silent 15-minute reservation when Collect is tapped, with conflict prevention and automatic release when the payment form closes
 - One collector-entered `Amount received`, automatically allocated oldest invoice first and then across later invoices
@@ -46,6 +48,8 @@
 ## Core Decisions
 
 Billing is authoritative for invoice balances, payment allocation, payment status, and receipt numbers. Collector stores only operational reservation, receipt-link, custody, print-history, and remittance data.
+
+Billing also owns field-visit events in its `collection_case` history. Collector displays the latest Billing projection and calls the role-scoped Billing field-visit API directly for no-payment outcomes. No visit record is stored in `collector_records`, and logging a field visit does not set or change Billing's next-action date.
 
 Collector calculates and submits oldest-first `allocations` from the one amount received, and the API independently reconstructs the expected allocation before posting. For an invoice with a Billing quote, the promotion IDs are attached only when the remaining received funds can pay the full `discountedPayable`; otherwise the invoice receives an ordinary partial payment without the promotion. Amounts spanning invoices continue automatically.
 
@@ -89,6 +93,8 @@ Posted Billing payments and receipt identifiers are immutable. Reprints append p
 ## API Contracts
 
 `GET /api/collector/customers` returns Billing account aging rows enriched with Customer Profiling contact/location and the current internal reservation. Account rows include `outstandingBalance`, `promotionDiscountTotal`, `payableToday`, and `paymentDate`; each open invoice includes an authoritative `promotionQuote` with version, fingerprint, ordered promotion IDs/names, discount, and discounted payable.
+
+The account rows also include `lastFieldVisit` (`outcome`, `at`, `collectorName`) from Billing. `POST /api/billing/collections/accounts/{customer_id}/field-visits` accepts a stable `Idempotency-Key`, one structured outcome, optional note, and promise amount/date only for `PROMISED_TO_PAY`. `GET /api/billing/collections/accounts/{customer_id}/field-visits/by-idempotency-key/{key}` returns `RECORDED` or `UNCONFIRMED` for the original collector. Billing rejects manually submitted `PAYMENT_RECEIVED`; its payment posting path creates that visit with `paymentId` and `receiptNumber` automatically.
 
 `POST /api/collector/customers/{customer_id}/unavailable-message` requires collection permission and a saved customer mobile number. It reloads the collectible account, refuses zero/stale balances, calculates the current promotion-adjusted amount due on the server, and submits the approved visit notice through System Settings A2P with purpose `COLLECTOR_CUSTOMER_UNAVAILABLE` and sender ID `3J BILL`. The response exposes only the masked destination plus safe message identifiers; both A2P delivery logging and Collector business audit context are retained.
 

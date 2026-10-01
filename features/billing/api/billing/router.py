@@ -94,6 +94,14 @@ COLLECTION_WORKLIST_STATUSES = {
 COLLECTION_FOLLOW_UP_SMS_SENDER_ID = "3J BILL"
 COLLECTION_FOLLOW_UP_ACTIONS = {"NOTE", "CALL", "VISIT", "PROMISE_TO_PAY", "ASSIGN", "SMS_SENT", "SMS_FAILED"}
 COLLECTION_FOLLOW_UP_FILTERS = {"ALL", "DUE", "SCHEDULED", "UNASSIGNED"}
+FIELD_VISIT_OUTCOMES = {
+    "NO_ONE_HOME": "No one home",
+    "PROMISED_TO_PAY": "Promised to pay",
+    "REQUESTED_REVISIT": "Asked for another visit",
+    "ACCOUNT_ISSUE": "Account or address issue",
+    "PAYMENT_RECEIVED": "Payment received",
+}
+FIELD_VISIT_ROLES = {"collector", "collection_supervisor", "owner", "admin", "system_admin"}
 BILLING_RECORD_COLLECTIONS = {
     "subscription": subscriptions,
     "invoice": invoices,
@@ -238,6 +246,13 @@ class CollectionFollowUpPayload(BaseModel):
     note: str | None = Field(default=None, max_length=1000)
     assignedToUsername: str | None = Field(default=None, max_length=160)
     nextActionDate: str | None = None
+    promiseDate: str | None = None
+    promiseAmount: float | None = Field(default=None, gt=0)
+
+
+class FieldVisitPayload(BaseModel):
+    outcome: str
+    note: str | None = Field(default=None, max_length=1000)
     promiseDate: str | None = None
     promiseAmount: float | None = Field(default=None, gt=0)
 
@@ -4413,10 +4428,125 @@ def collection_follow_up_projection(
         "lastContactAt": case.get("lastContactAt") or "",
         "updatedAt": case.get("updatedAt") or "",
         "eventCount": len(case.get("history") or []),
+        "lastVisitOutcome": case.get("lastVisitOutcome") or "",
+        "lastVisitAt": case.get("lastVisitAt") or "",
+        "lastVisitByName": case.get("lastVisitByName") or "",
     }
     if include_history:
         projection["history"] = deepcopy(case.get("history") or [])
     return projection
+
+
+def record_field_visit(
+    customer_id: str,
+    payload: FieldVisitPayload,
+    admin: dict[str, Any],
+    idempotency_key: str,
+    *,
+    payment: dict[str, Any] | None = None,
+    persist: bool = True,
+) -> dict[str, Any]:
+    """Append one attributed field visit to Billing's durable collection case."""
+    outcome = normalize_upper(payload.outcome)
+    if outcome not in FIELD_VISIT_OUTCOMES:
+        raise HTTPException(status_code=400, detail="Unknown field visit outcome")
+    if bool(payment) != (outcome == "PAYMENT_RECEIVED"):
+        raise HTTPException(status_code=400, detail="Payment visits must come from a posted Collector receipt")
+    note = clean_text(payload.note, 1000)
+    if outcome == "ACCOUNT_ISSUE" and len(note) < 3:
+        raise HTTPException(status_code=400, detail="Describe the account or address issue")
+    promise_date = clean_text(payload.promiseDate, 20)
+    promise_amount = money(payload.promiseAmount)
+    if outcome == "PROMISED_TO_PAY":
+        if not promise_date or promise_amount <= 0:
+            raise HTTPException(status_code=400, detail="Promise date and amount are required")
+        if parse_day(promise_date, "promiseDate") < billing_business_date():
+            raise HTTPException(status_code=400, detail="Promise date cannot be in the past")
+    elif promise_date or promise_amount:
+        raise HTTPException(status_code=400, detail="Promise details require the Promised to pay outcome")
+
+    fingerprint = posting_fingerprint("field_visit", {
+        "customerId": customer_id,
+        "outcome": outcome,
+        "note": note,
+        "promiseDate": promise_date,
+        "promiseAmount": promise_amount,
+        "paymentId": (payment or {}).get("id") or "",
+    })
+    for case_row in collection_cases:
+        for old_event in case_row.get("history") or []:
+            if old_event.get("fieldVisitIdempotencyKey") == idempotency_key:
+                if old_event.get("fieldVisitFingerprint") != fingerprint:
+                    raise HTTPException(status_code=409, detail="Idempotency-Key was already used for another field visit")
+                if old_event.get("createdByUsername") != clean_text(admin.get("username"), 160):
+                    raise HTTPException(status_code=403, detail="This field visit belongs to another collector")
+                return {**deepcopy(old_event), "idempotentReplay": True}
+
+    if payment is None:
+        open_invoices = [
+            summary
+            for invoice in visible_invoices()
+            if invoice.get("customerId") == customer_id
+            for summary in [invoice_summary(invoice)]
+            if summary["status"] not in {"DRAFT", "PAID", "VOID"} and money(summary["balance"]) > 0
+        ]
+        active_service = any(
+            subscription.get("customerId") == customer_id and subscription.get("status") == "ACTIVE"
+            for subscription in visible_subscriptions()
+        )
+        if not open_invoices and not active_service:
+            raise HTTPException(status_code=404, detail="Customer has no active Billing account")
+        balance_snapshot = money(sum(summary["balance"] for summary in open_invoices))
+        if outcome == "PROMISED_TO_PAY" and promise_amount > balance_snapshot:
+            raise HTTPException(status_code=400, detail="Promise amount cannot exceed the open balance")
+    else:
+        balance_snapshot = money(payment.get("remainingAccountBalance"))
+
+    timestamp = now_iso()
+    case = collection_case_for_customer(customer_id)
+    if case is None:
+        case = {"id": customer_id, "customerId": customer_id, "createdAt": timestamp, "history": []}
+        collection_cases.append(case)
+    action = "PROMISE_TO_PAY" if outcome == "PROMISED_TO_PAY" else "VISIT"
+    event = {
+        "id": str(uuid4()),
+        "action": action,
+        "note": f"{FIELD_VISIT_OUTCOMES[outcome]}: {note}" if note else FIELD_VISIT_OUTCOMES[outcome],
+        "fieldVisitOutcome": outcome,
+        "fieldVisitIdempotencyKey": idempotency_key,
+        "fieldVisitFingerprint": fingerprint,
+        "paymentId": (payment or {}).get("id") or "",
+        "receiptNumber": (payment or {}).get("receiptNumber") or "",
+        "assignedToUsername": case.get("assignedToUsername") or clean_text(admin.get("username"), 160),
+        "nextActionDate": "",
+        "promiseDate": promise_date,
+        "promiseAmount": promise_amount,
+        "messageId": "",
+        "outstandingBalanceAtAction": balance_snapshot,
+        "createdAt": timestamp,
+        "createdByUsername": clean_text(admin.get("username"), 160),
+        "createdByName": admin_display_name(admin),
+    }
+    case["history"].insert(0, event)
+    case["lastOutcome"] = action
+    case["lastContactAt"] = timestamp
+    case["lastVisitOutcome"] = outcome
+    case["lastVisitAt"] = timestamp
+    case["lastVisitByName"] = event["createdByName"]
+    case["updatedAt"] = timestamp
+    if outcome == "PROMISED_TO_PAY":
+        case["promiseDate"] = promise_date
+        case["promiseAmount"] = promise_amount
+    add_audit(
+        "billing_field_visit_recorded",
+        "BillingCollectionAccount",
+        customer_id,
+        {"outcome": outcome, "eventId": event["id"], "paymentId": event["paymentId"]},
+        admin["username"],
+    )
+    if persist:
+        persist_billing_state()
+    return deepcopy(event)
 
 
 def record_collection_follow_up(
@@ -4863,6 +4993,12 @@ def collector_aging_accounts(search: str = "") -> list[dict[str, Any]]:
 
     rows = list(grouped.values())
     for row in rows:
+        visit = collection_follow_up_projection(row["customerId"])
+        row["lastFieldVisit"] = {
+            "outcome": visit["lastVisitOutcome"],
+            "at": visit["lastVisitAt"],
+            "collectorName": visit["lastVisitByName"],
+        } if visit["lastVisitAt"] else None
         row["invoices"].sort(
             key=lambda invoice: (
                 invoice.get("dueDate") or "9999-12-31",
@@ -6315,6 +6451,43 @@ def create_collection_follow_up(
     return record_collection_follow_up(customer_id, payload, admin)
 
 
+def require_field_collector(admin: dict[str, Any]) -> None:
+    role = clean_text(admin.get("role"), 100).lower()
+    permissions = {clean_text(value, 160) for value in admin.get("permissions") or []}
+    if role not in FIELD_VISIT_ROLES and "collector.payment.collect" not in permissions:
+        raise HTTPException(status_code=403, detail="Collector field visit access is required")
+
+
+@router.post("/collections/accounts/{customer_id}/field-visits")
+@billing_mutation
+def create_field_visit(
+    customer_id: str,
+    payload: FieldVisitPayload,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    admin=Depends(require_admin),
+):
+    require_field_collector(admin)
+    if normalize_upper(payload.outcome) == "PAYMENT_RECEIVED":
+        raise HTTPException(status_code=400, detail="Payment received is recorded from the Collector receipt")
+    seed_billing_data()
+    return record_field_visit(customer_id, payload, admin, normalize_idempotency_key(idempotency_key))
+
+
+@router.get("/collections/accounts/{customer_id}/field-visits/by-idempotency-key/{key}")
+@billing_read_snapshot
+def get_field_visit_by_key(customer_id: str, key: str, admin=Depends(require_admin)):
+    require_field_collector(admin)
+    posting_key = normalize_idempotency_key(key)
+    case = collection_case_for_customer(customer_id)
+    event = next(
+        (row for row in (case or {}).get("history") or []
+         if row.get("fieldVisitIdempotencyKey") == posting_key
+         and row.get("createdByUsername") == clean_text(admin.get("username"), 160)),
+        None,
+    )
+    return {"status": "RECORDED", "event": deepcopy(event)} if event else {"status": "UNCONFIRMED"}
+
+
 @router.post("/collections/accounts/{customer_id}/follow-up-sms")
 def send_collection_follow_up_sms(
     customer_id: str,
@@ -7495,6 +7668,15 @@ def create_payment(
         },
         admin["username"],
     )
+    if payment["collectionChannel"] == "COLLECTOR":
+        record_field_visit(
+            customer["id"],
+            FieldVisitPayload(outcome="PAYMENT_RECEIVED"),
+            admin,
+            f"collector-payment:{payment['id']}",
+            payment=payment,
+            persist=False,
+        )
     persist_billing_state()
     return payment
 

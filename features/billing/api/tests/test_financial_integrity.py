@@ -2691,6 +2691,71 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
         self.assertEqual(1, due["summary"]["dueFollowUpCount"])
         self.assertEqual("PROMISE_TO_PAY", detail["followUp"]["history"][0]["action"])
 
+    def test_collector_field_visits_record_outcomes_without_next_action_date(self):
+        self.add_invoice(amount=300)
+        collector = {"username": "collector-one", "fullName": "Collector One", "role": "collector"}
+        with patch.object(billing, "billing_business_date", return_value=date(2026, 10, 1)):
+            first = billing.create_field_visit(
+                self.customer["id"],
+                billing.FieldVisitPayload(outcome="NO_ONE_HOME"),
+                idempotency_key="visit:no-answer-1",
+                admin=collector,
+            )
+            replay = billing.create_field_visit(
+                self.customer["id"],
+                billing.FieldVisitPayload(outcome="NO_ONE_HOME"),
+                idempotency_key="visit:no-answer-1",
+                admin=collector,
+            )
+            with self.assertRaises(HTTPException) as changed_key:
+                billing.create_field_visit(
+                    self.customer["id"],
+                    billing.FieldVisitPayload(outcome="REQUESTED_REVISIT"),
+                    idempotency_key="visit:no-answer-1",
+                    admin=collector,
+                )
+            with self.assertRaises(HTTPException) as unauthorized:
+                billing.create_field_visit(
+                    self.customer["id"],
+                    billing.FieldVisitPayload(outcome="NO_ONE_HOME"),
+                    idempotency_key="visit:finance-1",
+                    admin={"username": "finance-one", "role": "finance_officer"},
+                )
+            promised = billing.create_field_visit(
+                self.customer["id"],
+                billing.FieldVisitPayload(
+                    outcome="PROMISED_TO_PAY", promiseDate="2026-10-05", promiseAmount=200
+                ),
+                idempotency_key="visit:promise-1",
+                admin=collector,
+            )
+            lookup = billing.get_field_visit_by_key(
+                self.customer["id"], "visit:promise-1", admin=collector
+            )
+        self.assertEqual(first["id"], replay["id"])
+        self.assertEqual(409, changed_key.exception.status_code)
+        self.assertEqual(403, unauthorized.exception.status_code)
+        self.assertTrue(replay["idempotentReplay"])
+        self.assertEqual("RECORDED", lookup["status"])
+        self.assertEqual(promised["id"], lookup["event"]["id"])
+        self.assertEqual("", promised["nextActionDate"])
+        self.assertEqual("", billing.collection_case_for_customer(self.customer["id"]).get("nextActionDate", ""))
+        self.assertEqual("PROMISED_TO_PAY", billing.collector_aging_accounts()[0]["lastFieldVisit"]["outcome"])
+        self.assertEqual(2, len(billing.collection_case_for_customer(self.customer["id"])["history"]))
+
+    def test_collector_payment_records_one_linked_visit(self):
+        self.add_invoice(amount=100)
+        collector = {"username": "collector-one", "fullName": "Collector One", "role": "collector"}
+        payload = self.payment_payload(100).model_copy(update={"collectionChannel": "COLLECTOR"})
+        posted = billing.create_payment(payload, idempotency_key="payment:field-visit-1", admin=collector)
+        replay = billing.create_payment(payload, idempotency_key="payment:field-visit-1", admin=collector)
+        history = billing.collection_case_for_customer(self.customer["id"])["history"]
+        self.assertEqual(posted["id"], replay["id"])
+        self.assertEqual(1, len(history))
+        self.assertEqual("PAYMENT_RECEIVED", history[0]["fieldVisitOutcome"])
+        self.assertEqual(posted["id"], history[0]["paymentId"])
+        self.assertEqual(posted["receiptNumber"], history[0]["receiptNumber"])
+
 
 if __name__ == "__main__":
     unittest.main()
