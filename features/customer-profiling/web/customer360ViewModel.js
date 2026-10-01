@@ -29,6 +29,9 @@ export const CUSTOMER_360_ENDPOINTS = {
 const CLOSED_INVOICE_STATUSES = new Set(['PAID', 'VOID', 'DRAFT']);
 const SERVICE_PERIOD_INVOICE_TYPES = new Set(['MONTHLY', 'FIRST_PRORATED', 'FIRST_FULL']);
 const SERVICE_MONTH_FORMATTER = new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+const PAYMENT_POSTED_AT_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'Asia/Manila', month: 'numeric', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'
+});
 
 export function emptyCustomer360Data() {
   return {
@@ -57,6 +60,17 @@ export function normalizeArray(value) {
 
 export function normalizeStatus(value) {
   return String(value || '').trim().toUpperCase();
+}
+
+export function formatPaymentDateTime(payment = {}) {
+  const postedAt = String(payment.postedAt || payment.createdAt || '').trim();
+  if (postedAt && !/^\d{4}-\d{2}-\d{2}$/.test(postedAt)) {
+    const parsed = new Date(postedAt);
+    if (!Number.isNaN(parsed.getTime())) return PAYMENT_POSTED_AT_FORMATTER.format(parsed);
+  }
+  const date = String(payment.paymentDate || postedAt).trim();
+  const dateOnly = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return dateOnly ? `${Number(dateOnly[2])}/${Number(dateOnly[3])}/${dateOnly[1]}` : date || '-';
 }
 
 function serviceMonthKey(value) {

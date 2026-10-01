@@ -62,6 +62,7 @@ import {
   buildCustomer360Data,
   customer360SectionState,
   emptyCustomer360Data,
+  formatPaymentDateTime,
   hasCustomer360TabData,
   onboardingStepSatisfied,
   paymentAllocationDetails
@@ -4116,7 +4117,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
               <tbody>
                 {customer360.payments.map((payment) => (
                   <tr key={payment.id}>
-                    <td>{formatDisplayDateTime(payment.paymentDate || payment.createdAt)}</td>
+                    <td>{formatPaymentDateTime(payment)}</td>
                     <td>{payment.receiptNumber || payment.referenceNumber || '-'}</td>
                     <td>{formatMoney(payment.amount)}</td>
                     <td>{payment.method || '-'}</td>

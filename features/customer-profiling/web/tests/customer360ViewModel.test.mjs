@@ -10,6 +10,7 @@ import {
   emptyCustomer360Data,
   filterCustomerActivity,
   filterCustomerEquipment,
+  formatPaymentDateTime,
   hasCustomer360TabData,
   isOpenInvoice,
   paymentAllocationDetails
@@ -119,6 +120,15 @@ test('payment allocations fall back to invoice references when coverage is unava
   assert.deepEqual(paymentAllocationDetails({ invoiceNumber: 'Advance credit', advanceAmount: 500 }), [
     { period: 'Advance credit', invoiceReference: '', amount: 500 }
   ]);
+});
+
+test('payment time uses the recorded posting timestamp, never a fabricated time from a date-only value', () => {
+  assert.equal(formatPaymentDateTime({
+    paymentDate: '2026-09-29',
+    postedAt: '2026-09-29T07:23:21.137327+00:00'
+  }), '9/29/2026, 3:23 PM');
+  assert.equal(formatPaymentDateTime({ paymentDate: '2026-09-29' }), '9/29/2026');
+  assert.equal(formatPaymentDateTime({ paymentDate: '2026-09-29', createdAt: '2026-09-29' }), '9/29/2026');
 });
 
 test('customer filters tolerate missing integration data', () => {
