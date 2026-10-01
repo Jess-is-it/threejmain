@@ -3315,14 +3315,6 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       : Number(balance.balance || 0) > 0
         ? 'OPEN BALANCE'
         : 'CURRENT';
-    const tabCounts = {
-      overview: '',
-      billing: customer360.openInvoices.length || customer360.invoices.length,
-      payments: customer360.payments.length + customer360.posSales.length,
-      tickets: customer360.tickets.length,
-      equipment: customer360.equipment.length,
-      activity: customer360.activity.length
-    };
     const firstTabError = (keys) => keys.map((key) => customer360Errors[key]).find(Boolean) || null;
     const renderState = (keys, items, emptyText, fallback = null) => {
       const error = firstTabError(Array.isArray(keys) ? keys : [keys]);
@@ -4321,7 +4313,6 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                   aria-selected={customerDetailTab === tab.value}
                 >
                   <span>{tab.label}</span>
-                  {tabCounts[tab.value] ? <span className="badge bg-secondary-lt text-secondary">{tabCounts[tab.value]}</span> : null}
                   {!hasCustomer360TabData(customer360, tab.value) && tab.value !== 'overview' && !customer360Loading ? <span className="customer-360-tab-dot" aria-hidden="true" /> : null}
                 </button>
               ))}
