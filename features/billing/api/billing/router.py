@@ -4529,7 +4529,8 @@ def record_field_visit(
     }
     case["history"].insert(0, event)
     case["lastOutcome"] = action
-    case["lastContactAt"] = timestamp
+    if outcome in {"PROMISED_TO_PAY", "REQUESTED_REVISIT", "PAYMENT_RECEIVED"}:
+        case["lastContactAt"] = timestamp
     case["lastVisitOutcome"] = outcome
     case["lastVisitAt"] = timestamp
     case["lastVisitByName"] = event["createdByName"]

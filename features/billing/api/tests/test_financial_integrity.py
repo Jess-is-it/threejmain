@@ -2701,6 +2701,7 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
                 idempotency_key="visit:no-answer-1",
                 admin=collector,
             )
+            self.assertFalse(billing.collection_case_for_customer(self.customer["id"]).get("lastContactAt"))
             replay = billing.create_field_visit(
                 self.customer["id"],
                 billing.FieldVisitPayload(outcome="NO_ONE_HOME"),
@@ -2741,6 +2742,7 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
         self.assertEqual("", promised["nextActionDate"])
         self.assertEqual("", billing.collection_case_for_customer(self.customer["id"]).get("nextActionDate", ""))
         self.assertEqual("PROMISED_TO_PAY", billing.collector_aging_accounts()[0]["lastFieldVisit"]["outcome"])
+        self.assertTrue(billing.collection_case_for_customer(self.customer["id"])["lastContactAt"])
         self.assertEqual(2, len(billing.collection_case_for_customer(self.customer["id"])["history"]))
 
     def test_collector_payment_records_one_linked_visit(self):
