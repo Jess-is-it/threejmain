@@ -1673,6 +1673,24 @@ def list_collections(
     }
 
 
+@router.get("/collections/by-idempotency-key/{idempotency_key}")
+def collection_posting_status(idempotency_key: str, actor=Depends(require_actor)):
+    """Resolve an uncertain mobile post without creating another payment."""
+    require_collector_permission(actor, "collector.portal.view")
+    posting_key = clean_text(idempotency_key, 200)
+    if len(posting_key) < 8:
+        raise HTTPException(status_code=400, detail="A valid payment attempt key is required")
+    with collector_store._process_lock:
+        collector_store.ensure_loaded()
+        record = find_collection_by_idempotency_key(posting_key)
+        if record is None or (
+            not is_finance_actor(actor)
+            and record.get("collectorUsername") != actor_username(actor)
+        ):
+            return {"status": "UNCONFIRMED"}
+        return {"status": record.get("status") or "UNCONFIRMED", "collection": public_collection(record, actor)}
+
+
 @router.get("/collections/{collection_id}")
 def get_collection(collection_id: str, actor=Depends(require_actor)):
     return public_collection(find_record(collections, collection_id, "Collection"), actor)

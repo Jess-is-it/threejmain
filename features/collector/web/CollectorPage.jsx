@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   IconAlertTriangle,
   IconArrowLeft,
@@ -23,6 +23,8 @@ import { billingMonthLabel, receiptDocument } from './receiptDocument.js';
 import './collector.css';
 
 const API = '/api';
+const PAYMENT_POST_TIMEOUT_MS = 20000;
+const PAYMENT_LOOKUP_TIMEOUT_MS = 10000;
 
 function token() {
   return localStorage.getItem('threejmain_token');
@@ -38,8 +40,22 @@ async function request(path, options = {}) {
     }
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail || 'Request failed');
+  if (!response.ok) {
+    const error = new Error(data.detail || 'Request failed');
+    error.status = response.status;
+    throw error;
+  }
   return data;
+}
+
+async function requestWithTimeout(path, options, timeoutMs) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await request(path, { ...options, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 function money(value) {
@@ -142,6 +158,10 @@ function customerSearchText(account = {}) {
 function createIdempotencyKey() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
   return `collector-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function pendingPaymentStorageKey(username) {
+  return `threejmain_collector_pending_payment:${username}`;
 }
 
 function invoicePromotionQuote(invoice = {}) {
@@ -487,6 +507,9 @@ export default function CollectorPage({ currentUser = {} }) {
   const [selectedReceipt, setSelectedReceipt] = useState(null);
   const [payment, setPayment] = useState(null);
   const [excessPrompt, setExcessPrompt] = useState(false);
+  const [paymentReview, setPaymentReview] = useState(null);
+  const [paymentRecoveryMessage, setPaymentRecoveryMessage] = useState('');
+  const [paymentRecoveryStatus, setPaymentRecoveryStatus] = useState('');
   const [remittanceForm, setRemittanceForm] = useState({
     declaredCash: '',
     gcashTransferredAmount: '',
@@ -500,6 +523,7 @@ export default function CollectorPage({ currentUser = {} }) {
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const paymentPostingRef = useRef(false);
 
   const activeClaimMine = selectedCustomer?.claim?.collectorUsername === currentUser?.username;
   const paymentBreakdown = useMemo(
@@ -545,7 +569,7 @@ export default function CollectorPage({ currentUser = {} }) {
     window.setTimeout(() => setNotice(''), 6000);
   }
 
-  async function load() {
+  async function load({ preserveSelection = true } = {}) {
     setLoading(true);
     setError('');
     try {
@@ -579,7 +603,7 @@ export default function CollectorPage({ currentUser = {} }) {
         declaredCash: current.declaredCash || String(nextOverview.custody?.cash || 0),
         gcashTransferredAmount: current.gcashTransferredAmount || String(nextOverview.custody?.gcash || 0)
       }));
-      if (selectedCustomer) {
+      if (preserveSelection && selectedCustomer) {
         const refreshed = (customerResult.items || []).find((row) => row.customerId === selectedCustomer.customerId);
         setSelectedCustomer(refreshed || null);
       }
@@ -598,7 +622,45 @@ export default function CollectorPage({ currentUser = {} }) {
     load();
   }, []);
 
+  useEffect(() => {
+    if (!currentUser?.username) return;
+    try {
+      const saved = JSON.parse(window.sessionStorage.getItem(pendingPaymentStorageKey(currentUser.username)) || 'null');
+      if (!saved?.idempotencyKey || !saved?.payload || !saved?.breakdown) return;
+      setPaymentReview(saved);
+      setPaymentRecoveryMessage('Checking the payment attempt saved in this browser session.');
+      checkPaymentStatus(saved);
+    } catch {
+      try {
+        window.sessionStorage.removeItem(pendingPaymentStorageKey(currentUser.username));
+      } catch {
+        // Restricted browser storage must not prevent the portal from opening.
+      }
+    }
+  }, [currentUser?.username]);
+
+  function savePendingPaymentAttempt(attempt) {
+    if (!currentUser?.username) return;
+    try {
+      window.sessionStorage.setItem(pendingPaymentStorageKey(currentUser.username), JSON.stringify(attempt));
+    } catch {
+      // The current modal still supports lookup and retry when session storage is unavailable.
+    }
+  }
+
+  function clearPendingPaymentAttempt() {
+    if (!currentUser?.username) return;
+    try {
+      window.sessionStorage.removeItem(pendingPaymentStorageKey(currentUser.username));
+    } catch {
+      // Browser storage can be unavailable in restricted modes.
+    }
+  }
+
   function openCustomer(account) {
+    setPaymentReview(null);
+    setPaymentRecoveryMessage('');
+    setPaymentRecoveryStatus('');
     setSelectedCustomer(account);
     setPayment({
       amount: String(accountPayableToday(account) || ''),
@@ -674,10 +736,10 @@ export default function CollectorPage({ currentUser = {} }) {
       setExcessPrompt(true);
       return;
     }
-    await postPayment('');
+    openPaymentReview('');
   }
 
-  async function postPayment(excessDecision) {
+  function openPaymentReview(excessDecision) {
     if (!selectedCustomer || !payment) return;
     if (!activeClaimMine) {
       showError('This payment entry is no longer active. Close it and tap Collect again.');
@@ -692,42 +754,129 @@ export default function CollectorPage({ currentUser = {} }) {
       showError('Enter an amount received.');
       return;
     }
+    if (payment.method === 'GCASH' && !payment.referenceNumber.trim()) {
+      showError('Enter the GCash transaction reference.');
+      return;
+    }
     setExcessPrompt(false);
+    setPaymentRecoveryMessage('');
+    setPaymentRecoveryStatus('');
+    setPaymentReview({
+      idempotencyKey: payment.idempotencyKey,
+      customerName: customerName(selectedCustomer.customer),
+      accountNumber: selectedCustomer.customer?.accountNumber || '',
+      balanceBefore: Number(selectedCustomer.outstandingBalance || 0),
+      breakdown,
+      payload: {
+        customerId: selectedCustomer.customerId,
+        amount: breakdown.amount,
+        receivedAmount: breakdown.receivedAmount,
+        returnedAmount: breakdown.returnedAmount,
+        allocations: breakdown.allocations.map((allocation) => ({
+          invoiceId: allocation.invoiceId,
+          amount: allocation.amount,
+          promotionIds: allocation.promotionIds,
+          promotionQuoteDate: allocation.promotionQuoteDate,
+          promotionQuoteFingerprint: allocation.promotionQuoteFingerprint
+        })),
+        advanceAmount: breakdown.advanceAmount,
+        allocationMode: breakdown.advanceAmount > 0 ? 'ADVANCE' : 'OLDEST',
+        method: payment.method,
+        paymentDate: payment.paymentDate || selectedCustomer.paymentDate,
+        referenceNumber: payment.referenceNumber,
+        tenderedAmount: payment.method === 'CASH' ? breakdown.receivedAmount : breakdown.amount,
+        smsDestination: payment.smsDestination,
+        notes: payment.notes
+      }
+    });
+  }
+
+  async function completePostedPayment(result) {
+    clearPendingPaymentAttempt();
+    setSelectedReceipt(result);
+    setSelectedCustomer(null);
+    setPayment(null);
+    setPaymentReview(null);
+    setPaymentRecoveryMessage('');
+    setPaymentRecoveryStatus('');
+    showNotice(`Payment posted as ${result.receiptNumber}.`);
+    await load({ preserveSelection: false });
+  }
+
+  async function checkPaymentStatus(attempt) {
+    if (!attempt) return 'UNCONFIRMED';
+    setPaymentRecoveryMessage('Checking whether this payment was recorded. Do not collect again.');
+    setBusy('payment-check');
+    try {
+      const result = await requestWithTimeout(
+        `/collector/collections/by-idempotency-key/${encodeURIComponent(attempt.idempotencyKey)}`,
+        {},
+        PAYMENT_LOOKUP_TIMEOUT_MS
+      );
+      if (result.status === 'POSTED' && result.collection?.receiptNumber) {
+        await completePostedPayment(result.collection);
+        return 'POSTED';
+      }
+      if (result.status === 'UNCONFIRMED' && (attempt.needsOffice || paymentRecoveryStatus === 'NEEDS_OFFICE')) {
+        setPaymentRecoveryStatus('NEEDS_OFFICE');
+        setPaymentRecoveryMessage('This payment was rejected and no Collector receipt is confirmed. Contact the office before taking another payment.');
+        return 'UNCONFIRMED';
+      }
+      setPaymentRecoveryStatus(result.status || 'UNCONFIRMED');
+      if (result.status === 'VOID') clearPendingPaymentAttempt();
+      setPaymentRecoveryMessage(result.status === 'VOID'
+        ? 'This receipt was voided. Contact Finance before taking another payment.'
+        : 'Payment is not confirmed yet. Check again or retry this same payment. Do not take a second payment.');
+      return result.status || 'UNCONFIRMED';
+    } catch (err) {
+      const needsOffice = attempt.needsOffice || paymentRecoveryStatus === 'NEEDS_OFFICE';
+      setPaymentRecoveryStatus(needsOffice ? 'NEEDS_OFFICE' : 'UNREACHABLE');
+      setPaymentRecoveryMessage(needsOffice
+        ? 'The connection is unavailable. Contact the office to verify this attempt before taking another payment.'
+        : 'The connection is unavailable. Keep this payment open and check again when connected. Do not take a second payment.');
+      return 'UNREACHABLE';
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function postPayment(attempt) {
+    if (!attempt || paymentPostingRef.current || busy || ['VOID', 'NEEDS_OFFICE'].includes(paymentRecoveryStatus)) return;
+    paymentPostingRef.current = true;
+    setPaymentRecoveryMessage('');
+    setPaymentRecoveryStatus('');
+    savePendingPaymentAttempt(attempt);
     setBusy('payment');
     try {
-      const result = await request('/collector/collections', {
+      const result = await requestWithTimeout('/collector/collections', {
         method: 'POST',
-        headers: { 'Idempotency-Key': payment.idempotencyKey },
-        body: JSON.stringify({
-          customerId: selectedCustomer.customerId,
-          amount: breakdown.amount,
-          receivedAmount: breakdown.receivedAmount,
-          returnedAmount: breakdown.returnedAmount,
-          allocations: breakdown.allocations.map((allocation) => ({
-            invoiceId: allocation.invoiceId,
-            amount: allocation.amount,
-            promotionIds: allocation.promotionIds,
-            promotionQuoteDate: allocation.promotionQuoteDate,
-            promotionQuoteFingerprint: allocation.promotionQuoteFingerprint
-          })),
-          advanceAmount: breakdown.advanceAmount,
-          allocationMode: breakdown.advanceAmount > 0 ? 'ADVANCE' : 'OLDEST',
-          method: payment.method,
-          paymentDate: payment.paymentDate || selectedCustomer.paymentDate,
-          referenceNumber: payment.referenceNumber,
-          tenderedAmount: payment.method === 'CASH' ? breakdown.receivedAmount : breakdown.amount,
-          smsDestination: payment.smsDestination,
-          notes: payment.notes
-        })
-      });
-      setSelectedReceipt(result);
-      setSelectedCustomer(null);
-      setPayment(null);
-      showNotice(`Payment posted as ${result.receiptNumber}.`);
-      await load();
+        headers: { 'Idempotency-Key': attempt.idempotencyKey },
+        body: JSON.stringify(attempt.payload)
+      }, PAYMENT_POST_TIMEOUT_MS);
+      if (result?.status === 'VOID') {
+        clearPendingPaymentAttempt();
+        setPaymentRecoveryStatus('VOID');
+        setPaymentRecoveryMessage('This receipt was voided. Contact Finance before taking another payment.');
+        return;
+      }
+      if (result?.status !== 'POSTED' || !result?.receiptNumber) throw new Error('Payment response was incomplete');
+      await completePostedPayment(result);
     } catch (err) {
-      showError(err.message);
+      if (err.status && err.status < 500 && err.status !== 409) {
+        clearPendingPaymentAttempt();
+        setPaymentReview(null);
+        setPayment((current) => current ? { ...current, idempotencyKey: createIdempotencyKey() } : current);
+        showError(err.message);
+      } else {
+        const status = await checkPaymentStatus(attempt);
+        if (err.status === 409 && status === 'UNCONFIRMED') {
+          savePendingPaymentAttempt({ ...attempt, needsOffice: true });
+          setPaymentRecoveryStatus('NEEDS_OFFICE');
+          setPaymentRecoveryMessage(`${err.message}. The receipt could not be confirmed. Contact the office before taking another payment.`);
+        }
+      }
     } finally {
+      paymentPostingRef.current = false;
       setBusy('');
     }
   }
@@ -738,6 +887,9 @@ export default function CollectorPage({ currentUser = {} }) {
     const customerId = selectedCustomer?.customerId;
     const shouldRelease = Boolean(claimId && activeClaimMine);
     setExcessPrompt(false);
+    setPaymentReview(null);
+    setPaymentRecoveryMessage('');
+    setPaymentRecoveryStatus('');
     setSelectedCustomer(null);
     setPayment(null);
     if (!shouldRelease) return;
@@ -1339,7 +1491,7 @@ export default function CollectorPage({ currentUser = {} }) {
               <span>Excess</span>
               <strong>{money(paymentBreakdown.excess)}</strong>
             </div>
-            <button className="btn btn-primary" type="button" disabled={busy === 'payment'} onClick={() => postPayment('ADVANCE')}>
+            <button className="btn btn-primary" type="button" disabled={busy === 'payment'} onClick={() => openPaymentReview('ADVANCE')}>
               Apply excess as advance
             </button>
             <button
@@ -1347,7 +1499,7 @@ export default function CollectorPage({ currentUser = {} }) {
               type="button"
               disabled={busy === 'payment'}
               onClick={() => (
-                paymentBreakdown.appliedAmount > 0 ? postPayment('RETURN') : closePaymentEntry()
+                paymentBreakdown.appliedAmount > 0 ? openPaymentReview('RETURN') : closePaymentEntry()
               )}
             >
               {paymentBreakdown.appliedAmount > 0
@@ -1359,6 +1511,72 @@ export default function CollectorPage({ currentUser = {} }) {
             <button className="btn btn-link" type="button" disabled={busy === 'payment'} onClick={() => setExcessPrompt(false)}>
               Go back
             </button>
+          </section>
+        </div>
+      )}
+
+      {paymentReview && (
+        <div className="collector-modal-backdrop collector-review-backdrop" role="presentation">
+          <section className="collector-review-modal" role="dialog" aria-modal="true" aria-label={paymentRecoveryMessage ? 'Check payment status' : 'Review payment before posting'}>
+            <header>
+              <span className="collector-review-icon"><IconShieldCheck size={25} /></span>
+              <div>
+                <h3>{paymentRecoveryMessage ? 'Check payment status' : 'Review payment'}</h3>
+                <span>{paymentReview.customerName} · {paymentReview.accountNumber || 'No account number'}</span>
+              </div>
+            </header>
+            <div className="collector-review-details">
+              <div><span>Amount received</span><strong>{money(paymentReview.breakdown.receivedAmount)}</strong></div>
+              <div><span>Payment method</span><strong>{paymentReview.payload.method === 'GCASH' ? 'GCash' : 'Cash'}</strong></div>
+              {paymentReview.payload.method === 'GCASH' && (
+                <div><span>GCash reference</span><strong>{paymentReview.payload.referenceNumber}</strong></div>
+              )}
+              <div><span>Applied to bills</span><strong>{money(paymentReview.breakdown.appliedAmount)}</strong></div>
+              {paymentReview.breakdown.promotionDiscountAmount > 0 && (
+                <div><span>Automatic savings</span><strong>{discountMoney(paymentReview.breakdown.promotionDiscountAmount)}</strong></div>
+              )}
+              {paymentReview.breakdown.advanceAmount > 0 && (
+                <div><span>Advance credit</span><strong>{money(paymentReview.breakdown.advanceAmount)}</strong></div>
+              )}
+              {paymentReview.breakdown.returnedAmount > 0 && (
+                <div><span>Return to customer</span><strong>{money(paymentReview.breakdown.returnedAmount)}</strong></div>
+              )}
+              <div className="collector-review-total"><span>Amount kept for remittance</span><strong>{money(paymentReview.breakdown.amount)}</strong></div>
+              <div><span>Expected balance after</span><strong>{money(Math.max(0, paymentReview.balanceBefore - paymentReview.breakdown.appliedAmount - paymentReview.breakdown.promotionDiscountAmount))}</strong></div>
+            </div>
+            {paymentRecoveryMessage ? (
+              <div className="collector-review-recovery" role="alert">
+                <IconAlertTriangle size={20} />
+                <p>{paymentRecoveryMessage}<small>Attempt reference: {paymentReview.idempotencyKey}</small></p>
+              </div>
+            ) : (
+              <p className="collector-review-note">
+                {paymentReview.payload.method === 'GCASH'
+                  ? 'Confirm the GCash amount reached your account before posting. Billing will check the balance again.'
+                  : 'Confirm you have received the cash and returned any change shown above. Billing will check the balance again.'}
+              </p>
+            )}
+            <div className="collector-review-actions">
+              {paymentRecoveryMessage ? (
+                <>
+                  <button className="btn btn-outline-primary" type="button" disabled={Boolean(busy)} onClick={() => checkPaymentStatus(paymentReview)}>
+                    <IconRefresh size={18} /> {busy === 'payment-check' ? 'Checking…' : 'Check status again'}
+                  </button>
+                  {!['VOID', 'NEEDS_OFFICE'].includes(paymentRecoveryStatus) && (
+                    <button className="btn btn-primary" type="button" disabled={Boolean(busy)} onClick={() => postPayment(paymentReview)}>
+                      <IconShieldCheck size={18} /> Retry same payment safely
+                    </button>
+                  )}
+                </>
+              ) : (
+                <>
+                  <button className="btn btn-outline-secondary" type="button" disabled={Boolean(busy)} onClick={() => setPaymentReview(null)}>Back to edit</button>
+                  <button className="btn btn-success" type="button" disabled={Boolean(busy)} onClick={() => postPayment(paymentReview)}>
+                    <IconShieldCheck size={18} /> {busy === 'payment' ? 'Posting payment…' : 'Confirm received and post'}
+                  </button>
+                </>
+              )}
+            </div>
           </section>
         </div>
       )}

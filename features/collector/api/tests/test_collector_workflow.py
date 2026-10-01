@@ -270,6 +270,24 @@ class CollectorWorkflowTests(unittest.TestCase):
             actor=self.collector_actor,
         )
 
+    def test_payment_attempt_lookup_recovers_receipt_and_hides_other_collectors(self):
+        key = "collector:uncertain-mobile-post"
+        self.assertEqual(
+            {"status": "UNCONFIRMED"},
+            collector.collection_posting_status(key, actor=self.collector_actor),
+        )
+        self.claim()
+        posted = self.post_cash(key=key)
+
+        recovered = collector.collection_posting_status(key, actor=self.collector_actor)
+        self.assertEqual("POSTED", recovered["status"])
+        self.assertEqual(posted["id"], recovered["collection"]["id"])
+        self.assertEqual(posted["receiptNumber"], recovered["collection"]["receiptNumber"])
+        self.assertEqual(
+            {"status": "UNCONFIRMED"},
+            collector.collection_posting_status(key, actor=self.other_collector),
+        )
+
     def test_claim_prevents_two_collectors_from_collecting_same_customer(self):
         claimed = self.claim()
 

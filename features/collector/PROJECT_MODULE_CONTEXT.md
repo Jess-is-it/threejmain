@@ -30,7 +30,9 @@
 - Excess-over-total-due popup with either advance account credit or immediate return/change
 - Advance credit requires all current invoices to be fully settled by actual payment plus Billing promotion credits; Billing automatically applies available credit FIFO to the next generated monthly invoice
 - Personal GCash collection with required unique transaction reference
+- Final mobile review before posting, showing customer/account, received funds, method/reference, application, savings, returned/advance amount, custody amount, and expected remaining balance
 - Immediate idempotent Billing payment posting
+- 20-second payment request timeout with read-only status lookup by idempotency key, same-key retry, and current-tab pending-attempt recovery after reload
 - Automatic A2P SMS attempt after every successful payment using sender ID `3J BILL`
 - Billing-numbered 80 mm browser-print receipt
 - Unlimited audited receipt reprints using the same receipt number
@@ -103,6 +105,8 @@ Posted Billing payments and receipt identifiers are immutable. Reprints append p
 
 It returns the Collector collection record with the Billing payment id, official receipt number, allocation/promotion snapshot, amount received, returned amount, applied amount, promotion discount, advance amount, invoice balance before/after, account credit before/after, SMS status, custody status, and print history.
 
+`GET /api/collector/collections/by-idempotency-key/{key}` checks an uncertain payment without creating another payment. It returns `UNCONFIRMED` when no accessible Collector record exists; otherwise it returns the record status and receipt to the original collector or an authorized Finance actor. Mobile retry reuses the exact frozen payload and idempotency key. The pending attempt is kept in browser session storage until resolved or definitively rejected.
+
 `POST /api/collector/collections/{id}/print-events` appends `ORIGINAL` for the first print and `REPRINT` for later prints. It does not call Billing or A2P.
 
 `POST /api/collector/remittances` submits held collections. `GET /api/collector/finance/overview` enriches every open/recent remittance with `collectionItems`, containing each linked customer name, account number, receipt number, method, and payment amount plus `listedCollectionTotal` for Finance review. The UI and confirmation API block settlement when the linked item count or total does not match the remittance summary. `POST /api/collector/remittances/{id}/confirm` records Finance count/verification and either closes or flags the batch.
@@ -145,7 +149,8 @@ The first print and every later reprint use the same clean customer-facing recei
 - Collector SMS wording excludes the receipt number and labels `balanceAfter` as the customer's total `Remaining balance`, not as a single-invoice balance.
 - The SMS starts `Thank you, <first name>! We received your payment of P<amount>.` It then shows the remaining balance when positive or `Your account is now fully paid.` whenever the balance is zero. Advance-credit details are intentionally excluded. Name fallback uses the first word of the customer display name and then `Customer`.
 - Browser printing depends on the Android print-service/printer application and cannot guarantee the printer completed a physical print.
-- Billing and Collector use separate durable module transactions. Stable idempotency makes a failed Collector-link retry safe if Billing committed first, but cross-module distributed transactions are not available.
+- Billing and Collector use separate durable module transactions. Stable idempotency prevents a duplicate Billing receipt on retry, but an unlinked Billing-only post may need office investigation; cross-module distributed transactions are not available.
+- The read-only payment status lookup only finds saved Collector links. If Billing committed but Collector linking failed, the mobile flow leaves the attempt unconfirmed and requires office investigation before another payment is taken.
 - An advance receipt that has already funded a future invoice cannot be voided until a controlled credit-application reversal workflow exists.
 - Remittance reversal and custody correction for a receipt already submitted or settled remain future work. Billing rejects payment voids for those receipts with HTTP 409; Finance confirmation also rejects a linked Billing payment that is void or missing.
 - GPS evidence, signatures, photos, promises-to-pay, permanent collection runs, and advanced reporting are deferred.
@@ -159,4 +164,4 @@ python3 -m unittest features/collector/api/tests/test_collector_workflow.py -v
 node --test features/collector/web/tests/receiptDocument.test.mjs
 ```
 
-Covered: automatic-reservation collision, permission-controlled customer-unavailable A2P messaging with a server-calculated promotional balance, server-enforced oldest-first partial/multi-invoice allocation, automatic promo forwarding, stale/manipulated quote rejection, partial-payment promo protection, promoted payoff plus advance, returned excess/change, payment/SMS/idempotent replay, audited reprint, GCash validation/duplicate reference, Finance settlement, independent cash/GCash variance detection, and month-first receipt rendering for multi-month, promoted, and partial payments.
+Covered: automatic-reservation collision, permission-controlled customer-unavailable A2P messaging with a server-calculated promotional balance, server-enforced oldest-first partial/multi-invoice allocation, automatic promo forwarding, stale/manipulated quote rejection, partial-payment promo protection, promoted payoff plus advance, returned excess/change, payment/SMS/idempotent replay, scoped payment-attempt status lookup, audited reprint, GCash validation/duplicate reference, Finance settlement, independent cash/GCash variance detection, and month-first receipt rendering for multi-month, promoted, and partial payments.
