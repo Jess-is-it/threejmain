@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 from datetime import date, datetime, timezone
@@ -127,8 +128,8 @@ EXISTING_SUBSCRIBER_COLUMN_GUIDE = {
     "province": {"purpose": "Province of the installed service address.", "format": "Dropdown: CAGAYAN or ISABELA", "example": "CAGAYAN"},
     "city": {"purpose": "City or municipality of the installed service address; choices depend on Province.", "format": "Dependent dropdown", "example": "ENRILE"},
     "barangay": {"purpose": "Barangay of the installed service address; choices depend on Province and City.", "format": "Dependent dropdown", "example": "ALIBAGO"},
-    "latitude": {"purpose": "North/south GPS coordinate of the installed line; used to create the internal location record.", "format": "Optional decimal from -90 to 90", "example": "17.559311"},
-    "longitude": {"purpose": "East/west GPS coordinate of the installed line; used to create the internal location record.", "format": "Optional decimal from -180 to 180", "example": "121.684928"},
+    "latitude": {"purpose": "North/south GPS coordinate of the installed line; used to create the internal location record.", "format": "Optional decimal (-90 to 90) or degrees/minutes/seconds with N/S", "example": "17°31'31.42\"N"},
+    "longitude": {"purpose": "East/west GPS coordinate of the installed line; used to create the internal location record.", "format": "Optional decimal (-180 to 180) or degrees/minutes/seconds with E/W", "example": "121°41'05.74\"E"},
     "gender": {"purpose": "Customer gender used by the profile and avatar settings.", "format": "Optional dropdown: MALE or FEMALE", "example": "MALE"},
     "monthlyRate": {"purpose": "Current monthly amount charged for the installed line; combined with Billing Mode for plan mapping.", "format": "Non-negative number; no currency symbol", "example": "1000"},
     "billingMode": {"purpose": "Identifies whether service is paid before or after the service month.", "format": "Dropdown: PREPAID or POSTPAID", "example": "PREPAID"},
@@ -971,6 +972,42 @@ def duplicate_candidates(row: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(matches, key=lambda item: (-item["score"], item["fullName"]))[:5]
 
 
+def normalize_migration_coordinate(value: str, field: str) -> str:
+    if not value:
+        return ""
+    limit = 90 if field == "latitude" else 180
+    directions = "NS" if field == "latitude" else "EW"
+    dms = re.fullmatch(
+        r"(?P<sign>[+-]?)(?P<degrees>\d{1,3})\s*°\s*"
+        r"(?P<minutes>\d{1,2})\s*['′’]\s*"
+        r"(?P<seconds>\d{1,2}(?:\.\d+)?)\s*[\"″”]?\s*"
+        r"(?P<direction>[NSEW])?",
+        value,
+        re.IGNORECASE,
+    )
+    if dms:
+        direction = (dms.group("direction") or "").upper()
+        if direction and (direction not in directions or dms.group("sign")):
+            raise ValueError(f"{field} has an invalid compass direction")
+        minutes = int(dms.group("minutes"))
+        seconds = float(dms.group("seconds"))
+        if minutes >= 60 or seconds >= 60:
+            raise ValueError(f"{field} minutes and seconds must be less than 60")
+        coordinate = int(dms.group("degrees")) + minutes / 60 + seconds / 3600
+        if direction in {"S", "W"} or dms.group("sign") == "-":
+            coordinate = -coordinate
+        normalized = f"{coordinate:.8f}".rstrip("0").rstrip(".")
+    else:
+        try:
+            coordinate = float(value)
+        except ValueError as exc:
+            raise ValueError(f"{field} must be decimal degrees or degrees/minutes/seconds") from exc
+        normalized = value
+    if not math.isfinite(coordinate) or abs(coordinate) > limit:
+        raise ValueError(f"{field} must be between -{limit} and {limit}")
+    return normalized
+
+
 def normalize_migration_row(
     raw_row: dict[str, Any],
     row_number: int,
@@ -982,6 +1019,11 @@ def normalize_migration_row(
     for field in REQUIRED_EXISTING_SUBSCRIBER_HEADERS:
         if not row.get(field):
             errors.append(f"{field} is required")
+    for field in ("latitude", "longitude"):
+        try:
+            row[field] = normalize_migration_coordinate(row[field], field)
+        except ValueError as exc:
+            errors.append(str(exc))
     try:
         row["monthlyRate"] = money_value(row.get("monthlyRate"), "monthlyRate", required=True)
         row["lastPaymentAmount"] = money_value(row.get("lastPaymentAmount"), "lastPaymentAmount")

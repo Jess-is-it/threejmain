@@ -116,6 +116,40 @@ class ExistingSubscriberMigrationTests(unittest.TestCase):
         self.assertEqual("1000.00|PREPAID", normalized["planKey"])
         self.assertEqual("MONTHLY_RATE_AND_BILLING_MODE", normalized["planReferenceSource"])
 
+    def test_coordinates_normalize_dms_and_reject_invalid_values_during_preview(self):
+        normalized, errors = customer_profiling.normalize_migration_row(
+            self.sample_row(latitude='17°31\'31.42"N', longitude='121°41′05.74″E'),
+            2,
+            "2026-09-16",
+        )
+        self.assertEqual([], errors)
+        self.assertEqual("17.52539444", normalized["latitude"])
+        self.assertEqual("121.68492778", normalized["longitude"])
+
+        southern, errors = customer_profiling.normalize_migration_row(
+            self.sample_row(latitude='17°31\'31.42"S', longitude='121°41\'05.74"W'),
+            2,
+            "2026-09-16",
+        )
+        self.assertEqual([], errors)
+        self.assertEqual("-17.52539444", southern["latitude"])
+        self.assertEqual("-121.68492778", southern["longitude"])
+
+        for latitude, longitude in [
+            ('17°61\'31.42"N', '121.684928'),
+            ('17°31\'61.42"N', '121.684928'),
+            ('17°31\'31.42"E', '121.684928'),
+            ('91°00\'00"N', '121.684928'),
+            ('17.559311', '181.684928'),
+        ]:
+            with self.subTest(latitude=latitude, longitude=longitude):
+                _, errors = customer_profiling.normalize_migration_row(
+                    self.sample_row(latitude=latitude, longitude=longitude),
+                    2,
+                    "2026-09-16",
+                )
+                self.assertTrue(any(error.startswith("latitude") or error.startswith("longitude") for error in errors))
+
     def test_postpaid_schedule_keeps_current_month_for_month_end_generation(self):
         normalized, errors = customer_profiling.normalize_migration_row(
             self.sample_row(billingMode="POSTPAID", lastPaymentAmount="1000"),
@@ -166,16 +200,25 @@ class ExistingSubscriberMigrationTests(unittest.TestCase):
         self.assertEqual("OPENING_BALANCE", normalized["billingPreview"]["defaultResolution"])
 
     def test_commit_generates_customer_and_checkpoints_cross_module_results(self):
+        location_data = []
+
+        def ensure_location(data, actor):
+            location_data.append(data)
+            return {"id": "location-1", "location_name": "Imported location"}
+
+        customer_profiling.ensure_location_record = ensure_location
         with patch.object(customer_profiling, "subscriber_migration_business_date", side_effect=["2026-09-16", "2026-09-18"]):
             batch = customer_profiling.create_subscriber_migration_batch(
                 customer_profiling.ExistingSubscriberMigrationBatchPayload(
                     filename="existing.csv",
-                    rows=[self.sample_row()],
+                    rows=[self.sample_row(latitude='17°31\'31.42"N', longitude='121°41\'05.74"E')],
                 ),
                 self.admin,
             )
             self.assertEqual("PENDING_COMMIT", batch["effectiveDateStatus"])
             row = batch["rows"][0]
+            self.assertEqual("17.52539444", row["normalized"]["latitude"])
+            self.assertEqual("121.68492778", row["normalized"]["longitude"])
             committed = customer_profiling.commit_subscriber_migration_batch(
                 batch["id"],
                 customer_profiling.ExistingSubscriberMigrationCommitPayload(
@@ -192,6 +235,8 @@ class ExistingSubscriberMigrationTests(unittest.TestCase):
         self.assertEqual("SA-202609-0001", result["serviceAccountNumber"])
         self.assertEqual(2, result["invoiceCount"])
         self.assertTrue(customer_profiling.customers[0]["migration"]["existingSubscriber"])
+        self.assertEqual("17.52539444", customer_profiling.customers[0]["latitude"])
+        self.assertEqual("121.68492778", location_data[0]["longitude"])
         self.assertEqual(["2026-08", "2026-09"], self.billing_calls[0]["arrearMonths"])
         self.assertEqual("2026-09-18", committed["cutoverDate"])
         self.assertEqual("ASSIGNED", committed["effectiveDateStatus"])

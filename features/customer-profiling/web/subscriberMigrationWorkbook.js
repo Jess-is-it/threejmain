@@ -102,7 +102,7 @@ export async function buildExistingSubscriberWorkbook(template, excelJsOverride)
   instructions.addRow(['Existing Subscriber Migration', 'How to use this workbook']);
   instructions.addRow(['One row per line', 'Each row in the Subscribers worksheet represents one already-installed internet line.']);
   instructions.addRow(['Column help', 'Open the Column Guide worksheet for each column purpose, required status, format, and example.']);
-  instructions.addRow(['Location', 'Choose Province first, then City, then Barangay. Enter the existing line latitude and longitude when available. The system creates its own location ID and location name.']);
+  instructions.addRow(['Location', 'Choose Province first, then City, then Barangay. Enter latitude and longitude as decimal degrees or degrees, minutes, and seconds (for example 17°31\'31.42"N). The system converts coordinates to decimal degrees and creates its own location ID and location name.']);
   instructions.addRow(['Plan reference', 'Enter the current monthly rate and billing mode. During review, map that rate to a current Service Catalog plan or create a migration-only legacy plan.']);
   instructions.addRow(['Promotions', 'Use codes from Active Promotions. Separate multiple future qualification codes with semicolons. Last Payment Promotion Code identifies the discount actually applied to the historical payment.']);
   instructions.addRow(['Billing schedule', 'Do not supply a billing day or next billing date. The system derives the calendar-month schedule from Billing Mode, the migration effective date, and Last Paid Through Month.']);
