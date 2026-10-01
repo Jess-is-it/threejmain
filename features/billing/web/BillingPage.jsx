@@ -29,6 +29,7 @@ const DEFAULT_INSTALLATION_FEE = '1500';
 const DEFAULT_EARLY_BIRD_DISCOUNT = '200';
 const DEFAULT_INVOICE_PAGE_SIZE = 20;
 const MONTHLY_INVOICE_TYPES = new Set(['MONTHLY', 'FIRST_PRORATED', 'FIRST_FULL']);
+const BILLING_WORKSPACES = ['Overview', 'Billing Operations', 'Invoices', 'Receivables', 'Credits & Adjustments'];
 
 function token() {
   return localStorage.getItem('threejmain_token');
@@ -230,6 +231,17 @@ function customerLabel(customer) {
   if (!customer) return '-';
   const firstLast = [customer.firstName, customer.lastName].map((part) => String(part || '').trim()).filter(Boolean).join(' ');
   return firstLast || customer.fullName || customer.name || 'Unnamed customer';
+}
+
+function matchesSearchTerms(values, query) {
+  const terms = String(query || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return true;
+  const searchableText = values.map((value) => String(value || '')).join(' ').toLowerCase();
+  return terms.every((term) => searchableText.includes(term));
+}
+
+function mergeCustomers(current, incoming) {
+  return [...new Map([...current, ...incoming].map((customer) => [customer.id, customer])).values()];
 }
 
 function serviceReference(order) {
@@ -621,6 +633,53 @@ function Card({ title, icon: Icon, children, actions }) {
   );
 }
 
+function WorkspaceSectionNav({ label, items, active, onSelect }) {
+  return (
+    <nav className="billing-workspace-sections" aria-label={label}>
+      {items.map((item) => (
+        <button
+          className={`billing-workspace-section ${active === item ? 'is-active' : ''}`}
+          key={item}
+          type="button"
+          aria-current={active === item ? 'page' : undefined}
+          onClick={() => onSelect(item)}
+        >
+          {item}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+function CustomerLookup({ value, onChange, onSearch, busy }) {
+  return (
+    <div className="billing-customer-lookup">
+      <label className="form-label" htmlFor="billing-customer-lookup">Find customer</label>
+      <div className="billing-customer-lookup-controls">
+        <div className="input-icon">
+          <span className="input-icon-addon"><IconSearch size={16} /></span>
+          <input
+            id="billing-customer-lookup"
+            className="form-control"
+            type="search"
+            value={value}
+            placeholder="Name, account number, or contact"
+            onChange={(event) => onChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                onSearch();
+              }
+            }}
+          />
+        </div>
+        <button className="btn" type="button" disabled={busy} onClick={onSearch}>{busy ? 'Searching' : 'Find'}</button>
+      </div>
+      <small className="text-muted">Showing up to 50 matches. Search to find another customer, then select below.</small>
+    </div>
+  );
+}
+
 function Modal({ title, icon: Icon, open, onClose, children, size = 'default' }) {
   if (!open) return null;
   return (
@@ -760,7 +819,9 @@ const blankPromotion = {
 };
 
 export default function BillingPage({ refreshShell = () => {} }) {
-  const [activeTab, setActiveTab] = useState('Overview');
+  const [activeWorkspace, setActiveWorkspace] = useState('Overview');
+  const [operationsSection, setOperationsSection] = useState('Subscriptions');
+  const [receivablesSection, setReceivablesSection] = useState('Collections');
   const [meta, setMeta] = useState({ billingModes: [], subscriptionStatuses: [], invoiceStatuses: [], paymentMethods: [], paymentStatuses: [], adjustmentTypes: [], adjustmentStatuses: [], installationChargeStatuses: [], promotionStatuses: [], promotionScopes: [], promotionDiscountTypes: [], promotionPaymentRules: [] });
   const [collectionPerformance, setCollectionPerformance] = useState({
     rows: [],
@@ -790,15 +851,20 @@ export default function BillingPage({ refreshShell = () => {} }) {
   const collectionRequestSequence = useRef(0);
   const collectionWorklistRequestSequence = useRef(0);
   const [customers, setCustomers] = useState([]);
+  const [customerChoices, setCustomerChoices] = useState([]);
+  const [customerLookupBusy, setCustomerLookupBusy] = useState(false);
   const [avatarConfig, setAvatarConfig] = useState(null);
   const [serviceOrders, setServiceOrders] = useState([]);
   const [serviceCatalog, setServiceCatalog] = useState([]);
   const [serviceAccounts, setServiceAccounts] = useState([]);
   const [customerSearch, setCustomerSearch] = useState('');
   const [subscriptionSearch, setSubscriptionSearch] = useState('');
+  const [installationSearch, setInstallationSearch] = useState('');
   const [billingSetupFilter, setBillingSetupFilter] = useState('READY');
   const [promotionSearch, setPromotionSearch] = useState('');
   const [invoiceSearch, setInvoiceSearch] = useState('');
+  const [adjustmentSearch, setAdjustmentSearch] = useState('');
+  const [balanceSearch, setBalanceSearch] = useState('');
   const [promotionStatusFilter, setPromotionStatusFilter] = useState('');
   const [promotionScopeFilter, setPromotionScopeFilter] = useState('');
   const [invoicePage, setInvoicePage] = useState(1);
@@ -976,12 +1042,11 @@ export default function BillingPage({ refreshShell = () => {} }) {
     && promotionActiveNow(promotion)
     && (!promotion.billingMode || promotion.billingMode === installationChargeForm.billingMode)
   )), [promotions, installationChargeForm.billingMode]);
-  const filteredSubscriptions = useMemo(() => {
-    const needle = subscriptionSearch.trim().toLowerCase();
-    if (!needle) return subscriptions;
-    return subscriptions.filter((subscription) => [
+  const filteredSubscriptions = useMemo(() => subscriptions.filter((subscription) => (
+    matchesSearchTerms([
       customerLabel(subscription.customer),
       subscription.customer?.accountNumber,
+      subscription.customer?.contactNumber,
       subscription.planName,
       subscription.serviceId,
       subscription.serviceAccountNumber,
@@ -994,8 +1059,52 @@ export default function BillingPage({ refreshShell = () => {} }) {
       subscription.missingBillingCycles,
       subscription.oldestMissingBillingCycle,
       subscription.newestMissingBillingCycle,
-    ].some((value) => String(value || '').toLowerCase().includes(needle)));
-  }, [subscriptions, subscriptionSearch]);
+    ], subscriptionSearch)
+  )), [subscriptions, subscriptionSearch]);
+  const filteredBillingSetupAccounts = useMemo(() => billingSetupAccounts.filter((account) => (
+    matchesSearchTerms([
+      customerLabel(account.customer || customerById.get(account.customerId)),
+      account.customer?.accountNumber,
+      account.customer?.contactNumber,
+      account.serviceAccountNumber,
+      account.serviceReference,
+      account.catalogCode,
+      accountPlanName(account),
+      account.status,
+    ], subscriptionSearch)
+  )), [billingSetupAccounts, customerById, subscriptionSearch]);
+  const visibleInstallationCharges = installationDecisionView === 'HISTORICAL_IMPORTS'
+    ? historicalInstallationCharges
+    : currentInstallationCharges;
+  const filteredInstallationCharges = useMemo(() => visibleInstallationCharges.filter((charge) => {
+    const account = serviceAccountById.get(charge.serviceAccountId);
+    return matchesSearchTerms([
+      customerLabel(charge.customer || account?.customer || customerById.get(charge.customerId)),
+      charge.customer?.accountNumber,
+      charge.serviceAccountNumber,
+      account?.serviceAccountNumber,
+      charge.serviceId,
+      charge.status,
+      charge.reason,
+      charge.waiverReason,
+    ], installationSearch);
+  }), [visibleInstallationCharges, serviceAccountById, customerById, installationSearch]);
+  const filteredAdjustments = useMemo(() => adjustments.filter((adjustment) => matchesSearchTerms([
+    customerLabel(adjustment.customer || customerById.get(adjustment.customerId)),
+    adjustment.customer?.accountNumber,
+    adjustment.invoiceNumber,
+    adjustment.reason,
+    adjustment.adjustmentSource,
+    adjustment.status,
+    adjustment.outageStart,
+    adjustment.outageEnd,
+  ], adjustmentSearch)), [adjustments, adjustmentSearch, customerById]);
+  const filteredBalances = useMemo(() => balances.filter((balance) => matchesSearchTerms([
+    customerLabel(balance.customer),
+    balance.customer?.accountNumber,
+    balance.customer?.contactNumber,
+    balance.customer?.id,
+  ], balanceSearch)), [balances, balanceSearch]);
   const filteredPromotions = useMemo(() => {
     const needle = promotionSearch.trim().toLowerCase();
     const statusFilter = promotionStatusFilter.trim().toUpperCase();
@@ -1084,7 +1193,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
     return byAccount;
   }, [recurringServiceOrders]);
 
-  async function load(search = customerSearch) {
+  async function load() {
     const collectionRequestId = collectionRequestSequence.current + 1;
     collectionRequestSequence.current = collectionRequestId;
     const worklistRequestId = collectionWorklistRequestSequence.current + 1;
@@ -1111,7 +1220,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
           page: collectionPage,
           pageSize: collectionPageSize
         })),
-        request(`/billing/customers?search=${encodeURIComponent(search)}`),
+        request('/billing/customers'),
         request('/service/orders?activeOnly=true'),
         request('/service/catalog?status=ACTIVE'),
         request('/service/accounts?activeOnly=true'),
@@ -1138,7 +1247,8 @@ export default function BillingPage({ refreshShell = () => {} }) {
         setCollectionStatus(nextCollectionWorklist.selectedStatus || 'ACTION_REQUIRED');
         setCollectionPage(nextCollectionWorklist.pagination?.page || 1);
       }
-      setCustomers(nextCustomers);
+      setCustomers((current) => mergeCustomers(current, nextCustomers));
+      setCustomerChoices(nextCustomers);
       setServiceOrders(nextServiceOrders);
       setServiceCatalog(nextServiceCatalog);
       setServiceAccounts(nextServiceAccounts);
@@ -1160,6 +1270,19 @@ export default function BillingPage({ refreshShell = () => {} }) {
       if (worklistRequestId === collectionWorklistRequestSequence.current) {
         setCollectionWorklistBusy(false);
       }
+    }
+  }
+
+  async function searchCustomerChoices() {
+    setCustomerLookupBusy(true);
+    try {
+      const matches = await request(`/billing/customers?search=${encodeURIComponent(customerSearch.trim())}`);
+      setCustomers((current) => mergeCustomers(current, matches));
+      setCustomerChoices(matches);
+    } catch (err) {
+      showError(err.message);
+    } finally {
+      setCustomerLookupBusy(false);
     }
   }
 
@@ -1225,7 +1348,8 @@ export default function BillingPage({ refreshShell = () => {} }) {
     setCollectionPage(1);
     setCollectionStatus(status);
     setCollectionBillingPeriod(billingPeriod || 'ALL');
-    setActiveTab('Collections');
+    setReceivablesSection('Collections');
+    setActiveWorkspace('Receivables');
   }
 
   useEffect(() => { load(); }, []);
@@ -1286,11 +1410,18 @@ export default function BillingPage({ refreshShell = () => {} }) {
     setError(text);
   }
 
-  function customerOptions() {
+  function customerOptions(selectedId = '') {
+    const choices = [...customerChoices];
+    if (selectedId && !choices.some((customer) => customer.id === selectedId)) {
+      const selectedCustomer = customerById.get(selectedId)
+        || subscriptions.find((subscription) => subscription.customerId === selectedId)?.customer
+        || invoices.find((invoice) => invoice.customerId === selectedId)?.customer;
+      choices.unshift(selectedCustomer || { id: selectedId, name: selectedId });
+    }
     return (
       <>
         <option value="">Select customer</option>
-        {customers.map((customer) => <option key={customer.id} value={customer.id}>{customerLabel(customer)}</option>)}
+        {choices.map((customer) => <option key={customer.id} value={customer.id}>{customerLabel(customer)}</option>)}
       </>
     );
   }
@@ -1468,7 +1599,8 @@ export default function BillingPage({ refreshShell = () => {} }) {
       return;
     }
     setSubscriptionForm(subscriptionDraftFromServiceAccount(account, blankSubscription));
-    setActiveTab('Subscriptions');
+    setOperationsSection('Subscriptions');
+    setActiveWorkspace('Billing Operations');
     setModal('subscription');
   }
 
@@ -1509,13 +1641,17 @@ export default function BillingPage({ refreshShell = () => {} }) {
 
   function openInstallationChargeForm(account, charge = null) {
     setInstallationChargeForm(installationChargeDraftFromServiceAccount(account, charge));
-    if (activeTab === 'Overview') setActiveTab('Subscriptions');
+    if (activeWorkspace !== 'Billing Operations') {
+      setOperationsSection('Subscriptions');
+      setActiveWorkspace('Billing Operations');
+    }
     setModal('installation-charge');
   }
 
   function openBillingSetupQueue(filter) {
     setBillingSetupFilter(filter);
-    setActiveTab('Subscriptions');
+    setOperationsSection('Subscriptions');
+    setActiveWorkspace('Billing Operations');
   }
 
   function selectedInvoiceSubscription(subscriptionId) {
@@ -1760,7 +1896,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
       amount: String(firstLine.unitPrice || firstLine.amount || ''),
       notes: invoice.notes || ''
     });
-    setActiveTab('Invoices');
+    setActiveWorkspace('Invoices');
     setModal('invoice');
   }
 
@@ -1809,7 +1945,8 @@ export default function BillingPage({ refreshShell = () => {} }) {
       requiresApproval: Boolean(promotion.requiresApproval),
       stackable: Boolean(promotion.stackable),
     } : blankPromotion);
-    setActiveTab('Promotions');
+    setOperationsSection('Promotions');
+    setActiveWorkspace('Billing Operations');
     setModal('promotion');
   }
 
@@ -1918,7 +2055,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
       headers: { 'Idempotency-Key': `subscription-invoice:${id}:${cycleStart || 'next'}` }
     });
     showMessage(invoice.idempotentReplay ? `${invoice.invoiceNumber} already covers this billing cycle.` : `Generated ${invoice.invoiceNumber}.`);
-    setActiveTab('Invoices');
+    setActiveWorkspace('Invoices');
     await load();
     refreshShell();
   }
@@ -2103,22 +2240,20 @@ export default function BillingPage({ refreshShell = () => {} }) {
       )}
 
       <div className="billing-toolbar">
-        <div className="input-icon billing-search">
-          <span className="input-icon-addon"><IconSearch size={16} /></span>
-          <input className="form-control" value={customerSearch} placeholder="Search customers" onChange={(e) => setCustomerSearch(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') load(customerSearch); }} />
-        </div>
-        <button className="btn" onClick={() => load(customerSearch)}><IconRefresh size={16} className="me-1" />Refresh</button>
+        <button className="btn" type="button" onClick={() => load()}><IconRefresh size={16} className="me-1" />Refresh data</button>
       </div>
 
-      <ul className="nav nav-tabs mb-3">
-        {['Overview', 'Subscriptions', 'Billing Runs', 'Installation Fees', 'Promotions', 'Invoices', 'Collections', 'Adjustments', 'Balances'].map((tab) => (
-          <li className="nav-item" key={tab}>
-            <button className={`nav-link ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>{tab}</button>
-          </li>
-        ))}
-      </ul>
+      <nav aria-label="Billing workspaces">
+        <ul className="nav nav-tabs billing-workspace-tabs mb-3">
+          {BILLING_WORKSPACES.map((workspace) => (
+            <li className="nav-item" key={workspace}>
+              <button className={`nav-link ${activeWorkspace === workspace ? 'active' : ''}`} type="button" aria-current={activeWorkspace === workspace ? 'page' : undefined} onClick={() => setActiveWorkspace(workspace)}>{workspace}</button>
+            </li>
+          ))}
+        </ul>
+      </nav>
 
-      {activeTab === 'Overview' && (
+      {activeWorkspace === 'Overview' && (
         <div className="row row-cards">
           <div className="col-12">
             <CollectionPeriodControls
@@ -2161,7 +2296,10 @@ export default function BillingPage({ refreshShell = () => {} }) {
                 billingReady={monthlyBillingReadyAccounts.length}
                 missingCycleCount={missingBillingCycleCount}
                 missingSubscriptionCount={subscriptionsWithMissingCycles}
-                onBillingRuns={() => setActiveTab('Billing Runs')}
+                onBillingRuns={() => {
+                  setOperationsSection('Billing Runs');
+                  setActiveWorkspace('Billing Operations');
+                }}
                 onSetup={openBillingSetupQueue}
                 onCollections={() => openCollectionWorklist('ACTION_REQUIRED')}
               />
@@ -2170,8 +2308,26 @@ export default function BillingPage({ refreshShell = () => {} }) {
         </div>
       )}
 
-      {activeTab === 'Subscriptions' && (
+      {activeWorkspace === 'Billing Operations' && (
+        <WorkspaceSectionNav
+          label="Billing Operations sections"
+          items={['Subscriptions', 'Billing Runs', 'Installation Fees', 'Promotions']}
+          active={operationsSection}
+          onSelect={setOperationsSection}
+        />
+      )}
+
+      {activeWorkspace === 'Billing Operations' && operationsSection === 'Subscriptions' && (
         <div className="row row-cards">
+          <div className="col-12">
+            <div className="billing-workspace-search">
+              <div className="input-icon billing-workspace-search-input">
+                <span className="input-icon-addon"><IconSearch size={16} /></span>
+                <input className="form-control" type="search" value={subscriptionSearch} placeholder="Search customer, service account, or subscription" aria-label="Search billing setup and subscriptions" onChange={(event) => setSubscriptionSearch(event.target.value)} />
+              </div>
+              <span className="text-muted small" role="status">{filteredBillingSetupAccounts.length} setup accounts · {filteredSubscriptions.length} subscriptions</span>
+            </div>
+          </div>
           <div className="col-12">
             <Card title="Billing Setup Queue" icon={IconReceipt}>
               <div className="billing-setup-filter" role="group" aria-label="Filter billing setup queue">
@@ -2195,15 +2351,17 @@ export default function BillingPage({ refreshShell = () => {} }) {
                 </button>
               </div>
               <ServiceAccountBillingTable
-                rows={billingSetupAccounts}
+                rows={filteredBillingSetupAccounts}
                 subscriptionByServiceAccountId={subscriptionByServiceAccountId}
                 installationChargeByServiceAccountId={installationChargeByServiceAccountId}
                 onResolveInstallationFee={openInstallationChargeForm}
                 onCreateSubscription={openServiceAccountSubscription}
                 avatarConfig={avatarConfig}
-                emptyMessage={billingSetupFilter === 'INSTALLATION_PENDING'
-                  ? 'No Service Accounts have a pending installation fee decision.'
-                  : 'No Service Accounts are waiting for monthly Billing setup.'}
+                emptyMessage={subscriptionSearch.trim()
+                  ? 'No billing setup accounts match your search.'
+                  : billingSetupFilter === 'INSTALLATION_PENDING'
+                    ? 'No Service Accounts have a pending installation fee decision.'
+                    : 'No Service Accounts are waiting for monthly Billing setup.'}
               />
             </Card>
           </div>
@@ -2213,10 +2371,6 @@ export default function BillingPage({ refreshShell = () => {} }) {
               icon={IconRepeat}
               actions={(
                 <div className="billing-card-actions">
-                  <div className="input-icon billing-subscription-search">
-                    <span className="input-icon-addon"><IconSearch size={16} /></span>
-                    <input className="form-control form-control-sm" value={subscriptionSearch} placeholder="Search subscriptions" onChange={(event) => setSubscriptionSearch(event.target.value)} />
-                  </div>
                   <button className="btn btn-primary btn-sm" type="button" onClick={() => openSubscriptionForm()}><IconPlus size={16} className="me-1" />New Subscription</button>
                 </div>
               )}
@@ -2228,13 +2382,14 @@ export default function BillingPage({ refreshShell = () => {} }) {
                 onEdit={openSubscriptionForm}
                 onGenerate={generateInvoice}
                 onDelete={deleteSubscription}
+                emptyMessage={subscriptionSearch.trim() ? 'No subscriptions match your search.' : undefined}
               />
             </Card>
           </div>
         </div>
       )}
 
-      {activeTab === 'Billing Runs' && (
+      {activeWorkspace === 'Billing Operations' && operationsSection === 'Billing Runs' && (
         <div className="row row-cards">
           <div className="col-12">
             <Card
@@ -2292,10 +2447,19 @@ export default function BillingPage({ refreshShell = () => {} }) {
         </div>
       )}
 
-      {activeTab === 'Installation Fees' && (
+      {activeWorkspace === 'Billing Operations' && operationsSection === 'Installation Fees' && (
         <div className="row row-cards">
           <div className="col-12">
-            <Card title="Installation Fee Decisions" icon={IconReceipt}>
+            <Card
+              title="Installation Fee Decisions"
+              icon={IconReceipt}
+              actions={(
+                <div className="input-icon billing-section-search">
+                  <span className="input-icon-addon"><IconSearch size={16} /></span>
+                  <input className="form-control form-control-sm" type="search" value={installationSearch} placeholder="Search fee decisions" aria-label="Search installation fee decisions" onChange={(event) => setInstallationSearch(event.target.value)} />
+                </div>
+              )}
+            >
               <div className="btn-group mb-3" role="group" aria-label="Installation fee decision view">
                 <button
                   className={`btn btn-sm ${installationDecisionView === 'CURRENT' ? 'btn-primary' : 'btn-outline-primary'}`}
@@ -2318,21 +2482,23 @@ export default function BillingPage({ refreshShell = () => {} }) {
                 <p className="text-muted small">These subscribers were already installed before migration. Their records preserve the no-new-fee decision for audit and are read-only.</p>
               )}
               <InstallationChargeTable
-                rows={installationDecisionView === 'HISTORICAL_IMPORTS' ? historicalInstallationCharges : currentInstallationCharges}
+                rows={filteredInstallationCharges}
                 serviceAccountById={serviceAccountById}
                 onEdit={(charge) => openInstallationChargeForm(serviceAccountById.get(charge.serviceAccountId), charge)}
                 onVoid={voidInstallationCharge}
                 avatarConfig={avatarConfig}
-                emptyMessage={installationDecisionView === 'HISTORICAL_IMPORTS'
-                  ? 'No historical imported installation decisions.'
-                  : 'No new installation fee decisions.'}
+                emptyMessage={installationSearch.trim()
+                  ? 'No installation fee decisions match your search.'
+                  : installationDecisionView === 'HISTORICAL_IMPORTS'
+                    ? 'No historical imported installation decisions.'
+                    : 'No new installation fee decisions.'}
               />
             </Card>
           </div>
         </div>
       )}
 
-      {activeTab === 'Promotions' && (
+      {activeWorkspace === 'Billing Operations' && operationsSection === 'Promotions' && (
         <div className="row row-cards">
           <div className="col-12">
             <Card
@@ -2366,7 +2532,7 @@ export default function BillingPage({ refreshShell = () => {} }) {
         </div>
       )}
 
-      {activeTab === 'Invoices' && (
+      {activeWorkspace === 'Invoices' && (
         <div className="row row-cards">
           <div className="col-12">
             <Card
@@ -2433,17 +2599,21 @@ export default function BillingPage({ refreshShell = () => {} }) {
         </div>
       )}
 
-      {activeTab === 'Collections' && (
+      {activeWorkspace === 'Receivables' && (
+        <WorkspaceSectionNav
+          label="Receivables sections"
+          items={['Collections', 'Balances']}
+          active={receivablesSection}
+          onSelect={setReceivablesSection}
+        />
+      )}
+
+      {activeWorkspace === 'Receivables' && receivablesSection === 'Collections' && (
         <div className="row row-cards">
           <div className="col-12">
             <Card
               title="Collection Worklist"
               icon={IconReceipt}
-              actions={(
-                <button className="btn btn-sm" type="button" onClick={() => setActiveTab('Balances')}>
-                  <IconUsers size={16} className="me-1" />View Balances
-                </button>
-              )}
             >
               <div className="billing-collection-workspace">
                 <CollectionWorklistControls
@@ -2492,26 +2662,44 @@ export default function BillingPage({ refreshShell = () => {} }) {
         </div>
       )}
 
-      {activeTab === 'Adjustments' && (
+      {activeWorkspace === 'Credits & Adjustments' && (
         <div className="row row-cards">
           <div className="col-12">
             <Card
-              title="Adjustments"
+              title="Credits & Adjustments"
               icon={IconPlus}
-              actions={<button className="btn btn-primary btn-sm" type="button" onClick={openAdjustmentForm}><IconDiscount2 size={16} className="me-1" />Apply Outage Rebates</button>}
+              actions={(
+                <div className="billing-card-actions">
+                  <div className="input-icon billing-section-search">
+                    <span className="input-icon-addon"><IconSearch size={16} /></span>
+                    <input className="form-control form-control-sm" type="search" value={adjustmentSearch} placeholder="Search credits and adjustments" aria-label="Search credits and adjustments" onChange={(event) => setAdjustmentSearch(event.target.value)} />
+                  </div>
+                  <button className="btn btn-primary btn-sm" type="button" onClick={openAdjustmentForm}><IconDiscount2 size={16} className="me-1" />Apply Outage Rebates</button>
+                </div>
+              )}
             >
               <AdjustmentTable
-                rows={adjustments}
+                rows={filteredAdjustments}
                 onVoid={voidAdjustment}
+                emptyMessage={adjustmentSearch.trim() ? 'No credits or adjustments match your search.' : undefined}
               />
             </Card>
           </div>
         </div>
       )}
 
-      {activeTab === 'Balances' && (
-        <Card title="Customer Balances" icon={IconUsers}>
-          <BalanceTable rows={balances} avatarConfig={avatarConfig} />
+      {activeWorkspace === 'Receivables' && receivablesSection === 'Balances' && (
+        <Card
+          title="Customer Balances"
+          icon={IconUsers}
+          actions={(
+            <div className="input-icon billing-section-search">
+              <span className="input-icon-addon"><IconSearch size={16} /></span>
+              <input className="form-control form-control-sm" type="search" value={balanceSearch} placeholder="Search customer balances" aria-label="Search customer balances" onChange={(event) => setBalanceSearch(event.target.value)} />
+            </div>
+          )}
+        >
+          <BalanceTable rows={filteredBalances} avatarConfig={avatarConfig} emptyMessage={balanceSearch.trim() ? 'No customer balances match your search.' : undefined} />
         </Card>
       )}
 
@@ -2520,7 +2708,8 @@ export default function BillingPage({ refreshShell = () => {} }) {
           {!editingSubscription && <SelectField label="Service Account" value={subscriptionForm.serviceAccountId} onChange={setSubscriptionServiceAccount}>{serviceAccountOptions()}</SelectField>}
           {selectedServiceAccount && <ServiceAccountDetail account={selectedServiceAccount} subscriptionForm={subscriptionForm} />}
           {linkedSubscriptionForm && !editingSubscription && firstInvoicePreview && <FirstSubscriptionInvoicePreview preview={firstInvoicePreview} />}
-          <SelectField label="Customer" value={subscriptionForm.customerId} required disabled={lockSubscriptionCustomer} onChange={(customerId) => setSubscriptionForm({ ...subscriptionForm, customerId })}>{customerOptions()}</SelectField>
+          {!lockSubscriptionCustomer && <CustomerLookup value={customerSearch} onChange={setCustomerSearch} onSearch={searchCustomerChoices} busy={customerLookupBusy} />}
+          <SelectField label="Customer" value={subscriptionForm.customerId} required disabled={lockSubscriptionCustomer} onChange={(customerId) => setSubscriptionForm({ ...subscriptionForm, customerId })}>{customerOptions(subscriptionForm.customerId)}</SelectField>
           <TextField label="Plan Name" value={subscriptionForm.planName} required disabled={linkedSubscriptionForm} onChange={(planName) => setSubscriptionForm({ ...subscriptionForm, planName })} />
           <TextField label="Service ID" value={subscriptionForm.serviceId} disabled={linkedSubscriptionForm} onChange={(serviceId) => setSubscriptionForm({ ...subscriptionForm, serviceId })} />
           {linkedSubscriptionForm ? (
@@ -2802,7 +2991,12 @@ export default function BillingPage({ refreshShell = () => {} }) {
       <Modal title={invoiceForm.id ? 'Edit Invoice' : 'New Invoice'} icon={IconFileInvoice} open={modal === 'invoice'} onClose={closeModal}>
         <form className="billing-form" onSubmit={submitInvoice}>
           <SelectField label="Subscription" value={invoiceForm.subscriptionId} onChange={(subscriptionId) => setInvoiceForm(invoiceDraftForSubscription(subscriptionId))}>{subscriptionOptions()}</SelectField>
-          {!invoiceForm.subscriptionId && <SelectField label="Customer" value={invoiceForm.customerId} required onChange={(customerId) => setInvoiceForm({ ...invoiceForm, customerId })}>{customerOptions()}</SelectField>}
+          {!invoiceForm.subscriptionId && (
+            <>
+              <CustomerLookup value={customerSearch} onChange={setCustomerSearch} onSearch={searchCustomerChoices} busy={customerLookupBusy} />
+              <SelectField label="Customer" value={invoiceForm.customerId} required onChange={(customerId) => setInvoiceForm({ ...invoiceForm, customerId })}>{customerOptions(invoiceForm.customerId)}</SelectField>
+            </>
+          )}
           <div className="billing-two-cols">
             <TextField label="Billing Period Start" type="date" value={invoiceForm.billingCycleStart} required onChange={(billingCycleStart) => setInvoiceForm({ ...invoiceForm, billingCycleStart })} />
             <TextField label="Billing Period End" type="date" value={invoiceForm.billingCycleEnd} onChange={(billingCycleEnd) => setInvoiceForm({ ...invoiceForm, billingCycleEnd })} />
@@ -4031,8 +4225,8 @@ function CollectionSmsEditor({ form, busy, onChange, onSubmit, onClose }) {
   );
 }
 
-function SubscriptionTable({ rows, avatarConfig, unpaidSummaryById, onEdit, onGenerate, onDelete }) {
-  if (!rows.length) return <Empty />;
+function SubscriptionTable({ rows, avatarConfig, unpaidSummaryById, onEdit, onGenerate, onDelete, emptyMessage }) {
+  if (!rows.length) return <Empty message={emptyMessage} />;
   return (
     <div className="table-responsive">
       <table className="table card-table table-vcenter">
@@ -4792,8 +4986,8 @@ function OutageRebatePreview({ preview, busy, error }) {
   );
 }
 
-function AdjustmentTable({ rows, onVoid }) {
-  if (!rows.length) return <Empty />;
+function AdjustmentTable({ rows, onVoid, emptyMessage }) {
+  if (!rows.length) return <Empty message={emptyMessage} />;
   return (
     <div className="table-responsive">
       <table className="table card-table table-vcenter">
@@ -4852,8 +5046,8 @@ function AdjustmentTable({ rows, onVoid }) {
   );
 }
 
-function BalanceTable({ rows, avatarConfig }) {
-  if (!rows.length) return <Empty />;
+function BalanceTable({ rows, avatarConfig, emptyMessage }) {
+  if (!rows.length) return <Empty message={emptyMessage} />;
   return (
     <div className="table-responsive">
       <table className="table card-table table-vcenter">
