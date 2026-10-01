@@ -661,7 +661,7 @@ function selectedReceiptRemainingDetails(rows, selectedInvoiceIds = []) {
 function receiptViewModel(payment, invoiceRows = []) {
   const allocations = paymentReceiptAllocations(payment);
   const discountAmount = paymentDiscountAmount(payment);
-  const amountReceived = roundMoney(payment.amountReceived ?? payment.amount);
+  const amountReceived = roundMoney(payment.tenderedAmount ?? payment.amountReceived ?? payment.amount);
   const appliedAmount = roundMoney(payment.appliedAmount ?? allocations.reduce((sum, allocation) => sum + allocation.amount, 0));
   const returnedAmount = roundMoney(payment.returnedAmount || 0);
   const advanceAmount = roundMoney(payment.advanceAmount || 0);
@@ -1508,11 +1508,6 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
   const invoicePaymentAppliedAmount = invoicePaymentAllocatedTotal;
   const invoicePaymentShortfallAmount = roundMoney(Math.max(0, invoicePaymentAppliedAmount - invoicePaymentAmount));
   const invoicePaymentExcessAmount = roundMoney(Math.max(0, invoicePaymentAmount - invoicePaymentAppliedAmount));
-  const invoicePaymentAdvanceAmount = 0;
-  const invoicePaymentReturnedAmount = invoicePaymentExcessAmount;
-  const invoicePaymentExcessLabel = invoicePaymentExcessAmount > 0 ? 'Change / excess' : 'Change';
-  const invoicePaymentExcessDisplayAmount = invoicePaymentExcessAmount;
-  const invoicePaymentPostAmount = invoicePaymentAppliedAmount;
   const invoicePaymentPromotionByInvoiceId = useMemo(() => {
     const promotionRows = selectedPaymentInvoiceRows
       .filter((row) => row.promotion && moneyEquals(row.amountToCollect, row.promotion.payable))
@@ -1527,18 +1522,17 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
     ? `${invoicePaymentPromotionCount} automatic promotions`
     : (Array.from(invoicePaymentPromotionByInvoiceId.values())[0]?.label || '');
   const selectedInvoiceRemaining = roundMoney(Math.max(0, selectedCustomerBalance - invoicePaymentAllocatedTotal - invoicePaymentDiscountTotal));
+  const invoicePaymentAdvanceEligible = selectedCustomerInvoiceRows.length > 0 && selectedInvoiceRemaining <= 0;
+  const invoicePaymentAdvanceAmount = invoicePaymentExcessAmount > 0 && invoicePaymentForm.excessAction === 'ADVANCE' && invoicePaymentAdvanceEligible
+    ? invoicePaymentExcessAmount : 0;
+  const invoicePaymentReturnedAmount = invoicePaymentExcessAmount > 0 && invoicePaymentForm.excessAction === 'CHANGE'
+    ? invoicePaymentExcessAmount : 0;
+  const invoicePaymentPostAmount = roundMoney(invoicePaymentAppliedAmount + invoicePaymentAdvanceAmount);
   const invoicePaymentReferenceRequired = paymentRequiresReference(invoicePaymentForm.method);
   const invoicePaymentIsCash = String(invoicePaymentForm.method || '').toUpperCase() === 'CASH';
   const billingPaymentMethods = useMemo(() => (
     billingMeta.paymentMethods?.length ? billingMeta.paymentMethods : (meta.paymentMethods?.length ? meta.paymentMethods : ['CASH'])
   ), [billingMeta.paymentMethods, meta.paymentMethods]);
-  useEffect(() => {
-    if (!selectedBillingCustomerGroup) return;
-    const nextAmount = invoicePaymentAppliedAmount > 0 ? String(invoicePaymentAppliedAmount) : '';
-    setInvoicePaymentForm((form) => (
-      String(form.amount || '') === nextAmount ? form : { ...form, amount: nextAmount, excessAction: '' }
-    ));
-  }, [selectedBillingCustomerGroup, invoicePaymentAppliedAmount]);
   const billingPaymentMetrics = useMemo(() => ({
     customerAccounts: visibleBillingCustomerGroups.length,
     outstanding: visiblePayableBillingInvoices.reduce((sum, invoice) => sum + Number(invoice.balance || 0), 0),
@@ -2012,7 +2006,7 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
     setInvoicePaymentForm({
       ...blankInvoicePayment,
       invoiceId: invoice.id,
-      amount: String(options.amount ?? ''),
+      amount: '',
       method: invoicePaymentForm.method || 'CASH',
       paymentDate,
       excessAction: ''
@@ -2084,14 +2078,17 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
   }
 
   function changeInvoicePaymentDate(paymentDate) {
-    setInvoicePaymentForm((form) => ({ ...form, paymentDate }));
+    setError('');
+    setInvoicePaymentForm((form) => ({ ...form, paymentDate, excessAction: '' }));
     if (selectedBillingCustomerGroup?.invoices?.length) {
       loadBillingInvoicePromotions(selectedBillingCustomerGroup.invoices, paymentDate).catch((err) => setError(err.message));
     }
   }
 
   function toggleInvoicePaymentInvoice(invoiceId) {
+    setError('');
     setSelectedBillingInvoiceId(invoiceId);
+    setInvoicePaymentForm((form) => ({ ...form, excessAction: '' }));
     setSelectedBillingInvoiceIds((current) => (
       current.includes(invoiceId)
         ? current.filter((id) => id !== invoiceId)
@@ -2162,8 +2159,18 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
       setError(`Amount received must be at least ${currency(amountDue)}.`);
       return;
     }
-    if (!invoicePaymentIsCash && !moneyEquals(amountReceived, amountDue)) {
-      setError('Non-cash payments must match the selected invoice total.');
+    if (invoicePaymentExcessAmount > 0 && !['CHANGE', 'ADVANCE'].includes(invoicePaymentForm.excessAction)) {
+      setError(invoicePaymentIsCash
+        ? 'Choose whether to return the excess as change or keep it as advance credit.'
+        : 'Confirm that the excess should be kept as advance credit.');
+      return;
+    }
+    if (invoicePaymentExcessAmount > 0 && invoicePaymentForm.excessAction === 'CHANGE' && !invoicePaymentIsCash) {
+      setError('Change can only be returned for cash payments.');
+      return;
+    }
+    if (invoicePaymentExcessAmount > 0 && invoicePaymentForm.excessAction === 'ADVANCE' && !invoicePaymentAdvanceEligible) {
+      setError('Pay all of this customer’s open invoices before keeping an advance credit.');
       return;
     }
     if (invoicePaymentReferenceRequired && !String(invoicePaymentForm.referenceNumber || '').trim()) {
@@ -2184,6 +2191,8 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
       const paymentBody = {
         customerId: selectedBillingCustomerGroup?.customer?.id || selectedBillingInvoice?.customerId,
         amount: invoicePaymentPostAmount,
+        tenderedAmount: amountReceived,
+        returnedAmount: invoicePaymentReturnedAmount,
         allocations: invoicePaymentAllocations.map((allocation) => ({
           invoiceId: allocation.invoiceId,
           amount: allocation.amount,
@@ -2753,6 +2762,79 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                       <button type="button" className="btn btn-icon btn-sm" disabled={invoicePaymentSubmitting} onClick={resetInvoicePayment} aria-label="Close payment desk"><IconX size={18} /></button>
                     </div>
                     <div className="pos-modal-body pos-payment-modal-body">
+                      {error && <div className="alert alert-danger mb-0" role="alert">{error}</div>}
+                      <section className="pos-payment-section pos-payment-entry-section" aria-label="Payment details">
+                        <div className="pos-payment-section-header">
+                          <div>
+                            <span>Payment Details</span>
+                            <strong>Enter the payment received</strong>
+                          </div>
+                          <div className="pos-payment-due">
+                            <span>Amount due</span>
+                            <strong>{currency(invoicePaymentAppliedAmount)}</strong>
+                          </div>
+                        </div>
+                        <div className="pos-payment-entry-grid">
+                          <div className="pos-payment-amount-field">
+                            <label className="form-label" htmlFor="pos-invoice-amount-received">Amount Received</label>
+                            <div className="pos-payment-amount-controls">
+                              <input
+                                id="pos-invoice-amount-received"
+                                className="form-control"
+                                type="number"
+                                inputMode="decimal"
+                                min="0.01"
+                                step="0.01"
+                                value={invoicePaymentForm.amount}
+                                required
+                                autoFocus
+                                disabled={invoicePaymentSubmitting}
+                                onChange={(event) => { setError(''); setInvoicePaymentForm((form) => ({ ...form, amount: event.target.value, excessAction: '' })); }}
+                              />
+                              <button type="button" className="btn btn-outline-primary" disabled={invoicePaymentSubmitting || invoicePaymentAppliedAmount <= 0} onClick={() => { setError(''); setInvoicePaymentForm((form) => ({ ...form, amount: String(invoicePaymentAppliedAmount), excessAction: '' })); }}>Exact amount</button>
+                            </div>
+                            <small>Enter the cash handed over or the amount the cashier confirmed with the payment provider.</small>
+                          </div>
+                          <div className="pos-payment-secondary-fields">
+                            <SelectField label="Method" value={invoicePaymentForm.method} options={billingPaymentMethods} disabled={invoicePaymentSubmitting} onChange={(method) => { setError(''); setInvoicePaymentForm((form) => ({ ...form, method, excessAction: '' })); }} />
+                            <TextField label="Payment Date" type="date" max={today()} value={invoicePaymentForm.paymentDate} required disabled={invoicePaymentSubmitting} onChange={changeInvoicePaymentDate} />
+                            <div>
+                              <TextField label={invoicePaymentReferenceRequired ? 'Reference Required' : 'Reference'} value={invoicePaymentForm.referenceNumber} disabled={invoicePaymentSubmitting} onChange={(referenceNumber) => { setError(''); setInvoicePaymentForm((form) => ({ ...form, referenceNumber })); }} />
+                              {invoicePaymentReferenceRequired && <div className="pos-field-hint">Required for {labelize(invoicePaymentForm.method)} payments.</div>}
+                            </div>
+                          </div>
+                        </div>
+                        {invoicePaymentExcessAmount > 0 && (
+                          <fieldset className="pos-excess-choice" aria-live="polite">
+                            <legend>Decide what to do with {currency(invoicePaymentExcessAmount)} extra</legend>
+                            {invoicePaymentIsCash && (
+                              <label className={`pos-excess-option ${invoicePaymentForm.excessAction === 'CHANGE' ? 'is-selected' : ''}`}>
+                                <input type="radio" name="pos-invoice-excess-action" value="CHANGE" checked={invoicePaymentForm.excessAction === 'CHANGE'} disabled={invoicePaymentSubmitting} onChange={() => { setError(''); setInvoicePaymentForm((form) => ({ ...form, excessAction: 'CHANGE' })); }} />
+                                <span><strong>Return as change</strong><small>Give {currency(invoicePaymentExcessAmount)} back to the customer.</small></span>
+                              </label>
+                            )}
+                            <label className={`pos-excess-option ${invoicePaymentForm.excessAction === 'ADVANCE' ? 'is-selected' : ''} ${!invoicePaymentAdvanceEligible ? 'is-disabled' : ''}`}>
+                              <input type="radio" name="pos-invoice-excess-action" value="ADVANCE" checked={invoicePaymentForm.excessAction === 'ADVANCE'} disabled={invoicePaymentSubmitting || !invoicePaymentAdvanceEligible} onChange={() => { setError(''); setInvoicePaymentForm((form) => ({ ...form, excessAction: 'ADVANCE' })); }} />
+                              <span><strong>Keep as advance credit</strong><small>Record {currency(invoicePaymentExcessAmount)} for this customer's future bills.</small></span>
+                            </label>
+                            {!invoicePaymentAdvanceEligible && (
+                              <div className="pos-excess-guidance">
+                                <span>Advance credit is available after all of this customer's open invoices are paid.</span>
+                                <button type="button" className="btn btn-sm btn-outline-primary" disabled={invoicePaymentSubmitting} onClick={() => { setError(''); setSelectedBillingInvoiceIds(selectedCustomerInvoiceRows.map((row) => row.invoice.id)); setInvoicePaymentForm((form) => ({ ...form, excessAction: '' })); }}>Select all open invoices</button>
+                              </div>
+                            )}
+                          </fieldset>
+                        )}
+                        <details className="pos-payment-disclosure">
+                          <summary>
+                            <span>Notes</span>
+                            <strong>{invoicePaymentForm.notes ? 'Added' : 'Optional'}</strong>
+                          </summary>
+                          <div>
+                            <textarea className="form-control" rows="3" value={invoicePaymentForm.notes} disabled={invoicePaymentSubmitting} onChange={(e) => setInvoicePaymentForm({ ...invoicePaymentForm, notes: e.target.value })} />
+                          </div>
+                        </details>
+                      </section>
                       <section className="pos-payment-section pos-payment-selection-section">
                         <div className="pos-payment-section-header">
                           <div>
@@ -2794,44 +2876,6 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                           {!selectedCustomerInvoiceRows.length && <div className="text-muted">No payable invoices found for this customer.</div>}
                         </div>
                       </section>
-                      <section className="pos-payment-section">
-                        <div className="pos-payment-section-header">
-                          <div>
-                            <span>Payment Details</span>
-                            <strong>{currency(invoicePaymentAppliedAmount)}</strong>
-                          </div>
-                        </div>
-                        <div className="row g-3">
-                          <div className="col-md-6"><TextField label="Payment Date" type="date" max={today()} value={invoicePaymentForm.paymentDate} required disabled={invoicePaymentSubmitting} onChange={changeInvoicePaymentDate} /></div>
-                          <div className="col-md-6"><SelectField label="Method" value={invoicePaymentForm.method} options={billingPaymentMethods} disabled={invoicePaymentSubmitting} onChange={(method) => setInvoicePaymentForm({ ...invoicePaymentForm, method })} /></div>
-                          <div className="col-md-6"><TextField label="Amount Received" type="number" min="0.01" step="0.01" value={invoicePaymentForm.amount} required disabled={invoicePaymentSubmitting} onChange={(amount) => setInvoicePaymentForm({ ...invoicePaymentForm, amount })} /></div>
-                          <div className="col-md-6">
-                            <TextField label={invoicePaymentReferenceRequired ? 'Reference Required' : 'Reference'} value={invoicePaymentForm.referenceNumber} disabled={invoicePaymentSubmitting} onChange={(referenceNumber) => setInvoicePaymentForm({ ...invoicePaymentForm, referenceNumber })} />
-                            {invoicePaymentReferenceRequired && <div className="pos-field-hint">Required for {labelize(invoicePaymentForm.method)} payments.</div>}
-                          </div>
-                          {invoicePaymentExcessAmount > 0 && invoicePaymentIsCash && (
-                            <div className="col-12">
-                              <div className="pos-excess-note">
-                                <div>
-                                  <strong>{invoicePaymentExcessLabel}</strong>
-                                  <span>{currency(invoicePaymentExcessAmount)} will be returned to the customer.</span>
-                                </div>
-                              </div>
-                            </div>
-                          )}
-                          <div className="col-12">
-                            <details className="pos-payment-disclosure">
-                              <summary>
-                                <span>Notes</span>
-                                <strong>{invoicePaymentForm.notes ? 'Added' : 'Optional'}</strong>
-                              </summary>
-                              <div>
-                                <textarea className="form-control" rows="3" value={invoicePaymentForm.notes} disabled={invoicePaymentSubmitting} onChange={(e) => setInvoicePaymentForm({ ...invoicePaymentForm, notes: e.target.value })} />
-                              </div>
-                            </details>
-                          </div>
-                        </div>
-                      </section>
                       <div className="pos-total-panel pos-payment-totals pos-payment-totals-compact">
                         <div>
                           <span>Invoice total</span>
@@ -2842,17 +2886,17 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                           <strong className={invoicePaymentDiscountTotal > 0 ? 'text-green' : ''}>{invoicePaymentDiscountTotal > 0 ? `-${currency(invoicePaymentDiscountTotal)}` : currency(0)}</strong>
                         </div>
                         <div>
-                          <span>Amount due</span>
+                          <span>Applied to invoices</span>
                           <strong>{currency(invoicePaymentAppliedAmount)}</strong>
                         </div>
                         <div>
-                          <span>Received</span>
+                          <span>Amount received</span>
                           <strong>{currency(invoicePaymentAmount)}</strong>
                         </div>
-                        <div>
-                          <span>{invoicePaymentShortfallAmount > 0 ? 'Short' : invoicePaymentExcessLabel}</span>
-                          <strong className={invoicePaymentShortfallAmount > 0 ? 'text-danger' : ''}>{currency(invoicePaymentShortfallAmount || invoicePaymentExcessDisplayAmount)}</strong>
-                        </div>
+                        {invoicePaymentShortfallAmount > 0 && <div><span>Still needed</span><strong className="text-danger">{currency(invoicePaymentShortfallAmount)}</strong></div>}
+                        {invoicePaymentExcessAmount > 0 && !invoicePaymentForm.excessAction && <div><span>Excess to decide</span><strong>{currency(invoicePaymentExcessAmount)}</strong></div>}
+                        {invoicePaymentReturnedAmount > 0 && <div><span>Change to return</span><strong>{currency(invoicePaymentReturnedAmount)}</strong></div>}
+                        {invoicePaymentAdvanceAmount > 0 && <div><span>Advance credit</span><strong>{currency(invoicePaymentAdvanceAmount)}</strong></div>}
                         <div>
                           <span>Remaining balance</span>
                           <strong>{currency(selectedInvoiceRemaining)}</strong>

@@ -188,6 +188,8 @@ class PaymentPayload(BaseModel):
     invoiceId: str | None = None
     customerId: str | None = None
     amount: float | None = Field(default=None, gt=0)
+    tenderedAmount: float | None = Field(default=None, gt=0)
+    returnedAmount: float | None = Field(default=None, ge=0)
     allocations: list[PaymentAllocationPayload] | None = None
     advanceAmount: float | None = Field(default=None, ge=0)
     method: str | None = None
@@ -7037,6 +7039,12 @@ def create_payment(
     status = normalize_upper(payload.status or "POSTED")
     if method not in PAYMENT_METHODS:
         raise HTTPException(status_code=400, detail="Invalid payment method")
+    tendered_amount = money(payload.tenderedAmount if payload.tenderedAmount is not None else amount)
+    returned_amount = money(payload.returnedAmount)
+    if returned_amount > 0 and method != "CASH":
+        raise HTTPException(status_code=400, detail="Only cash payments can return change")
+    if tendered_amount != money(amount + returned_amount):
+        raise HTTPException(status_code=400, detail="Tendered amount must equal the posted payment plus returned change")
     if status not in PAYMENT_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid payment status")
     if status != "POSTED":
@@ -7192,6 +7200,8 @@ def create_payment(
         "allocationCount": len(allocations),
         "appliedAmount": money(amount - advance_amount),
         "advanceAmount": advance_amount,
+        "tenderedAmount": tendered_amount,
+        "returnedAmount": returned_amount,
         "customerId": customer["id"],
         "customer": customer,
         "amount": amount,
@@ -7245,6 +7255,8 @@ def create_payment(
             "allocationCount": len(allocations),
             "appliedAmount": payment["appliedAmount"],
             "advanceAmount": advance_amount,
+            "tenderedAmount": tendered_amount,
+            "returnedAmount": returned_amount,
             "accountCreditAfter": payment["accountCreditAfter"],
             "postedAt": timestamp,
         },

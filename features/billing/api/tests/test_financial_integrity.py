@@ -572,6 +572,87 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
         self.assertEqual(100.0, billing.invoice_summary(billing.invoices[0])["balance"])
         self.assertEqual(75.0, billing.invoice_summary(billing.invoices[1])["balance"])
 
+    def test_pos_cash_change_is_preserved_on_receipt_and_idempotent_replay(self):
+        self.add_invoice(amount=100)
+        payload = billing.PaymentPayload(
+            invoiceId="invoice-1",
+            amount=100,
+            tenderedAmount=120,
+            returnedAmount=20,
+            method="CASH",
+            paymentDate="2026-07-14",
+            collectionChannel="POS",
+            status="POSTED",
+        )
+
+        payment = billing.create_payment(payload, idempotency_key="payment:cash-change", admin=self.admin)
+        replay = billing.create_payment(payload, idempotency_key="payment:cash-change", admin=self.admin)
+
+        self.assertEqual(100.0, payment["amount"])
+        self.assertEqual(120.0, payment["tenderedAmount"])
+        self.assertEqual(20.0, payment["returnedAmount"])
+        self.assertEqual(100.0, billing.invoice_summary(billing.invoices[0])["paidTotal"])
+        self.assertEqual(payment["id"], replay["id"])
+        self.assertEqual(20.0, replay["returnedAmount"])
+
+    def test_pos_advance_keeps_excess_and_rejects_non_cash_change(self):
+        self.add_invoice(amount=100)
+        payment = billing.create_payment(
+            billing.PaymentPayload(
+                invoiceId="invoice-1",
+                amount=120,
+                tenderedAmount=120,
+                returnedAmount=0,
+                advanceAmount=20,
+                method="GCASH",
+                referenceNumber="GCASH-123",
+                paymentDate="2026-07-14",
+                collectionChannel="POS",
+                status="POSTED",
+            ),
+            idempotency_key="payment:advance",
+            admin=self.admin,
+        )
+
+        self.assertEqual(100.0, payment["appliedAmount"])
+        self.assertEqual(20.0, payment["advanceAmount"])
+        self.assertEqual(20.0, payment["accountCreditAfter"])
+        self.assertEqual(0.0, payment["returnedAmount"])
+
+        with self.assertRaises(HTTPException) as non_cash_change:
+            billing.create_payment(
+                billing.PaymentPayload(
+                    invoiceId="invoice-1",
+                    amount=100,
+                    tenderedAmount=120,
+                    returnedAmount=20,
+                    method="GCASH",
+                    paymentDate="2026-07-14",
+                    collectionChannel="POS",
+                    status="POSTED",
+                ),
+                idempotency_key="payment:invalid-non-cash-change",
+                admin=self.admin,
+            )
+        self.assertEqual(400, non_cash_change.exception.status_code)
+
+        with self.assertRaises(HTTPException) as mismatched_tender:
+            billing.create_payment(
+                billing.PaymentPayload(
+                    invoiceId="invoice-1",
+                    amount=100,
+                    tenderedAmount=120,
+                    returnedAmount=10,
+                    method="CASH",
+                    paymentDate="2026-07-14",
+                    collectionChannel="POS",
+                    status="POSTED",
+                ),
+                idempotency_key="payment:invalid-cash-tender",
+                admin=self.admin,
+            )
+        self.assertEqual(400, mismatched_tender.exception.status_code)
+
     def test_multi_invoice_payment_applies_per_allocation_promotions(self):
         first_invoice = self.add_invoice(amount=100, invoice_id="invoice-1")
         second_invoice = self.add_invoice(amount=120, invoice_id="invoice-2")
