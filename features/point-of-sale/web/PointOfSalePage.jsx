@@ -1378,6 +1378,7 @@ const blankOfficeStockForm = {
 const blankInvoicePayment = {
   invoiceId: '',
   amount: '',
+  exactAmount: false,
   excessAction: '',
   method: 'CASH',
   paymentDate: today(),
@@ -1483,7 +1484,6 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
     ? selectedCustomerInvoiceRows.reduce((sum, row) => roundMoney(sum + row.currentBalance), 0)
     : roundMoney(selectedBillingCustomerGroup?.totalBalance || 0);
   const selectedInvoiceTotalBeforeDiscount = selectedPaymentInvoiceRows.reduce((sum, row) => roundMoney(sum + row.currentBalance), 0);
-  const invoicePaymentAmount = roundMoney(Number(invoicePaymentForm.amount || 0));
   const invoicePaymentAllocations = useMemo(() => (
     selectedPaymentInvoiceRows
       .filter((row) => row.amountToCollect > 0)
@@ -1506,6 +1506,10 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
   ), [selectedPaymentInvoiceRows]);
   const invoicePaymentAllocatedTotal = invoicePaymentAllocations.reduce((sum, allocation) => roundMoney(sum + allocation.amount), 0);
   const invoicePaymentAppliedAmount = invoicePaymentAllocatedTotal;
+  const invoicePaymentAmountInput = invoicePaymentForm.exactAmount
+    ? (invoicePaymentAppliedAmount > 0 ? String(invoicePaymentAppliedAmount) : '')
+    : invoicePaymentForm.amount;
+  const invoicePaymentAmount = roundMoney(Number(invoicePaymentAmountInput || 0));
   const invoicePaymentShortfallAmount = roundMoney(Math.max(0, invoicePaymentAppliedAmount - invoicePaymentAmount));
   const invoicePaymentExcessAmount = roundMoney(Math.max(0, invoicePaymentAmount - invoicePaymentAppliedAmount));
   const invoicePaymentPromotionByInvoiceId = useMemo(() => {
@@ -2785,13 +2789,13 @@ export default function PointOfSalePage({ refreshShell = () => {} }) {
                                 inputMode="decimal"
                                 min="0.01"
                                 step="0.01"
-                                value={invoicePaymentForm.amount}
+                                value={invoicePaymentAmountInput}
                                 required
                                 autoFocus
                                 disabled={invoicePaymentSubmitting}
-                                onChange={(event) => { setError(''); setInvoicePaymentForm((form) => ({ ...form, amount: event.target.value, excessAction: '' })); }}
+                                onChange={(event) => { setError(''); setInvoicePaymentForm((form) => ({ ...form, amount: event.target.value, exactAmount: false, excessAction: '' })); }}
                               />
-                              <button type="button" className="btn btn-outline-primary" disabled={invoicePaymentSubmitting || invoicePaymentAppliedAmount <= 0} onClick={() => { setError(''); setInvoicePaymentForm((form) => ({ ...form, amount: String(invoicePaymentAppliedAmount), excessAction: '' })); }}>Exact amount</button>
+                              <button type="button" className={`btn ${invoicePaymentForm.exactAmount ? 'btn-primary' : 'btn-outline-primary'}`} aria-pressed={invoicePaymentForm.exactAmount} disabled={invoicePaymentSubmitting || invoicePaymentAppliedAmount <= 0} onClick={() => { setError(''); setInvoicePaymentForm((form) => ({ ...form, exactAmount: true, excessAction: '' })); }}>Exact amount</button>
                             </div>
                             <small>Enter the cash handed over or the amount the cashier confirmed with the payment provider.</small>
                           </div>
