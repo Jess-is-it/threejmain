@@ -644,8 +644,8 @@ export default function CollectorPage({ currentUser = {} }) {
       if (financeResult) setFinance(financeResult);
       setRemittanceForm((current) => ({
         ...current,
-        declaredCash: current.declaredCash || String(nextOverview.custody?.cash || 0),
-        gcashTransferredAmount: current.gcashTransferredAmount || String(nextOverview.custody?.gcash || 0)
+        declaredCash: current.declaredCash || (Number(nextOverview.custody?.cash || 0) > 0 ? '' : '0'),
+        gcashTransferredAmount: current.gcashTransferredAmount || (Number(nextOverview.custody?.gcash || 0) > 0 ? '' : '0')
       }));
       if (preserveSelection && selectedCustomer) {
         const refreshed = (customerResult.items || []).find((row) => row.customerId === selectedCustomer.customerId);
@@ -1126,7 +1126,7 @@ export default function CollectorPage({ currentUser = {} }) {
 
   async function submitRemittance(event) {
     event.preventDefault();
-    if (!checklistMatchesOverview || !allReceiptsReviewed || (hasRemittanceVariance && !remittanceForm.notes.trim())) return;
+    if (!checklistMatchesOverview || !amountsEntered || !allReceiptsReviewed || (hasRemittanceVariance && !remittanceForm.notes.trim())) return;
     setBusy('remittance');
     try {
       const result = await request('/collector/remittances', {
@@ -1245,9 +1245,21 @@ export default function CollectorPage({ currentUser = {} }) {
     && heldGcashCents === cents(overview.custody?.gcash);
   const reviewedCount = heldCollections.filter((row) => reviewedReceipts[row.id] === receiptReviewKey(row)).length;
   const allReceiptsReviewed = heldCollections.length > 0 && reviewedCount === heldCollections.length;
+  const amountsEntered = remittanceForm.declaredCash !== '' && remittanceForm.gcashTransferredAmount !== '';
   const cashVarianceCents = cents(remittanceForm.declaredCash) - heldCashCents;
   const gcashVarianceCents = cents(remittanceForm.gcashTransferredAmount) - heldGcashCents;
-  const hasRemittanceVariance = cashVarianceCents !== 0 || gcashVarianceCents !== 0;
+  const hasRemittanceVariance = amountsEntered && (cashVarianceCents !== 0 || gcashVarianceCents !== 0);
+  const canMarkAllReviewed = amountsEntered && !hasRemittanceVariance && checklistMatchesOverview && heldCollections.length > 0;
+
+  function changeRemittanceAmount(field, value, expectedCents) {
+    setRemittanceForm((current) => ({ ...current, [field]: value }));
+    if (allReceiptsReviewed && cents(value) !== expectedCents) setReviewedReceipts({});
+  }
+
+  function markAllReceiptsReviewed() {
+    if (!canMarkAllReviewed || loading || busy === 'remittance') return;
+    setReviewedReceipts(Object.fromEntries(heldCollections.map((row) => [row.id, receiptReviewKey(row)])));
+  }
 
   const tabs = [
     meta.canCollect && { id: 'worklist', label: 'Customers', icon: IconMapPin },
@@ -1378,8 +1390,8 @@ export default function CollectorPage({ currentUser = {} }) {
               <section className="collector-remittance-checklist" aria-label="Receipts to hand over">
                 <div className="collector-remittance-checklist-heading">
                   <div>
-                    <strong>Check every held receipt</strong>
-                    <span>Match each customer payment with the cash or GCash you will hand over.</span>
+                    <strong>Review held receipts</strong>
+                    <span>Check them individually, or mark all after entering matching Cash and GCash amounts below.</span>
                   </div>
                   <span className="collector-remittance-progress" aria-live="polite">{reviewedCount}/{heldCollections.length} checked</span>
                 </div>
@@ -1428,7 +1440,7 @@ export default function CollectorPage({ currentUser = {} }) {
               )}
               <label>
                 <span>Cash being handed to Finance</span>
-                <input className="form-control" type="number" min="0" step="0.01" required value={remittanceForm.declaredCash} onChange={(event) => setRemittanceForm({ ...remittanceForm, declaredCash: event.target.value })} />
+                <input className="form-control" type="number" min="0" step="0.01" required value={remittanceForm.declaredCash} onChange={(event) => changeRemittanceAmount('declaredCash', event.target.value, heldCashCents)} />
               </label>
               {remittanceForm.declaredCash !== '' && (
                 <div className={`collector-remittance-difference ${cashVarianceCents ? 'is-variance' : ''}`}>
@@ -1437,11 +1449,24 @@ export default function CollectorPage({ currentUser = {} }) {
               )}
               <label>
                 <span>GCash transferred to company</span>
-                <input className="form-control" type="number" min="0" step="0.01" required value={remittanceForm.gcashTransferredAmount} onChange={(event) => setRemittanceForm({ ...remittanceForm, gcashTransferredAmount: event.target.value })} />
+                <input className="form-control" type="number" min="0" step="0.01" required value={remittanceForm.gcashTransferredAmount} onChange={(event) => changeRemittanceAmount('gcashTransferredAmount', event.target.value, heldGcashCents)} />
               </label>
               {remittanceForm.gcashTransferredAmount !== '' && (
                 <div className={`collector-remittance-difference ${gcashVarianceCents ? 'is-variance' : ''}`}>
                   GCash: {gcashVarianceCents === 0 ? 'Matches expected amount' : `${gcashVarianceCents < 0 ? 'Short' : 'Over'} by ${money(Math.abs(gcashVarianceCents) / 100)}`}
+                </div>
+              )}
+              {heldCollections.length > 0 && (
+                <div className="collector-remittance-mark-all">
+                  <button
+                    className="btn btn-outline-primary w-100"
+                    type="button"
+                    disabled={loading || busy === 'remittance' || !canMarkAllReviewed || allReceiptsReviewed}
+                    onClick={markAllReceiptsReviewed}
+                  >
+                    <IconCheck size={18} /> {allReceiptsReviewed ? 'All receipts reviewed' : `Mark all ${heldCollections.length} receipts reviewed`}
+                  </button>
+                  <small>Use after counting the cash and confirming the GCash transfer. Both entered amounts must match the expected totals.</small>
                 </div>
               )}
               {heldGcashCents > 0 && (
@@ -1461,7 +1486,7 @@ export default function CollectorPage({ currentUser = {} }) {
                 <textarea className="form-control" rows="2" maxLength="1000" required={hasRemittanceVariance} value={remittanceForm.notes} onChange={(event) => setRemittanceForm({ ...remittanceForm, notes: event.target.value })} />
               </label>
               {hasRemittanceVariance && <p className="collector-remittance-note">Finance will review this difference. Enter the reason you know before submitting.</p>}
-              <button className="btn btn-primary w-100" type="submit" disabled={busy === 'remittance' || loading || !checklistMatchesOverview || !allReceiptsReviewed || (hasRemittanceVariance && !remittanceForm.notes.trim())}>
+              <button className="btn btn-primary w-100" type="submit" disabled={busy === 'remittance' || loading || !checklistMatchesOverview || !amountsEntered || !allReceiptsReviewed || (hasRemittanceVariance && !remittanceForm.notes.trim())}>
                 <IconSend size={18} /> Submit to Finance
               </button>
             </div>

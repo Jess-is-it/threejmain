@@ -562,6 +562,21 @@
   color: var(--tblr-danger);
 }
 
+.collector-remittance-mark-all {
+  margin-bottom: 0.9rem;
+}
+
+.collector-remittance-mark-all .btn {
+  min-height: 44px;
+}
+
+.collector-remittance-mark-all small {
+  color: var(--tblr-muted);
+  display: block;
+  line-height: 1.35;
+  margin-top: 0.4rem;
+}
+
 .collector-remittance-note {
   font-size: 0.78rem;
   margin: -0.35rem 0 0.75rem;
