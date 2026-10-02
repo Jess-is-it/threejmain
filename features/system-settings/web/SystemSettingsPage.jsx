@@ -3926,9 +3926,6 @@ function AccessTab() {
       const data = await request('/system-settings/access');
       setAccess(data);
       setAuthForm(data.authSettings);
-      if (!userForm.roleId && data.roles?.[0]?.id) {
-        setUserForm((current) => ({ ...current, roleId: data.roles[0].id }));
-      }
     } catch (err) {
       setError(err.message);
     }
@@ -3941,6 +3938,11 @@ function AccessTab() {
   if (!access || !authForm) return <div className="empty">Loading access settings...</div>;
 
   const roleById = new Map((access.roles || []).map((role) => [role.id, role]));
+  const defaultUserRoleId = access.roles?.find((role) => role.name === 'viewer')?.id
+    || access.roles?.find((role) => role.name !== 'owner')?.id || '';
+  const isEditingOwnerUser = Boolean(userForm.id && access.users?.some(
+    (user) => user.id === userForm.id && roleById.get(user.roleId)?.name === 'owner'
+  ));
 
   function patchAuth(updates) {
     setAuthForm({ ...authForm, ...updates });
@@ -4043,11 +4045,11 @@ function AccessTab() {
       email: user.email || '',
       contact: user.contact || '',
       fullName: user.fullName || '',
-      roleId: user.roleId || access.roles?.[0]?.id || '',
+      roleId: user.roleId || defaultUserRoleId,
       password: '',
       isActive: Boolean(user.isActive),
       mustChangePassword: Boolean(user.mustChangePassword)
-    } : { ...blankUser, roleId: access.roles?.[0]?.id || '' });
+    } : { ...blankUser, roleId: defaultUserRoleId });
     setUserModalOpen(true);
   }
 
@@ -4348,7 +4350,7 @@ function AccessTab() {
               </div>
               <div className="col-md-6">
                 <label className="form-label">Role</label>
-                <select className="form-select" value={userForm.roleId} disabled={roleById.get(userForm.roleId)?.name === 'owner'} onChange={(event) => setUserForm({ ...userForm, roleId: event.target.value })}>
+                <select className="form-select" value={userForm.roleId} disabled={isEditingOwnerUser} onChange={(event) => setUserForm({ ...userForm, roleId: event.target.value })}>
                   {(access.roles || []).map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
                 </select>
               </div>
@@ -4358,7 +4360,7 @@ function AccessTab() {
               </div>
               <div className="col-md-6">
                 <label className="form-check">
-                  <input className="form-check-input" type="checkbox" checked={Boolean(userForm.isActive)} disabled={roleById.get(userForm.roleId)?.name === 'owner'} onChange={(event) => setUserForm({ ...userForm, isActive: event.target.checked })} />
+                  <input className="form-check-input" type="checkbox" checked={Boolean(userForm.isActive)} disabled={isEditingOwnerUser} onChange={(event) => setUserForm({ ...userForm, isActive: event.target.checked })} />
                   <span className="form-check-label">Active</span>
                 </label>
               </div>

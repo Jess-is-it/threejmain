@@ -40,6 +40,7 @@ System Settings manages shell configuration pages for branding, business profile
   - Permissions catalog with system-managed permission codes grouped by feature.
   - Roles CRUD with permission assignment and automatic required view-permission dependencies.
   - Users CRUD with role assignment, active/inactive status, force password change, password reset, email reset, and owner lockouts.
+  - Add User starts with the viewer role; operators can choose another role. Existing owner accounts retain locked role and active status controls.
 - View the host-generated Graphify development knowledge graph under Graphify:
   - Artifact statistics for nodes, relationships, communities, confidence counts, freshness, and graph/report availability.
   - Short-lived ticket opening of `graph.html` and `GRAPH_REPORT.md` through the API because the frontend uses bearer tokens.
