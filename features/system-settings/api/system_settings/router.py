@@ -3025,6 +3025,14 @@ def a2p_messaging_store() -> dict[str, Any]:
     current["messageLogs"] = logs if isinstance(logs, list) else []
     read_ids = current.get("notificationReadIds")
     current["notificationReadIds"] = [normalize_a2p_text(item, 120) for item in read_ids if normalize_a2p_text(item, 120)] if isinstance(read_ids, list) else []
+    read_ids_by_user = current.get("notificationReadIdsByUser")
+    current["notificationReadIdsByUser"] = {
+        normalize_a2p_text(user_id, 160): [
+            normalize_a2p_text(item, 120) for item in ids if normalize_a2p_text(item, 120)
+        ]
+        for user_id, ids in read_ids_by_user.items()
+        if normalize_a2p_text(user_id, 160) and isinstance(ids, list)
+    } if isinstance(read_ids_by_user, dict) else {}
     return current
 
 
@@ -3378,10 +3386,22 @@ def a2p_admin_notification_from_log(log: dict[str, Any], read_ids: set[str]) -> 
     }
 
 
-def a2p_admin_notifications(limit: int = 40) -> list[dict[str, Any]]:
+def notification_actor_key(admin: dict[str, Any]) -> str:
+    user_key = normalize_a2p_text(admin.get("id") or admin.get("username"), 160)
+    if not user_key:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return user_key
+
+
+def a2p_admin_notifications(admin: dict[str, Any], limit: int = 40) -> list[dict[str, Any]]:
     store = a2p_messaging_store()
-    read_ids = set(store.get("notificationReadIds") or [])
-    logs = [log for log in store.get("messageLogs", []) if isinstance(log, dict)]
+    user_key = notification_actor_key(admin)
+    read_ids = set(store["notificationReadIdsByUser"].get(user_key, []))
+    logs = [
+        log for log in store.get("messageLogs", [])
+        if isinstance(log, dict)
+        and normalize_a2p_text(log.get("created_by_admin_id"), 160) == user_key
+    ]
     notifications = [a2p_admin_notification_from_log(log, read_ids) for log in logs]
     notifications.sort(key=lambda item: (item.get("status") == "UNREAD", str(item.get("created_at") or "")), reverse=True)
     return notifications[:limit]
@@ -4503,7 +4523,7 @@ def list_a2p_messaging_messages(
 @router.get("/api/admin/notifications")
 def list_admin_notifications(limit: int = 40, admin=Depends(require_admin)):
     safe_limit = min(100, max(10, int(limit or 40)))
-    items = a2p_admin_notifications(safe_limit)
+    items = a2p_admin_notifications(admin, safe_limit)
     unread_items = [item for item in items if item.get("status") == "UNREAD"]
     return {
         "items": items,
@@ -4517,10 +4537,11 @@ def list_admin_notifications(limit: int = 40, admin=Depends(require_admin)):
 @router.post("/api/admin/notifications/read-all")
 def mark_all_admin_notifications_read(admin=Depends(require_admin)):
     store = a2p_messaging_store()
-    notifications = a2p_admin_notifications(100)
-    read_ids = set(store.get("notificationReadIds") or [])
+    user_key = notification_actor_key(admin)
+    notifications = a2p_admin_notifications(admin, 100)
+    read_ids = set(store["notificationReadIdsByUser"].get(user_key, []))
     read_ids.update(item["id"] for item in notifications)
-    store["notificationReadIds"] = sorted(read_ids)
+    store["notificationReadIdsByUser"][user_key] = sorted(read_ids)
     save_persisted_a2p_messaging_store()
     return {"status": "OK"}
 
@@ -4531,14 +4552,15 @@ def mark_admin_notification_read(notification_id: str, admin=Depends(require_adm
     if not normalized_id.startswith("a2p-"):
         raise HTTPException(status_code=404, detail="Notification not found")
     store = a2p_messaging_store()
-    known_ids = {item["id"] for item in a2p_admin_notifications(100)}
+    user_key = notification_actor_key(admin)
+    known_ids = {item["id"] for item in a2p_admin_notifications(admin, 100)}
     if normalized_id not in known_ids:
         raise HTTPException(status_code=404, detail="Notification not found")
-    read_ids = set(store.get("notificationReadIds") or [])
+    read_ids = set(store["notificationReadIdsByUser"].get(user_key, []))
     read_ids.add(normalized_id)
-    store["notificationReadIds"] = sorted(read_ids)
+    store["notificationReadIdsByUser"][user_key] = sorted(read_ids)
     save_persisted_a2p_messaging_store()
-    return next(item for item in a2p_admin_notifications(100) if item["id"] == normalized_id)
+    return next(item for item in a2p_admin_notifications(admin, 100) if item["id"] == normalized_id)
 
 
 @router.get("/api/system-settings/avatars")
