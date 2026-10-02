@@ -100,6 +100,26 @@ function notifyAuthExpired() {
   }
 }
 
+function requestErrorMessage(detail) {
+  if (typeof detail === 'string' && detail.trim()) return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail.map((issue) => {
+      if (typeof issue === 'string') return issue;
+      if (!issue || typeof issue !== 'object') return '';
+      const field = Array.isArray(issue.loc)
+        ? issue.loc.filter((part) => !['body', 'query', 'path'].includes(part)).join('.')
+        : '';
+      const message = typeof issue.msg === 'string' ? issue.msg : '';
+      return field && message ? `${field}: ${message}` : message;
+    }).filter(Boolean);
+    return messages.join('; ') || 'Request failed';
+  }
+  if (detail && typeof detail === 'object') {
+    return requestErrorMessage(detail.message || detail.msg || detail.error || detail.detail);
+  }
+  return 'Request failed';
+}
+
 async function request(path, options = {}) {
   const res = await fetch(`${API}${path}`, {
     ...options,
@@ -111,7 +131,7 @@ async function request(path, options = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const error = new Error(data.detail || 'Request failed');
+    const error = new Error(requestErrorMessage(data.detail || data.message));
     error.status = res.status;
     if (res.status === 401) notifyAuthExpired();
     throw error;
@@ -3983,6 +4003,7 @@ function AccessTab() {
   }
 
   function openRole(role = null) {
+    setError('');
     setResetPassword('');
     setRoleForm(role ? {
       id: role.id,
@@ -3991,6 +4012,11 @@ function AccessTab() {
       permissionCodes: role.permissionCodes || []
     } : blankRole);
     setRoleModalOpen(true);
+  }
+
+  function closeRoleModal() {
+    setRoleModalOpen(false);
+    setError('');
   }
 
   function toggleRolePermission(code) {
@@ -4038,6 +4064,7 @@ function AccessTab() {
   }
 
   function openUser(user = null) {
+    setError('');
     setResetPassword('');
     setUserForm(user ? {
       id: user.id,
@@ -4051,6 +4078,11 @@ function AccessTab() {
       mustChangePassword: Boolean(user.mustChangePassword)
     } : { ...blankUser, roleId: defaultUserRoleId });
     setUserModalOpen(true);
+  }
+
+  function closeUserModal() {
+    setUserModalOpen(false);
+    setError('');
   }
 
   async function saveUser(event) {
@@ -4106,7 +4138,7 @@ function AccessTab() {
   return (
     <div className="system-settings-access">
       {message && <div className="alert alert-info">{message}</div>}
-      {error && <div className="alert alert-danger">{error}</div>}
+      {error && !roleModalOpen && !userModalOpen && <div className="alert alert-danger" role="alert">{error}</div>}
       {resetPassword && (
         <div className="alert alert-warning d-flex align-items-center justify-content-between gap-2">
           <div>
@@ -4304,7 +4336,7 @@ function AccessTab() {
       )}
 
       {roleModalOpen && (
-        <Modal title={roleForm.id ? `Edit Role - ${roleForm.name}` : 'Add Role'} onClose={() => setRoleModalOpen(false)}>
+        <Modal title={roleForm.id ? `Edit Role - ${roleForm.name}` : 'Add Role'} onClose={closeRoleModal}>
           <form onSubmit={saveRole}>
             <div className="row g-3">
               <div className="col-md-4">
@@ -4320,7 +4352,8 @@ function AccessTab() {
                 <PermissionSelector groups={access.permissionGroups} selectedCodes={roleForm.permissionCodes} disabled={roleForm.name === 'owner'} onToggle={toggleRolePermission} />
               </div>
               <div className="col-12 text-end">
-                <button className="btn me-2" type="button" onClick={() => setRoleModalOpen(false)}>Cancel</button>
+                {error && <div className="alert alert-danger text-start" role="alert">{error}</div>}
+                <button className="btn me-2" type="button" onClick={closeRoleModal}>Cancel</button>
                 {roleForm.name !== 'owner' && <button className="btn btn-primary"><IconDeviceFloppy size={18} className="me-2" />Save Role</button>}
               </div>
             </div>
@@ -4329,7 +4362,7 @@ function AccessTab() {
       )}
 
       {userModalOpen && (
-        <Modal title={userForm.id ? `Edit User - ${userForm.username}` : 'Add User'} onClose={() => setUserModalOpen(false)}>
+        <Modal title={userForm.id ? `Edit User - ${userForm.username}` : 'Add User'} onClose={closeUserModal}>
           <form onSubmit={saveUser}>
             <div className="row g-3">
               <div className="col-md-4">
@@ -4371,7 +4404,8 @@ function AccessTab() {
                 </label>
               </div>
               <div className="col-12 text-end">
-                <button className="btn me-2" type="button" onClick={() => setUserModalOpen(false)}>Cancel</button>
+                {error && <div className="alert alert-danger text-start" role="alert">{error}</div>}
+                <button className="btn me-2" type="button" onClick={closeUserModal}>Cancel</button>
                 <button className="btn btn-primary"><IconDeviceFloppy size={18} className="me-2" />Save User</button>
               </div>
             </div>
