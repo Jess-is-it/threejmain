@@ -73,6 +73,14 @@ function money(value) {
   }).format(Number(value || 0));
 }
 
+function cents(value) {
+  return Math.round(Number(value || 0) * 100);
+}
+
+function receiptReviewKey(collection) {
+  return [collection.id, collection.receiptNumber, collection.customerId, collection.method, cents(collection.amount)].join('|');
+}
+
 function discountMoney(value) {
   const amount = Number(value || 0);
   return money(amount > 0 ? -amount : 0);
@@ -546,6 +554,7 @@ export default function CollectorPage({ currentUser = {} }) {
     companyGcashAccount: '',
     notes: ''
   });
+  const [reviewedReceipts, setReviewedReceipts] = useState({});
   const [financeDrafts, setFinanceDrafts] = useState({});
   const [reversalDrafts, setReversalDrafts] = useState({});
   const [loading, setLoading] = useState(true);
@@ -626,6 +635,11 @@ export default function CollectorPage({ currentUser = {} }) {
       setOverview(nextOverview);
       setCustomers(customerResult.items || []);
       setCollections(collectionResult.items || []);
+      setReviewedReceipts((current) => Object.fromEntries(
+        (collectionResult.items || [])
+          .filter((row) => row.status === 'POSTED' && row.custodyStatus === 'HELD' && current[row.id] === receiptReviewKey(row))
+          .map((row) => [row.id, current[row.id]])
+      ));
       setRemittances(remittanceResult.items || []);
       if (financeResult) setFinance(financeResult);
       setRemittanceForm((current) => ({
@@ -1112,11 +1126,16 @@ export default function CollectorPage({ currentUser = {} }) {
 
   async function submitRemittance(event) {
     event.preventDefault();
+    if (!checklistMatchesOverview || !allReceiptsReviewed || (hasRemittanceVariance && !remittanceForm.notes.trim())) return;
     setBusy('remittance');
     try {
       const result = await request('/collector/remittances', {
         method: 'POST',
         body: JSON.stringify({
+          collectionIds: heldCollections.map((row) => row.id),
+          reviewedAllHeld: true,
+          expectedCash: heldCashCents / 100,
+          expectedGcash: heldGcashCents / 100,
           declaredCash: Number(remittanceForm.declaredCash || 0),
           gcashTransferredAmount: Number(remittanceForm.gcashTransferredAmount || 0),
           gcashTransferReference: remittanceForm.gcashTransferReference,
@@ -1132,9 +1151,15 @@ export default function CollectorPage({ currentUser = {} }) {
         companyGcashAccount: '',
         notes: ''
       });
+      setReviewedReceipts({});
       await load();
     } catch (err) {
-      showError(err.message);
+      if (err.status === 409) {
+        await load();
+        showError(`${err.message} Review the refreshed receipts before trying again.`);
+      } else {
+        showError(err.message);
+      }
     } finally {
       setBusy('');
     }
@@ -1211,6 +1236,18 @@ export default function CollectorPage({ currentUser = {} }) {
       setBusy('');
     }
   }
+
+  const heldCollections = collections.filter((row) => row.status === 'POSTED' && row.custodyStatus === 'HELD');
+  const heldCashCents = heldCollections.reduce((sum, row) => sum + (row.method === 'CASH' ? cents(row.amount) : 0), 0);
+  const heldGcashCents = heldCollections.reduce((sum, row) => sum + (row.method === 'GCASH' ? cents(row.amount) : 0), 0);
+  const checklistMatchesOverview = heldCollections.length === Number(overview.custody?.collections || 0)
+    && heldCashCents === cents(overview.custody?.cash)
+    && heldGcashCents === cents(overview.custody?.gcash);
+  const reviewedCount = heldCollections.filter((row) => reviewedReceipts[row.id] === receiptReviewKey(row)).length;
+  const allReceiptsReviewed = heldCollections.length > 0 && reviewedCount === heldCollections.length;
+  const cashVarianceCents = cents(remittanceForm.declaredCash) - heldCashCents;
+  const gcashVarianceCents = cents(remittanceForm.gcashTransferredAmount) - heldGcashCents;
+  const hasRemittanceVariance = cashVarianceCents !== 0 || gcashVarianceCents !== 0;
 
   const tabs = [
     meta.canCollect && { id: 'worklist', label: 'Customers', icon: IconMapPin },
@@ -1334,19 +1371,80 @@ export default function CollectorPage({ currentUser = {} }) {
                 <IconSend className="text-blue" size={25} />
               </div>
               <div className="collector-custody-total">
-                <div><span>Cash expected</span><strong>{money(overview.custody?.cash)}</strong></div>
-                <div><span>GCash expected</span><strong>{money(overview.custody?.gcash)}</strong></div>
-                <div><span>Receipts</span><strong>{overview.custody?.collections || 0}</strong></div>
+                <div><span>Cash expected</span><strong>{money(heldCashCents / 100)}</strong></div>
+                <div><span>GCash expected</span><strong>{money(heldGcashCents / 100)}</strong></div>
+                <div><span>Receipts</span><strong>{heldCollections.length}</strong></div>
               </div>
+              <section className="collector-remittance-checklist" aria-label="Receipts to hand over">
+                <div className="collector-remittance-checklist-heading">
+                  <div>
+                    <strong>Check every held receipt</strong>
+                    <span>Match each customer payment with the cash or GCash you will hand over.</span>
+                  </div>
+                  <span className="collector-remittance-progress" aria-live="polite">{reviewedCount}/{heldCollections.length} checked</span>
+                </div>
+                {['CASH', 'GCASH'].map((method) => {
+                  const methodRows = heldCollections.filter((row) => row.method === method);
+                  if (!methodRows.length) return null;
+                  return (
+                    <div className="collector-remittance-group" key={method}>
+                      <div className="collector-remittance-group-heading">
+                        <strong>{method === 'GCASH' ? 'GCash' : 'Cash'} · {methodRows.length} {methodRows.length === 1 ? 'receipt' : 'receipts'}</strong>
+                        <strong>{money(method === 'GCASH' ? heldGcashCents / 100 : heldCashCents / 100)}</strong>
+                      </div>
+                      {methodRows.map((row) => (
+                        <label className="collector-checklist-item" key={row.id}>
+                          <input
+                            type="checkbox"
+                            checked={reviewedReceipts[row.id] === receiptReviewKey(row)}
+                            onChange={(event) => {
+                              const checked = event.target.checked;
+                              setReviewedReceipts((current) => {
+                                const next = { ...current };
+                                if (checked) next[row.id] = receiptReviewKey(row);
+                                else delete next[row.id];
+                                return next;
+                              });
+                            }}
+                          />
+                          <span className="collector-checklist-detail">
+                            <strong>{customerName(row.customer)}</strong>
+                            <small>{row.customer?.accountNumber || 'No account number'} · {row.receiptNumber || 'No receipt number'}</small>
+                            {row.method === 'GCASH' && row.referenceNumber && <small>Customer GCash ref: {row.referenceNumber}</small>}
+                          </span>
+                          <strong className="collector-checklist-amount">{money(row.amount)}</strong>
+                        </label>
+                      ))}
+                    </div>
+                  );
+                })}
+                {!heldCollections.length && <p className="collector-checklist-empty">No held receipts to remit.</p>}
+              </section>
+              {!checklistMatchesOverview && !loading && (
+                <div className="alert alert-warning collector-remittance-warning" role="alert">
+                  Receipt list and custody totals differ. Refresh before reviewing this batch.
+                  <button className="btn btn-outline-warning btn-sm" type="button" onClick={() => load()}>Refresh</button>
+                </div>
+              )}
               <label>
                 <span>Cash being handed to Finance</span>
-                <input className="form-control" type="number" min="0" step="0.01" value={remittanceForm.declaredCash} onChange={(event) => setRemittanceForm({ ...remittanceForm, declaredCash: event.target.value })} />
+                <input className="form-control" type="number" min="0" step="0.01" required value={remittanceForm.declaredCash} onChange={(event) => setRemittanceForm({ ...remittanceForm, declaredCash: event.target.value })} />
               </label>
+              {remittanceForm.declaredCash !== '' && (
+                <div className={`collector-remittance-difference ${cashVarianceCents ? 'is-variance' : ''}`}>
+                  Cash: {cashVarianceCents === 0 ? 'Matches expected amount' : `${cashVarianceCents < 0 ? 'Short' : 'Over'} by ${money(Math.abs(cashVarianceCents) / 100)}`}
+                </div>
+              )}
               <label>
                 <span>GCash transferred to company</span>
-                <input className="form-control" type="number" min="0" step="0.01" value={remittanceForm.gcashTransferredAmount} onChange={(event) => setRemittanceForm({ ...remittanceForm, gcashTransferredAmount: event.target.value })} />
+                <input className="form-control" type="number" min="0" step="0.01" required value={remittanceForm.gcashTransferredAmount} onChange={(event) => setRemittanceForm({ ...remittanceForm, gcashTransferredAmount: event.target.value })} />
               </label>
-              {Number(overview.custody?.gcash || 0) > 0 && (
+              {remittanceForm.gcashTransferredAmount !== '' && (
+                <div className={`collector-remittance-difference ${gcashVarianceCents ? 'is-variance' : ''}`}>
+                  GCash: {gcashVarianceCents === 0 ? 'Matches expected amount' : `${gcashVarianceCents < 0 ? 'Short' : 'Over'} by ${money(Math.abs(gcashVarianceCents) / 100)}`}
+                </div>
+              )}
+              {heldGcashCents > 0 && (
                 <>
                   <label>
                     <span>GCash transfer reference</span>
@@ -1359,10 +1457,11 @@ export default function CollectorPage({ currentUser = {} }) {
                 </>
               )}
               <label>
-                <span>Notes</span>
-                <textarea className="form-control" rows="2" value={remittanceForm.notes} onChange={(event) => setRemittanceForm({ ...remittanceForm, notes: event.target.value })} />
+                <span>{hasRemittanceVariance ? 'Explain the difference (required)' : 'Notes (optional)'}</span>
+                <textarea className="form-control" rows="2" maxLength="1000" required={hasRemittanceVariance} value={remittanceForm.notes} onChange={(event) => setRemittanceForm({ ...remittanceForm, notes: event.target.value })} />
               </label>
-              <button className="btn btn-primary w-100" type="submit" disabled={busy === 'remittance' || !Number(overview.custody?.collections || 0)}>
+              {hasRemittanceVariance && <p className="collector-remittance-note">Finance will review this difference. Enter the reason you know before submitting.</p>}
+              <button className="btn btn-primary w-100" type="submit" disabled={busy === 'remittance' || loading || !checklistMatchesOverview || !allReceiptsReviewed || (hasRemittanceVariance && !remittanceForm.notes.trim())}>
                 <IconSend size={18} /> Submit to Finance
               </button>
             </div>

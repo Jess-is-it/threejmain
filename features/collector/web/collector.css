@@ -462,6 +462,111 @@
   font-size: 0.68rem;
 }
 
+.collector-remittance-checklist {
+  border: 1px solid var(--tblr-border-color);
+  border-radius: 10px;
+  margin-bottom: 1rem;
+  overflow: hidden;
+}
+
+.collector-remittance-checklist-heading,
+.collector-remittance-group-heading {
+  align-items: flex-start;
+  display: flex;
+  gap: 0.6rem;
+  justify-content: space-between;
+  padding: 0.7rem 0.8rem;
+}
+
+.collector-remittance-checklist-heading {
+  background: var(--tblr-bg-surface-secondary);
+}
+
+.collector-remittance-checklist-heading > div {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.collector-remittance-checklist-heading span,
+.collector-checklist-detail small {
+  color: var(--tblr-muted);
+  font-size: 0.72rem;
+}
+
+.collector-remittance-progress {
+  flex: none;
+  font-weight: 700;
+}
+
+.collector-remittance-group + .collector-remittance-group {
+  border-top: 1px solid var(--tblr-border-color);
+}
+
+.collector-remittance-group-heading {
+  background: var(--tblr-primary-lt);
+  font-size: 0.8rem;
+}
+
+.collector-remittance-form .collector-checklist-item {
+  align-items: center;
+  border-top: 1px solid var(--tblr-border-color);
+  cursor: pointer;
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  margin: 0;
+  min-height: 56px;
+  padding: 0.55rem 0.8rem;
+}
+
+.collector-checklist-item input {
+  accent-color: var(--tblr-primary);
+  height: 20px;
+  margin: 0;
+  width: 20px;
+}
+
+.collector-checklist-detail {
+  display: grid;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.collector-checklist-amount {
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.collector-checklist-empty {
+  color: var(--tblr-muted);
+  margin: 0;
+  padding: 0.85rem;
+}
+
+.collector-remittance-warning {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.collector-remittance-difference {
+  color: var(--tblr-success);
+  font-size: 0.78rem;
+  margin: -0.45rem 0 0.75rem;
+}
+
+.collector-remittance-difference.is-variance,
+.collector-remittance-note {
+  color: var(--tblr-danger);
+}
+
+.collector-remittance-note {
+  font-size: 0.78rem;
+  margin: -0.35rem 0 0.75rem;
+}
+
 .collector-finance-metrics {
   margin-bottom: 1rem;
 }
@@ -1373,6 +1478,14 @@
 }
 
 @media (max-width: 640px) {
+  .collector-custody-total {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .collector-checklist-amount {
+    font-size: 0.74rem;
+  }
+
   .collector-reversal-fields {
     grid-template-columns: 1fr;
   }

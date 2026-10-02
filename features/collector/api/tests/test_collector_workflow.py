@@ -701,6 +701,68 @@ class CollectorWorkflowTests(unittest.TestCase):
         self.assertEqual("SETTLED", collector.find_record(collector.collections, posted["id"], "Collection")["custodyStatus"])
         self.assertEqual(0, collector.finance_overview(actor=self.finance_actor)["metrics"]["pendingBatches"])
 
+    def test_reviewed_remittance_requires_current_receipts_and_totals(self):
+        self.claim()
+        posted = self.post_cash()
+        checklist = {
+            "collectionIds": [posted["id"]],
+            "reviewedAllHeld": True,
+            "expectedCash": 150,
+            "expectedGcash": 0,
+            "declaredCash": 150,
+            "gcashTransferredAmount": 0,
+        }
+
+        with self.assertRaises(HTTPException) as missing_receipt:
+            collector.submit_remittance(
+                collector.RemittancePayload(**{**checklist, "collectionIds": []}),
+                actor=self.collector_actor,
+            )
+        self.assertEqual(409, missing_receipt.exception.status_code)
+
+        with self.assertRaises(HTTPException) as changed_total:
+            collector.submit_remittance(
+                collector.RemittancePayload(**{**checklist, "expectedCash": 149}),
+                actor=self.collector_actor,
+            )
+        self.assertEqual(409, changed_total.exception.status_code)
+        self.assertEqual("HELD", collector.collections[0]["custodyStatus"])
+
+        new_receipt = {**collector.collections[0], "id": "new-held-receipt"}
+        collector.collections.append(new_receipt)
+        with self.assertRaises(HTTPException) as new_held_receipt:
+            collector.submit_remittance(collector.RemittancePayload(**checklist), actor=self.collector_actor)
+        self.assertEqual(409, new_held_receipt.exception.status_code)
+        collector.collections.remove(new_receipt)
+
+        submitted = collector.submit_remittance(collector.RemittancePayload(**checklist), actor=self.collector_actor)
+        self.assertEqual([posted["id"]], submitted["collectionIds"])
+        self.assertEqual("SUBMITTED", collector.collections[0]["custodyStatus"])
+
+    def test_reviewed_remittance_requires_variance_explanation(self):
+        self.claim()
+        posted = self.post_cash()
+        checklist = {
+            "collectionIds": [posted["id"]],
+            "reviewedAllHeld": True,
+            "expectedCash": 150,
+            "expectedGcash": 0,
+            "declaredCash": 140,
+            "gcashTransferredAmount": 0,
+        }
+
+        with self.assertRaises(HTTPException) as missing_note:
+            collector.submit_remittance(collector.RemittancePayload(**checklist), actor=self.collector_actor)
+        self.assertEqual(400, missing_note.exception.status_code)
+        self.assertEqual("HELD", collector.collections[0]["custodyStatus"])
+
+        submitted = collector.submit_remittance(
+            collector.RemittancePayload(**{**checklist, "notes": "Cash count is short by PHP 10"}),
+            actor=self.collector_actor,
+        )
+        self.assertEqual(140, submitted["declaredCash"])
+        self.assertEqual("Cash count is short by PHP 10", submitted["notes"])
+
     def test_cash_and_gcash_variances_do_not_cancel_each_other(self):
         self.claim()
         self.post_cash()

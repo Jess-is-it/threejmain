@@ -94,6 +94,9 @@ class PrintEventPayload(BaseModel):
 
 class RemittancePayload(BaseModel):
     collectionIds: list[str] = Field(default_factory=list)
+    reviewedAllHeld: bool = False
+    expectedCash: float | None = Field(default=None, ge=0)
+    expectedGcash: float | None = Field(default=None, ge=0)
     declaredCash: float | None = Field(default=None, ge=0)
     gcashTransferredAmount: float | None = Field(default=None, ge=0)
     gcashTransferReference: str | None = None
@@ -1740,7 +1743,12 @@ def submit_remittance(payload: RemittancePayload, actor=Depends(require_actor)):
     require_collector_permission(actor, "collector.remittance.submit")
     username = actor_username(actor)
     held = open_custody_collections(username)
-    if payload.collectionIds:
+    if payload.reviewedAllHeld:
+        held_ids = {row["id"] for row in held}
+        if len(payload.collectionIds) != len(held_ids) or set(payload.collectionIds) != held_ids:
+            raise HTTPException(status_code=409, detail="Held receipts changed; refresh and review the remittance checklist again")
+        selected = held
+    elif payload.collectionIds:
         requested = set(payload.collectionIds)
         selected = [row for row in held if row.get("id") in requested]
         if len(selected) != len(requested):
@@ -1751,6 +1759,13 @@ def submit_remittance(payload: RemittancePayload, actor=Depends(require_actor)):
         raise HTTPException(status_code=400, detail="There are no held collections to remit")
     require_posted_billing_payments(selected)
     totals = collection_totals(selected)
+    if payload.reviewedAllHeld and (
+        payload.expectedCash is None
+        or payload.expectedGcash is None
+        or money(payload.expectedCash) != totals["cash"]
+        or money(payload.expectedGcash) != totals["gcash"]
+    ):
+        raise HTTPException(status_code=409, detail="Held receipt totals changed; refresh and review the remittance checklist again")
     declared_cash = money(payload.declaredCash if payload.declaredCash is not None else totals["cash"])
     transferred_gcash = money(
         payload.gcashTransferredAmount
@@ -1760,6 +1775,10 @@ def submit_remittance(payload: RemittancePayload, actor=Depends(require_actor)):
     transfer_reference = clean_text(payload.gcashTransferReference, 160)
     if money(totals["gcash"]) > 0 and not transfer_reference:
         raise HTTPException(status_code=400, detail="Company GCash transfer reference is required")
+    if payload.reviewedAllHeld and (
+        declared_cash != totals["cash"] or transferred_gcash != totals["gcash"]
+    ) and not clean_text(payload.notes, 1000):
+        raise HTTPException(status_code=400, detail="Explain the cash or GCash difference before submitting")
     timestamp = now_iso()
     remittance = {
         "id": str(uuid4()),

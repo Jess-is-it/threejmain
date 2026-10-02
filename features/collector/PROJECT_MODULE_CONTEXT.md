@@ -39,7 +39,7 @@
 - Billing-numbered 80 mm browser-print receipt
 - Unlimited audited receipt reprints using the same receipt number
 - Collector custody totals split by cash and GCash
-- Remittance batch submission and personal-to-company GCash transfer reference
+- Mobile remittance checklist of each held receipt, grouped by Cash/GCash, with explicit receipt review, channel subtotal comparison, variance explanation, and personal-to-company GCash transfer reference
 - Finance count/verification, channel-specific variance, accepted resolution note, and settlement
 - Same-transaction reversal of held custody when the linked Billing payment is voided; submitted/under-review/settled custody blocks Billing void. Held reversals remain in Finance's review queue until a documented funds disposition is recorded; GCash refunds require a reference.
 - Billing posting-status checks before remittance submission and Finance confirmation, including older unsynchronized receipts
@@ -115,7 +115,7 @@ It returns the Collector collection record with the Billing payment id, official
 
 `POST /api/collector/collections/{id}/print-events` appends `ORIGINAL` for the first print and `REPRINT` for later prints. It does not call Billing or A2P.
 
-`POST /api/collector/remittances` submits held collections. `GET /api/collector/finance/overview` enriches every open/recent remittance with `collectionItems`, containing each linked customer name, account number, receipt number, method, and payment amount plus `listedCollectionTotal` for Finance review. The UI and confirmation API block settlement when the linked item count or total does not match the remittance summary. `POST /api/collector/remittances/{id}/confirm` records Finance count/verification and either closes or flags the batch.
+`POST /api/collector/remittances` submits held collections. The Collector checklist sends `collectionIds`, `reviewedAllHeld=true`, `expectedCash`, and `expectedGcash`; submission rejects a missing/new receipt or changed expected channel total with HTTP 409. A Cash or GCash difference requires a note. Legacy callers can still submit selected held IDs without `reviewedAllHeld`. `GET /api/collector/finance/overview` enriches every open/recent remittance with `collectionItems`, containing each linked customer name, account number, receipt number, method, and payment amount plus `listedCollectionTotal` for Finance review. The UI and confirmation API block settlement when the linked item count or total does not match the remittance summary. `POST /api/collector/remittances/{id}/confirm` records Finance count/verification and either closes or flags the batch.
 
 `GET /api/collector/finance/overview` also returns `pendingReversals` and counts/amounts for voided held receipts awaiting funds review. `POST /api/collector/finance/reversed-collections/{id}/resolve` requires Finance confirmation permission and persists an attributed disposition, note, and optional reference; GCash refunds require a reference. It never reposts or changes the Billing payment.
 
