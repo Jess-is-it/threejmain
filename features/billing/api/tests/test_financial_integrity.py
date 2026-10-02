@@ -2698,7 +2698,9 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
         self.assertEqual(0, billing.get_invoice(invoice["id"], admin=self.admin)["balance"])
 
     def test_collection_follow_up_persists_owner_promise_and_due_filter(self):
-        self.add_invoice(amount=300)
+        invoice = self.add_invoice(amount=300)
+        invoice["createdAt"] = "2026-09-30T12:00:00+00:00"
+        invoice["updatedAt"] = invoice["createdAt"]
         with patch.object(billing, "billing_business_date", return_value=date(2026, 10, 1)):
             billing.create_collection_follow_up(
                 self.customer["id"],
