@@ -20,6 +20,7 @@
 - Worklist `Log visit` action records No one home, Promised to pay, Asked for another visit, or Account/address issue directly in Billing's durable follow-up history. A promise requires amount/date and an issue requires a note. The form has no next-action date. Billing automatically records a linked Payment received visit after successful Collector payment posting, in the same transaction; the worklist displays the latest visit outcome/time.
 - Field visit saves use an idempotency key, a read-only status lookup, same-key retry after uncertain network failures, and current-tab session recovery. SMS remains a separate, explicitly confirmed action.
 - Page shell uses the shared app-shell `container-xl` width and left/right boundaries exactly like Billing; Collector must not add an inner centered max-width or mobile negative margins.
+- The four overview metric cards were removed from the top of the mobile page to expose the customer worklist sooner. Receipts shows today's posted collection total (including already remitted receipts); Remit keeps expected held Cash/GCash totals and shows the open remittance count in My remittances. Keep the `/overview` custody payload because the checklist compares it with held receipts before submission.
 - Silent 15-minute reservation when Collect is tapped, with conflict prevention and automatic release when the payment form closes
 - One collector-entered `Amount received`, automatically allocated oldest invoice first and then across later invoices
 - No invoice-selection or allocation-mode choice in the mobile UI

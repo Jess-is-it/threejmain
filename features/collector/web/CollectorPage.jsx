@@ -1292,13 +1292,6 @@ export default function CollectorPage({ currentUser = {} }) {
         </div>
       )}
 
-      <div className="collector-metrics">
-        <Metric icon={IconCoin} label="Collected today" value={money(overview.today?.total)} tone="green" />
-        <Metric icon={IconCash} label="Cash held" value={money(overview.custody?.cash)} tone="orange" />
-        <Metric icon={IconWallet} label="GCash held" value={money(overview.custody?.gcash)} tone="blue" />
-        <Metric icon={IconClock} label="Open remittance" value={overview.myOpenRemittanceCount || 0} tone="purple" />
-      </div>
-
       <nav className="collector-tabs" aria-label="Collector workspaces">
         {tabs.map(({ id, label, icon: Icon }) => (
           <button className={activeTab === id ? 'active' : ''} type="button" key={id} onClick={() => setActiveTab(id)}>
@@ -1365,6 +1358,11 @@ export default function CollectorPage({ currentUser = {} }) {
             <div><h3>Payment receipts</h3><p>Every receipt remains available for audited reprinting.</p></div>
             <span className="badge bg-blue-lt text-blue">{collections.length}</span>
           </div>
+          <p className="collector-receipts-today">
+            <span>Collected today</span>
+            <strong>{money(overview.today?.total)}</strong>
+            <small>Includes payments already remitted.</small>
+          </p>
           <div className="collector-history-list">
             {collections.map((collection) => (
               <CollectionCard key={collection.id} collection={collection} onPrint={printCollection} printing={busy === `print-${collection.id}`} />
@@ -1498,7 +1496,12 @@ export default function CollectorPage({ currentUser = {} }) {
             </div>
           </form>
           <div>
-            <div className="collector-section-heading"><div><h3>My remittances</h3><p>Finance receipt and variance status.</p></div></div>
+            <div className="collector-section-heading">
+              <div><h3>My remittances</h3><p>Finance receipt and variance status.</p></div>
+              {Number(overview.myOpenRemittanceCount || 0) > 0 && (
+                <span className="badge bg-purple-lt text-purple">{overview.myOpenRemittanceCount} open</span>
+              )}
+            </div>
             <div className="collector-history-list">
               {remittances.map((remittance) => <RemittanceCard key={remittance.id} remittance={remittance} />)}
             </div>
