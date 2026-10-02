@@ -20,7 +20,7 @@ Collector is the mobile field-payment and office-remittance portal for 3J Comput
 - When the amount received exceeds the discounted total due, a confirmation popup shows the excess and asks whether to store it as advance account credit or return it to the customer. Returned excess is excluded from the posted payment and collector custody.
 - Every applied promotion carries Billing's quote date and fingerprint. Collector and Billing both revalidate the invoice balance and promotion immediately before posting and reject a stale or manipulated quote with a refresh instruction.
 - Billing owns the immutable advance-credit ledger. A receipt may settle all current invoices with automatic promotion credits and store the remaining funds as advance. Available credit is applied FIFO to the customer's next generated monthly invoice with a separate audit record; an advance receipt already used by an invoice cannot be voided.
-- Cash and GCash both use the same `Amount received` field. GCash additionally requires only the customer's transaction reference.
+- Cash and GCash both use the same `Amount received` field. The customer-to-collector GCash transaction reference is optional; when entered, it is saved and duplicate references are rejected. The collector must still confirm the incoming payment reached their personal GCash account before posting.
 - Every payment, including an excess/advance choice, stops at a final review of customer/account, received amount, method/reference, invoice application, automatic savings, return/advance, remittance amount, and expected remaining balance. The collector explicitly confirms the money was received before posting.
 - A successful payment automatically attempts an A2P confirmation SMS to the customer's saved or entered SMS number using sender ID `3J BILL`. The concise message thanks the customer by first name and shows either the remaining customer balance or a fully-paid confirmation; it does not include the receipt number or advance-credit details. SMS failure is recorded but never rolls back the Billing payment.
 - Mobile payment requests time out after 20 seconds. The portal then looks up the original Collector receipt by its stable idempotency key. A posted receipt opens normally; an unconfirmed attempt stays on screen with Check status and Retry same payment actions using the identical key and payload. The pending attempt survives a reload in the current browser tab until confirmed or definitively rejected.
@@ -77,7 +77,7 @@ Endpoints:
 5. Review the always-visible open-invoice ledger, regular balance, automatic promo savings, and amount due today. Enter the amount received or use the full-amount shortcut; the ledger previews the oldest-first allocation without hiding invoices while the amount is blank.
 6. If enough is received to fully pay an invoice at its discounted payable, its Billing-qualified promotion is applied automatically. Partial payments do not consume the promotion.
 7. If the amount is greater than the discounted total due, choose `Apply excess as advance` or `Return excess to customer` in the confirmation popup.
-8. For GCash, record the unique customer transaction reference.
+8. For GCash, enter the customer-to-collector transaction reference if available. It may be left blank; confirm the incoming payment in the collector's own GCash account.
 9. Review the customer, received amount, method, applied amount, any change/advance, and expected remaining balance; confirm the money is in hand or has reached the collector's GCash account. Billing then revalidates the quote, issues the receipt, posts promotion credits separately, updates invoice balances, and records any chosen advance credit.
 10. If the request times out or the connection drops, wait while the portal checks the original attempt. Use Check status or Retry same payment from the recovery screen; the receipt lookup and retry use the original idempotency key. Do not take a second payment while the attempt is unresolved.
 11. The system attempts the customer SMS with the remaining customer balance or fully-paid confirmation.
@@ -99,7 +99,7 @@ collector_records
   remittance
 ```
 
-The table has durable unique controls for collection idempotency keys and posted GCash references. Collector stores Billing payment/receipt links plus custody and print history, not a second invoice or payment ledger.
+The table has durable unique controls for collection idempotency keys and nonblank posted GCash references. Collector stores Billing payment/receipt links plus custody and print history, not a second invoice or payment ledger.
 
 Provider contracts:
 

@@ -944,10 +944,6 @@ export default function CollectorPage({ currentUser = {} }) {
       showError('Enter an amount received.');
       return;
     }
-    if (payment.method === 'GCASH' && !payment.referenceNumber.trim()) {
-      showError('Enter the GCash transaction reference.');
-      return;
-    }
     setExcessPrompt(false);
     setPaymentRecoveryMessage('');
     setPaymentRecoveryStatus('');
@@ -973,7 +969,7 @@ export default function CollectorPage({ currentUser = {} }) {
         allocationMode: breakdown.advanceAmount > 0 ? 'ADVANCE' : 'OLDEST',
         method: payment.method,
         paymentDate: payment.paymentDate || selectedCustomer.paymentDate,
-        referenceNumber: payment.referenceNumber,
+        referenceNumber: payment.method === 'GCASH' ? payment.referenceNumber.trim() : '',
         tenderedAmount: payment.method === 'CASH' ? breakdown.receivedAmount : breakdown.amount,
         smsDestination: payment.smsDestination,
         notes: payment.notes
@@ -1823,8 +1819,9 @@ export default function CollectorPage({ currentUser = {} }) {
                 </div>
                 {payment.method === 'GCASH' && (
                   <label>
-                    <span>GCash transaction reference</span>
-                    <input className="form-control" required value={payment.referenceNumber} onChange={(event) => setPayment({ ...payment, referenceNumber: event.target.value })} />
+                    <span>GCash transaction reference (optional)</span>
+                    <input className="form-control" value={payment.referenceNumber} onChange={(event) => setPayment({ ...payment, referenceNumber: event.target.value })} />
+                    <small>Enter it if available. Confirm the payment reached your GCash account before posting.</small>
                   </label>
                 )}
                 <label>
@@ -1905,7 +1902,7 @@ export default function CollectorPage({ currentUser = {} }) {
             <div className="collector-review-details">
               <div><span>Amount received</span><strong>{money(paymentReview.breakdown.receivedAmount)}</strong></div>
               <div><span>Payment method</span><strong>{paymentReview.payload.method === 'GCASH' ? 'GCash' : 'Cash'}</strong></div>
-              {paymentReview.payload.method === 'GCASH' && (
+              {paymentReview.payload.method === 'GCASH' && paymentReview.payload.referenceNumber && (
                 <div><span>GCash reference</span><strong>{paymentReview.payload.referenceNumber}</strong></div>
               )}
               <div><span>Applied to bills</span><strong>{money(paymentReview.breakdown.appliedAmount)}</strong></div>

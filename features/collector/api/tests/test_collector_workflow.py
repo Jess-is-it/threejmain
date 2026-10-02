@@ -631,20 +631,54 @@ class CollectorWorkflowTests(unittest.TestCase):
         self.assertEqual(1, len(self.billing_postings))
         self.assertEqual(1, len(self.sms_messages))
 
-    def test_gcash_reference_is_required_and_cannot_be_reused(self):
+    def test_gcash_reference_is_optional_but_company_transfer_reference_is_required(self):
         self.claim()
-        with self.assertRaises(HTTPException) as missing_reference:
-            collector.create_collection(
-                collector.CollectionPayload(
-                    customerId=self.customer["id"],
-                    amount=50,
-                    allocations=[collector.CollectionAllocationPayload(invoiceId="invoice-1", amount=50)],
-                    method="GCASH",
-                ),
-                idempotency_key="collector:gcash-missing",
+        first = collector.create_collection(
+            collector.CollectionPayload(
+                customerId=self.customer["id"],
+                amount=50,
+                allocations=[collector.CollectionAllocationPayload(invoiceId="invoice-1", amount=50)],
+                method="GCASH",
+            ),
+            idempotency_key="collector:gcash-no-reference-one",
+            actor=self.collector_actor,
+        )
+        self.claim()
+        second = collector.create_collection(
+            collector.CollectionPayload(
+                customerId=self.customer["id"],
+                amount=25,
+                allocations=[collector.CollectionAllocationPayload(invoiceId="invoice-1", amount=25)],
+                method="GCASH",
+                referenceNumber="   ",
+            ),
+            idempotency_key="collector:gcash-no-reference-two",
+            actor=self.collector_actor,
+        )
+        self.assertEqual("", first["referenceNumber"])
+        self.assertEqual("", second["referenceNumber"])
+        self.assertEqual(2, len(self.billing_postings))
+        self.assertEqual("", self.billing_postings[0]["payload"]["referenceNumber"])
+
+        with self.assertRaises(HTTPException) as missing_transfer_reference:
+            collector.submit_remittance(
+                collector.RemittancePayload(gcashTransferredAmount=75),
                 actor=self.collector_actor,
             )
-        self.assertEqual(400, missing_reference.exception.status_code)
+        self.assertEqual(400, missing_transfer_reference.exception.status_code)
+
+        submitted = collector.submit_remittance(
+            collector.RemittancePayload(
+                gcashTransferredAmount=75,
+                gcashTransferReference="TRANSFER-OPTIONAL-CUSTOMER-REF",
+            ),
+            actor=self.collector_actor,
+        )
+        self.assertEqual(2, submitted["collectionCount"])
+        self.assertEqual(75, submitted["expectedGcash"])
+
+    def test_provided_gcash_reference_cannot_be_reused(self):
+        self.claim()
 
         posted = collector.create_collection(
             collector.CollectionPayload(

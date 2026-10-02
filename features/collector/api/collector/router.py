@@ -1253,6 +1253,8 @@ def find_collection_by_idempotency_key(idempotency_key: str) -> dict[str, Any] |
 
 def gcash_reference_exists(reference_number: str) -> bool:
     normalized = clean_text(reference_number, 160).lower()
+    if not normalized:
+        return False
     return any(
         row.get("method") == "GCASH"
         and clean_text(row.get("referenceNumber"), 160).lower() == normalized
@@ -1378,9 +1380,6 @@ def create_collection(
             detail="Collection amount must equal invoice allocations plus advance credit",
         )
     reference_number = clean_text(payload.referenceNumber, 160)
-    if method == "GCASH":
-        if not reference_number:
-            raise HTTPException(status_code=400, detail="GCash transaction reference is required")
     received_amount = money(
         payload.receivedAmount
         if payload.receivedAmount is not None
@@ -1411,7 +1410,7 @@ def create_collection(
             response = public_collection(replay, actor)
             response["idempotentReplay"] = True
             return response
-        if method == "GCASH" and gcash_reference_exists(reference_number):
+        if method == "GCASH" and reference_number and gcash_reference_exists(reference_number):
             raise HTTPException(status_code=409, detail="This GCash transaction reference was already recorded")
         claim = active_claim_for_customer(payload.customerId)
         if claim is None:

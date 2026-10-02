@@ -32,7 +32,7 @@
 - Full discounted invoice payoff applies the quoted promotion automatically; smaller partial payments do not grant the full-payoff promotion
 - Excess-over-total-due popup with either advance account credit or immediate return/change
 - Advance credit requires all current invoices to be fully settled by actual payment plus Billing promotion credits; Billing automatically applies available credit FIFO to the next generated monthly invoice
-- Personal GCash collection with required unique transaction reference
+- Personal GCash collection with optional customer-to-collector reference; a nonblank reference is checked for duplicates, and the collector confirms receipt in their wallet before posting
 - Final mobile review before posting, showing customer/account, received funds, method/reference, application, savings, returned/advance amount, custody amount, and expected remaining balance
 - Immediate idempotent Billing payment posting
 - 20-second payment request timeout with read-only status lookup by idempotency key, same-key retry, and current-tab pending-attempt recovery after reload
@@ -62,7 +62,7 @@ Customer payment is posted immediately when the collector confirms collection. F
 
 All collectors see all customers because the business has no fixed customer assignments. Tapping Collect silently creates a short internal reservation to prevent concurrent payment entry; the user never performs a separate claim step.
 
-Personal GCash is treated as collector-held company money. The customer transaction reference is recorded at collection; the collector-to-company reference and Finance's company receipt reference are recorded during remittance.
+Personal GCash is treated as collector-held company money. The customer transaction reference is recorded at collection when available; the collector-to-company transfer reference remains required during remittance, and Finance records the company's receiving reference when confirming it.
 
 ## States
 
@@ -108,7 +108,7 @@ The account rows also include `lastFieldVisit` (`outcome`, `at`, `collectorName`
 - allocation total plus advance amount exactly equal to the collected amount
 - exact server-reconstructed oldest-first allocation; clients cannot skip to a newer invoice
 - all current invoices fully settled by payment plus promotion credit before any advance amount is accepted
-- unique GCash transaction reference for GCash
+- optional customer-to-collector GCash transaction reference; a supplied nonblank value must be unique among posted GCash collections
 
 It returns the Collector collection record with the Billing payment id, official receipt number, allocation/promotion snapshot, amount received, returned amount, applied amount, promotion discount, advance amount, invoice balance before/after, account credit before/after, SMS status, custody status, and print history.
 
