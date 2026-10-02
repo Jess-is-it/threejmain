@@ -35,7 +35,8 @@
 - Personal GCash collection with optional customer-to-collector reference; a nonblank reference is checked for duplicates, and the collector confirms receipt in their wallet before posting
 - Final mobile review before posting, showing customer/account, received funds, method/reference, application, savings, returned/advance amount, custody amount, and expected remaining balance
 - Immediate idempotent Billing payment posting
-- 20-second payment request timeout with read-only status lookup by idempotency key, same-key retry, and current-tab pending-attempt recovery after reload
+- 20-second payment request timeout with read-only status lookup by idempotency key, same-key retry, and durable per-user pending-attempt recovery after a tab/browser restart. Posting is blocked if the browser cannot persist the attempt.
+- Billing payment, Collector receipt/custody link, and Billing payment audit commit on one shared PostgreSQL transaction; payment SMS remains a separate post-commit attempt.
 - Automatic A2P SMS attempt after every successful payment using sender ID `3J BILL`
 - Billing-numbered 80 mm browser-print receipt
 - Unlimited audited receipt reprints using the same receipt number
@@ -113,7 +114,7 @@ The account rows also include `lastFieldVisit` (`outcome`, `at`, `collectorName`
 
 It returns the Collector collection record with the Billing payment id, official receipt number, allocation/promotion snapshot, amount received, returned amount, applied amount, promotion discount, advance amount, invoice balance before/after, account credit before/after, SMS status, custody status, and print history.
 
-`GET /api/collector/collections/by-idempotency-key/{key}` checks an uncertain payment without creating another payment. It returns `UNCONFIRMED` when no accessible Collector record exists; otherwise it returns the record status and receipt to the original collector or an authorized Finance actor. Mobile retry reuses the exact frozen payload and idempotency key. The pending attempt is kept in browser session storage until resolved or definitively rejected.
+`GET /api/collector/collections/by-idempotency-key/{key}` checks an uncertain payment without creating another payment. It returns the Collector receipt when present, `UNCONFIRMED` when neither accessible Collector nor Billing payment exists, or `NEEDS_OFFICE` plus the Billing receipt number if an older Billing-only post exists for the original collector or Finance. Mobile retry reuses the exact frozen payload and idempotency key. The pending attempt is kept in per-user browser local storage until resolved or definitively rejected; old current-tab session attempts are migrated. A different attempt cannot replace a pending one on the same device.
 
 `POST /api/collector/collections/{id}/print-events` appends `ORIGINAL` for the first print and `REPRINT` for later prints. It does not call Billing or A2P.
 
@@ -130,7 +131,7 @@ Unique controls:
 - `(record_type, idempotency_key)` for collections
 - case-insensitive GCash reference for active posted GCash collections
 
-The module uses a PostgreSQL advisory transaction lock and reloads shared records inside mutations before persisting JSONB snapshots.
+The module uses a PostgreSQL advisory transaction lock and reloads shared records inside mutations before persisting JSONB snapshots. Collection posting borrows Billing's active PostgreSQL connection, takes the Collector lock before Billing's lock, saves Collector custody before the shared commit, and dispatches Collector audit events only after that commit succeeds.
 
 ## Roles
 
@@ -157,8 +158,9 @@ The first print and every later reprint use the same clean customer-facing recei
 - Collector SMS wording excludes the receipt number and labels `balanceAfter` as the customer's total `Remaining balance`, not as a single-invoice balance.
 - The SMS starts `Thank you, <first name>! We received your payment of P<amount>.` It then shows the remaining balance when positive or `Your account is now fully paid.` whenever the balance is zero. Advance-credit details are intentionally excluded. Name fallback uses the first word of the customer display name and then `Customer`.
 - Browser printing depends on the Android print-service/printer application and cannot guarantee the printer completed a physical print.
-- Billing and Collector use separate durable module transactions. Stable idempotency prevents a duplicate Billing receipt on retry, but an unlinked Billing-only post may need office investigation; cross-module distributed transactions are not available.
-- The read-only payment status lookup only finds saved Collector links. If Billing committed but Collector linking failed, the mobile flow leaves the attempt unconfirmed and requires office investigation before another payment is taken.
+- New Collector payments commit Billing and Collector records together in the shared PostgreSQL database. Older Billing-only posts from before this change remain possible in existing data; the status lookup identifies them for office investigation without taking another payment.
+- The integrated app refuses new Collector payment posting when shared PostgreSQL storage is unavailable or the atomic Billing transaction is not configured. In-memory posting remains available only to isolated module tests that supply their own fake Billing provider.
+- Browser local storage persists pending payments across tabs and restarts on the same device, but clearing browser data or losing the device can still remove the local retry payload. Payment posting refuses to start when local storage is unavailable.
 - An advance receipt that has already funded a future invoice cannot be voided until a controlled credit-application reversal workflow exists.
 - Remittance reversal and custody correction for a receipt already submitted or settled remain future work. Billing rejects payment voids for those receipts with HTTP 409; Finance confirmation also rejects a linked Billing payment that is void or missing.
 - GPS evidence, signatures, photos, promises-to-pay, permanent collection runs, and advanced reporting are deferred.

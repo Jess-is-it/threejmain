@@ -21,6 +21,11 @@ import {
   IconX
 } from '@tabler/icons-react';
 import { billingMonthLabel, receiptDocument } from './receiptDocument.js';
+import {
+  clearPendingPaymentAttempt as removePendingPaymentAttempt,
+  loadPendingPaymentAttempt,
+  savePendingPaymentAttempt as persistPendingPaymentAttempt
+} from './paymentAttemptStorage.js';
 import './collector.css';
 
 const API = '/api';
@@ -173,10 +178,6 @@ function customerSearchText(account = {}) {
 function createIdempotencyKey() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
   return `collector-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function pendingPaymentStorageKey(username) {
-  return `threejmain_collector_pending_payment:${username}`;
 }
 
 function pendingVisitStorageKey(username) {
@@ -668,19 +669,11 @@ export default function CollectorPage({ currentUser = {} }) {
 
   useEffect(() => {
     if (!currentUser?.username) return;
-    try {
-      const saved = JSON.parse(window.sessionStorage.getItem(pendingPaymentStorageKey(currentUser.username)) || 'null');
-      if (!saved?.idempotencyKey || !saved?.payload || !saved?.breakdown) return;
-      setPaymentReview(saved);
-      setPaymentRecoveryMessage('Checking the payment attempt saved in this browser session.');
-      checkPaymentStatus(saved);
-    } catch {
-      try {
-        window.sessionStorage.removeItem(pendingPaymentStorageKey(currentUser.username));
-      } catch {
-        // Restricted browser storage must not prevent the portal from opening.
-      }
-    }
+    const saved = loadPendingPaymentAttempt(currentUser.username);
+    if (!saved) return;
+    setPaymentReview(saved);
+    setPaymentRecoveryMessage('Checking the payment attempt saved on this device.');
+    checkPaymentStatus(saved);
   }, [currentUser?.username]);
 
   useEffect(() => {
@@ -708,21 +701,19 @@ export default function CollectorPage({ currentUser = {} }) {
   }, [currentUser?.username]);
 
   function savePendingPaymentAttempt(attempt) {
-    if (!currentUser?.username) return;
-    try {
-      window.sessionStorage.setItem(pendingPaymentStorageKey(currentUser.username), JSON.stringify(attempt));
-    } catch {
-      // The current modal still supports lookup and retry when session storage is unavailable.
+    const result = persistPendingPaymentAttempt(currentUser?.username, attempt);
+    if (result.pending) {
+      setPaymentReview(result.pending);
+      setPaymentRecoveryMessage('Finish checking the earlier payment before starting another.');
+      checkPaymentStatus(result.pending);
+    } else if (!result.saved) {
+      showError('This browser cannot save the payment attempt. Enable browser storage before posting.');
     }
+    return result.saved;
   }
 
   function clearPendingPaymentAttempt() {
-    if (!currentUser?.username) return;
-    try {
-      window.sessionStorage.removeItem(pendingPaymentStorageKey(currentUser.username));
-    } catch {
-      // Browser storage can be unavailable in restricted modes.
-    }
+    removePendingPaymentAttempt(currentUser?.username);
   }
 
   function savePendingVisitAttempt(attempt) {
@@ -1003,6 +994,13 @@ export default function CollectorPage({ currentUser = {} }) {
         await completePostedPayment(result.collection);
         return 'POSTED';
       }
+      if (result.status === 'NEEDS_OFFICE') {
+        setPaymentRecoveryStatus('NEEDS_OFFICE');
+        setPaymentRecoveryMessage(
+          `Billing posted ${result.billingReceiptNumber || 'this payment'}, but the Collector receipt needs office review. Do not collect again.`
+        );
+        return 'NEEDS_OFFICE';
+      }
       if (result.status === 'UNCONFIRMED' && (attempt.needsOffice || paymentRecoveryStatus === 'NEEDS_OFFICE')) {
         setPaymentRecoveryStatus('NEEDS_OFFICE');
         setPaymentRecoveryMessage('This payment was rejected and no Collector receipt is confirmed. Contact the office before taking another payment.');
@@ -1031,7 +1029,10 @@ export default function CollectorPage({ currentUser = {} }) {
     paymentPostingRef.current = true;
     setPaymentRecoveryMessage('');
     setPaymentRecoveryStatus('');
-    savePendingPaymentAttempt(attempt);
+    if (!savePendingPaymentAttempt(attempt)) {
+      paymentPostingRef.current = false;
+      return;
+    }
     setBusy('payment');
     try {
       const result = await requestWithTimeout('/collector/collections', {

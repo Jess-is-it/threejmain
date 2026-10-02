@@ -47,7 +47,9 @@ from account_access_management import account_access_management_metrics, configu
 from billing import (
     billing_metrics,
     billing_payment_posting_status,
+    billing_store,
     collector_aging_accounts,
+    collector_payment_by_idempotency_key,
     configure_billing,
     migration_promotion_catalog,
     migrate_existing_subscriber_billing,
@@ -761,6 +763,8 @@ configure_collector(
     post_collector_payment,
     send_a2p_sms_message,
     billing_payment_status_provider=billing_payment_posting_status,
+    billing_payment_attempt_provider=collector_payment_by_idempotency_key,
+    billing_transaction_factory=billing_store.transaction,
 )
 configure_logs(current_admin, audit_logs)
 configure_techportal(

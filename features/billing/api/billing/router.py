@@ -622,9 +622,9 @@ class BillingRecordStore:
                 logger.exception("Billing audit event dispatch failed after transaction commit")
 
     @contextmanager
-    def transaction(self, prelock_collector: bool = False) -> Iterator[None]:
+    def transaction(self, prelock_collector: bool = False) -> Iterator[Any]:
         if self.in_transaction:
-            yield
+            yield getattr(self._state, "connection", None)
             return
 
         connection = None
@@ -653,7 +653,7 @@ class BillingRecordStore:
                 self._state.pending_audits = []
                 self._state.dirty = False
 
-                yield
+                yield connection
 
                 if self._state.dirty:
                     refresh_invoice_statuses_for_storage()
@@ -7774,6 +7774,20 @@ def billing_payment_posting_status(payment_id: str) -> str:
             if exc.status_code == 404:
                 return "MISSING"
             raise
+
+
+def collector_payment_by_idempotency_key(idempotency_key: str) -> dict[str, Any] | None:
+    """Find a legacy Billing-only Collector post without changing its ledger entry."""
+    with billing_store.read_snapshot():
+        payment = billing_store.find_idempotent_record("payment", idempotency_key)
+        if payment is None or normalize_upper(payment.get("collectionChannel")) != "COLLECTOR":
+            return None
+        return {
+            "id": payment.get("id"),
+            "status": payment.get("status"),
+            "receiptNumber": payment.get("receiptNumber"),
+            "postedByUsername": payment.get("postedByUsername"),
+        }
 
 
 def post_collector_payment(

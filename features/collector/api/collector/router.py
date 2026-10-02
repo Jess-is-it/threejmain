@@ -41,6 +41,8 @@ _customer_searcher: Callable[[str], list[dict[str, Any]]] | None = None
 _billing_aging_provider: Callable[..., list[dict[str, Any]]] | None = None
 _billing_payment_poster: Callable[..., dict[str, Any]] | None = None
 _billing_payment_status_provider: Callable[[str], str] | None = None
+_billing_payment_attempt_provider: Callable[[str], dict[str, Any] | None] | None = None
+_billing_transaction_factory: Callable[..., Any] | None = None
 _sms_sender: Callable[..., dict[str, Any]] | None = None
 
 COLLECTOR_STORAGE_MODE = os.getenv("COLLECTOR_STORAGE") or ("postgres" if os.getenv("DATABASE_URL") else "memory")
@@ -223,9 +225,12 @@ def configure_collector(
     billing_payment_poster: Callable[..., dict[str, Any]] | None = None,
     sms_sender: Callable[..., dict[str, Any]] | None = None,
     billing_payment_status_provider: Callable[[str], str] | None = None,
+    billing_payment_attempt_provider: Callable[[str], dict[str, Any] | None] | None = None,
+    billing_transaction_factory: Callable[..., Any] | None = None,
 ) -> None:
     global _current_admin, _audit_logger, _customer_resolver, _customer_searcher
-    global _billing_aging_provider, _billing_payment_poster, _billing_payment_status_provider, _sms_sender
+    global _billing_aging_provider, _billing_payment_poster, _billing_payment_status_provider
+    global _billing_payment_attempt_provider, _billing_transaction_factory, _sms_sender
     _current_admin = current_admin
     _audit_logger = audit_logger
     _customer_resolver = customer_resolver
@@ -233,6 +238,8 @@ def configure_collector(
     _billing_aging_provider = billing_aging_provider
     _billing_payment_poster = billing_payment_poster
     _billing_payment_status_provider = billing_payment_status_provider
+    _billing_payment_attempt_provider = billing_payment_attempt_provider
+    _billing_transaction_factory = billing_transaction_factory
     _sms_sender = sms_sender
 
 
@@ -448,36 +455,46 @@ class CollectorRecordStore:
             collection.extend(deepcopy(snapshot.get(record_type, [])))
 
     @contextmanager
-    def transaction(self) -> Iterator[None]:
+    def transaction(
+        self,
+        connection=None,
+        audit_sink: list[dict[str, Any]] | None = None,
+        snapshot_sink: list[dict[str, list[dict[str, Any]]]] | None = None,
+    ) -> Iterator[Any]:
         if self.in_transaction:
-            yield
+            yield connection
             return
-        connection = None
+        owns_connection = connection is None
         snapshot: dict[str, list[dict[str, Any]]] | None = None
         committed_audits: list[dict[str, Any]] = []
         with self._process_lock:
             try:
                 if self.postgres_enabled:
-                    self.ensure_schema()
-                    connection = self._connect(autocommit=False)
+                    self.ensure_schema(connection)
+                    if owns_connection:
+                        connection = self._connect(autocommit=False)
                     with connection.cursor() as cursor:
                         cursor.execute(
                             "SELECT pg_advisory_xact_lock(hashtext(%s))",
                             ("threejmain.collector.operational-records",),
                         )
                     self.load_records(force=True, connection=connection)
+                elif connection is not None:
+                    raise HTTPException(status_code=503, detail="Collector and Billing storage modes do not match")
                 snapshot = self._snapshot()
+                if snapshot_sink is not None:
+                    snapshot_sink.append(snapshot)
                 self._state.in_transaction = True
                 self._state.dirty = False
                 self._state.pending_audits = []
-                yield
+                yield connection
                 if self._state.dirty and self.postgres_enabled:
                     self.save_all(connection=connection)
-                if connection is not None:
+                if owns_connection and connection is not None:
                     connection.commit()
                 committed_audits = list(self._state.pending_audits)
             except Exception as exc:
-                if connection is not None:
+                if owns_connection and connection is not None:
                     connection.rollback()
                 if snapshot is not None:
                     self._restore(snapshot)
@@ -491,20 +508,27 @@ class CollectorRecordStore:
                 for attribute in ["in_transaction", "dirty", "pending_audits"]:
                     if hasattr(self._state, attribute):
                         delattr(self._state, attribute)
-                if connection is not None:
+                if owns_connection and connection is not None:
                     connection.close()
-        if _audit_logger is not None:
-            for event in committed_audits:
-                try:
-                    _audit_logger(
-                        event["action"],
-                        event["targetType"],
-                        event["targetId"],
-                        event["details"],
-                        event["actor"],
-                    )
-                except Exception:
-                    logger.exception("Collector audit dispatch failed after commit")
+        if audit_sink is not None:
+            audit_sink.extend(committed_audits)
+        else:
+            self.dispatch_audits(committed_audits)
+
+    def dispatch_audits(self, events: list[dict[str, Any]]) -> None:
+        if _audit_logger is None:
+            return
+        for event in events:
+            try:
+                _audit_logger(
+                    event["action"],
+                    event["targetType"],
+                    event["targetId"],
+                    event["details"],
+                    event["actor"],
+                )
+            except Exception:
+                logger.exception("Collector audit dispatch failed after commit")
 
     def ensure_loaded(self) -> None:
         if self.postgres_enabled:
@@ -540,6 +564,39 @@ class CollectorRecordStore:
 
 
 collector_store = CollectorRecordStore()
+
+
+@contextmanager
+def collection_posting_transaction() -> Iterator[None]:
+    """Commit Billing payment and Collector custody on one PostgreSQL connection."""
+    if not collector_store.postgres_enabled:
+        if _billing_transaction_factory is not None:
+            raise HTTPException(status_code=503, detail="Collector payment posting requires shared PostgreSQL storage")
+        with collector_store.transaction():
+            yield
+        return
+    if _billing_transaction_factory is None:
+        raise HTTPException(status_code=503, detail="Atomic Billing payment posting is not configured")
+    audits: list[dict[str, Any]] = []
+    snapshots: list[dict[str, list[dict[str, Any]]]] = []
+    # Billing voids take the Collector process lock first, so keep that order.
+    with collector_store._process_lock:
+        try:
+            with _billing_transaction_factory(prelock_collector=True) as connection:
+                if connection is None:
+                    raise HTTPException(status_code=503, detail="Billing and Collector storage modes do not match")
+                with collector_store.transaction(
+                    connection=connection,
+                    audit_sink=audits,
+                    snapshot_sink=snapshots,
+                ):
+                    yield
+        except Exception:
+            # Billing owns the commit. Restore Collector's in-memory view if it rolls back.
+            if snapshots:
+                collector_store._restore(snapshots[0])
+            raise
+    collector_store.dispatch_audits(audits)
 
 
 def collector_payment_void_guard():
@@ -1404,12 +1461,20 @@ def create_collection(
     tendered_amount = received_amount if method == "CASH" else amount
     payment_date = parse_payment_date(payload.paymentDate)
 
-    with collector_store.transaction():
+    with collection_posting_transaction():
         replay = find_collection_by_idempotency_key(posting_key)
         if replay is not None:
             response = public_collection(replay, actor)
             response["idempotentReplay"] = True
             return response
+        billing_attempt = _billing_payment_attempt_provider(posting_key) if _billing_payment_attempt_provider else None
+        if billing_attempt and normalize_upper(billing_attempt.get("status")) == "POSTED":
+            if not is_finance_actor(actor) and billing_attempt.get("postedByUsername") != actor_username(actor):
+                raise HTTPException(status_code=409, detail="This payment attempt key is already in use")
+            raise HTTPException(
+                status_code=409,
+                detail="Billing already posted this attempt without a Collector receipt. Contact the office; do not collect again",
+            )
         if method == "GCASH" and reference_number and gcash_reference_exists(reference_number):
             raise HTTPException(status_code=409, detail="This GCash transaction reference was already recorded")
         claim = active_claim_for_customer(payload.customerId)
@@ -1689,6 +1754,19 @@ def collection_posting_status(idempotency_key: str, actor=Depends(require_actor)
             not is_finance_actor(actor)
             and record.get("collectorUsername") != actor_username(actor)
         ):
+            billing_attempt = _billing_payment_attempt_provider(posting_key) if _billing_payment_attempt_provider else None
+            if billing_attempt and (
+                is_finance_actor(actor)
+                or billing_attempt.get("postedByUsername") == actor_username(actor)
+            ):
+                if normalize_upper(billing_attempt.get("status")) == "VOID":
+                    return {"status": "VOID"}
+                if normalize_upper(billing_attempt.get("status")) != "POSTED":
+                    return {"status": "UNCONFIRMED"}
+                return {
+                    "status": "NEEDS_OFFICE",
+                    "billingReceiptNumber": billing_attempt.get("receiptNumber") or "",
+                }
             return {"status": "UNCONFIRMED"}
         return {"status": record.get("status") or "UNCONFIRMED", "collection": public_collection(record, actor)}
 

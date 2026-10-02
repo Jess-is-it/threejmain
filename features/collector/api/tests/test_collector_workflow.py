@@ -2,7 +2,10 @@ import importlib
 import os
 import sys
 import unittest
+from contextlib import contextmanager
+from copy import deepcopy
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi import HTTPException
 
@@ -287,6 +290,113 @@ class CollectorWorkflowTests(unittest.TestCase):
             {"status": "UNCONFIRMED"},
             collector.collection_posting_status(key, actor=self.other_collector),
         )
+
+    def test_legacy_billing_only_attempt_requires_office_review(self):
+        key = "collector:billing-only-attempt"
+        collector._billing_payment_attempt_provider = lambda value: {
+            "status": "POSTED",
+            "receiptNumber": "OR-LEGACY",
+            "postedByUsername": self.collector_actor["username"],
+        } if value == key else None
+        self.assertEqual(
+            {"status": "NEEDS_OFFICE", "billingReceiptNumber": "OR-LEGACY"},
+            collector.collection_posting_status(key, actor=self.collector_actor),
+        )
+        self.assertEqual(
+            {"status": "UNCONFIRMED"},
+            collector.collection_posting_status(key, actor=self.other_collector),
+        )
+        self.claim()
+        with self.assertRaises(HTTPException) as retry:
+            self.post_cash(key=key)
+        self.assertEqual(409, retry.exception.status_code)
+        self.assertEqual([], self.billing_postings)
+
+    def test_atomic_posting_uses_one_connection_and_rolls_back_both_records(self):
+        self.claim()
+        starting_invoices = deepcopy(self.invoice_rows)
+        events = []
+
+        class FakeCursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def execute(self, *_args):
+                events.append("collector-lock")
+
+        class FakeConnection:
+            def cursor(self):
+                return FakeCursor()
+
+            def commit(self):
+                pass
+
+            def rollback(self):
+                pass
+
+            def close(self):
+                pass
+
+        connection = FakeConnection()
+        fail_commit = False
+
+        @contextmanager
+        def billing_transaction(*, prelock_collector=False):
+            self.assertTrue(prelock_collector)
+            invoice_snapshot = deepcopy(self.invoice_rows)
+            posting_snapshot = deepcopy(self.billing_postings)
+            try:
+                yield connection
+                if fail_commit:
+                    raise RuntimeError("Billing commit failed")
+                events.append("commit")
+            except Exception:
+                self.invoice_rows[:] = invoice_snapshot
+                self.billing_postings[:] = posting_snapshot
+                events.append("rollback")
+                raise
+
+        def save_collector(*, connection=None):
+            self.assertIs(connection, fake_connection)
+            events.append("save-collector")
+            if fail_save:
+                raise RuntimeError("Collector persistence failed")
+
+        fake_connection = connection
+        collector._billing_transaction_factory = billing_transaction
+        collector.collector_store.storage_mode = "postgres"
+        fail_save = True
+        with patch.object(collector.collector_store, "ensure_schema", return_value=True), \
+             patch.object(collector.collector_store, "load_records", return_value=True), \
+             patch.object(collector.collector_store, "_connect", return_value=connection), \
+             patch.object(collector.collector_store, "save_all", side_effect=save_collector):
+            with self.assertRaisesRegex(RuntimeError, "Collector persistence failed"):
+                self.post_cash(key="collector:atomic-failure")
+            self.assertEqual(starting_invoices, self.invoice_rows)
+            self.assertEqual([], self.billing_postings)
+            self.assertEqual([], collector.collections)
+            self.assertEqual("CLAIMED", collector.claims[0]["status"])
+            self.assertEqual([], self.sms_messages)
+            self.assertEqual("rollback", events[-1])
+
+            fail_save = False
+            fail_commit = True
+            with self.assertRaisesRegex(RuntimeError, "Billing commit failed"):
+                self.post_cash(key="collector:atomic-commit-failure")
+            self.assertEqual(starting_invoices, self.invoice_rows)
+            self.assertEqual([], self.billing_postings)
+            self.assertEqual([], collector.collections)
+            self.assertEqual("CLAIMED", collector.claims[0]["status"])
+
+            fail_commit = False
+            posted = self.post_cash(key="collector:atomic-retry")
+            self.assertEqual("POSTED", posted["status"])
+            self.assertEqual(1, len(self.billing_postings))
+            self.assertEqual(1, len(collector.collections))
+            self.assertIn(["collector-lock", "save-collector", "commit"], [events[index:index + 3] for index in range(len(events) - 2)])
 
     def test_claim_prevents_two_collectors_from_collecting_same_customer(self):
         claimed = self.claim()

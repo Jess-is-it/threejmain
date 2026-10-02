@@ -62,6 +62,46 @@ class BillingFinancialIntegrityTests(unittest.TestCase):
             "message_id": f"sms-{len(self.sms_messages)}",
         }
 
+    def test_transaction_exposes_one_connection_for_collector_custody(self):
+        events = []
+
+        class FakeCursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def execute(self, _query, params):
+                events.append(params[0])
+
+        class FakeConnection:
+            def cursor(self):
+                return FakeCursor()
+
+            def commit(self):
+                events.append("commit")
+
+            def rollback(self):
+                events.append("rollback")
+
+            def close(self):
+                events.append("close")
+
+        connection = FakeConnection()
+        billing.billing_store.storage_mode = "postgres"
+        with patch.object(billing.billing_store, "ensure_schema", return_value=True), \
+             patch.object(billing.billing_store, "load_records", return_value=True), \
+             patch.object(billing.billing_store, "_connect", return_value=connection):
+            with billing.billing_store.transaction(prelock_collector=True) as shared:
+                self.assertIs(connection, shared)
+                with billing.billing_store.transaction() as nested:
+                    self.assertIs(connection, nested)
+        self.assertEqual(
+            ["threejmain.collector.operational-records", "threejmain.billing.financial-posting", "commit", "close"],
+            events,
+        )
+
     def add_invoice(self, amount=100.0, status="ISSUED", invoice_id="invoice-1"):
         timestamp = billing.now_iso()
         invoice = {
