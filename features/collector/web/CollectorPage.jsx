@@ -1464,9 +1464,15 @@ export default function CollectorPage({ currentUser = {} }) {
                     disabled={loading || busy === 'remittance' || !canMarkAllReviewed || allReceiptsReviewed}
                     onClick={markAllReceiptsReviewed}
                   >
-                    <IconCheck size={18} /> {allReceiptsReviewed ? 'All receipts reviewed' : `Mark all ${heldCollections.length} receipts reviewed`}
+                    <IconCheck size={18} /> {allReceiptsReviewed ? 'All receipts reviewed' : `Mark all ${heldCollections.length} ${heldCollections.length === 1 ? 'receipt' : 'receipts'} reviewed`}
                   </button>
-                  <small>Use after counting the cash and confirming the GCash transfer. Both entered amounts must match the expected totals.</small>
+                  <small>
+                    {heldCashCents > 0 && heldGcashCents > 0
+                      ? 'Use after counting cash and confirming the GCash transfer. Both entered amounts must match.'
+                      : heldCashCents > 0
+                        ? 'Use after counting cash. The entered amount must match the expected total.'
+                        : 'Use after confirming the GCash transfer. The entered amount must match the expected total.'}
+                  </small>
                 </div>
               )}
               {heldGcashCents > 0 && (
