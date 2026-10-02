@@ -40,6 +40,7 @@
 - Billing-numbered 80 mm browser-print receipt
 - Unlimited audited receipt reprints using the same receipt number
 - Collector custody totals split by cash and GCash
+- Remit checklist and My remittances are scoped to the logged-in username even when a supervisor/admin can see every receipt through Finance permissions; the submission API independently selects only that actor's held collections
 - Mobile remittance checklist of each held receipt, grouped by Cash/GCash, with explicit receipt review, a `Mark all reviewed` shortcut enabled only after collector-entered channel amounts match expected totals, channel variance explanation, and personal-to-company GCash transfer reference. Positive held amounts start blank so a collector enters the actual count/transfer before bulk review; changing an amount to a mismatch after full review clears checks.
 - Finance count/verification, channel-specific variance, accepted resolution note, and settlement
 - Same-transaction reversal of held custody when the linked Billing payment is voided; submitted/under-review/settled custody blocks Billing void. Held reversals remain in Finance's review queue until a documented funds disposition is recorded; GCash refunds require a reference.

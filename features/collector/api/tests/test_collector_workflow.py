@@ -306,6 +306,47 @@ class CollectorWorkflowTests(unittest.TestCase):
         self.assertTrue(metadata["canViewFinance"])
         self.assertTrue(metadata["canConfirmFinance"])
 
+    def test_remittance_accepts_only_the_logged_in_collectors_held_receipts(self):
+        self.claim()
+        own_payment = self.post_cash(key="collector:own-remittance-payment")
+        self.claim(self.other_collector)
+        other_payment = collector.create_collection(
+            collector.CollectionPayload(
+                customerId=self.customer["id"],
+                amount=25,
+                allocations=[collector.CollectionAllocationPayload(invoiceId="invoice-2", amount=25)],
+                method="CASH",
+            ),
+            idempotency_key="collector:other-remittance-payment",
+            actor=self.other_collector,
+        )
+
+        self.assertEqual([own_payment["id"]], [row["id"] for row in collector.list_collections(actor=self.collector_actor)["items"]])
+        self.assertEqual([other_payment["id"]], [row["id"] for row in collector.list_collections(actor=self.other_collector)["items"]])
+        self.assertEqual(150, collector.overview(actor=self.collector_actor)["custody"]["cash"])
+        self.assertEqual(25, collector.overview(actor=self.other_collector)["custody"]["cash"])
+
+        with self.assertRaises(HTTPException) as other_receipt:
+            collector.submit_remittance(
+                collector.RemittancePayload(collectionIds=[other_payment["id"]], declaredCash=25),
+                actor=self.collector_actor,
+            )
+        self.assertEqual(409, other_receipt.exception.status_code)
+
+        own_batch = collector.submit_remittance(
+            collector.RemittancePayload(declaredCash=150),
+            actor=self.collector_actor,
+        )
+        self.assertEqual([own_payment["id"]], own_batch["collectionIds"])
+        self.assertEqual("HELD", next(row for row in collector.collections if row["id"] == other_payment["id"])["custodyStatus"])
+        self.assertEqual(0, collector.list_remittances(actor=self.other_collector)["total"])
+
+        other_batch = collector.submit_remittance(
+            collector.RemittancePayload(declaredCash=25),
+            actor=self.other_collector,
+        )
+        self.assertEqual([other_payment["id"]], other_batch["collectionIds"])
+
     def test_collector_can_send_server_calculated_unavailable_customer_message(self):
         self.add_promo_quote()
 

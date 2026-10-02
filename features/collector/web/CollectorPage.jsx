@@ -637,7 +637,7 @@ export default function CollectorPage({ currentUser = {} }) {
       setCollections(collectionResult.items || []);
       setReviewedReceipts((current) => Object.fromEntries(
         (collectionResult.items || [])
-          .filter((row) => row.status === 'POSTED' && row.custodyStatus === 'HELD' && current[row.id] === receiptReviewKey(row))
+          .filter((row) => row.collectorUsername === currentUser?.username && row.status === 'POSTED' && row.custodyStatus === 'HELD' && current[row.id] === receiptReviewKey(row))
           .map((row) => [row.id, current[row.id]])
       ));
       setRemittances(remittanceResult.items || []);
@@ -1233,7 +1233,8 @@ export default function CollectorPage({ currentUser = {} }) {
     }
   }
 
-  const heldCollections = collections.filter((row) => row.status === 'POSTED' && row.custodyStatus === 'HELD');
+  const heldCollections = collections.filter((row) => row.collectorUsername === currentUser?.username && row.status === 'POSTED' && row.custodyStatus === 'HELD');
+  const myRemittances = remittances.filter((row) => row.collectorUsername === currentUser?.username);
   const heldCashCents = heldCollections.reduce((sum, row) => sum + (row.method === 'CASH' ? cents(row.amount) : 0), 0);
   const heldGcashCents = heldCollections.reduce((sum, row) => sum + (row.method === 'GCASH' ? cents(row.amount) : 0), 0);
   const checklistMatchesOverview = heldCollections.length === Number(overview.custody?.collections || 0)
@@ -1499,9 +1500,9 @@ export default function CollectorPage({ currentUser = {} }) {
               )}
             </div>
             <div className="collector-history-list">
-              {remittances.map((remittance) => <RemittanceCard key={remittance.id} remittance={remittance} />)}
+              {myRemittances.map((remittance) => <RemittanceCard key={remittance.id} remittance={remittance} />)}
             </div>
-            {!remittances.length && <div className="collector-empty card">No remittance batches yet.</div>}
+            {!myRemittances.length && <div className="collector-empty card">No remittance batches yet.</div>}
           </div>
         </section>
       )}
