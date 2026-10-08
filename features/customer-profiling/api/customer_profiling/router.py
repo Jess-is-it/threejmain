@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+from .staging_reset import execute_staging_reset, preview_staging_reset, require_staging_owner
 
 try:
     import psycopg
@@ -1409,6 +1410,29 @@ def customer_profiling_readiness(admin=Depends(require_admin)):
             "Add backup/restore runbooks and operational monitoring before live customer import.",
         ],
     }
+
+
+class StagingSubscriberResetPayload(BaseModel):
+    previewToken: str
+    confirmation: str
+
+
+@router.get("/staging-reset/availability")
+def staging_subscriber_reset_availability(admin=Depends(require_admin)):
+    require_staging_owner(admin)
+    return {"available": True}
+
+
+@router.get("/staging-reset/preview")
+def staging_subscriber_reset_preview(admin=Depends(require_admin)):
+    return preview_staging_reset(admin)
+
+
+@router.post("/staging-reset")
+def staging_subscriber_reset(payload: StagingSubscriberResetPayload, admin=Depends(require_admin)):
+    result = execute_staging_reset(admin, payload.previewToken, payload.confirmation)
+    add_audit("staging_subscriber_reset", "CustomerProfiling", "all", {"deleted": result["deleted"], "backupFile": result["backupFile"]}, admin.get("username") or "system")
+    return result
 
 
 @router.get("/customers/overview")

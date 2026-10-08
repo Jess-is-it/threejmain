@@ -164,3 +164,17 @@ GET /api/system/database-migrations
 ```
 
 Remaining production stages include role/permission enforcement, server-side draft storage if customer drafts must roam across devices, backup/restore runbooks, and final customer lookup contracts for dependent modules.
+
+## Staging subscriber test-data reset
+
+The Customer Profiling toolbar exposes **Reset test data** only when the API is running with both `APP_ENV=staging` and `APP_BRANCH=staging` and the signed-in user has the `owner` role. It is intended for repeat tests of Import Existing Subscribers. The API routes are:
+
+```text
+GET  /api/customer-profiling/staging-reset/availability
+GET  /api/customer-profiling/staging-reset/preview
+POST /api/customer-profiling/staging-reset
+```
+
+Preview lists the affected row counts, blockers, and a one-use token valid for five minutes. POST requires that token and the exact phrase `RESET STAGING SUBSCRIBERS`; the API rechecks the data before deletion. A full System Settings database/configuration backup plus related runtime records is written under `/app/data/subscriber-reset-backups/` before deletion. Override the directory with `STAGING_SUBSCRIBER_RESET_BACKUP_DIR` if needed. Backups contain sensitive settings and use mode `0600`; the API returns only the filename. Restore uses the System Settings full-backup workflow and should be reviewed before use.
+
+The reset removes customer profiles, import batches/rows, Service accounts/orders and import-created legacy plans, non-promotion Billing records/posting events, Collector records, customer SMS logs, hotspot contact overrides/sync logs, and customer-linked in-memory Ticketing/Customer Service/Network records. It preserves reusable Service Catalog plans, Billing promotions, settings, access users, and locations. Customer-linked Inventory assignments or POS sales block the reset until stock and finance are reconciled. On successful reset, the browser clears Customer Profiling drafts stored on that device. External Pisowifi state is outside this local reset.

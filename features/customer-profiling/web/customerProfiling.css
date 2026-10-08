@@ -1472,6 +1472,28 @@
   box-shadow: 0 24px 80px rgba(15, 23, 42, 0.28);
 }
 
+.staging-reset-modal {
+  width: min(42rem, 100%);
+}
+
+.staging-reset-counts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.4rem 1.25rem;
+}
+
+.staging-reset-counts > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-bottom: 1px solid var(--admin-border);
+  padding: 0.25rem 0;
+}
+
+@media (max-width: 576px) {
+  .staging-reset-counts { grid-template-columns: 1fr; }
+}
+
 .customer-form-modal {
   width: min(58rem, 100%);
   height: min(52rem, calc(100vh - 2rem));

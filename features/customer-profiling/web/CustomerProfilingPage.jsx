@@ -78,6 +78,28 @@ import './customerProfiling.css';
 
 const API = '/api';
 const CUSTOMER_DRAFT_STORAGE_KEY = 'threejmain_customer_profile_drafts';
+const STAGING_RESET_COUNT_LABELS = {
+  customers: 'Customer profiles',
+  importBatches: 'Import batches',
+  importRows: 'Import rows',
+  serviceAccountsAndOrders: 'Service accounts and orders',
+  migrationOnlyPlans: 'Plans created by subscriber imports',
+  billingRecords: 'Billing records',
+  billingEvents: 'Billing posting events',
+  collectorRecords: 'Collector records',
+  customerSmsLogs: 'Customer SMS logs',
+  hotspotSyncLogs: 'Hotspot sync logs',
+  hotspotContactOverrides: 'Hotspot contact overrides',
+  customerNetworkRecords: 'Customer network records',
+  tickets: 'Customer tickets',
+  careRequests: 'Customer service requests',
+  careInteractions: 'Customer service interactions',
+  careFollowUps: 'Customer service follow-ups',
+  careInboxThreads: 'Customer inbox threads',
+  careInboxMessages: 'Customer inbox messages',
+  inventoryAssignments: 'Inventory assignments requiring review',
+  posCustomerRecords: 'POS records requiring review'
+};
 const CUSTOMER_DRAFT_TYPE_BULK_UPLOAD = 'bulkUpload';
 const CUSTOMER_TABLE_COLUMN_STORAGE_PREFIX = 'threejmain_customer_profile_table_columns';
 const DEFAULT_CAPTURE_COORDINATES = { latitude: 17.559311, longitude: 121.684928 };
@@ -939,6 +961,12 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   const [expandedBulkUploadRowNumbers, setExpandedBulkUploadRowNumbers] = useState([]);
   const [isBulkUploading, setBulkUploading] = useState(false);
   const [isSubscriberMigrationOpen, setSubscriberMigrationOpen] = useState(false);
+  const [stagingResetAvailable, setStagingResetAvailable] = useState(false);
+  const [isStagingResetOpen, setStagingResetOpen] = useState(false);
+  const [stagingResetPreview, setStagingResetPreview] = useState(null);
+  const [stagingResetConfirmation, setStagingResetConfirmation] = useState('');
+  const [stagingResetBusy, setStagingResetBusy] = useState(false);
+  const [stagingResetError, setStagingResetError] = useState('');
   const [subscriberMigrationFileName, setSubscriberMigrationFileName] = useState('');
   const [subscriberMigrationRows, setSubscriberMigrationRows] = useState([]);
   const [subscriberMigrationErrors, setSubscriberMigrationErrors] = useState([]);
@@ -1268,6 +1296,13 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   }
 
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    let cancelled = false;
+    request('/customer-profiling/staging-reset/availability')
+      .then(() => { if (!cancelled) setStagingResetAvailable(true); })
+      .catch(() => { if (!cancelled) setStagingResetAvailable(false); });
+    return () => { cancelled = true; };
+  }, []);
   useEffect(() => {
     const openCustomerFromUrl = () => {
       const params = new URLSearchParams(window.location.search);
@@ -1776,6 +1811,63 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
   function closeSubscriberMigration() {
     setSubscriberMigrationOpen(false);
     setSubscriberMigrationBusy(false);
+  }
+
+  async function refreshStagingResetPreview() {
+    setStagingResetBusy(true);
+    setStagingResetError('');
+    setStagingResetPreview(null);
+    setStagingResetConfirmation('');
+    try {
+      setStagingResetPreview(await request('/customer-profiling/staging-reset/preview'));
+    } catch (err) {
+      setStagingResetError(err.message);
+    } finally {
+      setStagingResetBusy(false);
+    }
+  }
+
+  function openStagingReset() {
+    setStagingResetOpen(true);
+    refreshStagingResetPreview();
+  }
+
+  async function confirmStagingReset() {
+    if (!stagingResetPreview || stagingResetBusy) return;
+    setStagingResetBusy(true);
+    setStagingResetError('');
+    try {
+      const result = await request('/customer-profiling/staging-reset', {
+        method: 'POST',
+        body: JSON.stringify({
+          previewToken: stagingResetPreview.previewToken,
+          confirmation: stagingResetConfirmation
+        })
+      });
+      localStorage.removeItem(CUSTOMER_DRAFT_STORAGE_KEY);
+      setCustomerDrafts([]);
+      setSelectedDraftIds([]);
+      setActiveDraftId('');
+      setActiveBulkUploadDraftId('');
+      setDraftPanelOpen(false);
+      setBulkUploadModalOpen(false);
+      setSubscriberMigrationOpen(false);
+      setSubscriberMigrationBatch(null);
+      setSubscriberMigrationOutcome(null);
+      setSelected(null);
+      setDetailsPanelOpen(false);
+      syncCustomerUrl('', { replace: true });
+      setStagingResetOpen(false);
+      setStagingResetPreview(null);
+      setMessage(`Staging subscriber data reset. Backup saved as ${result.backupFile}.${result.warnings?.length ? ` ${result.warnings.join(' ')}` : ''}`);
+      load();
+      refreshShell();
+    } catch (err) {
+      setStagingResetError(err.message);
+      if (err.status === 409) setStagingResetPreview(null);
+    } finally {
+      setStagingResetBusy(false);
+    }
   }
 
   async function downloadSubscriberMigrationTemplate() {
@@ -5450,6 +5542,53 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     );
   }
 
+  function renderStagingResetModal() {
+    const blocked = Boolean(stagingResetPreview?.blockers?.length);
+    return (
+      <div className="customer-modal-backdrop" role="presentation">
+        <div className="customer-modal staging-reset-modal" role="dialog" aria-modal="true" aria-labelledby="staging-reset-title">
+          <div className="customer-modal-header">
+            <div>
+              <div className="text-danger small fw-semibold">Staging only · Owner access</div>
+              <h3 id="staging-reset-title" className="customer-modal-title">Reset subscriber test data</h3>
+            </div>
+            <button type="button" className="btn btn-icon btn-sm" aria-label="Close reset preview" onClick={() => setStagingResetOpen(false)} disabled={stagingResetBusy}><IconX size={18} /></button>
+          </div>
+          <div className="customer-modal-body">
+            <p>This permanently removes the listed staging customer, import, Service, Billing, and Collector records. A full backup is saved on the staging API server before deletion. Browser drafts on this device are cleared after success.</p>
+            {stagingResetBusy && !stagingResetPreview && <div className="text-muted">Loading current counts…</div>}
+            {stagingResetPreview && (
+              <>
+                <div className="staging-reset-counts">
+                  {Object.entries(STAGING_RESET_COUNT_LABELS).map(([key, label]) => (
+                    <div key={key}><span>{label}</span><strong>{stagingResetPreview.counts?.[key] ?? 0}</strong></div>
+                  ))}
+                  <div><span>Browser drafts on this device</span><strong>{customerDrafts.length}</strong></div>
+                </div>
+                {blocked && <div className="alert alert-warning mt-3 mb-0" role="alert">{stagingResetPreview.blockers.map((item) => <div key={item}>{item}</div>)}</div>}
+                {!blocked && (
+                  <div className="mt-3">
+                    <label className="form-label" htmlFor="staging-reset-confirmation">Type <strong>{stagingResetPreview.confirmationPhrase}</strong> to confirm</label>
+                    <input id="staging-reset-confirmation" className="form-control" autoComplete="off" value={stagingResetConfirmation} onChange={(event) => setStagingResetConfirmation(event.target.value)} />
+                    <div className="form-hint">The preview expires after five minutes. Refresh it if the data changes.</div>
+                  </div>
+                )}
+              </>
+            )}
+            {stagingResetError && <div className="alert alert-danger mt-3 mb-0" role="alert">{stagingResetError}</div>}
+          </div>
+          <div className="customer-modal-footer">
+            <button type="button" className="btn btn-outline-secondary" onClick={refreshStagingResetPreview} disabled={stagingResetBusy}>Refresh preview</button>
+            <button type="button" className="btn btn-outline-secondary" onClick={() => setStagingResetOpen(false)} disabled={stagingResetBusy}>Cancel</button>
+            <button type="button" className="btn btn-danger" onClick={confirmStagingReset} disabled={stagingResetBusy || blocked || !stagingResetPreview || stagingResetConfirmation !== stagingResetPreview.confirmationPhrase}>
+              <IconTrash size={16} className="me-1" />{stagingResetBusy ? 'Resetting…' : 'Reset staging data'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const kpis = [
     ['Total Customers', overview?.totalCustomers, IconUsers, 'azure'],
     ['Active', overview?.activeCustomers, IconActivity, 'green'],
@@ -5535,6 +5674,11 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                   <button className="btn btn-outline-primary btn-sm" onClick={openSubscriberMigration}>
                     <IconHomeSignal size={16} className="me-1" />Import Existing Subscribers
                   </button>
+                  {stagingResetAvailable && (
+                    <button type="button" className="btn btn-outline-danger btn-sm" onClick={openStagingReset}>
+                      <IconTrash size={16} className="me-1" />Reset test data
+                    </button>
+                  )}
                   <button className="btn btn-primary btn-sm customer-header-icon-button" title="New Customer" aria-label="New Customer" onClick={openNewCustomerModal}>
                     <IconPlus size={16} />
                   </button>
@@ -5701,6 +5845,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
     </div>
     {isOnboardingModalOpen && selected && renderCustomerDetailsPanel({ onboardingModal: true })}
     {isSubscriberMigrationOpen && renderSubscriberMigrationModal()}
+    {isStagingResetOpen && renderStagingResetModal()}
     {isSubscriberMigrationOutcomeOpen && renderSubscriberMigrationOutcome()}
     {isBulkUploadModalOpen && (
       <div className="customer-modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && requestBulkUploadClose()}>
