@@ -55,6 +55,7 @@ import SystemSettingsPage from '../../../features/system-settings/web/SystemSett
 import TechPortalPage from '../../../features/techportal/web/TechPortalPage.jsx';
 import TechPortalTicketingPage from '../../../features/techportal/web/TechPortalTicketingPage.jsx';
 import TicketingPage from '../../../features/ticketing/web/TicketingPage.jsx';
+import { collectorPermittedPages, filterNavItemsForPages, isCollectorPortalUser } from './portalAccess.js';
 import './styles.css';
 
 const API = '/api';
@@ -146,10 +147,6 @@ const technicianNav = [
   { page: 'Tech Portal Ticketing', label: 'Ticketing', slug: 'techportal/ticketing', icon: IconTicket, tone: 'red' }
 ];
 
-const collectorNav = [
-  { page: 'Collector', label: 'Collector Portal', slug: 'collector', icon: IconReceipt, tone: 'orange' }
-];
-
 const accountAccessManagementPages = {
   'Account Access Management': 'CUSTOMERS',
   'Customer Accounts': 'CUSTOMERS',
@@ -157,14 +154,6 @@ const accountAccessManagementPages = {
 };
 
 const TECHNICIAN_ALLOWED_PAGES = new Set(['Tech Portal', 'Tech Portal Ticketing', 'View Profile', 'Change Password']);
-const COLLECTOR_ALLOWED_PAGES = new Set(['Collector', 'View Profile', 'Change Password']);
-const COLLECTOR_PORTAL_ROLES = new Set([
-  'collector',
-  'collection_supervisor',
-  'finance_officer',
-  'cashier_treasury',
-  'finance_approver'
-]);
 const LOGIN_VARIANTS = {
   admin: {
     credentials: { username: 'admin', password: 'admin123' },
@@ -221,10 +210,6 @@ const LOGIN_VARIANTS = {
 
 function isTechnicianUser(user) {
   return String(user?.role || '').toLowerCase() === 'technician';
-}
-
-function isCollectorPortalUser(user) {
-  return COLLECTOR_PORTAL_ROLES.has(String(user?.role || '').toLowerCase());
 }
 
 function isTechPortalPath(pathname) {
@@ -494,7 +479,7 @@ function environmentTone(environment) {
   return 'local';
 }
 
-function Sidebar({ page, setPage, me, logout, branding, versionInfo, collapsed, navItems = moduleNav }) {
+function Sidebar({ page, setPage, me, logout, branding, versionInfo, collapsed, navItems = moduleNav, homePage = 'Dashboard' }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [navOpen, setNavOpen] = useState({});
@@ -563,7 +548,7 @@ function Sidebar({ page, setPage, me, logout, branding, versionInfo, collapsed, 
       <div className="container-fluid">
         <button className="navbar-toggler" type="button" onClick={() => setMobileOpen(!mobileOpen)}><span className="navbar-toggler-icon" /></button>
         <h1 className="navbar-brand navbar-brand-autodark">
-          <button className="brand-button" onClick={() => activate('Dashboard')}>
+          <button className="brand-button" onClick={() => activate(homePage)}>
             {collapsed ? <span className="brand-compact"><IconWifi size={22} /></span> : (branding.company_logo_url ? <img src={branding.company_logo_url} className="navbar-brand-logo" alt="Company Logo" /> : branding.display_name)}
           </button>
         </h1>
@@ -954,12 +939,24 @@ function App() {
 
   const technicianUser = isTechnicianUser(me);
   const collectorPortalUser = isCollectorPortalUser(me);
-  const activeNavItems = technicianUser ? technicianNav : collectorPortalUser ? collectorNav : moduleNav;
+  const permittedCollectorPages = useMemo(
+    () => collectorPortalUser ? collectorPermittedPages(me) : null,
+    [collectorPortalUser, me]
+  );
+  const collectorNavItems = useMemo(
+    () => collectorPortalUser ? filterNavItemsForPages(moduleNav, permittedCollectorPages) : [],
+    [collectorPortalUser, permittedCollectorPages]
+  );
+  const collectorLandingPage = permittedCollectorPages?.has('Collector')
+    ? 'Collector'
+    : collectorNavItems.length ? firstLeafNavItem(collectorNavItems[0]).page : 'View Profile';
+  const activeNavItems = technicianUser ? technicianNav : collectorPortalUser ? collectorNavItems : moduleNav;
   const activePage = technicianUser && !TECHNICIAN_ALLOWED_PAGES.has(page)
     ? 'Tech Portal'
-    : collectorPortalUser && !COLLECTOR_ALLOWED_PAGES.has(page)
-      ? 'Collector'
+    : collectorPortalUser && !permittedCollectorPages.has(page)
+      ? collectorLandingPage
       : page;
+  const canRenderModulePage = (modulePage) => !technicianUser && (!collectorPortalUser || permittedCollectorPages.has(modulePage));
   const loginVariant = loginVariantForPath(window.location.pathname);
 
   const moduleByPage = useMemo(() => {
@@ -996,10 +993,10 @@ function App() {
   useEffect(() => {
     if (authed && technicianUser && !TECHNICIAN_ALLOWED_PAGES.has(page)) {
       navigate('Tech Portal', true);
-    } else if (authed && collectorPortalUser && !COLLECTOR_ALLOWED_PAGES.has(page)) {
-      navigate('Collector', true);
+    } else if (authed && collectorPortalUser && !permittedCollectorPages.has(page)) {
+      navigate(collectorLandingPage, true);
     }
-  }, [authed, technicianUser, collectorPortalUser, page]);
+  }, [authed, technicianUser, collectorPortalUser, permittedCollectorPages, collectorLandingPage, page]);
   useEffect(() => { document.documentElement.style.setProperty('--tblr-primary', branding.accent_color || '#206bc4'); }, [branding.accent_color]);
   useEffect(() => { applyDocumentBranding(branding); }, [branding.display_name, branding.browser_logo_url, branding.browser_logo_type]);
   useEffect(() => {
@@ -1030,7 +1027,11 @@ function App() {
           setMe(user || null);
           setAuthed(true);
           if (isTechnicianUser(user)) navigate('Tech Portal', true);
-          else if (isCollectorPortalUser(user)) navigate('Collector', true);
+          else if (isCollectorPortalUser(user)) {
+            const permitted = collectorPermittedPages(user);
+            const nav = filterNavItemsForPages(moduleNav, permitted);
+            navigate(permitted.has('Collector') ? 'Collector' : nav.length ? firstLeafNavItem(nav[0]).page : 'View Profile', true);
+          }
           else if (loginVariant === 'tech') navigate('Dashboard', true);
         }}
       />
@@ -1047,38 +1048,38 @@ function App() {
 
   return (
     <div className={`page ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
-      <Sidebar page={activePage} setPage={navigate} me={me} logout={logout} branding={branding} versionInfo={versionInfo} collapsed={sidebarCollapsed} navItems={activeNavItems} />
+      <Sidebar page={activePage} setPage={navigate} me={me} logout={logout} branding={branding} versionInfo={versionInfo} collapsed={sidebarCollapsed} navItems={activeNavItems} homePage={technicianUser ? 'Tech Portal' : collectorPortalUser ? collectorLandingPage : 'Dashboard'} />
       <div className="page-wrapper">
         <Header page={activePage} resources={resources} onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)} sidebarCollapsed={sidebarCollapsed} onNavigatePage={navigate} />
         <div className="page-body">
           <div className="container-xl">
             {activePage === 'Tech Portal' && <TechPortalPage refreshShell={refresh} currentUser={me} onNavigatePage={navigate} />}
             {activePage === 'Tech Portal Ticketing' && <TechPortalTicketingPage refreshShell={refresh} currentUser={me} onNavigatePage={navigate} />}
-            {activePage === 'Collector' && <CollectorPage currentUser={me} refreshShell={refresh} />}
+            {canRenderModulePage('Collector') && activePage === 'Collector' && <CollectorPage currentUser={me} refreshShell={refresh} />}
             {!technicianUser && !collectorPortalUser && activePage === 'Dashboard' && <Dashboard data={dashboard} />}
             {!technicianUser && !collectorPortalUser && activePage === 'Process Flow' && <ProcessFlowPage refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'Customer Profiling' && <CustomerProfilingPage refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'Billing' && <BillingPage refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'Point of Sale' && <PointOfSalePage refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'Inventory' && <InventoryPage refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && accountAccessManagementInitialView && <AccountAccessManagementPage initialView={accountAccessManagementInitialView} refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'Customer Service Management' && <CustomerServiceManagementPage refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'Ticketing' && <TicketingPage refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'Service Catalog' && <ServicePage initialSection="catalog" refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'Service Account' && <ServicePage initialSection="accounts" refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'Service Order' && <ServicePage initialSection="orders" refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'Network Settings' && <NetworkSettingsPage initialSection="overview" refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'MikroTik API' && <NetworkSettingsPage initialSection="mikrotik-settings" refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'PPPoE Accounts' && <NetworkSettingsPage initialSection="pppoe" refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'OLT SNMP' && <NetworkSettingsPage initialSection="olt-settings" refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'Mapping' && <NetworkSettingsPage initialSection="map" refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'Serviceability Check' && <NetworkSettingsPage initialSection="serviceability" refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'Topology' && <NetworkSettingsPage initialSection="fiber-mapping" refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'OLT & PON' && <NetworkSettingsPage initialSection="olts" refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'ONUs' && <NetworkSettingsPage initialSection="onus" refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'NAP Boxes' && <NetworkSettingsPage initialSection="naps" refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'Splitters' && <NetworkSettingsPage initialSection="fbts" refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'Fiber Optic' && <NetworkSettingsPage initialSection="fiber-optic-loss" refreshShell={refresh} />}
+            {canRenderModulePage('Customer Profiling') && activePage === 'Customer Profiling' && <CustomerProfilingPage refreshShell={refresh} />}
+            {canRenderModulePage('Billing') && activePage === 'Billing' && <BillingPage refreshShell={refresh} />}
+            {canRenderModulePage('Point of Sale') && activePage === 'Point of Sale' && <PointOfSalePage refreshShell={refresh} />}
+            {canRenderModulePage('Inventory') && activePage === 'Inventory' && <InventoryPage refreshShell={refresh} />}
+            {canRenderModulePage(activePage) && accountAccessManagementInitialView && <AccountAccessManagementPage initialView={accountAccessManagementInitialView} refreshShell={refresh} />}
+            {canRenderModulePage('Customer Service Management') && activePage === 'Customer Service Management' && <CustomerServiceManagementPage refreshShell={refresh} />}
+            {canRenderModulePage('Ticketing') && activePage === 'Ticketing' && <TicketingPage refreshShell={refresh} />}
+            {canRenderModulePage('Service Catalog') && activePage === 'Service Catalog' && <ServicePage initialSection="catalog" refreshShell={refresh} />}
+            {canRenderModulePage('Service Account') && activePage === 'Service Account' && <ServicePage initialSection="accounts" refreshShell={refresh} />}
+            {canRenderModulePage('Service Order') && activePage === 'Service Order' && <ServicePage initialSection="orders" refreshShell={refresh} />}
+            {canRenderModulePage('Network Settings') && activePage === 'Network Settings' && <NetworkSettingsPage initialSection="overview" refreshShell={refresh} />}
+            {canRenderModulePage('MikroTik API') && activePage === 'MikroTik API' && <NetworkSettingsPage initialSection="mikrotik-settings" refreshShell={refresh} />}
+            {canRenderModulePage('PPPoE Accounts') && activePage === 'PPPoE Accounts' && <NetworkSettingsPage initialSection="pppoe" refreshShell={refresh} />}
+            {canRenderModulePage('OLT SNMP') && activePage === 'OLT SNMP' && <NetworkSettingsPage initialSection="olt-settings" refreshShell={refresh} />}
+            {canRenderModulePage('Mapping') && activePage === 'Mapping' && <NetworkSettingsPage initialSection="map" refreshShell={refresh} />}
+            {canRenderModulePage('Serviceability Check') && activePage === 'Serviceability Check' && <NetworkSettingsPage initialSection="serviceability" refreshShell={refresh} />}
+            {canRenderModulePage('Topology') && activePage === 'Topology' && <NetworkSettingsPage initialSection="fiber-mapping" refreshShell={refresh} />}
+            {canRenderModulePage('OLT & PON') && activePage === 'OLT & PON' && <NetworkSettingsPage initialSection="olts" refreshShell={refresh} />}
+            {canRenderModulePage('ONUs') && activePage === 'ONUs' && <NetworkSettingsPage initialSection="onus" refreshShell={refresh} />}
+            {canRenderModulePage('NAP Boxes') && activePage === 'NAP Boxes' && <NetworkSettingsPage initialSection="naps" refreshShell={refresh} />}
+            {canRenderModulePage('Splitters') && activePage === 'Splitters' && <NetworkSettingsPage initialSection="fbts" refreshShell={refresh} />}
+            {canRenderModulePage('Fiber Optic') && activePage === 'Fiber Optic' && <NetworkSettingsPage initialSection="fiber-optic-loss" refreshShell={refresh} />}
             {moduleNav.filter((item) => ![
               'Dashboard',
               'Process Flow',
@@ -1099,8 +1100,8 @@ function App() {
             ].includes(item.page)).map((item) => (
               !technicianUser && !collectorPortalUser && activePage === item.page ? <ModulePage key={item.page} module={moduleByPage.get(item.page)} /> : null
             ))}
-            {!technicianUser && !collectorPortalUser && activePage === 'System Settings' && <SystemSettingsPage refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'Logs' && <LogsPage />}
+            {canRenderModulePage('System Settings') && activePage === 'System Settings' && <SystemSettingsPage refreshShell={refresh} />}
+            {canRenderModulePage('Logs') && activePage === 'Logs' && <LogsPage />}
             {activePage === 'View Profile' && <ProfilePage mode="profile" onSaved={refresh} />}
             {activePage === 'Change Password' && <ProfilePage mode="password" onSaved={refresh} />}
           </div>
