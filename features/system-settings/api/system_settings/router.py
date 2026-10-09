@@ -673,6 +673,12 @@ _graphify_artifact_tickets: dict[str, dict[str, Any]] = {}
 ACCESS_PASSWORD_MIN_LENGTH = 8
 ACCESS_PERMISSION_SEEDS = [
     {
+        "code": "dashboard.view",
+        "label": "Dashboard View",
+        "description": "View the shared dashboard summary and module overview.",
+        "category": "Dashboard",
+    },
+    {
         "code": "system.settings.view",
         "label": "System Settings View",
         "description": "View shared System Settings pages.",

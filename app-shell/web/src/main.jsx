@@ -916,8 +916,12 @@ function App() {
     if (token()) {
       const nextMe = await request('/me');
       setMe(nextMe);
-      if (isTechnicianUser(nextMe) || isCollectorPortalUser(nextMe)) {
+      if (isTechnicianUser(nextMe)) {
         setDashboard(null);
+        setModules([]);
+      } else if (isCollectorPortalUser(nextMe)) {
+        const permitted = collectorPermittedPages(nextMe);
+        setDashboard(permitted.has('Dashboard') ? await request('/dashboard') : null);
         setModules([]);
       } else {
         const [nextDashboard, nextModules] = await Promise.all([
@@ -1056,7 +1060,7 @@ function App() {
             {activePage === 'Tech Portal' && <TechPortalPage refreshShell={refresh} currentUser={me} onNavigatePage={navigate} />}
             {activePage === 'Tech Portal Ticketing' && <TechPortalTicketingPage refreshShell={refresh} currentUser={me} onNavigatePage={navigate} />}
             {canRenderModulePage('Collector') && activePage === 'Collector' && <CollectorPage currentUser={me} refreshShell={refresh} />}
-            {!technicianUser && !collectorPortalUser && activePage === 'Dashboard' && <Dashboard data={dashboard} />}
+            {canRenderModulePage('Dashboard') && activePage === 'Dashboard' && <Dashboard data={dashboard} />}
             {!technicianUser && !collectorPortalUser && activePage === 'Process Flow' && <ProcessFlowPage refreshShell={refresh} />}
             {canRenderModulePage('Customer Profiling') && activePage === 'Customer Profiling' && <CustomerProfilingPage refreshShell={refresh} />}
             {canRenderModulePage('Billing') && activePage === 'Billing' && <BillingPage refreshShell={refresh} />}

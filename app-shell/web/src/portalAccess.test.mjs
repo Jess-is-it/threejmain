@@ -48,3 +48,11 @@ test('removing Collector view hides Collector even for a finance role', () => {
   const pages = collectorPermittedPages({ role: 'finance_officer', permissions: ['billing.view'] });
   assert.deepEqual(filterNavItemsForPages(nav, pages).map((item) => item.page), ['Billing']);
 });
+
+test('Dashboard appears only when its own view permission is granted', () => {
+  const withoutDashboard = collectorPermittedPages({ role: 'finance_officer', permissions: ['billing.view'] });
+  const withDashboard = collectorPermittedPages({ role: 'finance_officer', permissions: ['billing.view', 'dashboard.view'] });
+  assert.equal(withoutDashboard.has('Dashboard'), false);
+  assert.equal(withDashboard.has('Dashboard'), true);
+  assert.deepEqual(filterNavItemsForPages(nav, withDashboard).map((item) => item.page), ['Dashboard', 'Billing']);
+});

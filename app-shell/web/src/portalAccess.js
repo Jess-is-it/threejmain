@@ -7,6 +7,7 @@ export const COLLECTOR_PORTAL_ROLES = new Set([
 ]);
 
 const PAGE_VIEW_PERMISSIONS = {
+  Dashboard: 'dashboard.view',
   'Customer Profiling': 'customer-profiling.view',
   Billing: 'billing.view',
   Collector: 'collector.portal.view',
