@@ -223,6 +223,8 @@ Account Access Management is not the system-login admin area. It is reserved for
 
 `app-shell/web/vite.config.js`, `app-shell/api/Dockerfile`, and `app-shell/web/Dockerfile` include module allowlist/copy entries for the integrated module folders.
 
+Network Settings -> MikroTik -> PPPoE Accounts now supports durable app-side customer tags for discovered router/username pairs. Authorized Network Settings editors can assign, change, and remove a Customer Profile tag, selecting the Service Account when the customer has multiple lines; the RouterOS API remains read-only. The PPPoE table keeps linked and unlinked accounts visible, and lists active customers without a tag. Tags persist in Network Settings' atomic JSON store. Customer 360 reads all links for a customer and displays live PPPoE username, router, status, profile, IP, and caller ID; router-unavailable and missing-account states are reported separately from offline status. Account Access Management's hidden binding routes and summaries use this same persisted link source, and its PPPoE/ONU mapping no longer invents a sample customer. PPPoE and Wi-Fi passwords remain outside this view; PPPoE provisioning and PostgreSQL migration remain future work.
+
 ## Ports
 
 - `8280/tcp`: threejmain staging web/admin entry point on this shared host

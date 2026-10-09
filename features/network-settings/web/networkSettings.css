@@ -2537,7 +2537,82 @@
 }
 
 .network-pppoe-table {
-  min-width: 1120px;
+  min-width: 1320px;
+}
+
+.network-pppoe-link-coverage {
+  margin-bottom: 0;
+}
+
+.network-pppoe-link-coverage details {
+  margin-top: 0.35rem;
+}
+
+.network-pppoe-link-coverage summary {
+  cursor: pointer;
+}
+
+.network-pppoe-unlinked-customers {
+  display: grid;
+  gap: 0.2rem;
+  max-height: 12rem;
+  overflow: auto;
+  margin-top: 0.5rem;
+}
+
+.network-pppoe-tag-modal {
+  width: min(42rem, 100%);
+}
+
+.network-pppoe-tag-account {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.network-pppoe-tag-account > span:not(.badge) {
+  color: var(--admin-muted, #64748b);
+}
+
+.network-pppoe-customer-options {
+  display: grid;
+  max-height: 16rem;
+  overflow: auto;
+  margin-top: 0.5rem;
+  border: 1px solid var(--admin-border);
+  border-radius: 0.5rem;
+}
+
+.network-pppoe-customer-option {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  border: 0;
+  border-bottom: 1px solid var(--admin-border);
+  background: #fff;
+  text-align: left;
+}
+
+.network-pppoe-customer-option:last-child {
+  border-bottom: 0;
+}
+
+.network-pppoe-customer-option:hover,
+.network-pppoe-customer-option.active {
+  background: #eff6ff;
+}
+
+.network-pppoe-customer-option span:first-child {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.network-pppoe-customer-option small {
+  color: #64748b;
 }
 
 .network-filter-bar {

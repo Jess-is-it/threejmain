@@ -1254,6 +1254,7 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
       ['serviceCatalog', request('/service/catalog?status=ACTIVE')],
       ['serviceAccounts', request(`/service/accounts?customerId=${customerId}`)],
       ['serviceOrders', request(`/service/orders?customerId=${customerId}`)],
+      ['pppoeCustomerLinks', request(`/network-settings/pppoe-customer-links?customerId=${customerId}&refreshLive=true`)],
       ['subscriptions', request(`/billing/subscriptions?customerId=${customerId}`)],
       ['installationCharges', request(`/billing/installation-charges?customerId=${customerId}`)],
       ['balance', request(`/billing/customers/${customerId}/balance`)],
@@ -4071,6 +4072,37 @@ export default function CustomerProfilingPage({ refreshShell = () => {} }) {
                   </a>
                 </>
               )}
+            </section>
+
+            <section className="customer-360-panel customer-360-overview-primary">
+              {renderOverviewPanelHeading('Internet Connection', IconRouter, 'Linked PPPoE account details from Network Settings')}
+              {renderState('pppoeCustomerLinks', customer360.pppoeLinks, selected.status === 'ACTIVE' ? 'Active customer has no PPPoE account tagged yet.' : 'No PPPoE account is tagged to this customer.')}
+              {customer360.pppoeLinks.map((link) => {
+                const account = link.account || {};
+                const availability = link.availability || 'NOT_CHECKED';
+                const connectionStatus = availability === 'LIVE'
+                  ? account.status || 'Unknown'
+                  : availability === 'ACCOUNT_MISSING' ? 'Account not found on router'
+                    : availability === 'ROUTER_UNAVAILABLE' ? 'Router unavailable'
+                      : 'Not checked';
+                return (
+                  <div className="customer-360-pppoe-link" key={`${link.routerId}:${link.username}`}>
+                    <div className="customer-360-pppoe-link-heading">
+                      <strong>{link.username}</strong>
+                      <span className={`badge ${availability === 'LIVE' ? statusClass(account.status) : 'bg-yellow-lt text-yellow'}`}>{connectionStatus}</span>
+                    </div>
+                    <div className="customer-360-summary-grid">
+                      {renderSummaryFact('MikroTik router', account.routerName || link.routerId)}
+                      {renderSummaryFact('Service Account', link.customerTag?.serviceAccountNumber)}
+                      {renderSummaryFact('PPPoE profile', account.profile)}
+                      {renderSummaryFact('IP address', account.activeAddress || account.remoteAddress)}
+                      {renderSummaryFact('Caller ID / MAC', account.callerId || account.macAddress)}
+                      {renderSummaryFact('Last checked', link.checkedAt ? formatDisplayDateTime(link.checkedAt) : '')}
+                    </div>
+                    {availability !== 'LIVE' && <small className="text-muted">The account fields shown are from the last successful tag. Current connection details could not be confirmed.</small>}
+                  </div>
+                );
+              })}
             </section>
 
             <section className="customer-360-panel customer-360-overview-secondary">

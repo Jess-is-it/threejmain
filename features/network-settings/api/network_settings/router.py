@@ -28,12 +28,14 @@ fiber_mapping: dict[str, Any] = {}
 network_devices: list[dict[str, Any]] = []
 device_captures: list[dict[str, Any]] = []
 onus: list[dict[str, Any]] = []
+pppoe_customer_links: list[dict[str, Any]] = []
 _data_loaded = False
 
 _current_admin: Callable[[str | None], dict[str, Any]] | None = None
 _audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None] | None = None
 _capture_lock = threading.Lock()
 _data_save_lock = threading.Lock()
+_pppoe_link_lock = threading.Lock()
 _poller_lock = threading.Lock()
 _poller_stop_event = threading.Event()
 _poller_thread: threading.Thread | None = None
@@ -414,6 +416,13 @@ class DeviceOrderPayload(BaseModel):
     deviceType: str | None = None
 
 
+class PppoeCustomerLinkPayload(BaseModel):
+    routerId: str = Field(min_length=1)
+    username: str = Field(min_length=1)
+    customerId: str = Field(min_length=1)
+    serviceAccountId: str | None = None
+
+
 def configure_network_settings(
     current_admin: Callable[[str | None], dict[str, Any]] | None = None,
     audit_logger: Callable[[str, str, str, dict[str, Any] | None, str], None] | None = None,
@@ -439,7 +448,7 @@ def add_audit(action: str, target_type: str, target_id: str, details: dict[str, 
 
 
 def load_network_settings_data() -> None:
-    global _data_loaded, olts, pon_ports, nap_boxes, fbts, fiber_optic_losses, fiber_color_settings, fiber_mapping, network_devices, device_captures, onus
+    global _data_loaded, olts, pon_ports, nap_boxes, fbts, fiber_optic_losses, fiber_color_settings, fiber_mapping, network_devices, device_captures, onus, pppoe_customer_links
     if _data_loaded:
         return
     _data_loaded = True
@@ -463,6 +472,7 @@ def load_network_settings_data() -> None:
     network_devices = list(payload.get("networkDevices") or [])
     device_captures = list(payload.get("deviceCaptures") or [])
     onus = list(payload.get("onus") or [])
+    pppoe_customer_links = list(payload.get("pppoeCustomerLinks") or [])
     capture_history_normalized = normalize_capture_history()
     display_orders_normalized = ensure_display_orders()
     if normalize_pon_inventory_defaults() or capture_history_normalized or display_orders_normalized:
@@ -515,30 +525,32 @@ def normalize_capture_history() -> bool:
     return changed
 
 
-def save_network_settings_data() -> None:
+def save_network_settings_data() -> bool:
     if not NETWORK_SETTINGS_DATA_PATH:
-        return
-    payload = {
-        "olts": olts,
-        "ponPorts": pon_ports,
-        "napBoxes": nap_boxes,
-        "fbts": fbts,
-        "fiberOpticLosses": fiber_optic_losses,
-        "fiberColorSettings": fiber_color_settings_summary(),
-        "fiberMapping": fiber_mapping_summary(),
-        "networkDevices": network_devices,
-        "deviceCaptures": compact_capture_history(device_captures),
-        "onus": onus,
-    }
+        return False
     try:
         with _data_save_lock:
+            payload = {
+                "olts": olts,
+                "ponPorts": pon_ports,
+                "napBoxes": nap_boxes,
+                "fbts": fbts,
+                "fiberOpticLosses": fiber_optic_losses,
+                "fiberColorSettings": fiber_color_settings_summary(),
+                "fiberMapping": fiber_mapping_summary(),
+                "networkDevices": network_devices,
+                "deviceCaptures": compact_capture_history(device_captures),
+                "onus": onus,
+                "pppoeCustomerLinks": pppoe_customer_links,
+            }
             os.makedirs(os.path.dirname(NETWORK_SETTINGS_DATA_PATH), exist_ok=True)
             temp_path = f"{NETWORK_SETTINGS_DATA_PATH}.tmp"
             with open(temp_path, "w", encoding="utf-8") as handle:
                 json.dump(payload, handle, separators=(",", ":"))
             os.replace(temp_path, NETWORK_SETTINGS_DATA_PATH)
+        return True
     except OSError:
-        return
+        return False
 
 
 def clean_text(value: Any) -> str:
@@ -3702,6 +3714,59 @@ def pppoe_status(disabled: bool, active: bool) -> str:
     return "OFFLINE"
 
 
+def pppoe_customer_link_key(router_id: Any, username: Any) -> tuple[str, str]:
+    return clean_text(router_id), clean_text(username)
+
+
+def find_pppoe_customer_link(router_id: Any, username: Any) -> dict[str, Any] | None:
+    key = pppoe_customer_link_key(router_id, username)
+    return next(
+        (link for link in pppoe_customer_links if pppoe_customer_link_key(link.get("routerId"), link.get("username")) == key),
+        None,
+    )
+
+
+def pppoe_customer_tag_summary(link: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not link:
+        return None
+    return {field: link.get(field, "") for field in (
+        "customerId", "customerName", "customerAccountNumber", "serviceAccountId",
+        "serviceAccountNumber", "taggedAt", "taggedBy",
+    )}
+
+
+def pppoe_account_snapshot(account: dict[str, Any]) -> dict[str, Any]:
+    return {field: account.get(field, "") for field in (
+        "routerId", "routerName", "routerEndpoint", "username", "service", "profile", "status",
+        "callerId", "macAddress", "localAddress", "remoteAddress", "activeAddress", "uptime",
+        "lastCallerId", "lastLoggedOut", "lastDisconnectReason", "source",
+    )}
+
+
+def pppoe_link_details(link: dict[str, Any], account: dict[str, Any] | None = None, availability: str = "NOT_CHECKED") -> dict[str, Any]:
+    return {
+        "routerId": link.get("routerId", ""),
+        "username": link.get("username", ""),
+        "customerTag": pppoe_customer_tag_summary(link),
+        "account": pppoe_account_snapshot(account) if account else link.get("accountSnapshot") or {},
+        "availability": availability,
+        "checkedAt": now_iso() if availability != "NOT_CHECKED" else "",
+    }
+
+
+def require_pppoe_link_permission(admin: dict[str, Any], permission: str) -> None:
+    codes = admin.get("permissions")
+    if codes is not None and "*" not in codes and permission not in codes:
+        raise HTTPException(status_code=403, detail="Permission required")
+
+
+def require_pppoe_link_reader(admin: dict[str, Any]) -> None:
+    codes = admin.get("permissions")
+    allowed = {"customer-profiling.view", "network-settings.view", "account-access-management.customer.view"}
+    if codes is not None and "*" not in codes and not allowed.intersection(codes):
+        raise HTTPException(status_code=403, detail="Permission required")
+
+
 def pppoe_account_row(device: dict[str, Any], secret: dict[str, str] | None, active: dict[str, str] | None) -> dict[str, Any]:
     secret = secret or {}
     active = active or {}
@@ -3969,6 +4034,8 @@ def list_pppoe_accounts(
         and matches_search(row, search)
     ]
     rows = sorted(rows, key=lambda item: (item["routerName"], item["username"]))
+    for row in rows:
+        row["customerTag"] = pppoe_customer_tag_summary(find_pppoe_customer_link(row["routerId"], row["username"]))
     return {
         "capturedAt": captured_at,
         "accounts": rows,
@@ -3978,6 +4045,123 @@ def list_pppoe_accounts(
         "deviceErrors": device_errors,
         "source": "routeros-api",
     }
+
+
+@router.get("/pppoe-customer-links")
+def list_pppoe_customer_links(customerId: str = "", refreshLive: bool = False, admin=Depends(require_admin)):
+    require_pppoe_link_reader(admin)
+    seed_network_settings_data()
+    links = [link for link in pppoe_customer_links if not customerId or link.get("customerId") == customerId]
+    accounts_by_router: dict[str, dict[str, dict[str, Any]] | None] = {}
+    if refreshLive:
+        for router_id in {clean_text(link.get("routerId")) for link in links}:
+            device = next((row for row in visible_devices() if row.get("id") == router_id and is_mikrotik_api_device(row)), None)
+            if device is None:
+                accounts_by_router[router_id] = None
+                continue
+            try:
+                accounts_by_router[router_id] = {
+                    account["username"]: account for account in fetch_mikrotik_pppoe_accounts(device)
+                }
+            except (OSError, RouterOsApiError):
+                accounts_by_router[router_id] = None
+    result = []
+    for link in links:
+        router_id = clean_text(link.get("routerId"))
+        live_accounts = accounts_by_router.get(router_id)
+        live_account = live_accounts.get(link.get("username")) if live_accounts is not None else None
+        availability = (
+            "NOT_CHECKED" if not refreshLive else
+            "ROUTER_UNAVAILABLE" if live_accounts is None else
+            "ACCOUNT_MISSING" if live_account is None else "LIVE"
+        )
+        result.append(pppoe_link_details(link, live_account, availability))
+    return {"links": result, "total": len(result)}
+
+
+@router.put("/pppoe-customer-links")
+def tag_pppoe_customer(payload: PppoeCustomerLinkPayload, admin=Depends(require_admin)):
+    require_pppoe_link_permission(admin, "network-settings.edit")
+    seed_network_settings_data()
+    if not NETWORK_SETTINGS_DATA_PATH:
+        raise HTTPException(status_code=503, detail="PPPoE customer link storage is unavailable")
+    router_id, username = pppoe_customer_link_key(payload.routerId, payload.username)
+    device = next((row for row in visible_devices() if row.get("id") == router_id and is_mikrotik_api_device(row)), None)
+    if device is None:
+        raise HTTPException(status_code=404, detail="MikroTik router not found")
+    try:
+        account = next((row for row in fetch_mikrotik_pppoe_accounts(device) if row["username"] == username), None)
+    except (OSError, RouterOsApiError) as exc:
+        raise HTTPException(status_code=503, detail="Unable to verify PPPoE account on MikroTik") from exc
+    if account is None:
+        raise HTTPException(status_code=404, detail="PPPoE account was not found on this router")
+
+    from customer_profiling.router import customer_full_name, find_customer, seed_customer_data
+    from service.router import seed_service_data, visible_accounts
+
+    seed_customer_data()
+    customer = find_customer(clean_text(payload.customerId))
+    seed_service_data()
+    service_accounts = [row for row in visible_accounts() if row.get("customerId") == customer["id"]]
+    requested_service_id = clean_text(payload.serviceAccountId)
+    if requested_service_id:
+        service_account = next((row for row in service_accounts if row.get("id") == requested_service_id), None)
+        if service_account is None:
+            raise HTTPException(status_code=400, detail="Service Account does not belong to this customer")
+    elif len(service_accounts) == 1:
+        service_account = service_accounts[0]
+    elif len(service_accounts) > 1:
+        raise HTTPException(status_code=400, detail="Choose the customer's Service Account for this PPPoE account")
+    else:
+        service_account = None
+
+    timestamp = now_iso()
+    with _pppoe_link_lock:
+        previous_links = [dict(row) for row in pppoe_customer_links]
+        previous = find_pppoe_customer_link(router_id, username)
+        link = {
+            "routerId": router_id,
+            "username": username,
+            "customerId": customer["id"],
+            "customerName": customer_full_name(customer) or clean_text(customer.get("fullName")),
+            "customerAccountNumber": clean_text(customer.get("accountNumber")),
+            "serviceAccountId": service_account.get("id", "") if service_account else "",
+            "serviceAccountNumber": service_account.get("serviceAccountNumber", "") if service_account else "",
+            "accountSnapshot": pppoe_account_snapshot(account),
+            "taggedAt": timestamp,
+            "taggedBy": clean_text(admin.get("username")),
+        }
+        if previous:
+            pppoe_customer_links.remove(previous)
+        pppoe_customer_links.append(link)
+        if not save_network_settings_data():
+            pppoe_customer_links[:] = previous_links
+            raise HTTPException(status_code=503, detail="Could not save PPPoE customer link")
+    add_audit(
+        "network_pppoe_customer_tagged", "PppoeCustomerLink", f"{router_id}:{username}",
+        {"customerId": customer["id"], "serviceAccountId": link["serviceAccountId"], "previousCustomerId": previous.get("customerId") if previous else ""},
+        clean_text(admin.get("username")),
+    )
+    return pppoe_link_details(link, account, "LIVE")
+
+
+@router.delete("/pppoe-customer-links")
+def untag_pppoe_customer(routerId: str, username: str, admin=Depends(require_admin)):
+    require_pppoe_link_permission(admin, "network-settings.edit")
+    seed_network_settings_data()
+    with _pppoe_link_lock:
+        previous = find_pppoe_customer_link(routerId, username)
+        if previous is None:
+            raise HTTPException(status_code=404, detail="PPPoE customer link not found")
+        pppoe_customer_links.remove(previous)
+        if not save_network_settings_data():
+            pppoe_customer_links.append(previous)
+            raise HTTPException(status_code=503, detail="Could not remove PPPoE customer link")
+    add_audit(
+        "network_pppoe_customer_untagged", "PppoeCustomerLink", f"{routerId}:{username}",
+        {"customerId": previous.get("customerId", "")}, clean_text(admin.get("username")),
+    )
+    return {"status": "ok"}
 
 
 @router.get("/devices")

@@ -3418,6 +3418,31 @@
   grid-template-columns: 1fr;
 }
 
+.customer-360-pppoe-link {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.85rem;
+  border: 1px solid #dbeafe;
+  border-radius: 0.5rem;
+  background: #f8fbff;
+}
+
+.customer-360-pppoe-link + .customer-360-pppoe-link {
+  margin-top: 0.5rem;
+}
+
+.customer-360-pppoe-link-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.customer-360-pppoe-link-heading strong {
+  overflow-wrap: anywhere;
+}
+
 .customer-360-summary-fact {
   display: grid;
   gap: 0.15rem;

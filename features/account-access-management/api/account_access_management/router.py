@@ -1,4 +1,5 @@
 import hmac
+import importlib
 import json
 import os
 import re
@@ -26,6 +27,7 @@ from service.router import (
 )
 from ticketing.router import seed_ticketing_data, visible_tickets
 
+network_settings_module = importlib.import_module("network_settings.router")
 
 router = APIRouter(prefix="/api/account-access-management", tags=["account-access-management"])
 
@@ -467,10 +469,14 @@ def customer_account_number(customer: dict[str, Any]) -> str:
 def pppoe_binding_key(account: dict[str, Any] | None) -> str:
     if not account:
         return ""
+    router_id = clean_text(account.get("routerId"))
+    username = clean_text(account.get("username"))
+    if router_id and username:
+        return f"{router_id}:{username}"
     account_id = clean_text(account.get("id") or account.get("pppoeAccountId"))
     if account_id:
         return account_id
-    return f"{clean_text(account.get('routerId'))}:{clean_text(account.get('username')).lower()}"
+    return ""
 
 
 def default_network_record(customer: dict[str, Any]) -> dict[str, Any]:
@@ -1087,24 +1093,10 @@ def sample_mapping_customer(account: dict[str, Any], onu: dict[str, Any] | None)
 
 
 def customer_for_pppoe(account: dict[str, Any], customers: list[dict[str, Any]]) -> dict[str, Any] | None:
-    username = normalize_key(account.get("username"))
-    comment = normalize_key(account.get("comment"))
-    for customer in customers:
-        account_number = normalize_key(customer.get("accountNumber"))
-        full_name = normalize_key(customer_display_name(customer))
-        record = customer_network_records.get(customer["id"], {})
-        desired = normalize_key(record.get("desiredPppoeUsername"))
-        binding = record.get("pppoeBinding") or {}
-        bound_username = normalize_key(binding.get("username"))
-        if desired and desired == username:
-            return customer
-        if bound_username and bound_username == username:
-            return customer
-        if account_number and (account_number in username or account_number in comment):
-            return customer
-        if full_name and len(full_name) >= 8 and (full_name in username or full_name in comment):
-            return customer
-    return None
+    network_settings_module.seed_network_settings_data()
+    link = network_settings_module.find_pppoe_customer_link(account.get("routerId"), account.get("username"))
+    customer_id = clean_text((link or {}).get("customerId"))
+    return next((customer for customer in customers if customer["id"] == customer_id), None)
 
 
 def pppoe_metadata_key(account: dict[str, Any]) -> str:
@@ -1328,9 +1320,6 @@ def pppoe_onu_mapping_snapshot(
         onu = match.get("onu")
         customer = customer_for_pppoe(account, customers)
         is_sample_customer = False
-        if onu and customer is None and sample_match is None:
-            customer = sample_mapping_customer(account, onu)
-            is_sample_customer = True
         mapping = {
             "id": pppoe_binding_key(account),
             "pppoe": pppoe_mapping_summary(account),
@@ -1349,25 +1338,6 @@ def pppoe_onu_mapping_snapshot(
         mappings.append(mapping)
         if is_sample_customer:
             sample_match = mapping
-
-    if sample_match is None and pppoe_data.get("accounts") and onus:
-        account = pppoe_data["accounts"][0]
-        onu = onus[0]
-        sample_match = {
-            "id": "sample-pppoe-onu-fallback",
-            "pppoe": pppoe_mapping_summary(account),
-            "onu": onu_mapping_summary(onu),
-            "customer": customer_mapping_summary(sample_mapping_customer(account, onu)),
-            "matchStatus": "SAMPLE_MATCH",
-            "matchReason": "Temporary sample customer profile for PPPoE-to-ONU review",
-            "matchMethod": "sample",
-            "matchConfidence": "sample",
-            "pppoeMacKey": pppoe_mac_key(account),
-            "onuMacKey": onu_mac_key(onu),
-            "macDelta": mac_tail_delta(pppoe_mac_key(account), onu_mac_key(onu)),
-            "matched": True,
-            "sampleCustomerProfile": True,
-        }
 
     filtered_mappings = filtered_mapping_rows(mappings, search=search, status=status)
     unmatched = [row for row in mappings if row["matchStatus"] == "UNMATCHED_ONU"]
@@ -1397,10 +1367,11 @@ def pppoe_onu_mapping_snapshot(
 
 def binding_map() -> dict[str, list[dict[str, Any]]]:
     bindings: dict[str, list[dict[str, Any]]] = {}
-    for record in customer_network_records.values():
-        key = pppoe_binding_key(record.get("pppoeBinding"))
+    network_settings_module.seed_network_settings_data()
+    for link in network_settings_module.pppoe_customer_links:
+        key = pppoe_binding_key(link)
         if key:
-            bindings.setdefault(key, []).append(record)
+            bindings.setdefault(key, []).append(link)
     return bindings
 
 
@@ -1495,15 +1466,22 @@ def customer_network_row(
     seed_tickets: bool = True,
 ) -> dict[str, Any]:
     record = normalize_record(customer_network_records[customer["id"]], customer)
+    network_settings_module.seed_network_settings_data()
+    customer_links = [link for link in network_settings_module.pppoe_customer_links if link.get("customerId") == customer["id"]]
+    primary_link = next((link for link in customer_links if link.get("serviceAccountId")), customer_links[0] if customer_links else None)
+    bound = ({**(primary_link.get("accountSnapshot") or {}), **primary_link} if primary_link else {})
+    record = {**record, "pppoeBinding": bound or None}
     service = service_bundle(customer["id"])
     tickets = ticket_bundle(customer["id"], seed=seed_tickets)
     discovered_lookup = pppoe_account_lookup(snapshot)
+    live_account = discovered_lookup.get(pppoe_binding_key(bound), {})
+    if bound and not live_account:
+        bound = {**bound, "status": "UNKNOWN"}
+        record = {**record, "pppoeBinding": bound}
     bound_keys = set(binding_map())
     suggestion = suggest_pppoe(customer, snapshot.get("accounts", []), bound_keys) if not record.get("pppoeBinding") else None
     lifecycle = compute_lifecycle(record, customer, service)
     flags = review_flags(record, customer, service, discovered_lookup, duplicate_bindings)
-    bound = record.get("pppoeBinding") or {}
-    live_account = discovered_lookup.get(pppoe_binding_key(bound), {})
     pppoe_status = clean_text(live_account.get("status") or bound.get("status")) or "UNBOUND"
     access_summary = customer_access_summary(customer, record, service, pppoe_status, flags, hotspot_settings=hotspot_settings)
     return {
@@ -2026,48 +2004,30 @@ def update_customer_network_config(customer_id: str, payload: NetworkConfigPaylo
 
 @router.post("/customer-accounts/{customer_id}/bind-pppoe")
 def bind_pppoe(customer_id: str, payload: PppoeBindingPayload, admin=Depends(require_admin)):
-    customer, record = find_customer_network(customer_id)
+    customer, _record = find_customer_network(customer_id)
     snapshot = pppoe_snapshot(admin=admin, refresh=True)
     account = find_discovered_pppoe(payload, snapshot)
-    key = pppoe_binding_key(account)
-    for other in customer_network_records.values():
-        if other["customerId"] != customer_id and pppoe_binding_key(other.get("pppoeBinding")) == key:
-            raise HTTPException(status_code=409, detail="PPPoE account is already bound to another customer")
-    timestamp = now_iso()
-    record["pppoeBinding"] = {
-        "id": account.get("id", ""),
-        "routerId": account.get("routerId", ""),
-        "routerName": account.get("routerName", ""),
-        "routerEndpoint": account.get("routerEndpoint", ""),
-        "username": account.get("username", ""),
-        "profile": account.get("profile", ""),
-        "status": account.get("status", ""),
-        "activeAddress": account.get("activeAddress", ""),
-        "remoteAddress": account.get("remoteAddress", ""),
-        "callerId": account.get("callerId", ""),
-        "macAddress": account.get("macAddress", ""),
-        "source": account.get("source", "routeros-api"),
-        "boundAt": timestamp,
-        "boundBy": admin["username"],
-    }
-    record["desiredPppoeUsername"] = account.get("username", record.get("desiredPppoeUsername", ""))
-    record["pppoeProfile"] = account.get("profile", record.get("pppoeProfile", ""))
-    record["routerId"] = account.get("routerId", record.get("routerId", ""))
-    record["routerName"] = account.get("routerName", record.get("routerName", ""))
-    record["provisioningStatus"] = "PROVISIONED"
-    record["updatedAt"] = timestamp
-    add_audit("customer_network_pppoe_bound", "CustomerNetwork", record["id"], {"customerId": customer_id, "username": account.get("username")}, admin["username"])
+    network_settings_module.tag_pppoe_customer(
+        network_settings_module.PppoeCustomerLinkPayload(
+            routerId=account.get("routerId", ""), username=account.get("username", ""), customerId=customer["id"]
+        ),
+        admin=admin,
+    )
+    pppoe_discovery_cache["capturedAt"] = ""
     return customer_network_row(customer, snapshot, binding_map())
 
 
 @router.delete("/customer-accounts/{customer_id}/bind-pppoe")
 def unbind_pppoe(customer_id: str, admin=Depends(require_admin)):
-    customer, record = find_customer_network(customer_id)
-    previous = record.get("pppoeBinding") or {}
-    record["pppoeBinding"] = None
-    record["provisioningStatus"] = "NOT_REQUESTED"
-    record["updatedAt"] = now_iso()
-    add_audit("customer_network_pppoe_unbound", "CustomerNetwork", record["id"], {"customerId": customer_id, "username": previous.get("username")}, admin["username"])
+    customer, _record = find_customer_network(customer_id)
+    network_settings_module.seed_network_settings_data()
+    links = [link for link in network_settings_module.pppoe_customer_links if link.get("customerId") == customer_id]
+    if not links:
+        raise HTTPException(status_code=404, detail="Customer has no PPPoE link")
+    if len(links) > 1:
+        raise HTTPException(status_code=409, detail="Remove a specific PPPoE tag in Network Settings")
+    network_settings_module.untag_pppoe_customer(links[0]["routerId"], links[0]["username"], admin=admin)
+    pppoe_discovery_cache["capturedAt"] = ""
     return customer_network_row(customer, pppoe_snapshot(admin=admin), binding_map())
 
 

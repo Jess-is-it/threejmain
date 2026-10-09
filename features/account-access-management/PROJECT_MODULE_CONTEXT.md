@@ -39,7 +39,7 @@ Current Phase 1 UI is intentionally table-first:
 - IPTV Access is a future-ready summary contract. It detects IPTV-like Service Account/Order data when present, but no IPTV provisioning controls or live integration are implemented yet.
 - `PPPoE & ONUs` is a separate Account Access Management side-nav view. It reads MikroTik PPPoE accounts and OLT ONUs from Network Settings and keeps the mapping review outside Customer Accounts and outside the Customer Accounts Active/Inactive tabs.
 - PPPoE-to-ONU matching is conservative but now accounts for observed device behavior: captured ONUs are first deduplicated by physical OLT/PON/ONU identity, exact PPPoE caller ID/MAC to ONU MAC evidence is matched first, same-OUI low-byte proximity matches use a maximum tail delta of 8 with mutual-best one-to-one assignment, and metadata fallback is used only when ONU identifiers appear in PPPoE text fields.
-- The PPPoE/ONU mapping API also attaches one temporary sample dummy customer profile to the first matched PPPoE/ONU pair so the intended customer-profile binding shape can be reviewed without changing Customer Profiling data.
+- PPPoE customer identity in the PPPoE/ONU mapping API comes only from Network Settings' persisted router/username customer tag. The temporary dummy customer profile has been removed so unmatched accounts remain unlinked.
 - `Hotspot Access` is a separate Account Access Management view for syncing monthly subscriber eligibility to the Pisowifi captive portal. It derives subscriber rows from visible Customer Profiles plus active Service Accounts, supports primary/alternate/secondary mobile contacts, and signs outbound sync calls to Pisowifi. Sync All sends `sync_mode: FULL` so Pisowifi disables subscribers/contacts missing from the exported list; single-row/contact saves send `sync_mode: PARTIAL`.
 - Service Account and Installation Order columns are hidden from the current Customer Accounts table.
 - Network configuration forms, save buttons, MikroTik refresh buttons, PPPoE binding controls, and review-only controls are hidden for this step.
@@ -146,10 +146,10 @@ Passwords are not returned by the API. Phase 1 only records whether a password c
 
 - In-memory data resets on API restart.
 - Activation readiness is derived because Service does not yet have a dedicated activation order type/status.
-- Temporary sample customer profile in the PPPoE/ONU mapping response is not persisted to Customer Profiling.
+- The older hidden `bind-pppoe` and unbind routes delegate to Network Settings' persisted customer tag. The Customer Accounts summary reads the same source, though its current one-customer-row presentation shows one primary PPPoE connection when a customer has several.
 - PPPoE/ONU matching is only as complete as captured ONU MAC/identifier data from OLT SNMP.
 - Same-OUI proximity matching is intentionally limited to high-confidence low-byte deltas and mutual-best candidates; duplicate captured rows for the same physical ONU are merged before ambiguity checks.
-- Network configuration editing, PPPoE binding, live PPPoE create/update/disable, WiFi/CPE writes, and router profile changes are future steps.
+- Network configuration editing, live PPPoE create/update/disable, WiFi/CPE writes, and router profile changes are future steps. Customer tagging is managed from Network Settings -> PPPoE Accounts.
 - PPPoE creation is not implemented yet. The next step should allow create only from an eligible `INSTALLATION` ticket, resolve the customer's System Settings `locationId`/address to a MikroTik router through Network Settings location bindings, then call the live RouterOS provisioning adapter.
 - Durable PostgreSQL tables and audit-grade sync history are future work.
 - Hotspot Access settings/contact overrides currently persist to the configured JSON state file. Docker deployments should set `ACCOUNT_ACCESS_MANAGEMENT_HOTSPOT_STATE_PATH=/app/data/account_access_management_hotspot.json` so the file is stored in the API data volume. The old `ACCOUNT_ADMIN_HOTSPOT_STATE_PATH` is still accepted as a fallback. Move this to a durable module database table if 3J Main later standardizes module persistence beyond Customer Profiling.

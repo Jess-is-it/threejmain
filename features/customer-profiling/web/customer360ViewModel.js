@@ -23,7 +23,8 @@ export const CUSTOMER_360_ENDPOINTS = {
   pointOfSaleSales: '/api/point-of-sale/sales',
   ticketingTickets: '/api/ticketing/tickets?customerId={customerId}',
   inventoryAssignments: '/api/inventory/assignments',
-  auditLogs: '/api/logs'
+  auditLogs: '/api/logs',
+  pppoeCustomerLinks: '/api/network-settings/pppoe-customer-links?customerId={customerId}&refreshLive=true'
 };
 
 const CLOSED_INVOICE_STATUSES = new Set(['PAID', 'VOID', 'DRAFT']);
@@ -38,6 +39,7 @@ export function emptyCustomer360Data() {
     serviceCatalog: [],
     serviceAccounts: [],
     serviceOrders: [],
+    pppoeLinks: [],
     subscriptions: [],
     installationCharges: [],
     balance: null,
@@ -168,6 +170,7 @@ export function buildCustomer360Data(customer, sources = {}) {
     serviceCatalog: normalizeArray(sources.serviceCatalog).sort((left, right) => String(left.name || '').localeCompare(String(right.name || ''))),
     serviceAccounts: normalizeArray(sources.serviceAccounts).sort(byRecentDate),
     serviceOrders: normalizeArray(sources.serviceOrders).sort(byRecentDate),
+    pppoeLinks: normalizeArray(sources.pppoeCustomerLinks?.links),
     subscriptions: normalizeArray(sources.subscriptions).sort(byRecentDate),
     installationCharges: normalizeArray(sources.installationCharges).sort(byRecentDate),
     balance: sources.balance && typeof sources.balance === 'object' ? sources.balance : null,

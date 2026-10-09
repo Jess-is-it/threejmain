@@ -17,7 +17,8 @@ The module is intended to connect customer installation and service lifecycle wo
 - Current implementation uses module-local JSON persistence on `/app/data/network_settings.json` when the shared API data volume is available. Shared PostgreSQL persistence remains future work.
 - Network Settings JSON persistence now writes to a temp file and atomically replaces `/app/data/network_settings.json` to avoid truncated data files during shared server rebuilds/restarts.
 - SNMP capture history is persisted as compact per-device history instead of storing every walked interface row. This keeps small CRUD saves, including NAP box saves, from rewriting hundreds of MB of capture details. Manual capture responses still return current-run details; persisted history keeps counts, system details, reconciliation, and bounded candidate previews.
-- The PPPoE Accounts page is now a live read-only RouterOS API discovery surface for saved MikroTik API devices; mapping and provisioning are not implemented yet.
+- The PPPoE Accounts page is a live read-only RouterOS API discovery surface for saved MikroTik API devices; live provisioning and PPPoE-to-ONU mapping are not implemented yet.
+- PPPoE Accounts supports an app-side customer tag for each discovered router/username pair. Authorized `network-settings.edit` users assign, change, or remove tags from the PPPoE table; the tag persists as `pppoeCustomerLinks` in the atomic Network Settings JSON store and never writes to RouterOS. Each tag references one Customer Profile and, when the customer has multiple Service Accounts, a selected service line. The table has a Customer column, Linked/Unlinked filters, and an active-customer-without-tag list. Customer 360 reads linked account details through the Network Settings API; router-unavailable and account-missing states remain distinct from offline status. The older Account Access Management binding routes use this same durable link source instead of their former in-memory `pppoeBinding` record. PPPoE-to-ONU mapping and provisioning are still future work.
 
 ## Research Summary
 
@@ -189,6 +190,7 @@ Current endpoints:
 - `GET /api/network-settings/devices/{device_id}/captures`
 - `POST /api/network-settings/devices/{device_id}/capture`
 - `GET /api/network-settings/pppoe-accounts`
+- `GET/PUT/DELETE /api/network-settings/pppoe-customer-links` (local customer tag; GET can refresh live account detail)
 - `GET/POST/PATCH/DELETE /api/network-settings/olts`
 - `GET/POST /api/network-settings/olts/{olt_id}/pons`
 - `PATCH /api/network-settings/olts/{olt_id}/pons/power`

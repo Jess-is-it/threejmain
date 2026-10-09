@@ -3021,7 +3021,20 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
   const [mapProviderSession, setMapProviderSession] = useState(null);
   const [mapProviderSessionError, setMapProviderSessionError] = useState('');
   const [customerProfiles, setCustomerProfiles] = useState([]);
+  const [customerProfilesLoaded, setCustomerProfilesLoaded] = useState(false);
   const [pppoeAccounts, setPppoeAccounts] = useState([]);
+  const [pppoeCustomerLinks, setPppoeCustomerLinks] = useState([]);
+  const [pppoeLinkFilter, setPppoeLinkFilter] = useState('');
+  const [pppoeTagAccount, setPppoeTagAccount] = useState(null);
+  const [pppoeTagCustomerId, setPppoeTagCustomerId] = useState('');
+  const [pppoeTagCustomerSearch, setPppoeTagCustomerSearch] = useState('');
+  const [pppoeTagServiceAccountId, setPppoeTagServiceAccountId] = useState('');
+  const [pppoeTagServiceAccounts, setPppoeTagServiceAccounts] = useState([]);
+  const [pppoeTagServiceAccountsReady, setPppoeTagServiceAccountsReady] = useState(false);
+  const pppoeTagCustomerRequestId = useRef(0);
+  const [pppoeTagSaving, setPppoeTagSaving] = useState(false);
+  const [pppoeTagRemoveConfirm, setPppoeTagRemoveConfirm] = useState(false);
+  const [canManagePppoeTags, setCanManagePppoeTags] = useState(false);
   const [pppoeKpis, setPppoeKpis] = useState({});
   const [pppoeRouters, setPppoeRouters] = useState([]);
   const [pppoeProfiles, setPppoeProfiles] = useState([]);
@@ -3347,7 +3360,7 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
         request('/network-settings/devices'),
         request('/system-settings/map-images').catch(() => null),
         request('/system-settings/map-providers').catch(() => null),
-        loadServiceabilityCustomerProfiles().catch(() => [])
+        loadServiceabilityCustomerProfiles().then((rows) => ({ rows, loaded: true })).catch(() => ({ rows: [], loaded: false }))
       ]);
       const normalizedFiberSettings = normalizeFiberColorSettings(nextFiberSettings?.colorSettings || nextMeta.fiberColorSettings);
       const orderedOlts = [...nextOlts].sort(sortByDisplayOrder);
@@ -3369,7 +3382,8 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
       setDevices(orderedDevices);
       if (nextMapImages) setMapImages(nextMapImages);
       setMapProviderSettings(normalizeMapProviderSettings(nextMapProviders || undefined));
-      setCustomerProfiles(Array.isArray(nextCustomers) ? nextCustomers : []);
+      setCustomerProfiles(nextCustomers.rows);
+      setCustomerProfilesLoaded(nextCustomers.loaded);
       setSelectedOltId((current) => (current && orderedOlts.some((olt) => olt.id === current) ? current : orderedOlts[0]?.id || ''));
       setExpandedOltIds((current) => Object.fromEntries(
         Object.entries(current).filter(([id, expanded]) => expanded && nextOlts.some((olt) => olt.id === id))
@@ -3387,14 +3401,25 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
 
   useEffect(() => { load(); }, []);
 
+  useEffect(() => {
+    request('/me').then((user) => {
+      const permissions = user?.permissions;
+      setCanManagePppoeTags(!Array.isArray(permissions) || permissions.includes('*') || permissions.includes('network-settings.edit'));
+    }).catch(() => setCanManagePppoeTags(false));
+  }, []);
+
   async function loadPppoeAccounts() {
     setPppoeLoading(true);
     setError('');
     try {
       const params = new URLSearchParams();
       if (pppoeRouterFilter) params.set('deviceId', pppoeRouterFilter);
-      const nextPppoe = await request(`/network-settings/pppoe-accounts${params.toString() ? `?${params.toString()}` : ''}`);
+      const [nextPppoe, nextLinks] = await Promise.all([
+        request(`/network-settings/pppoe-accounts${params.toString() ? `?${params.toString()}` : ''}`),
+        request('/network-settings/pppoe-customer-links')
+      ]);
       setPppoeAccounts(nextPppoe.accounts || []);
+      setPppoeCustomerLinks(nextLinks.links || []);
       setPppoeKpis(nextPppoe.kpis || {});
       setPppoeRouters(nextPppoe.routers || []);
       setPppoeProfiles(nextPppoe.profiles || []);
@@ -3405,6 +3430,96 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
       setError(err.message);
     } finally {
       setPppoeLoading(false);
+    }
+  }
+
+  async function choosePppoeTagCustomer(customer, preferredServiceAccountId = '') {
+    const requestId = ++pppoeTagCustomerRequestId.current;
+    setPppoeTagCustomerId(customer?.id || '');
+    setPppoeTagServiceAccounts([]);
+    setPppoeTagServiceAccountId('');
+    setPppoeTagServiceAccountsReady(false);
+    setPppoeTagRemoveConfirm(false);
+    if (!customer?.id) return;
+    try {
+      const accounts = await request(`/service/accounts?customerId=${encodeURIComponent(customer.id)}`);
+      if (requestId !== pppoeTagCustomerRequestId.current) return;
+      const rows = Array.isArray(accounts) ? accounts : [];
+      setPppoeTagServiceAccounts(rows);
+      setPppoeTagServiceAccountId(
+        rows.some((row) => row.id === preferredServiceAccountId)
+          ? preferredServiceAccountId
+          : rows.length === 1 ? rows[0].id : ''
+      );
+      setPppoeTagServiceAccountsReady(true);
+    } catch (err) {
+      if (requestId === pppoeTagCustomerRequestId.current) setError(err.message);
+    }
+  }
+
+  function openPppoeTag(account) {
+    setPppoeTagAccount(account);
+    setPppoeTagCustomerSearch('');
+    setPppoeTagRemoveConfirm(false);
+    setError('');
+    setModalType('pppoe-tag');
+    const customer = customerProfiles.find((row) => row.id === account.customerTag?.customerId);
+    choosePppoeTagCustomer(customer, account.customerTag?.serviceAccountId || '');
+    if (!customerProfilesLoaded) {
+      loadServiceabilityCustomerProfiles().then((rows) => {
+        setCustomerProfiles(rows);
+        setCustomerProfilesLoaded(true);
+      }).catch((err) => setError(err.message));
+    }
+  }
+
+  async function savePppoeTag(event) {
+    event.preventDefault();
+    if (!pppoeTagAccount || !pppoeTagCustomerId || !pppoeTagServiceAccountsReady) return;
+    if (pppoeTagServiceAccounts.length > 1 && !pppoeTagServiceAccountId) {
+      setError('Choose the Service Account for this PPPoE account.');
+      return;
+    }
+    setPppoeTagSaving(true);
+    setError('');
+    try {
+      await request('/network-settings/pppoe-customer-links', {
+        method: 'PUT',
+        body: JSON.stringify({
+          routerId: pppoeTagAccount.routerId,
+          username: pppoeTagAccount.username,
+          customerId: pppoeTagCustomerId,
+          serviceAccountId: pppoeTagServiceAccountId || null
+        })
+      });
+      closeModal();
+      await loadPppoeAccounts();
+      setMessage('PPPoE account tagged to customer.');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setPppoeTagSaving(false);
+    }
+  }
+
+  async function removePppoeTag() {
+    if (!pppoeTagAccount?.customerTag) return;
+    if (!pppoeTagRemoveConfirm) {
+      setPppoeTagRemoveConfirm(true);
+      return;
+    }
+    setPppoeTagSaving(true);
+    setError('');
+    try {
+      const params = new URLSearchParams({ routerId: pppoeTagAccount.routerId, username: pppoeTagAccount.username });
+      await request(`/network-settings/pppoe-customer-links?${params.toString()}`, { method: 'DELETE' });
+      closeModal();
+      await loadPppoeAccounts();
+      setMessage('PPPoE customer tag removed.');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setPppoeTagSaving(false);
     }
   }
 
@@ -4168,11 +4283,12 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
   );
   const filteredPppoeAccounts = useMemo(
     () => pppoeAccounts.filter((account) => (
-      matches(account, search)
+      (matches(account, search) || matches(account.customerTag || {}, search))
       && (!pppoeStatusFilter || account.status === pppoeStatusFilter)
       && (!pppoeProfileFilter || account.profile === pppoeProfileFilter)
+      && (!pppoeLinkFilter || (pppoeLinkFilter === 'LINKED' ? Boolean(account.customerTag) : !account.customerTag))
     )),
-    [pppoeAccounts, search, pppoeStatusFilter, pppoeProfileFilter]
+    [pppoeAccounts, search, pppoeStatusFilter, pppoeProfileFilter, pppoeLinkFilter]
   );
   const sortedPppoeAccounts = useMemo(() => {
     const direction = pppoeSort.direction === 'desc' ? -1 : 1;
@@ -7782,6 +7898,9 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
 
   function closeModal() {
     setModalType('');
+    pppoeTagCustomerRequestId.current += 1;
+    setPppoeTagAccount(null);
+    setPppoeTagRemoveConfirm(false);
     setFiberMappingLayoutContainerKey('');
     setFiberLinkCanvasPonId('');
     setFiberLineReturnPonId('');
@@ -11379,6 +11498,11 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
     const profileOptions = pppoeProfiles.length
       ? pppoeProfiles
       : [...new Set(pppoeAccounts.map((account) => account.profile).filter(Boolean))].sort();
+    const linkedCustomerIds = new Set(pppoeCustomerLinks.map((link) => link.customerTag?.customerId).filter(Boolean));
+    const unlinkedActiveCustomers = customerProfiles
+      .filter((customer) => customer.status === 'ACTIVE' && !linkedCustomerIds.has(customer.id))
+      .sort((left, right) => customerDisplayName(left).localeCompare(customerDisplayName(right)));
+    const linkedAccountCount = pppoeAccounts.filter((account) => account.customerTag).length;
     const kpis = [
       ['Total Accounts', pppoeKpis.total ?? pppoeAccounts.length, IconRouter, 'blue'],
       ['Online', pppoeKpis.online ?? 0, IconCircleCheck, 'green'],
@@ -11412,13 +11536,26 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
             </div>
           ))}
           <div className="col-12">
+            <div className="alert alert-info network-pppoe-link-coverage">
+              <strong>{linkedAccountCount} linked</strong> and <strong>{pppoeAccounts.length - linkedAccountCount} unlinked</strong> discovered PPPoE accounts.
+              <details>
+                <summary>{customerProfilesLoaded ? `${unlinkedActiveCustomers.length} active customers have no PPPoE tag` : 'Customer coverage unavailable; refresh customer list'}</summary>
+                <div className="network-pppoe-unlinked-customers">
+                  {unlinkedActiveCustomers.length ? unlinkedActiveCustomers.map((customer) => (
+                    <span key={customer.id}>{customerDisplayName(customer)} <small>({customer.accountNumber || customer.id})</small></span>
+                  )) : <span>{customerProfilesLoaded ? 'All active customers have a PPPoE tag.' : 'Customer Profiling data could not be loaded.'}</span>}
+                </div>
+              </details>
+            </div>
+          </div>
+          <div className="col-12">
             <Card
               title={`PPPoE Accounts (${filteredPppoeAccounts.length})`}
               icon={IconRouter}
               className="network-table-card"
               actions={(
                 <div className="btn-list network-header-actions">
-                  <SearchInput value={search} onChange={setSearch} placeholder="Search username, MAC, IP, profile, router" />
+                  <SearchInput value={search} onChange={setSearch} placeholder="Search username, customer, MAC, IP, router" />
                   <button type="button" className="btn btn-outline-secondary btn-sm network-header-icon-button" title="Refresh PPPoE accounts" aria-label="Refresh PPPoE accounts" disabled={pppoeLoading} onClick={loadPppoeAccounts}>
                     <IconRefresh size={16} />
                   </button>
@@ -11453,17 +11590,26 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
                   </select>
                 </label>
                 <label>
+                  <span>Customer tag</span>
+                  <select className="form-select form-select-sm" value={pppoeLinkFilter} onChange={(event) => { setPppoeLinkFilter(event.target.value); setPppoePage(1); }}>
+                    <option value="">All accounts</option>
+                    <option value="LINKED">Linked</option>
+                    <option value="UNLINKED">Unlinked</option>
+                  </select>
+                </label>
+                <label>
                   <span>Show Entries</span>
                   <select className="form-select form-select-sm" value={pppoePageSize} onChange={(event) => setPppoePageSize(Number(event.target.value))}>
                     {[10, 25, 50, 100].map((size) => <option key={size} value={size}>{size}</option>)}
                   </select>
                 </label>
-                {(pppoeStatusFilter || pppoeRouterFilter || pppoeProfileFilter || search) && (
+                {(pppoeStatusFilter || pppoeRouterFilter || pppoeProfileFilter || pppoeLinkFilter || search) && (
                   <button type="button" className="btn btn-sm" onClick={() => {
                     setSearch('');
                     setPppoeStatusFilter('');
                     setPppoeRouterFilter('');
                     setPppoeProfileFilter('');
+                    setPppoeLinkFilter('');
                   }}>
                     Clear
                   </button>
@@ -11479,12 +11625,14 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
                     <tr>
                       <th><SortHeader label="Account" field="username" /></th>
                       <th><SortHeader label="Router" field="routerName" /></th>
+                      <th>Customer</th>
                       <th><SortHeader label="Status" field="status" /></th>
                       <th><SortHeader label="Caller ID" field="callerId" /></th>
                       <th><SortHeader label="IP Address" field="activeAddress" /></th>
                       <th><SortHeader label="Profile" field="profile" /></th>
                       <th><SortHeader label="Session" field="uptime" /></th>
                       <th><SortHeader label="Last Seen" field="lastLoggedOut" /></th>
+                      <th className="network-actions-column">Action</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -11492,17 +11640,23 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
                       <tr key={account.id}>
                         <td><span className="network-table-value fw-semibold">{account.username}</span><div className="text-muted small">{titleize(account.service || 'pppoe')} / {account.source}</div></td>
                         <td>{account.routerName}<span>{account.routerEndpoint}</span></td>
+                        <td>
+                          {account.customerTag ? (
+                            <><span className="network-table-value fw-semibold">{account.customerTag.customerName || 'Customer'}</span><span>{account.customerTag.customerAccountNumber || ''}</span></>
+                          ) : <span className="badge bg-yellow-lt text-yellow">Unlinked</span>}
+                        </td>
                         <td><StatusBadge value={account.status} /><span>{account.radius ? 'RADIUS session' : account.disabled ? 'Disabled secret' : 'Local secret'}</span></td>
                         <td>{account.callerId || '-'}<span>Last {account.lastCallerId || '-'}</span></td>
                         <td>{account.activeAddress || account.remoteAddress || '-'}<span>Local {account.localAddress || '-'}</span></td>
                         <td>{account.profile || '-'}<span>{account.comment || 'No comment'}</span></td>
                         <td>{account.uptime || '-'}<span>{account.activeInterface || account.encoding || account.sessionId || '-'}</span></td>
                         <td>{account.lastLoggedOut || '-'}<span>{account.lastDisconnectReason || '-'}</span></td>
+                        <td>{canManagePppoeTags ? <button type="button" className="btn btn-sm btn-outline-primary" onClick={() => openPppoeTag(account)}>{account.customerTag ? 'Change Tag' : 'Tag Customer'}</button> : '-'}</td>
                       </tr>
                     ))}
                     {!pagedPppoeAccounts.length && (
                       <tr>
-                        <td colSpan="8">
+                        <td colSpan="10">
                           <div className="empty">{pppoeLoading ? 'Reading PPPoE accounts from MikroTik...' : 'No PPPoE accounts match the current filters.'}</div>
                         </td>
                       </tr>
@@ -11860,6 +12014,73 @@ export default function NetworkSettingsPage({ initialSection = 'overview', refre
   }
 
   function renderModal() {
+    if (modalType === 'pppoe-tag' && pppoeTagAccount) {
+      const searchTerm = pppoeTagCustomerSearch.trim().toLowerCase();
+      const matchingCustomers = customerProfiles
+        .filter((customer) => !searchTerm || [customerDisplayName(customer), customer.accountNumber, customer.contactNumber]
+          .some((value) => String(value || '').toLowerCase().includes(searchTerm)))
+        .sort((left, right) => {
+          if (left.id === pppoeTagCustomerId) return -1;
+          if (right.id === pppoeTagCustomerId) return 1;
+          if (left.status === 'ACTIVE' && right.status !== 'ACTIVE') return -1;
+          if (right.status === 'ACTIVE' && left.status !== 'ACTIVE') return 1;
+          return customerDisplayName(left).localeCompare(customerDisplayName(right));
+        });
+      const selectedCustomer = customerProfiles.find((customer) => customer.id === pppoeTagCustomerId);
+      return (
+        <CrudModal
+          title={pppoeTagAccount.customerTag ? 'Change PPPoE Customer Tag' : 'Tag PPPoE Account to Customer'}
+          icon={IconRouter}
+          onClose={closeModal}
+          onSubmit={savePppoeTag}
+          submitDisabled={pppoeTagSaving || !pppoeTagCustomerId || !pppoeTagServiceAccountsReady || (pppoeTagServiceAccounts.length > 1 && !pppoeTagServiceAccountId)}
+          submitLabel={pppoeTagSaving ? 'Saving...' : 'Save Tag'}
+          modalClassName="network-pppoe-tag-modal"
+        >
+          <div className="col-12 network-pppoe-tag-account">
+            <strong>{pppoeTagAccount.username}</strong>
+            <span>{pppoeTagAccount.routerName} / {pppoeTagAccount.routerEndpoint}</span>
+            <StatusBadge value={pppoeTagAccount.status} />
+          </div>
+          {pppoeTagAccount.customerTag && (
+            <div className="col-12 text-muted small">Currently tagged to {pppoeTagAccount.customerTag.customerName} ({pppoeTagAccount.customerTag.customerAccountNumber || 'no account number'}).</div>
+          )}
+          <div className="col-12">
+            <label className="form-label" htmlFor="pppoe-tag-customer-search">Find customer</label>
+            <input id="pppoe-tag-customer-search" className="form-control" value={pppoeTagCustomerSearch} onChange={(event) => setPppoeTagCustomerSearch(event.target.value)} placeholder="Search name, account number, or mobile" autoFocus />
+            <div className="network-pppoe-customer-options">
+              {matchingCustomers.slice(0, 30).map((customer) => (
+                <button type="button" key={customer.id} className={`network-pppoe-customer-option ${pppoeTagCustomerId === customer.id ? 'active' : ''}`} onClick={() => choosePppoeTagCustomer(customer)}>
+                  <span><strong>{customerDisplayName(customer)}</strong><small>{customer.accountNumber || customer.id}</small></span>
+                  <StatusBadge value={customer.status} />
+                </button>
+              ))}
+              {!matchingCustomers.length && <div className="text-muted small p-2">No customer matches this search.</div>}
+            </div>
+            {matchingCustomers.length > 30 && <div className="text-muted small mt-1">Showing 30 customers. Search to narrow the list.</div>}
+          </div>
+          {pppoeTagServiceAccounts.length > 1 && (
+            <div className="col-12">
+              <label className="form-label" htmlFor="pppoe-tag-service-account">Internet line / Service Account</label>
+              <select id="pppoe-tag-service-account" className="form-select" value={pppoeTagServiceAccountId} onChange={(event) => setPppoeTagServiceAccountId(event.target.value)} required>
+                <option value="">Choose the line that uses this PPPoE account</option>
+                {pppoeTagServiceAccounts.map((account) => <option key={account.id} value={account.id}>{account.serviceAccountNumber || account.id} / {account.catalogName || 'Internet service'} / {titleize(account.status)}</option>)}
+              </select>
+            </div>
+          )}
+          {pppoeTagCustomerId && !pppoeTagServiceAccountsReady && <div className="col-12 text-muted small">Loading this customer's Service Accounts before saving...</div>}
+          {selectedCustomer && (
+            <div className="col-12 alert alert-info mb-0">Save Tag will link <strong>{pppoeTagAccount.username}</strong> on <strong>{pppoeTagAccount.routerName}</strong> to <strong>{customerDisplayName(selectedCustomer)}</strong> in this app. MikroTik will not be changed.</div>
+          )}
+          {pppoeTagAccount.customerTag && (
+            <div className="col-12">
+              <button type="button" className="btn btn-outline-danger btn-sm" disabled={pppoeTagSaving} onClick={removePppoeTag}>{pppoeTagRemoveConfirm ? 'Confirm Remove Tag' : 'Remove Tag'}</button>
+              {pppoeTagRemoveConfirm && <span className="text-danger small ms-2">This removes the customer link in this app only.</span>}
+            </div>
+          )}
+        </CrudModal>
+      );
+    }
     if (modalType === 'fiber-delete-object' && fiberDeleteTarget) {
       return (
         <div className="network-modal-backdrop" role="presentation">
