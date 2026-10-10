@@ -17,6 +17,7 @@ from .db_migrations import database_migration_status, run_database_migrations
 
 
 MODULE_API_PATHS = [
+    ("dashboard", "api"),
     ("customer-profiling", "api"),
     ("billing", "api"),
     ("collector", "api"),
@@ -69,6 +70,7 @@ from collector import (
 )
 from customer_profiling import configure_customer_profiling, customer_metrics, router as customer_profiling_router, seed_customer_data, sync_customer_lifecycle_status
 from customer_profiling.router import find_customer, list_customers
+from dashboard import configure_dashboard, router as dashboard_router
 from customer_service_management import (
     configure_customer_service_management,
     customer_service_metrics,
@@ -767,6 +769,7 @@ configure_collector(
     billing_transaction_factory=billing_store.transaction,
 )
 configure_logs(current_admin, audit_logs)
+configure_dashboard(current_admin, seed_module_data, sync_module_metrics, modules, customer_metrics)
 configure_techportal(
     current_admin,
     add_audit,
@@ -789,6 +792,7 @@ app.include_router(process_flow_router)
 app.include_router(network_settings_router)
 app.include_router(system_settings_router)
 app.include_router(logs_router)
+app.include_router(dashboard_router)
 app.include_router(techportal_router)
 
 
@@ -908,32 +912,6 @@ def list_modules(admin=Depends(current_admin)):
     seed_module_data()
     sync_module_metrics()
     return modules
-
-
-@app.get("/api/dashboard")
-def dashboard(admin=Depends(current_admin)):
-    seed_module_data()
-    sync_module_metrics()
-    module_counts = {module["slug"]: module["metrics"] for module in modules}
-    billing_summary = module_counts.get("billing", {})
-    ticketing_summary = module_counts.get("ticketing", {})
-    inventory_summary = module_counts.get("inventory", {})
-    return {
-        "summary": {
-            "modules": len(modules),
-            "customers": customer_metrics()["customers"],
-            "open_tickets": ticketing_summary.get("open_tickets", 0),
-            "monthly_revenue": billing_summary.get("monthly_recurring_revenue", 0),
-            "inventory_alerts": inventory_summary.get("low_stock", 0),
-        },
-        "modules": modules,
-        "module_counts": module_counts,
-        "alerts": [
-            {"level": "info", "message": "Customer Profiling is loaded from the features/customer-profiling module folder."},
-            {"level": "info", "message": "Business modules, System Settings, and Logs are loaded from features module folders."},
-            {"level": "warning", "message": "Default admin password should be changed before deployment."},
-        ],
-    }
 
 
 @app.get("/api/system/resources")

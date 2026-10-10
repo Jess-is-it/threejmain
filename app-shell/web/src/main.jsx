@@ -45,6 +45,7 @@ import BillingPage from '../../../features/billing/web/BillingPage.jsx';
 import CollectorPage from '../../../features/collector/web/CollectorPage.jsx';
 import CustomerProfilingPage from '../../../features/customer-profiling/web/CustomerProfilingPage.jsx';
 import CustomerServiceManagementPage from '../../../features/customer-service-management/web/CustomerServiceManagementPage.jsx';
+import DashboardPage from '../../../features/dashboard/web/DashboardPage.jsx';
 import InventoryPage from '../../../features/inventory/web/InventoryPage.jsx';
 import LogsPage from '../../../features/logs/web/LogsPage.jsx';
 import NetworkSettingsPage from '../../../features/network-settings/web/NetworkSettingsPage.jsx';
@@ -758,53 +759,6 @@ function Header({ page, resources, onToggleSidebar, sidebarCollapsed, onNavigate
   );
 }
 
-function Dashboard({ data }) {
-  const summary = data?.summary || {};
-  return (
-    <div className="row row-cards">
-      {[
-        ['Modules', summary.modules, IconDashboard, 'blue'],
-        ['Customers', summary.customers, IconUsers, 'azure'],
-        ['Open Tickets', summary.open_tickets, IconTicket, 'red'],
-        ['Inventory Alerts', summary.inventory_alerts, IconBox, 'orange']
-      ].map(([label, value, Icon, tone]) => (
-        <div className="col-sm-6 col-lg-3" key={label}>
-          <div className="card status-card">
-            <div className="card-body">
-              <span className={`badge bg-${tone}-lt text-${tone} mb-3`}><Icon size={18} /></span>
-              <div className="h1 mb-0">{value ?? 0}</div>
-              <div className="text-muted">{label}</div>
-            </div>
-          </div>
-        </div>
-      ))}
-      <div className="col-12">
-        <Card title="Business Modules" icon={IconNetwork}>
-          <div className="module-grid">
-            {(data?.modules || []).map((module) => (
-              <div className="module-card" key={module.slug}>
-                <div className="d-flex justify-content-between gap-3">
-                  <div>
-                    <h3>{module.name}</h3>
-                    <div className="text-muted">{module.description}</div>
-                  </div>
-                  <span className={`badge ${module.status === 'planned' ? 'bg-blue-lt text-blue' : 'bg-green-lt text-green'}`}>{module.status}</span>
-                </div>
-                <div className="module-folder mt-3">{module.folder}/</div>
-              </div>
-            ))}
-          </div>
-        </Card>
-      </div>
-      <div className="col-12">
-        <Card title="Operational Notes" icon={IconAlertTriangle}>
-          {(data?.alerts || []).map((alert) => <div className={`alert alert-${alert.level === 'warning' ? 'warning' : 'info'} mb-2`} key={alert.message}>{alert.message}</div>)}
-        </Card>
-      </div>
-    </div>
-  );
-}
-
 function ModulePage({ module }) {
   if (!module) return <div className="empty">Module not found.</div>;
   const metrics = Object.entries(module.metrics || {});
@@ -1060,7 +1014,7 @@ function App() {
             {activePage === 'Tech Portal' && <TechPortalPage refreshShell={refresh} currentUser={me} onNavigatePage={navigate} />}
             {activePage === 'Tech Portal Ticketing' && <TechPortalTicketingPage refreshShell={refresh} currentUser={me} onNavigatePage={navigate} />}
             {canRenderModulePage('Collector') && activePage === 'Collector' && <CollectorPage currentUser={me} refreshShell={refresh} />}
-            {canRenderModulePage('Dashboard') && activePage === 'Dashboard' && <Dashboard data={dashboard} />}
+            {canRenderModulePage('Dashboard') && activePage === 'Dashboard' && <DashboardPage data={dashboard} />}
             {!technicianUser && !collectorPortalUser && activePage === 'Process Flow' && <ProcessFlowPage refreshShell={refresh} />}
             {canRenderModulePage('Customer Profiling') && activePage === 'Customer Profiling' && <CustomerProfilingPage refreshShell={refresh} />}
             {canRenderModulePage('Billing') && activePage === 'Billing' && <BillingPage refreshShell={refresh} />}

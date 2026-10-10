@@ -9,6 +9,7 @@ COPY app-shell/api/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app-shell/api/app ./app
+COPY features/dashboard/api/dashboard ./dashboard
 COPY features/customer-profiling/api/customer_profiling ./customer_profiling
 COPY features/billing/api/billing ./billing
 COPY features/collector/api/collector ./collector

@@ -1,0 +1,11 @@
+{
+  "slug": "dashboard",
+  "name": "Dashboard",
+  "status": "functional-shell",
+  "owner": "threejmain",
+  "description": "Read-only ISP operations summary and business module overview.",
+  "app_shell_route": "/dashboard",
+  "api_prefix": "/api/dashboard",
+  "frontend_entry": "features/dashboard/web/DashboardPage.jsx",
+  "api_entry": "features/dashboard/api/dashboard/router.py"
+}

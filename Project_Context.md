@@ -53,6 +53,7 @@ app-shell/
   api/        shared FastAPI shell
 
 features/
+  dashboard/    read-only main operations summary page and API
   customer-profiling/
     web/        Customer Profiling page/components/styles
     api/        Customer Profiling FastAPI router/service shell
@@ -77,6 +78,7 @@ features/
 
 Business module folders under `features/`:
 
+- `features/dashboard`: main read-only ISP operations summary, extracted from app-shell with its page, scoped styles, authenticated `/api/dashboard` router, metadata, and local context. App-shell retains shared data loading, metric registry/auth callbacks, navigation, and portal permissions. Existing URL/payload/module counts are preserved; Tech Portal's Dashboard remains separate.
 - `features/customer-profiling`: customer records, account identity, contacts, addresses, lifecycle state, and bulk upload workflow
 - `features/billing`: invoices, subscriptions, payments, adjustments, balances, and billing cycles
 - `features/collector`: mobile customer collections, Billing receipts, SMS confirmation, thermal receipt reprinting, cash/personal-GCash custody, remittance, and Finance reconciliation
