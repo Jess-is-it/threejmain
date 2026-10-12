@@ -42,6 +42,7 @@ import {
 } from '@tabler/icons-react';
 import AccountAccessManagementPage from '../../../features/account-access-management/web/AccountAccessManagementPage.jsx';
 import BillingPage from '../../../features/billing/web/BillingPage.jsx';
+import FinancePage from '../../../features/finance/web/FinancePage.jsx';
 import CollectorPage from '../../../features/collector/web/CollectorPage.jsx';
 import CustomerProfilingPage from '../../../features/customer-profiling/web/CustomerProfilingPage.jsx';
 import CustomerServiceManagementPage from '../../../features/customer-service-management/web/CustomerServiceManagementPage.jsx';
@@ -68,6 +69,14 @@ const moduleNav = [
   { page: 'Tech Portal Ticketing', slug: 'techportal/ticketing', icon: IconTicket, tone: 'red' },
   { page: 'Customer Profiling', slug: 'customer-profiling', icon: IconUsers, tone: 'azure' },
   { page: 'Billing', slug: 'billing', icon: IconCash, tone: 'green' },
+  { page: 'Finance Management', slug: 'finance', icon: IconCash, tone: 'green', children: [
+    { page: 'Finance Overview', slug: 'finance', icon: IconDashboard, tone: 'green' },
+    { page: 'Accounts & Transfers', slug: 'finance/accounts', icon: IconCash, tone: 'green' },
+    { page: 'Expenses & Payables', slug: 'finance/expenses', icon: IconReceipt, tone: 'green' },
+    { page: 'Income & Collections', slug: 'finance/income', icon: IconCash, tone: 'green' },
+    { page: 'Financial Reports', slug: 'finance/reports', icon: IconActivity, tone: 'green' },
+    { page: 'Subscriber Growth', slug: 'finance/subscribers', icon: IconUsers, tone: 'green' },
+  ] },
   { page: 'Collector', slug: 'collector', icon: IconReceipt, tone: 'orange' },
   { page: 'Point of Sale', slug: 'point-of-sale', icon: IconBuildingStore, tone: 'yellow' },
   { page: 'Inventory', slug: 'inventory', icon: IconBox, tone: 'orange' },
@@ -319,7 +328,7 @@ function routeForPage(page) {
 
 function pageFromPath(pathname) {
   const slug = String(pathname || '').replace(/^\/+|\/+$/g, '') || 'dashboard';
-  const item = navItems().find((navItem) => navItem.slug && navItem.slug === slug);
+  const item = navItems().find((navItem) => !navItem.children?.length && navItem.slug && navItem.slug === slug);
   if (item) return item.page;
   if (slug === 'account-admin') return 'Customer Accounts';
   if (slug === 'network-settings/devices') return 'MikroTik API';
@@ -908,13 +917,15 @@ function App() {
   const collectorLandingPage = permittedCollectorPages?.has('Collector')
     ? 'Collector'
     : collectorNavItems.length ? firstLeafNavItem(collectorNavItems[0]).page : 'View Profile';
-  const activeNavItems = technicianUser ? technicianNav : collectorPortalUser ? collectorNavItems : moduleNav;
+  const financePages = ['Finance Management', 'Finance Overview', 'Accounts & Transfers', 'Expenses & Payables', 'Income & Collections', 'Financial Reports', 'Subscriber Growth'];
+  const financeAllowed = (me?.permissions || []).some((p) => p === '*' || p === 'finance.view');
+  const activeNavItems = technicianUser ? technicianNav : collectorPortalUser ? collectorNavItems : moduleNav.filter((item) => item.slug !== 'finance' || financeAllowed);
   const activePage = technicianUser && !TECHNICIAN_ALLOWED_PAGES.has(page)
     ? 'Tech Portal'
     : collectorPortalUser && !permittedCollectorPages.has(page)
       ? collectorLandingPage
       : page;
-  const canRenderModulePage = (modulePage) => !technicianUser && (!collectorPortalUser || permittedCollectorPages.has(modulePage));
+  const canRenderModulePage = (modulePage) => !technicianUser && (!financePages.includes(modulePage) || financeAllowed) && (!collectorPortalUser || permittedCollectorPages.has(modulePage));
   const loginVariant = loginVariantForPath(window.location.pathname);
 
   const moduleByPage = useMemo(() => {
@@ -1018,6 +1029,8 @@ function App() {
             {!technicianUser && !collectorPortalUser && activePage === 'Process Flow' && <ProcessFlowPage refreshShell={refresh} />}
             {canRenderModulePage('Customer Profiling') && activePage === 'Customer Profiling' && <CustomerProfilingPage refreshShell={refresh} />}
             {canRenderModulePage('Billing') && activePage === 'Billing' && <BillingPage refreshShell={refresh} />}
+            {financePages.includes(activePage) && canRenderModulePage(activePage) && <FinancePage refreshShell={refresh} initialWorkspace={['Finance Management', 'Finance Overview'].includes(activePage) ? 'Overview' : activePage} onWorkspaceChange={(workspace) => navigate(workspace === 'Overview' ? 'Finance Overview' : workspace)} />}
+            {financePages.includes(activePage) && !financeAllowed && <div className="container-xl"><div className="alert alert-warning">Finance Management access is required.</div></div>}
             {canRenderModulePage('Point of Sale') && activePage === 'Point of Sale' && <PointOfSalePage refreshShell={refresh} />}
             {canRenderModulePage('Inventory') && activePage === 'Inventory' && <InventoryPage refreshShell={refresh} />}
             {canRenderModulePage(activePage) && accountAccessManagementInitialView && <AccountAccessManagementPage initialView={accountAccessManagementInitialView} refreshShell={refresh} />}
@@ -1045,6 +1058,7 @@ function App() {
               'Tech Portal Ticketing',
               'Customer Profiling',
               'Billing',
+              'Finance Management',
               'Collector',
               'Point of Sale',
               'Inventory',

@@ -130,3 +130,7 @@ Current CRUD scope:
 - The Today Cashier Collections summary uses currently exposed POS sales/payments and Billing payments. Full cashier end-of-day closing with counted cash, over/short variance, approvals, and durable cash drawer state is still future work.
 - Customer lookup is optional and depends on integration wiring.
 - No role-based POS permission checks are enforced in the module yet.
+
+## Finance Management integration (2026-10-12)
+
+finance_provider.py supplies PosFinanceFeed from shared immutable source capture. Register sale and payment remain separate effects. POS subscriber invoice confirmation evidence now retains canonical billingPaymentId, amount and paymentDate; its Finance alias adds no cash beyond Billing. Source save and capture are atomic; failed Finance delivery is retried with its cursor retained. POST /api/point-of-sale/finance/recovery/{sequence} requires native POS edit authority for source settlement/refund evidence. Initial source snapshot is baseline-only, subject to reviewed Finance cutover/openings. Stock quantities remain Inventory-owned; current unitCost does not certify historic COGS. See features/finance/PHASE7_INTEGRATION.md.

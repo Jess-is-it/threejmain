@@ -195,6 +195,7 @@ class AccessRolePayload(BaseModel):
     name: str = Field(..., min_length=2, max_length=80)
     description: str | None = Field(default=None, max_length=240)
     permissionCodes: list[str] = Field(default_factory=list)
+    financeScope: dict[str, Any] | None = None
 
 
 class AccessUserPayload(BaseModel):
@@ -885,6 +886,58 @@ FINANCE_OFFICER_PERMISSION_CODES = [
     "collector.finance.view",
     "collector.finance.confirm",
 ]
+_additional_access_roles: list[dict[str, Any]] = []
+_access_role_upgrades: list[dict[str, Any]] = []
+_legacy_finance_permissions = frozenset(FINANCE_OFFICER_PERMISSION_CODES)
+
+
+def register_access_module(registration: dict[str, Any]) -> None:
+    """Register module-owned grants without granting new authority to custom roles."""
+    known = {p['code'] for p in ACCESS_PERMISSION_SEEDS}
+    ACCESS_PERMISSION_SEEDS.extend(p for p in registration['permissions'] if p['code'] not in known)
+    ACCESS_PERMISSION_DEPENDENCIES.update(registration.get('dependencies', {}))
+    for role in registration.get('roles', []):
+        if not any(r['name'] == role['name'] for r in _additional_access_roles):
+            _additional_access_roles.append({**role, 'isBuiltin': True, 'isLocked': False})
+    for upgrade in registration.get('roleUpgrades', []):
+        if upgrade not in _access_role_upgrades:_access_role_upgrades.append(upgrade)
+    for code in registration.get('financeOfficerPermissions', []):
+        if code not in FINANCE_OFFICER_PERMISSION_CODES:
+            FINANCE_OFFICER_PERMISSION_CODES.append(code)
+
+
+def upgraded_module_role_codes(role,codes):
+    if role.get('isBuiltin'):
+        for upgrade in _access_role_upgrades:
+            if role.get('id')==upgrade['id'] and role.get('name')==upgrade['name'] and frozenset(codes)==frozenset(upgrade['previousPermissionCodes']):
+                return upgrade['permissionCodes']
+    return codes
+
+
+def normalize_finance_scope(raw):
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or set(raw) - {'accountIds', 'expenseIds', 'approvalLimit'}:
+        raise HTTPException(400, 'Invalid Finance scope')
+    result = {}
+    for key in ('accountIds', 'expenseIds'):
+        value = raw.get(key)
+        if value is not None and (not isinstance(value, list) or any(not isinstance(i, str) or not i.strip() for i in value)):
+            raise HTTPException(400, 'Finance scope IDs must be lists of nonempty strings, or null for unrestricted')
+        result[key] = sorted(set(value)) if value is not None else None
+    limit = raw.get('approvalLimit')
+    if limit is not None:
+        try:
+            if not isinstance(limit, str):
+                raise ValueError()
+            amount = Decimal(limit)
+            if not amount.is_finite() or amount < 0 or amount != amount.quantize(Decimal('.01')):
+                raise ValueError()
+            limit = format(amount, '.2f')
+        except Exception:
+            raise HTTPException(400, 'Finance approvalLimit must be a nonnegative decimal string with whole cents') from None
+    result['approvalLimit'] = limit
+    return result
 TECHNICIAN_TEST_USERNAME = "tech"
 TECHNICIAN_TEST_PASSWORD = "tech12345"
 TECHNICIAN_PERMISSION_CODES = [
@@ -1183,6 +1236,7 @@ def database_backup_snapshot() -> dict[str, Any]:
         return {"enabled": False, "status": "driver_unavailable", "tables": {}, "metadataTables": {}}
     try:
         with psycopg.connect(database_url, row_factory=dict_row) as conn:
+            conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
@@ -1338,9 +1392,19 @@ def restore_network_settings_data(data: Any) -> dict[str, Any]:
     return {"status": "restored", "counts": network_settings_backup_counts(data), "runtime": apply_network_settings_runtime_state(data)}
 
 
+def guard_finance_live_restore() -> None:
+    database_url = os.getenv('DATABASE_URL', '').strip()
+    if database_url and psycopg:
+        with psycopg.connect(database_url) as conn:
+            present = conn.execute("SELECT to_regclass('public.finance_integration_state')").fetchone()[0]
+        if present:
+            raise HTTPException(409, 'Finance has immutable accounting and source capture. Full database restore requires a coordinated cold PostgreSQL restore with workers stopped and migrations/triggers/sequences retained; live JSON truncation is disabled.')
+
+
 def restore_database_snapshot(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict) or not isinstance(data.get("tables"), dict):
         return {"status": "skipped", "message": "No database table data section found."}
+    guard_finance_live_restore()
     database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url:
         return {"status": "skipped", "message": "DATABASE_URL is not configured."}
@@ -1424,6 +1488,8 @@ def restore_backup_data(backup: dict[str, Any], admin: dict[str, Any]) -> dict[s
     backup_type = normalize_location_text(backup.get("backupType")).lower()
     if backup_type not in {"configuration", "full"}:
         raise HTTPException(status_code=400, detail="Backup type is not supported")
+    if backup_type == 'full':
+        guard_finance_live_restore()
     result = {
         "backupType": backup_type,
         "systemSettings": restore_system_settings_data(backup_section_data(backup, "systemSettings")),
@@ -1902,7 +1968,10 @@ def normalize_access_store(raw: dict[str, Any] | None) -> dict[str, Any]:
         name = normalize_access_text(role.get("name")).lower()
         if not name:
             continue
-        expanded, _ = expand_access_permission_codes(role.get("permissionCodes") or [])
+        original_codes = upgraded_module_role_codes(role,role.get("permissionCodes") or [])
+        if role_id == 'role-finance-officer' and name == 'finance_officer' and role.get('isBuiltin') and frozenset(original_codes) == _legacy_finance_permissions:
+            original_codes = FINANCE_OFFICER_PERMISSION_CODES
+        expanded, _ = expand_access_permission_codes(original_codes)
         normalized_roles.append(
             {
                 "id": role_id,
@@ -1911,6 +1980,7 @@ def normalize_access_store(raw: dict[str, Any] | None) -> dict[str, Any]:
                 "isBuiltin": bool(role.get("isBuiltin")),
                 "isLocked": bool(role.get("isLocked")) or name == "owner",
                 "permissionCodes": permission_codes if name == "owner" else expanded,
+                "financeScope": normalize_finance_scope(role.get('financeScope')),
                 "createdAt": normalize_access_text(role.get("createdAt")) or now_iso(),
                 "updatedAt": normalize_access_text(role.get("updatedAt")) or now_iso(),
             }
@@ -1974,6 +2044,7 @@ def normalize_access_store(raw: dict[str, Any] | None) -> dict[str, Any]:
             "permissionCodes": expand_access_permission_codes(FINANCE_OFFICER_PERMISSION_CODES)[0],
         },
     ]
+    default_roles.extend(_additional_access_roles)
     for role in default_roles:
         if role["name"] not in role_names:
             timestamp = now_iso()
@@ -2183,9 +2254,25 @@ def access_session_user(user: dict[str, Any], role: dict[str, Any]) -> dict[str,
         "role": role.get("name", ""),
         "status": "active" if user.get("isActive") else "inactive",
         "permissions": role.get("permissionCodes") or [],
+        "financeScope": role.get('financeScope'),
         "mustChangePassword": bool(user.get("mustChangePassword")),
         "auth_source": "system_access",
     }
+
+
+def resolve_access_session_user(user_id: str) -> dict[str, Any]:
+    # Read the persisted Access snapshot so revocation also crosses API workers.
+    persisted = read_persisted_system_settings()
+    access = persisted['access'] if isinstance(persisted.get("access"), dict) else access_store()
+    user = next((row for row in access.get("users", []) if row.get("id") == user_id), None)
+    role = next((row for row in access.get("roles", []) if user and row.get("id") == user.get("roleId")), None)
+    if not user or not user.get("isActive", True) or not role:
+        raise HTTPException(status_code=401, detail="Account access is no longer active; sign in again")
+    codes = upgraded_module_role_codes(role,role.get('permissionCodes') or [])
+    if role.get('id') == 'role-finance-officer' and role.get('name') == 'finance_officer' and role.get('isBuiltin') and frozenset(codes) == _legacy_finance_permissions:
+        codes = FINANCE_OFFICER_PERMISSION_CODES
+    role = {**role, "permissionCodes": access_permission_codes() if role.get("name") == "owner" else expand_access_permission_codes(codes)[0]}
+    return access_session_user(user, role)
 
 
 def authenticate_access_user(username: str, password: str) -> dict[str, Any] | None:
@@ -3936,6 +4023,7 @@ def create_access_role(payload: AccessRolePayload, admin=Depends(require_admin))
         "isBuiltin": False,
         "isLocked": False,
         "permissionCodes": permission_codes,
+        "financeScope": normalize_finance_scope(payload.financeScope),
         "createdAt": timestamp,
         "updatedAt": timestamp,
     }
@@ -3963,6 +4051,7 @@ def update_access_role(role_id: str, payload: AccessRolePayload, admin=Depends(r
             "name": name,
             "description": normalize_access_text(payload.description),
             "permissionCodes": permission_codes,
+            "financeScope": normalize_finance_scope(payload.financeScope),
             "updatedAt": now_iso(),
         }
     )

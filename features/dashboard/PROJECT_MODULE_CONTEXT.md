@@ -81,3 +81,7 @@ horizontal overflow, and no browser errors. Summary, alert, and module-id
 contracts matched the pre-deployment response. Root alias works; unauthenticated
 requests return 401. Docker endpoint owner is `dashboard.router`, registered
 once at `/api/dashboard`. Host Graphify was refreshed.
+
+## Finance metrics visibility (2026-10-12)
+
+Shared configure_dashboard accepts an optional module_visibility(current_user, modules) callback. App-shell supplies Finance-specific permission/scope filtering, hiding Finance without finance.view and suppressing company totals for restricted Finance scopes. Per-metric read authority applies to account/journal/payable/exception counts. Other modules and Dashboard summaries preserve existing behavior. Five Dashboard regressions and the shared Finance metrics authorization test pass.

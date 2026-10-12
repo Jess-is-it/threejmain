@@ -13,13 +13,14 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from .db_migrations import database_migration_status, run_database_migrations
+from .db_migrations import database_migration_status, run_database_migrations, register_module_migrations
 
 
 MODULE_API_PATHS = [
     ("dashboard", "api"),
     ("customer-profiling", "api"),
     ("billing", "api"),
+    ("finance", "api"),
     ("collector", "api"),
     ("point-of-sale", "api"),
     ("inventory", "api"),
@@ -60,6 +61,17 @@ from billing import (
     start_billing_scheduler,
     stop_billing_scheduler,
 )
+from finance import Actor, configure_finance, router as finance_router
+from finance.permissions import PERMISSIONS as FINANCE_PERMISSIONS
+from finance.access import ACCESS_REGISTRATION as FINANCE_ACCESS, actor_from_user
+from finance.migrations import MIGRATIONS as FINANCE_MIGRATIONS, INTEGRATION_MIGRATIONS, READINESS_MIGRATIONS
+from finance.integration import IntegrationStore, CoverageProvider, RecoveryWorker
+from billing.finance_provider import BillingFinanceFeed, BillingFinanceReport, install_finance_recovery as install_billing_finance_recovery
+from point_of_sale.finance_provider import PosFinanceFeed, install_finance_recovery as install_pos_finance_recovery
+from collector.finance_provider import CollectorFinanceFeed, install_finance_recovery as install_collector_finance_recovery
+from service.finance_provider import ServiceFinanceFeed, SubscriberFinanceReport
+from customer_profiling.finance_provider import FinanceCustomerReferences
+from inventory.finance_provider import FinanceInventoryReferences
 from collector import (
     collector_metrics,
     collector_payment_void_guard,
@@ -96,6 +108,7 @@ from system_settings import (
     configure_system_settings,
     public_branding_asset_response,
     public_branding_payload,
+    resolve_access_session_user,
     router as system_settings_router,
     send_a2p_sms_message,
     update_access_session_user,
@@ -111,6 +124,8 @@ from ticketing import (
     update_ticket_from_techportal,
 )
 from ticketing.router import visible_tickets
+
+register_module_migrations([*FINANCE_MIGRATIONS, *INTEGRATION_MIGRATIONS, *READINESS_MIGRATIONS])
 
 
 APP_STARTED_AT = time.time()
@@ -163,6 +178,11 @@ settings = {
 }
 
 modules = [
+    {
+        "slug": "finance", "name": "Finance Management", "folder": "features/finance",
+        "status": "integrated", "description": "Named financial accounts, accounting, expenses and payables, source reconciliation, financial reports and subscriber growth.",
+        "metrics": {},
+    },
     {
         "slug": "customer-profiling",
         "name": "Customer Profiling",
@@ -550,6 +570,7 @@ def sync_module_metrics() -> None:
     metric_loaders = {
         "customer-profiling": customer_metrics,
         "billing": billing_metrics,
+        "finance": finance_metrics,
         "collector": collector_metrics,
         "point-of-sale": point_of_sale_metrics,
         "inventory": inventory_metrics,
@@ -566,8 +587,41 @@ def sync_module_metrics() -> None:
     for module in modules:
         loader = metric_loaders.get(module["slug"])
         if loader:
-            module["status"] = "functional-shell"
+            module["status"] = "integrated" if module["slug"] == "finance" else "functional-shell"
             module["metrics"] = loader()
+
+
+def finance_metrics():
+    try:
+        with finance_api.service.store.read() as repo:
+            return {'accounts': len(repo.accounts()), 'journals': len(repo.entries()),
+                    'payables': len(repo.payables()),
+                    'reconciliation_exceptions': sum(r['status'] != 'RESOLVED' for r in repo.reconciliation_exceptions())}
+    except HTTPException:
+        return {'ready': False}
+
+
+def visible_modules_for_user(user, candidate_modules=None):
+    """Keep Finance counts within current grants/scopes in every shell API."""
+    if user.get('auth_source') == 'system_access':
+        user = resolve_access_session_user(str(user.get('id') or ''))
+    elif user.get('id') == admin_user['id']:
+        user = admin_user
+    grants = set(user.get('permissions') or [])
+    visible = []
+    for module in modules if candidate_modules is None else candidate_modules:
+        if module['slug'] != 'finance':
+            visible.append(module)
+            continue
+        if not {'*','finance.view'} & grants:
+            continue
+        scope = user.get('financeScope') or {}
+        allowed = {'accounts':'finance.accounts.view', 'journals':'finance.journals.view',
+                   'payables':'finance.expenses.view_all', 'reconciliation_exceptions':'finance.income.view_all'}
+        metrics = {} if scope.get('accountIds') is not None or scope.get('expenseIds') is not None else {
+            key:value for key,value in module['metrics'].items() if key in allowed and ('*' in grants or allowed[key] in grants)}
+        visible.append({**module,'metrics':metrics})
+    return visible
 
 
 def port_registry() -> list[dict[str, Any]]:
@@ -756,6 +810,8 @@ configure_service(
 configure_process_flow(current_admin)
 configure_network_settings(current_admin, add_audit)
 configure_system_settings(current_admin, add_audit, settings, port_registry)
+from system_settings.router import register_access_module, access_store, read_persisted_system_settings, normalize_access_store
+register_access_module(FINANCE_ACCESS)
 configure_collector(
     current_admin,
     add_audit,
@@ -769,7 +825,93 @@ configure_collector(
     billing_transaction_factory=billing_store.transaction,
 )
 configure_logs(current_admin, audit_logs)
-configure_dashboard(current_admin, seed_module_data, sync_module_metrics, modules, customer_metrics)
+
+# Fresh Access resolution applies revocation, role edits, scopes and approver
+# limits to every Finance request. Tokens never carry permanent Finance grants.
+def current_finance_actor(authorization):
+    current_admin(authorization)  # Validate the shared session and expiry first.
+    session_user = active_tokens[authorization.removeprefix('Bearer ').strip()]
+    if session_user.get('auth_source') == 'system_access':
+        return actor_from_user(resolve_access_session_user(str(session_user.get('id') or '')))
+    if session_user.get('id') == admin_user['id']:
+        return actor_from_user(admin_user)
+    raise HTTPException(401, 'A current shared Access identity is required for Finance')
+
+
+def finance_provider_actor(username):
+    if username == 'system:finance-recovery':
+        return Actor(username, frozenset(FINANCE_PERMISSIONS))
+    if username == admin_user['username']:
+        return actor_from_user(admin_user)
+    persisted = read_persisted_system_settings()
+    access = normalize_access_store(persisted['access']) if isinstance(persisted.get('access'), dict) else access_store()
+    user = next((r for r in access.get('users', []) if r['username'] == username), None)
+    if not user:
+        raise HTTPException(401, 'Source provider requires a current shared Access identity')
+    return actor_from_user(resolve_access_session_user(user['id']))
+
+
+def authorize_finance_feed(username):
+    actor = finance_provider_actor(username)
+    actor.require('finance.sources.sync')
+    actor.require('finance.income.view'); actor.require('finance.income.view_all')
+    if actor.account_ids is not None or actor.expense_ids is not None:
+        raise HTTPException(403, 'Certified source delivery requires unrestricted Finance scope')
+
+
+def authorize_finance_report(username, subscriber=False):
+    from finance.reporting import ReportingService
+    ReportingService._report_access(finance_provider_actor(username), subscriber)
+
+
+def authorize_finance_reference(username):
+    actor = finance_provider_actor(username)
+    actor.require('finance.view')
+    actor.require('finance.expenses.view')
+
+
+from importlib import import_module
+finance_api = import_module('finance.router')
+billing_api = import_module('billing.router')
+pos_api = import_module('point_of_sale.router')
+collector_api = import_module('collector.router')
+
+
+def require_finance_source_confirmation(permission):
+    def dependency(authorization: str | None = Header(default=None)):
+        user = current_admin(authorization)
+        current_finance_actor(authorization).require(permission)
+        return user
+    return dependency
+
+
+def require_collector_finance_confirmation(authorization: str | None = Header(default=None)):
+    actor = current_admin(authorization)
+    current_finance_actor(authorization).require('collector.finance.confirm')
+    return actor
+
+
+install_billing_finance_recovery(billing_router, require_finance_source_confirmation('billing.edit'), add_audit)
+install_pos_finance_recovery(point_of_sale_router, require_finance_source_confirmation('point-of-sale.edit'), add_audit)
+install_collector_finance_recovery(collector_router, require_collector_finance_confirmation, add_audit)
+finance_integration = RecoveryWorker(None, Actor('system:finance-recovery', frozenset(FINANCE_PERMISSIONS)), audit_logger=add_audit)
+configure_finance(current_finance_actor,
+    source_providers={
+        'billing': BillingFinanceFeed(authorize_finance_feed),
+        'point-of-sale': PosFinanceFeed(authorize_finance_feed),
+        'collector': CollectorFinanceFeed(authorize_finance_feed),
+        'service': ServiceFinanceFeed(authorize_finance_feed),
+    }, report_providers={
+        'subscribers': SubscriberFinanceReport(lambda username: authorize_finance_report(username, True)),
+        'billing-settlement': BillingFinanceReport(lambda username: authorize_finance_report(username, True)),
+        'billing-receivables': BillingFinanceReport(authorize_finance_report),
+        'financial-coverage': CoverageProvider(authorize_finance_report),
+    }, integration=finance_integration, period_provider=finance_integration.store.period_readiness, reference_providers={
+        'customer-profiling': FinanceCustomerReferences(authorize_finance_reference),
+        'inventory': FinanceInventoryReferences(authorize_finance_reference),
+    })
+finance_integration.service = finance_api.service
+configure_dashboard(current_admin, seed_module_data, sync_module_metrics, modules, customer_metrics, module_visibility=visible_modules_for_user)
 configure_techportal(
     current_admin,
     add_audit,
@@ -781,6 +923,7 @@ configure_techportal(
 
 app.include_router(customer_profiling_router)
 app.include_router(billing_router)
+app.include_router(finance_router)
 app.include_router(collector_router)
 app.include_router(point_of_sale_router)
 app.include_router(inventory_router)
@@ -806,12 +949,14 @@ def seed_logs():
         add_audit("system_started", "app", "app-shell", {"message": "ISP management shell started"})
     start_billing_scheduler()
     start_network_settings_poller()
+    finance_integration.start()
 
 
 @app.on_event("shutdown")
 def stop_module_workers():
     stop_billing_scheduler()
     stop_network_settings_poller()
+    finance_integration.stop()
 
 
 @app.get("/health")
@@ -911,7 +1056,7 @@ def change_password(payload: PasswordPayload, admin=Depends(current_admin)):
 def list_modules(admin=Depends(current_admin)):
     seed_module_data()
     sync_module_metrics()
-    return modules
+    return visible_modules_for_user(admin)
 
 
 @app.get("/api/system/resources")

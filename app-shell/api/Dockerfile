@@ -12,6 +12,7 @@ COPY app-shell/api/app ./app
 COPY features/dashboard/api/dashboard ./dashboard
 COPY features/customer-profiling/api/customer_profiling ./customer_profiling
 COPY features/billing/api/billing ./billing
+COPY features/finance/api/finance ./finance
 COPY features/collector/api/collector ./collector
 COPY features/point-of-sale/api/point_of_sale ./point_of_sale
 COPY features/inventory/api/inventory ./inventory

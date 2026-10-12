@@ -482,6 +482,19 @@ _migration_status: dict[str, Any] = {
 }
 
 
+def register_module_migrations(definitions: list[dict[str, Any]]) -> None:
+    """Modules retain SQL ownership; the shared runner owns checksums and DDL."""
+    known = {m['id']: m for m in MIGRATIONS}
+    for definition in definitions:
+        if definition['id'] in known:
+            if known[definition['id']] != definition:
+                raise RuntimeError(f"Conflicting module migration {definition['id']}")
+            continue
+        MIGRATIONS.append(definition)
+        known[definition['id']] = definition
+    _migration_status['knownMigrations'] = [m['id'] for m in MIGRATIONS]
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 

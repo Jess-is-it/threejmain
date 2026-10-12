@@ -104,3 +104,7 @@ Customer Profiling manages customer records, account identity, service addresses
   - Customer Service Management does not currently expose a customer-filtered interaction contract for Customer 360; add it before care interactions are shown in Activity or a future Care tab.
   - Network Settings must expose a persisted serviceability assessment keyed by `customerId` with disposition, assessor/timestamp, evidence, topology/NAP/port reference, and review status. Replace the manual Customer Profiling serviceability attestation when this exists.
   - Network/Account Access Management must expose service-account PPPoE/ONU provisioning readiness, and Inventory must expose customer/service-account equipment assignment. Replace manual network/equipment activation verification when both authoritative reads exist.
+
+## Finance Management references (2026-10-12)
+
+finance_provider.py supplies authorized minimal canonical customer identity/location references for Finance. Shared Finance report identities still come from authoritative Billing/Service records; no duplicated subscriber receipt or customer-contact ledger is created. Finance references require explicit Finance view/expense read authority and return no copied contact data. Source ownership remains Customer Profiling. See features/finance/PHASE7_INTEGRATION.md.

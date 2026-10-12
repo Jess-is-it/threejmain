@@ -1,0 +1,64 @@
+{
+  "slug": "finance",
+  "name": "Finance Management",
+  "status": "integrated",
+  "owner": "threejmain",
+  "description": "Finance Management accounts, accounting, payables, source recovery and six workspaces integrated with shared Access and PostgreSQL; reviewed business cutover required.",
+  "app_shell_route": "/finance",
+  "api_prefix": "/api/finance",
+  "frontend_entry": "features/finance/web/FinancePage.jsx",
+  "api_entry": "features/finance/api/finance/router.py",
+  "integrated": true,
+  "implementation_spec": "features/finance/IMPLEMENTATION_SPEC.md",
+  "source_contracts": "features/finance/SOURCE_CONTRACTS.md",
+  "implementation_plan": "features/finance/IMPLEMENTATION_PLAN.md",
+  "foundation_integration": "features/finance/PHASE2_INTEGRATION.md",
+  "payables_integration": "features/finance/PHASE3_EXPENSES_PAYABLES.md",
+  "migrations_entry": "features/finance/api/finance/migrations.py",
+  "implemented_workspaces": [
+    "overview",
+    "accounts_and_transfers",
+    "expenses_and_payables",
+    "income_and_collections",
+    "financial_reports",
+    "subscriber_growth"
+  ],
+  "planned_workspace_labels": [
+    "Overview",
+    "Accounts & Transfers",
+    "Expenses & Payables",
+    "Income & Collections",
+    "Financial Reports",
+    "Subscriber Growth"
+  ],
+  "planned_workspaces": [
+    "overview",
+    "accounts_and_transfers",
+    "expenses_and_payables",
+    "income_and_collections",
+    "financial_reports",
+    "subscriber_growth"
+  ],
+  "income_integration": "features/finance/PHASE4_INCOME_COLLECTIONS.md",
+  "historical_import_plan": "features/finance/HISTORICAL_IMPORT_PLAN.md",
+  "reporting_integration": "features/finance/PHASE5_REPORTING.md",
+  "implemented_api_workspaces": [
+    "accounts_and_transfers",
+    "expenses_and_payables",
+    "income_and_collections",
+    "financial_reports",
+    "subscriber_growth"
+  ],
+  "frontend_exports": "features/finance/web/index.mjs",
+  "interface_integration": "features/finance/PHASE6_INTERFACE.md",
+  "shared_integration": "features/finance/PHASE7_INTEGRATION.md",
+  "workspace_routes": [
+    "/finance",
+    "/finance/accounts",
+    "/finance/expenses",
+    "/finance/income",
+    "/finance/reports",
+    "/finance/subscribers"
+  ],
+  "readiness_review": "features/finance/PHASE8_READINESS.md"
+}

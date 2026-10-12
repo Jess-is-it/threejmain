@@ -346,6 +346,10 @@ class ServiceRecordStore:
         if Json is None:
             raise HTTPException(status_code=503, detail="Service JSON database adapter is not installed")
         payload = dict(record)
+        # Retain the existing trusted Service actor identifier in the shared
+        # change-capture attribution field; never take an actor from Finance.
+        if payload.get("updatedByUserId") or payload.get("createdByUserId"):
+            payload["updatedByUsername"] = payload.get("updatedByUserId") or payload["createdByUserId"]
         record_id = str(payload.get("id") or "").strip()
         if not record_id:
             raise HTTPException(status_code=500, detail="Service record is missing an id")

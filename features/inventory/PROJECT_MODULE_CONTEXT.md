@@ -123,3 +123,7 @@ These helpers accept an optional shared database connection. POS passes its curr
 - Assignment returns preserve their durable database row but the default visible API omits returned soft-deleted rows.
 - Procurement/replenishment, reservations/kitting, cycle counts, barcode workflows, RMA/repair, and advanced costing remain future phases.
 - Inventory still uses shared admin authentication; dedicated inventory roles, approval limits, and segregation of duties remain future work.
+
+## Finance Management references and costing boundary (2026-10-12)
+
+finance_provider.py supplies authorized current item classification/unit-cost references for Finance. Historical valued issue/consumption costs remain UNAVAILABLE: editable current unitCost cannot certify past direct costs/COGS. Finance stock purchases are assets until authoritative consumption/valuation evidence is provided. Existing Inventory quantities and POS atomic stock workflows remain authoritative. See features/finance/PHASE7_INTEGRATION.md.

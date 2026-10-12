@@ -4009,7 +4009,8 @@ function AccessTab() {
       id: role.id,
       name: role.name || '',
       description: role.description || '',
-      permissionCodes: role.permissionCodes || []
+      permissionCodes: role.permissionCodes || [],
+      financeScope: role.financeScope || null
     } : blankRole);
     setRoleModalOpen(true);
   }
@@ -4038,7 +4039,8 @@ function AccessTab() {
         body: JSON.stringify({
           name: roleForm.name,
           description: roleForm.description,
-          permissionCodes: roleForm.permissionCodes
+          permissionCodes: roleForm.permissionCodes,
+          financeScope: roleForm.financeScope || null
         })
       });
       setAccess(data);
@@ -4351,6 +4353,10 @@ function AccessTab() {
                 {roleForm.name === 'owner' && <div className="alert alert-warning">Owner role is locked. It always keeps full permissions and cannot be edited.</div>}
                 <PermissionSelector groups={access.permissionGroups} selectedCodes={roleForm.permissionCodes} disabled={roleForm.name === 'owner'} onToggle={toggleRolePermission} />
               </div>
+              {roleForm.name !== 'owner' && roleForm.permissionCodes.some((code) => code.startsWith('finance.')) && <>
+                <div className="col-md-4"><label className="form-label">Finance approval limit (PHP)</label><input className="form-control" inputMode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" value={roleForm.financeScope?.approvalLimit ?? ''} placeholder="Unrestricted" onChange={(event) => setRoleForm({ ...roleForm, financeScope: { ...roleForm.financeScope, approvalLimit: event.target.value || null } })} /><div className="form-hint">Independent approval is required even without a limit.</div></div>
+                {['accountIds', 'expenseIds'].map((key) => <div className="col-md-4" key={key}><label className="form-label">Finance {key === 'accountIds' ? 'account' : 'expense'} scope IDs</label><input className="form-control" value={(roleForm.financeScope?.[key] || []).join(', ')} placeholder="Unrestricted" onChange={(event) => setRoleForm({ ...roleForm, financeScope: { ...roleForm.financeScope, [key]: event.target.value.trim() ? event.target.value.split(',').map((id) => id.trim()).filter(Boolean) : null } })} /><div className="form-hint">Comma-separated IDs. Restricted roles cannot read company-wide reports.</div></div>)}
+              </>}
               <div className="col-12 text-end">
                 {error && <div className="alert alert-danger text-start" role="alert">{error}</div>}
                 <button className="btn me-2" type="button" onClick={closeRoleModal}>Cancel</button>

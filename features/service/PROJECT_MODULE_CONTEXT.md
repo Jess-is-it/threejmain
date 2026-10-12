@@ -78,3 +78,7 @@ Service manages the ISP service catalog, service accounts, and service orders. T
 - Database-level foreign keys should be added after all related modules expose durable table contracts.
 - Role/permission boundaries for catalog management versus order intake still need enforcement.
 - Service Order lifecycle should later drive installation scheduling, inventory assignment, and billing activation events.
+
+## Finance Management dated lifecycle integration (2026-10-12)
+
+finance_provider.py supplies installation references and SubscriberFinanceReport. Shared immutable capture commits in the same transaction as Service record writes; trusted Service actor identifiers are retained for capture attribution. Growth uses captured Service account lifecycle/ownership and captured Billing subscription rate/billability changes, not current-state activation-date guesses. The first completed captured Manila day supplies a durable end-of-day baseline (capture began 2026-10-12; first baseline available tomorrow). Earlier history remains unavailable; migrated existing lines are baseline adjustments, never new activations. Distinct customers/lines and Billing MRR reconcile separately. No Service payment/invoice ownership changes. See features/finance/PHASE7_INTEGRATION.md.
