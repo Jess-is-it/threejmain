@@ -29,6 +29,8 @@ async function open(path, workspace) {
   await page.goto(base + path); await ready();
   assert.equal(await page.getByRole('navigation', { name: 'Finance workspaces' }).count(), 0);
   await page.locator('.finance-header').getByRole('heading', { name: workspace, exact: true }).waitFor();
+  assert.equal(await page.getByText('Finance setup requires reviewed named-account openings and an independently approved source cutover.', { exact: false }).count(), 0);
+  assert.equal(await page.locator('.finance-setup-notice').count(), workspace === 'Overview' ? 1 : 0);
   const nav = page.locator('.navbar-vertical .nav-submenu');
   const selected = nav.getByRole('button', { name: workspace === 'Overview' ? 'Finance Overview' : workspace, exact: true, includeHidden: true });
   assert.match(await selected.getAttribute('class'), /\bactive\b/);

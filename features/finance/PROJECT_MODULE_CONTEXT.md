@@ -1,5 +1,15 @@
 # Finance Management Module Context
 
+## Compact setup guidance (2026-10-13)
+
+Removed the long persistent setup alert from every Finance workspace. Pending setup
+now shows only a collapsed “Finance setup is incomplete. Review setup” disclosure on
+Overview, and only for users with account-management, opening-post/approve or
+cutover-manage/approve grants (including wildcard). Expanding it explains starting
+balances and source cutover with directions to the existing local views. Other pages
+show no global setup notice. API setup/approval/cutover gates, source-specific controls
+and provisional/unavailable report labels remain unchanged.
+
 ## Sidebar navigation and expense setup (2026-10-13)
 
 The shared Finance sidebar is the workspace navigator. FinancePage no longer renders
