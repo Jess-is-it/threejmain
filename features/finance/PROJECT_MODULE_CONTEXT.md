@@ -1,5 +1,31 @@
 # Finance Management Module Context
 
+## Sidebar navigation and expense setup (2026-10-13)
+
+The shared Finance sidebar is the workspace navigator. FinancePage no longer renders
+the duplicate seven-workspace tab row. Its header shows Finance Management as a
+pretitle and the selected workspace as the page title; local report/Activity duplicate
+headings were removed. Existing deep links, initialWorkspace/onWorkspaceChange and
+record drill-downs remain supported. Journal-to-payable navigation now also calls
+onWorkspaceChange so the shared URL and sidebar selection match the displayed page.
+Account/card-bill/opening/transfer/journal and income/report subviews remain available.
+
+Expenses & Payables defaults to the expense list and Add expense action. Native
+keyboard-accessible Manage disclosure opens Payees or Categories; selecting a view
+closes the disclosure. Those views provide Back to expenses and existing authorized
+create/edit/archive actions. Read access remains available to expense viewers; management
+actions retain their existing grants and the API remains authoritative. No shared shell,
+API, permission or database changes are needed for this refinement.
+
+Existing browser checks now exercise shared sidebar navigation/deep links and the
+parent workspace prop contract rather than relying on removed in-page tabs.
+Shared staging rebuilt through scripts/staging_deploy.sh under runtime/server lock;
+desktop and 390px mobile screenshots reviewed. All 42 browser workflow groups pass
+(15 actual staging, 11 interface fixtures, nine Activity, seven expense/card), with
+zero page errors or shared financial writes. Actual smoke coverage includes all seven
+deep links, active sidebar selection, keyboard Manage access, mobile menu navigation,
+setup forms, exports and print. Module context/README updated; root context unchanged.
+
 ## Simple expenses and credit-card bills (2026-10-13)
 
 Current workflow and operations: SIMPLE_EXPENSES.md. Expenses & Payables now exposes

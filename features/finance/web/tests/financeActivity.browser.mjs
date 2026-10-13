@@ -41,7 +41,7 @@ async function clear() { await filterAction('Clear filters'); }
 async function apply() { await filterAction('Apply filters'); }
 try {
   await page.goto(base + '/finance/activity'); await ready();
-  assert.equal(await page.getByRole('navigation', { name: 'Finance workspaces' }).getByRole('button').count(), 7);
+  assert.equal(await page.getByRole('navigation', { name: 'Finance workspaces' }).count(), 0);
   await page.getByLabel('Activity type').selectOption('TRANSFER'); await page.getByLabel('Rows', { exact: true }).selectOption('10'); await apply();
   assert.equal(await page.locator('.finance-activity tbody tr').count(), 10);
   await filterAction('Next');
@@ -69,7 +69,7 @@ try {
   await page.getByRole('heading', { name: /Expense #/ }).waitFor();
   assert.equal(new URL(page.url()).pathname, '/finance/expenses');
   checks.push('date filter and supplier payment opens exact payable');
-  await page.getByRole('navigation', { name: 'Finance workspaces' }).getByRole('button', { name: 'Activity', exact: true }).click(); await ready();
+  await page.locator('.navbar-vertical .nav-submenu').getByRole('button', { name: 'Activity', exact: true }).click(); await ready();
   await page.getByLabel('Activity type').selectOption('CARD_PURCHASE'); await apply();
   assert.match(await page.locator('.finance-activity tbody').innerText(), /Credit-card purchase/);
   await page.locator('.finance-activity tbody button').click(); await page.getByText('Loading supporting record…').waitFor({ state: 'hidden' });

@@ -1,6 +1,10 @@
 .finance-management { padding-top: 1rem; padding-bottom: 2rem; }
 .finance-management .finance-header p { color: var(--tblr-secondary, #667382); }
-.finance-management .finance-workspaces { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1.25rem; }
+.finance-management .finance-manage { position: relative; }
+.finance-management .finance-manage summary { list-style: none; }
+.finance-management .finance-manage summary::-webkit-details-marker { display: none; }
+.finance-management .finance-manage-options { position: absolute; right: 0; top: calc(100% + .25rem); z-index: 10; display: grid; min-width: 10rem; padding: .35rem; border: 1px solid var(--tblr-border-color, #ddd); border-radius: .35rem; background: var(--tblr-bg-surface, white); box-shadow: 0 .25rem .75rem rgb(0 0 0 / 10%); }
+.finance-management .finance-manage-options button { justify-content: flex-start; text-decoration: none; }
 .finance-management .finance-toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .75rem; margin-bottom: 1rem; }
 .finance-management .finance-toolbar nav, .finance-management .finance-toolbar > div, .finance-management .finance-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
 .finance-management .finance-code { display: block; color: var(--tblr-secondary, #667382); margin-top: .2rem; }
@@ -62,7 +66,7 @@
 .finance-management .finance-activity-table td:first-child { white-space: nowrap; }
 .finance-management .finance-activity-table .badge { white-space: normal; }
 .finance-management .finance-records td { max-width: 26rem; overflow-wrap: anywhere; }
-.finance-management :is(button, [tabindex]):focus-visible { outline: 3px solid var(--tblr-primary, #206bc4); outline-offset: 3px; }
+.finance-management :is(button, summary, [tabindex]):focus-visible { outline: 3px solid var(--tblr-primary, #206bc4); outline-offset: 3px; }
 @media (max-width: 640px) {
   .finance-management .finance-activity-table, .finance-management .finance-activity-table tbody { display: block; width: 100%; }
   .finance-management .finance-activity-table thead { display: none; }

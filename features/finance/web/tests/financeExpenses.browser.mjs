@@ -32,7 +32,7 @@ const dialog = () => page.getByRole('dialog');
 async function cancel() { await dialog().getByRole('button', { name: 'Cancel', exact: true }).click(); }
 async function openExpenses() {
   await page.goto(base + '/finance/expenses');
-  await page.getByRole('heading', { name: 'Finance Management', exact: true }).waitFor();
+  await page.locator('.finance-header').getByRole('heading', { name: 'Expenses & Payables', exact: true }).waitFor();
   await page.getByText('Loading expense records…').waitFor({ state: 'hidden' });
   await page.getByRole('button', { name: 'Add expense', exact: true }).waitFor();
 }
@@ -88,7 +88,7 @@ try {
   await page.getByText('Isolated review: financial writes intercepted.').first().waitFor();
   assert.equal(writes.at(-1).path, `payables/${submitted.id}/approve-record`);await cancel();
   checks.push('independent approval calls transactional recognition endpoint');
-  await page.getByRole('navigation', { name: 'Finance workspaces' }).getByRole('button', { name: 'Accounts & Transfers', exact: true }).click();
+  await page.locator('.navbar-vertical .nav-submenu').getByRole('button', { name: 'Accounts & Transfers', exact: true }).click();
   await page.getByRole('button', { name: 'Card bills', exact: true }).click();
   await page.getByText('Loading card bills…').waitFor({ state: 'hidden' });
   await page.locator('.finance-cards tbody').getByRole('button').first().click();

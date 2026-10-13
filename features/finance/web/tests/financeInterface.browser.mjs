@@ -12,7 +12,7 @@ const esbuild = require(path.join(root, 'app-shell/web/node_modules/esbuild'));
 const { chromium } = await import(process.env.FINANCE_PLAYWRIGHT_MODULE ? pathToFileURL(process.env.FINANCE_PLAYWRIGHT_MODULE).href : 'playwright');
 const fixtures = JSON.parse(fs.readFileSync(process.env.FINANCE_UI_FIXTURES, 'utf8'));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'finance-ui-check-'));
-fs.writeFileSync(path.join(tmp, 'entry.jsx'), `import React from 'react';import {createRoot} from 'react-dom/client';import FinancePage from ${JSON.stringify(path.join(root, 'features/finance/web/FinancePage.jsx'))};createRoot(document.getElementById('finance-fixture')).render(<FinancePage/>);`);
+fs.writeFileSync(path.join(tmp, 'entry.jsx'), `import React from 'react';import {createRoot} from 'react-dom/client';import FinancePage from ${JSON.stringify(path.join(root, 'features/finance/web/FinancePage.jsx'))};function FixtureShell(){const [workspace,setWorkspace]=React.useState('Overview');React.useEffect(()=>{window.financeFixtureNavigate=setWorkspace;},[]);return <FinancePage initialWorkspace={workspace} onWorkspaceChange={setWorkspace}/>;}createRoot(document.getElementById('finance-fixture')).render(<FixtureShell/>);`);
 esbuild.buildSync({ entryPoints: [path.join(tmp, 'entry.jsx')], outfile: path.join(tmp, 'bundle.js'), bundle: true, format: 'iife', nodePaths: [path.join(root, 'app-shell/web/node_modules')], define: { 'process.env.NODE_ENV': '"development"' } });
 const browser = await chromium.launch({ headless: true });
 const failures = [], checks = [], requests = [];
@@ -38,13 +38,13 @@ try {
     await page.evaluate(() => { document.body.innerHTML = '<main class="page-body" id="finance-fixture"></main>'; localStorage.setItem('threejmain_token', 'fixture-only'); });
     await page.addStyleTag({ path: path.join(tmp, 'bundle.css') });
     await page.addScriptTag({ path: path.join(tmp, 'bundle.js') });
-    await page.getByRole('heading', { name: 'Finance Management', exact: true }).waitFor();
+    await page.locator('.finance-header').getByRole('heading', { name: 'Overview', exact: true }).waitFor();
     await page.getByText('Loading reports and their supporting records…').waitFor({ state: 'hidden' });
   }
-  async function workspace(name) { await page.getByRole('navigation', { name: 'Finance workspaces' }).getByRole('button', { name, exact: true }).click(); await page.getByText('Loading reports and their supporting records…').waitFor({ state: 'hidden' }); }
+  async function workspace(name) { await page.evaluate((next) => window.financeFixtureNavigate(next), name); await page.locator('.finance-header').getByRole('heading', { name, exact: true }).waitFor(); await page.getByText('Loading reports and their supporting records…').waitFor({ state: 'hidden' }); }
   async function close() { await page.getByRole('dialog').getByRole('button', { name: 'Close records', exact: true }).click(); }
   await mount();
-  assert.equal(await page.getByRole('navigation', { name: 'Finance workspaces' }).getByRole('button').count(), 7);
+  assert.equal(await page.getByRole('navigation', { name: 'Finance workspaces' }).count(), 0);
   await page.getByRole('button', { name: /Available controlled cash/ }).click();
   await page.getByRole('dialog').getByText('Closing balance', { exact: true }).waitFor();
   await close(); checks.push('overview summary opens controlled account records');
@@ -80,7 +80,7 @@ try {
   await page.emulateMedia({ media: 'print' });
   await page.evaluate(() => document.body.classList.add('finance-printing'));
   assert.equal(await page.locator('.finance-print-region').evaluate((el) => getComputedStyle(el).visibility), 'visible');
-  assert.equal(await page.getByRole('navigation', { name: 'Finance workspaces', includeHidden: true }).evaluate((el) => getComputedStyle(el).visibility), 'hidden');
+  assert.equal(await page.locator('.finance-header').evaluate((el) => getComputedStyle(el).visibility), 'hidden');
   await page.evaluate(() => document.body.classList.remove('finance-printing'));
   await page.emulateMedia({ media: 'screen' });
   await page.getByRole('dialog').getByRole('button', { name: 'Close preview', exact: true }).click();

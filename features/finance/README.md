@@ -1,5 +1,11 @@
 # Finance Management
 
+Workspace navigation uses the existing shared Finance Management sidebar and seven
+deep links. The page shows the current workspace title without repeating sidebar
+choices as tabs. Useful local account, income and report views remain available.
+Expenses default to the transaction list; Payees and Categories are under Manage,
+with Back to expenses and permission-controlled creation/editing actions.
+
 Finance Management owns ISP financial accounts, accounting, expenses/payables,
 source-linked income, cash flow, financial reports and subscriber analytics.
 

@@ -44,9 +44,9 @@ export default function FinanceActivity({ api, meta, refreshVersion, onOpenPayab
   function clear() { const defaults = initialFilters(); setDraft(defaults); setFilters(defaults); setOffset(0); }
   const field = (key, label, props = {}) => <label>{label}<input className="form-control" value={draft[key]} onChange={(e) => setDraft({ ...draft, [key]: e.target.value })} {...props} /></label>;
   const support = detail?.supportingRecord;
-  if (!allowed) return <section className="finance-activity"><h3>Activity</h3><p>Your role needs account and journal viewing access to see transaction history.</p></section>;
+  if (!allowed) return <section className="finance-activity"><p>Your role needs account and journal viewing access to see transaction history.</p></section>;
   return <section className="finance-activity" aria-label="Finance transaction history">
-    <div className="finance-toolbar"><div><h3>Activity</h3><p>Money in, money out and transfers — all in one transaction history.</p></div>
+    <div className="finance-toolbar"><div><p>Money in, money out and transfers — all in one transaction history.</p></div>
       <button type="button" className="btn btn-outline-primary" disabled={loading} onClick={() => setVersion((v) => v + 1)}>Refresh activity</button></div>
     <form className="finance-record-controls" onSubmit={apply}>
       {field('search', 'Search transactions', { type: 'search', maxLength: 160, placeholder: 'Description, reference, account or person' })}

@@ -17,7 +17,7 @@ page.on('response', (response) => { if (response.url().includes('/api/finance/')
 page.on('request', (request) => { if (request.url().includes('/api/finance/') && !['GET', 'HEAD'].includes(request.method())) writes.push(request.method()); });
 await page.addInitScript((value) => localStorage.setItem('threejmain_token', value), token);
 async function ready() {
-  await page.getByRole('heading', { name: 'Finance Management', exact: true }).waitFor();
+  await page.locator('.finance-header h2').waitFor();
   await page.getByText('Loading Finance accounts…', { exact: true }).waitFor({ state: 'hidden' });
   await page.getByText('Loading reports and their supporting records…', { exact: true }).waitFor({ state: 'hidden' });
   await page.getByText('Loading income records…', { exact: true }).waitFor({ state: 'hidden' });
@@ -27,9 +27,11 @@ async function ready() {
 }
 async function open(path, workspace) {
   await page.goto(base + path); await ready();
-  const nav = page.getByRole('navigation', { name: 'Finance workspaces' });
-  assert.equal(await nav.getByRole('button').count(), 7);
-  assert.equal(await nav.getByRole('button', { name: workspace, exact: true }).getAttribute('aria-current'), 'page');
+  assert.equal(await page.getByRole('navigation', { name: 'Finance workspaces' }).count(), 0);
+  await page.locator('.finance-header').getByRole('heading', { name: workspace, exact: true }).waitFor();
+  const nav = page.locator('.navbar-vertical .nav-submenu');
+  const selected = nav.getByRole('button', { name: workspace === 'Overview' ? 'Finance Overview' : workspace, exact: true, includeHidden: true });
+  assert.match(await selected.getAttribute('class'), /\bactive\b/);
   assert.equal(new URL(page.url()).pathname, path);
 }
 try {
@@ -51,12 +53,28 @@ try {
   await page.getByRole('button', { name: 'New account', exact: true }).click();
   await page.getByRole('dialog', { name: 'New financial account' }).waitFor();
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
-  await page.getByRole('navigation', { name: 'Finance workspaces' }).getByRole('button', { name: 'Expenses & Payables', exact: true }).click();
+  await page.locator('.navbar-vertical .nav-submenu').getByRole('button', { name: 'Expenses & Payables', exact: true }).click();
   await ready(); assert.equal(new URL(page.url()).pathname, '/finance/expenses');
+  await page.locator('.finance-manage summary').click();
+  await page.getByRole('button', { name: 'Payees', exact: true }).click();
+  await page.getByRole('heading', { name: 'Payees', exact: true }).waitFor();
+  assert.equal(await page.locator('.finance-manage').getAttribute('open'), null);
+  await page.getByRole('button', { name: 'New payee', exact: true }).click();
+  await page.getByRole('dialog', { name: 'New supplier or payee' }).waitFor();
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await page.locator('.finance-manage summary').focus();
+  await page.keyboard.press('Enter');
+  await page.getByRole('button', { name: 'Categories', exact: true }).click();
+  await page.getByRole('heading', { name: 'Categories', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Back to expenses', exact: true }).click();
+  assert.equal(await page.getByRole('button', { name: 'New payee', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'New category', exact: true }).count(), 0);
+  checks.push('expense Manage navigation and keyboard access retain setup forms');
+  if (screenshots) await page.screenshot({ path: screenshots+'/expenses-desktop.png', fullPage: true });
   await page.getByRole('button', { name: 'Add expense', exact: true }).click();
   await page.getByRole('dialog', { name: 'Add expense' }).waitFor();
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
-  await page.getByRole('navigation', { name: 'Finance workspaces' }).getByRole('button', { name: 'Income & Collections', exact: true }).click();
+  await page.locator('.navbar-vertical .nav-submenu').getByRole('button', { name: 'Income & Collections', exact: true }).click();
   await ready(); assert.equal(new URL(page.url()).pathname, '/finance/income');
   assert.equal(await page.getByRole('button', { name: 'Synchronize source', exact: true }).count(), 4);
   for (const button of await page.getByRole('button', { name: 'Synchronize source', exact: true }).all()) assert(await button.isDisabled());
@@ -98,6 +116,20 @@ try {
   checks.push('mobile shared gutters and overflow');
   if (screenshots) {
     await page.screenshot({ path: screenshots + '/accounts-mobile.png', fullPage: true });
+  }
+  await page.locator('.navbar-vertical .navbar-toggler').click();
+  await page.locator('.navbar-vertical .nav-submenu').getByRole('button', { name: 'Expenses & Payables', exact: true }).click();
+  await ready();
+  await page.locator('.finance-header').getByRole('heading', { name: 'Expenses & Payables', exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname, '/finance/expenses');
+  await page.locator('.finance-manage summary').click();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+  if (screenshots) await page.screenshot({ path: screenshots + '/expenses-manage-mobile.png', fullPage: true });
+  await page.getByRole('button', { name: 'Categories', exact: true }).click();
+  await page.getByRole('heading', { name: 'Categories', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Back to expenses', exact: true }).click();
+  checks.push('mobile sidebar navigation and expense Manage views');
+  if (screenshots) {
     await page.setViewportSize({ width: 1440, height: 1000 });
     await open('/finance','Overview');
     await page.screenshot({ path: screenshots + '/overview-desktop.png', fullPage: true });

@@ -19,6 +19,7 @@ export default function ExpensesPayables({ api, meta, pending, onPendingChange, 
   const has = (grant) => meta.permissionsGranted.includes(grant) || meta.permissionsGranted.includes('*');
   const disabled = busy || parentBusy || loading || Boolean(pending);
   const selectedId = useRef(initialPayableId);
+  const manageMenu = useRef(null);
   const priorIdentity = useRef(meta.actorUsername);
   const closeDialog = useCallback(() => setDialog(null), []);
 
@@ -113,10 +114,13 @@ export default function ExpensesPayables({ api, meta, pending, onPendingChange, 
   return <section className="finance-expenses">
     {error && <div role="alert" className="alert alert-danger">{error}</div>}
     {notice && <div role="status" className="alert alert-success">{notice}</div>}
-    <div className="finance-toolbar"><nav aria-label="Expenses and payables views">{['Payables', 'Payees', 'Categories'].map((name) => <button type="button" className={`btn ${name === view ? 'btn-primary' : 'btn-outline-primary'}`} key={name} onClick={() => setView(name)}>{name}</button>)}</nav>
-      <div>{has('finance.expenses.create') && <button className="btn btn-primary" disabled={disabled} onClick={() => start('new-expense')}>Add expense</button>}
-        {has('finance.expenses.manage') && <><button className="btn btn-outline-primary" disabled={disabled} onClick={() => start('new-payee')}>New payee</button><button className="btn btn-outline-primary" disabled={disabled || !has('finance.accounts.view')} onClick={() => start('new-category')}>New category</button></>}</div></div>
-    <p>Add the purchase, send it for approval, then record payments. Pay later and installments show what is still owed. A card charge pays the supplier; repay the card in Accounts &amp; Transfers.</p>
+    <div className="finance-toolbar"><div>{view !== 'Payables' && <><button type="button" className="btn btn-outline-secondary" disabled={disabled} onClick={() => setView('Payables')}>Back to expenses</button><h3 className="mb-0">{view}</h3></>}</div>
+      <div>{view === 'Payables' && has('finance.expenses.create') && <button className="btn btn-primary" disabled={disabled} onClick={() => start('new-expense')}>Add expense</button>}
+        {has('finance.expenses.manage') && view === 'Payees' && <button className="btn btn-primary" disabled={disabled} onClick={() => start('new-payee')}>New payee</button>}
+        {has('finance.expenses.manage') && view === 'Categories' && <button className="btn btn-primary" disabled={disabled || !has('finance.accounts.view')} onClick={() => start('new-category')}>New category</button>}
+        <details className="finance-manage" ref={manageMenu}><summary className="btn btn-outline-secondary dropdown-toggle">Manage</summary><div className="finance-manage-options">{['Payees', 'Categories'].map((name) => <button type="button" className="btn btn-link" key={name} disabled={disabled} onClick={() => { setView(name); manageMenu.current.open = false; }}>{name}</button>)}</div></details>
+      </div></div>
+    {view === 'Payables' && <p>Add the purchase, send it for approval, then record payments. Pay later and installments show what is still owed. A card charge pays the supplier; repay the card in Accounts &amp; Transfers.</p>}
     {!loading && listView.controls}
     {loading ? <p role="status">Loading expense records…</p> : view === 'Payables' ? <div className="table-responsive"><table className="table table-striped finance-expense-table"><thead><tr><th>Date</th><th>Payee</th><th>Category</th><th>Amount</th><th>Paid to supplier</th><th>Remaining</th><th>Status</th></tr></thead><tbody>
       {listView.items.map((r) => <tr key={r.id}><td data-label="Date">{r.expenseDate}<small className="finance-code">{r.nextDueDate ? `Due ${r.nextDueDate}${r.overdue ? ' · Overdue' : ''}` : 'Settled'}</small></td><td data-label="Payee"><button className="btn btn-sm btn-link" onClick={() => show(r.id).catch((e) => setError(e.message))}>#{r.number} {r.payeeSnapshot.name}</button></td><td data-label="Category">{r.categorySnapshot.name}<small className="finance-code">{ARRANGEMENTS[r.paymentArrangement || 'PAY_LATER']}</small></td><td data-label="Amount">{moneyLabel(r.amount)}</td><td data-label="Paid to supplier">{moneyLabel(r.paidAmount)}</td><td data-label="Remaining">{r.postingStatus === 'UNPOSTED' ? 'Pending approval / recording' : moneyLabel(r.outstandingAmount)}</td><td data-label="Status"><FinanceStatus value={expenseStatus(r)} /></td></tr>)}
