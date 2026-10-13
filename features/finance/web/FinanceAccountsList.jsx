@@ -11,7 +11,7 @@ export default function FinanceAccountsList({ accounts, view, group, onGroup, sh
         <span>{g.name}</span><strong>{moneyLabel(sumAccountBalances(active))}</strong><small>{g.balanceLabel} · {active.length} active accounts</small>
       </button>;
     })}</div>
-    <p className="text-secondary">Recorded balances as of {businessDate()} · PHP · Posted Finance evidence. Company funds are separate from money with collectors and card debt.</p>
+    <p className="text-secondary">Recorded balances as of {businessDate()} · PHP · Posted Finance evidence. Collector money awaiting remittance is tracked in Income & Collections.</p>
     {group && <button type="button" className="btn btn-outline-secondary mb-3" onClick={() => onGroup('')}>Show all accounts</button>}
     {view.controls}<label className="mb-3"><input type="checkbox" checked={showArchived} onChange={(e) => onArchived(e.target.checked)} /> Include archived accounts</label>
     {ACCOUNT_GROUPS.filter((g) => !group || group === g.id).map((g) => <section key={g.id} aria-label={g.name} className="mb-4">

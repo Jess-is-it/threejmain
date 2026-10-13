@@ -18,10 +18,11 @@ source-linked income, cash flow, financial reports and subscriber analytics.
 
 ## Simple accounts and transfers
 
-Accounts & Transfers opens the named-account list, grouped into Company funds,
-With collectors and Credit cards. Summary cards open their supporting account
+Accounts & Transfers opens the named-account list, grouped into Company funds and Credit cards. Collector custody
+is tracked under Income & Collections → Pending remittances. Summary cards open their supporting account
 rows. Balances reflect posted Finance evidence in PHP as of the Manila business
-date; collector holdings and card debt are kept separate from company funds.
+date. Collector holdings are outside this list; card debt is shown separately from
+company funds.
 Click an account name to review its balance, transaction history and account
 settings. Cash history uses Money in / Money out; cards use Charges / Repayments.
 Starting balances establish a baseline and are not shown as ordinary movements.
@@ -46,11 +47,34 @@ from its details. Latest bill remaining/next due are visible alongside card debt
 Bill repayment and linking an already-recorded transfer preserve their existing
 allocation, installment, reversal and duplicate-recovery workflows.
 
-Authorized **Manage** tools hold Accounting accounts, Starting balances and
+Authorized **Manage** tools hold Accounting accounts, Collector custody, Starting balances and
 Journal entries/Post journal. Existing API permissions and account scopes,
 opening approval, immutable posting, zero-balance archival and period rules
 remain authoritative. This refinement adds no ledger, migration, permission,
 shared route or automatic balance posting.
+
+## Pending collector remittances
+
+Income & Collections shows a pending-remittance summary and supporting custody
+accounts. Select **Pending remittances** to review each responsible collector,
+cash/personal GCash leg, posted balance and transaction evidence. Positive balances
+make up the pending total; negative balances require reconciliation and do not
+reduce another collector’s outstanding amount. Settled accounts are available
+through Include settled custody accounts. Dates, permitted scope, posted-record
+basis and provisional setup status remain explicit.
+
+Collector owns confirmation and discrepancy handling. **Open Collector** links to
+its existing workspace for roles with collector.finance.view. Finance balance and
+activity access require finance.accounts.view alongside income workspace access;
+missing access shows no amount. Source cutover/mapping gaps can leave this view
+incomplete: these are posted Finance custody balances, not a replacement Collector
+remittance ledger. Confirmed source remittance moves funds into the company account
+without creating another customer receipt or income posting.
+
+Collector types are absent from the everyday account list, its summaries and Add
+account. Authorized custody creation/edit/archive remains under Manage → Collector
+custody; openings, journal evidence, mappings, transfers and reports retain the
+underlying accounts. No financial records or accounting definitions are changed.
 
 ## Simple expense workflow
 

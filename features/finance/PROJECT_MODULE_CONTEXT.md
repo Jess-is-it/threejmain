@@ -1,5 +1,44 @@
 # Finance Management Module Context
 
+## Collector balances moved to Pending remittances (2026-10-13)
+
+Default Accounts & Transfers now shows Company funds and Credit cards only.
+COLLECTOR_CASH/COLLECTOR_GCASH are excluded from that list, pagination, summary
+cards and ordinary Add account kinds. Their master setup/edit/zero-balance archival
+remains under role-gated Manage → Collector custody. Their durable accounts, source
+mapping, reviewed openings, journals, corrections, transfer options and financial
+report definitions remain intact. This changes presentation rather than remittance
+posting or revenue recognition.
+
+IncomeCollections has a Pending remittances summary on Collections and a local
+Pending remittances view. FinancePendingRemittances reuses its scoped GET/accounts
+results and GET/accounts/{id}/activity for original evidence; no new API or receipt
+ledger. Positive custody balances make up the exact-cent pending total. Negative
+balances are flagged for reconciliation, never netted against another collector.
+Rows show responsible person, account/leg, amount, pending/settled/reconciliation
+state. Search/status/pagination, Include settled accounts, dated posted-record basis
+and setup provisional label are retained. Activity expands the existing journal
+history. Income workspace permission plus account view/scopes remain authoritative;
+without account permission neither amounts nor links are exposed.
+
+Open Collector links to existing /collector only with collector.finance.view. The
+Collector module owns confirmation, actual movement evidence and discrepancies.
+Posted custody can differ from authoritative Collector pending work until source
+cutover/delivery is reviewed; the view explicitly describes that boundary. No
+Collector provider/shared file, migration, role grant or financial evidence changed.
+
+Verification: 29 client tests and 48 source-income/PostgreSQL cases pass, with one
+inherited fixture skip. Thirty-eight browser groups pass (six pending-remittance,
+six accounts, eleven standalone interface, fifteen actual staging), zero page errors
+or shared financial writes. Isolated service fixtures prove 1000 collected across
+retained receipts, a confirmed 700 receipt-batch handover, 300 still pending, and
+final settlement; remittance collectionAmount remains zero. Browser checks cover
+main account exclusion, evidence/Collector link, negative-balance non-netting,
+settled history, permitted scope/denial, advanced custody setup and mobile layout.
+Staging rebuilt through staging_deploy.sh with runtime/server lock and reviewed at
+8280/8200. Root context and production unchanged; posted-report history/cutover
+coverage limitations remain. Host-only ignored graph refreshed.
+
 ## Simpler Accounts & Transfers (2026-10-13)
 
 The default screen is the named-account list rather than accounting view tabs.

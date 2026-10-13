@@ -67,9 +67,12 @@ try {
   await page.getByText('26–26 of 26 records').waitFor();
   await page.getByRole('button', { name: 'Clear filters', exact: true }).click();
   if (shots) await page.screenshot({ path: shots + '/accounts-desktop.png', fullPage: true });
-  checks.push('group totals separate funds/custody/card debt; summaries drill down; search and pagination');
+  checks.push('company and card totals exclude collector custody; summaries drill down; search and pagination');
 
-  await page.getByRole('button', { name: 'Add account', exact: true }).click();
+  assert.equal(await page.getByRole('region', { name: 'With collectors', exact: true }).count(), 0);
+  await page.locator('.finance-manage summary').click();
+  await page.getByRole('button', { name: 'Collector custody', exact: true }).click();
+  await page.getByRole('button', { name: 'Add custody account', exact: true }).click();
   assert.equal(await dialog().getByLabel('Account code').count(), 0);
   assert.equal(await dialog().getByLabel('Notes (optional)').isVisible(), false);
   await dialog().getByLabel('Account name').fill('Review collector account');
@@ -78,7 +81,10 @@ try {
   const blocked = writes.length;
   await dialog().getByRole('button', { name: 'Confirm and save', exact: true }).click();
   assert.equal(writes.length, blocked);
-  await dialog().getByLabel('Account type').selectOption('CASH');
+  await cancel();
+  await page.getByRole('button', { name: 'Back to accounts', exact: true }).click();
+  await page.getByRole('button', { name: 'Add account', exact: true }).click();
+  assert.equal(await dialog().getByLabel('Account type').locator('option[value=COLLECTOR_CASH]').count(), 0);
   await dialog().getByLabel('Account name').fill('Review new cash account');
   await dialog().getByLabel('Set starting balance after creating this account').check();
   await dialog().getByRole('button', { name: 'Confirm and save', exact: true }).click();

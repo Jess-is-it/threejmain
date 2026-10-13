@@ -7,7 +7,6 @@ export const ACCOUNT_LABELS = {
 };
 export const ACCOUNT_GROUPS = [
   { id: 'company', name: 'Company funds', balanceLabel: 'Recorded balance', description: 'Cash, bank and company GCash balances recorded in Finance.' },
-  { id: 'collector', name: 'With collectors', balanceLabel: 'Held / due', description: 'Funds awaiting remittance. Collector GCash is due from the collector.' },
   { id: 'card', name: 'Credit cards', balanceLabel: 'Amount owed', description: 'Card debt is shown separately from company funds.' },
 ];
 export function accountGroup(account) {
