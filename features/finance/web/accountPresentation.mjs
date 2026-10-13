@@ -1,12 +1,12 @@
 import { cents } from './reportClient.mjs';
 
 export const ACCOUNT_LABELS = {
-  CASH: 'Cash', PETTY_CASH: 'Petty cash', COMPANY_GCASH: 'Company GCash', BANK: 'Bank',
+  CASH: 'Cash', PETTY_CASH: 'Petty cash', COMPANY_GCASH: 'e-Wallet', BANK: 'Bank',
   COLLECTOR_CASH: 'Collector cash', COLLECTOR_GCASH: 'Collector GCash due',
   CREDIT_CARD: 'Credit card', GENERAL_LEDGER: 'Accounting account',
 };
 export const ACCOUNT_GROUPS = [
-  { id: 'company', name: 'Company funds', balanceLabel: 'Recorded balance', description: 'Cash, bank and company GCash balances recorded in Finance.' },
+  { id: 'company', name: 'Company funds', balanceLabel: 'Recorded balance', description: 'Cash, bank and e-Wallet balances recorded in Finance.' },
   { id: 'card', name: 'Credit cards', balanceLabel: 'Amount owed', description: 'Card debt is shown separately from company funds.' },
 ];
 export function accountGroup(account) {

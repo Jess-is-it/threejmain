@@ -27,6 +27,10 @@ Popups are excluded from printable reports. Host-only checks:
 
 ## Simple accounts and transfers
 
+The company electronic-wallet account type displays as **e-Wallet** in account
+forms, lists, details and named-account selections. Existing COMPANY_GCASH API and
+stored values remain compatible; account names identify the particular wallet.
+
 Accounts & Transfers opens one compact account-name/type and balance list, with separate Company funds and Credit cards totals. Collector custody
 is tracked under Income & Collections → Pending remittances. Summary cards open their supporting account
 rows. Balances reflect posted Finance evidence in PHP as of the Manila business

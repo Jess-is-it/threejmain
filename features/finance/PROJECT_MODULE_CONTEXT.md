@@ -1,5 +1,13 @@
 # Finance Management Module Context
 
+## e-Wallet account display name (2026-10-13)
+
+The COMPANY_GCASH account type displays as e-Wallet through ACCOUNT_LABELS,
+including Add account, account lists/details and named-account selections.
+Company-funds explanatory text uses e-Wallet too. The existing enum, account IDs,
+balances, payment-method mapping and source contracts are unchanged; this is a
+display-name refinement with no migration or shared wiring requirement.
+
 ## Immediate declared starting balances (2026-10-13)
 
 Authorized account managers can now apply simplified user-entered starting balances
