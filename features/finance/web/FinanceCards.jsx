@@ -4,7 +4,7 @@ import { FinanceStatus, useRecordView } from './FinanceRecords.jsx';
 import InstallmentEditor from './InstallmentEditor.jsx';
 import { businessDate, moneyLabel, newReference } from './financeApi.mjs';
 
-export default function FinanceCards({ api, meta, accounts, refreshVersion, pending, onPendingChange, onBusyChange, onSaved }) {
+export default function FinanceCards({ api, meta, accounts, accountId = '', refreshVersion, pending, onPendingChange, onBusyChange, onSaved }) {
   const [records, setRecords] = useState([]), [selected, setSelected] = useState(null), [dialog, setDialog] = useState(null), [form, setForm] = useState({});
   const [busy, setBusy] = useState(false), [loading, setLoading] = useState(true), [error, setError] = useState(''), [notice, setNotice] = useState('');
   const [transfers, setTransfers] = useState([]);
@@ -17,12 +17,12 @@ export default function FinanceCards({ api, meta, accounts, refreshVersion, pend
   }
   useEffect(() => { if (allowed) load().catch((e) => setError(e.message)); else { setRecords([]); setLoading(false); } }, [api, refreshVersion, meta.actorUsername, meta.permissionsGranted.join(',')]);
   const disabled = busy || loading || Boolean(pending);
-  const view = useRecordView(records, { getDate: (r) => r.periodEnd, statuses: ['UNPAID', 'PARTIALLY_PAID', 'PAID', 'SUPERSEDED'] });
+  const view = useRecordView(records.filter((r) => !accountId || r.accountId === accountId), { getDate: (r) => r.periodEnd, statuses: ['UNPAID', 'PARTIALLY_PAID', 'PAID', 'SUPERSEDED'], resetKey: accountId });
   const detail = records.find((r) => r.id === selected);
   function start(type, record) {
     setError(''); setNotice(''); setDialog({ type, record });
     const today = businessDate();
-    setForm(type === 'create' ? { accountId: '', statementReference: '', periodStart: `${today.slice(0, 7)}-01`, periodEnd: today, dueDate: today, statementBalance: '', evidenceReference: '', installments: [], scheduled: false }
+    setForm(type === 'create' ? { accountId, statementReference: '', periodStart: `${today.slice(0, 7)}-01`, periodEnd: today, dueDate: today, statementBalance: '', evidenceReference: '', installments: [], scheduled: false }
       : type === 'correct' ? { ...record, statementReference: '', correctionReason: '', scheduled: Boolean(record.installments?.length) }
         : type === 'link' ? { journalId: '', reason: 'Allocate verified existing card repayment' }
           : type === 'repay' ? { fromAccountId: '', effectiveDate: today, amount: record.nextDueAmount || record.outstandingAmount, sourceReference: newReference(), referenceNumber: '', reason: 'Credit-card bill repayment' }
@@ -57,7 +57,8 @@ export default function FinanceCards({ api, meta, accounts, refreshVersion, pend
   return <section className="finance-cards">
     {error && <div className="alert alert-danger" role="alert">{error}</div>}{notice && <div className="alert alert-success" role="status">{notice}</div>}
     <div className="finance-toolbar"><h3>Credit-card bills</h3>{has('finance.accounts.manage') && <button className="btn btn-primary" disabled={disabled} onClick={() => start('create')}>Add card bill</button>}</div>
-    <p>Card purchases pay the supplier and increase card debt. Bill repayments reduce that debt. Neither adding a bill nor repaying it records another expense. The latest bill carries forward any previous balance; earlier bills stay in history.</p>
+    {accountId && <p>Showing bills for <strong>{accounts.find((a) => a.id === accountId)?.name || 'selected card'}</strong>.</p>}
+    <p>Choose a bill to pay or review. Paying it reduces card debt without recording another expense.</p>
     {loading ? <p role="status">Loading card bills…</p> : <>{view.controls}<div className="table-responsive"><table className="table table-striped"><thead><tr><th>Card / bill</th><th>Closing date</th><th>Next due date</th><th>Bill amount</th><th>Allocated repayments</th><th>Bill remaining</th><th>Status</th></tr></thead><tbody>{view.items.map((r) => <tr key={r.id}><td><button className="btn btn-link btn-sm" onClick={() => setSelected(r.id)}>{r.accountSnapshot.name} · {r.statementReference}</button></td><td>{r.periodEnd}</td><td>{r.nextDueDate || '—'}</td><td>{moneyLabel(r.statementBalance)}</td><td>{moneyLabel(r.paidAmount)}</td><td>{moneyLabel(r.outstandingAmount)}</td><td><FinanceStatus value={r.status} /></td></tr>)}{!view.items.length && <tr><td colSpan="7">No card bills in your permitted scope. Add the bill when the card company issues it.</td></tr>}</tbody></table></div>{view.pagination}</>}
     {detail && <div className="card"><div className="card-body"><button className="btn btn-outline-secondary btn-sm float-end" onClick={() => setSelected(null)}>Close bill</button><h3>{detail.accountSnapshot.name} · {detail.statementReference}</h3>
       <p>Statement period {detail.periodStart} to {detail.periodEnd} · Due {detail.dueDate} · <FinanceStatus value={detail.status} /></p>

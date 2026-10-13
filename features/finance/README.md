@@ -16,6 +16,42 @@ with Back to expenses and permission-controlled creation/editing actions.
 Finance Management owns ISP financial accounts, accounting, expenses/payables,
 source-linked income, cash flow, financial reports and subscriber analytics.
 
+## Simple accounts and transfers
+
+Accounts & Transfers opens the named-account list, grouped into Company funds,
+With collectors and Credit cards. Summary cards open their supporting account
+rows. Balances reflect posted Finance evidence in PHP as of the Manila business
+date; collector holdings and card debt are kept separate from company funds.
+Click an account name to review its balance, transaction history and account
+settings. Cash history uses Money in / Money out; cards use Charges / Repayments.
+Starting balances establish a baseline and are not shown as ordinary movements.
+Debit/credit evidence and attribution remain available under Accounting details.
+
+**Add account** asks for name and type, generates a permanent internal code, and
+keeps optional notes/person responsible under More details. Collector accounts
+require a responsible person. An optional starting-balance step follows creation;
+it saves a separate evidence request for independent approval before posting.
+Cancelling this step retains the new zero-balance account. Starting balances can
+also be set later from account details. An uncertain creation is confirmed through
+the existing saved-request flow; complete the starting-balance step from the account
+once creation is confirmed, rather than creating the account again.
+
+**Transfer money** asks for source, destination, amount, date and purpose, suggests
+the payment method, and requires a real supporting reference for noncash movement.
+The generated posting reference stays internal. A preview identifies the two
+accounts; same-account and card-to-card choices are excluded. Transfer history
+shows the direction and amount with accounting detail available on demand.
+**Pay credit card** opens issuer bills, filtered to the current card when launched
+from its details. Latest bill remaining/next due are visible alongside card debt.
+Bill repayment and linking an already-recorded transfer preserve their existing
+allocation, installment, reversal and duplicate-recovery workflows.
+
+Authorized **Manage** tools hold Accounting accounts, Starting balances and
+Journal entries/Post journal. Existing API permissions and account scopes,
+opening approval, immutable posting, zero-balance archival and period rules
+remain authoritative. This refinement adds no ledger, migration, permission,
+shared route or automatic balance posting.
+
 ## Simple expense workflow
 
 Expenses & Payables uses **Add expense → Submit → Approve → Record payment**.
@@ -24,7 +60,7 @@ and installment expenses require a payee; Paid now and Charged to credit card ma
 the payee and retain “Payee not specified” in their evidence and reports.
 The two immediate-payment choices show separate cash/GCash/bank and credit-card
 account selectors, dates and references. Supplier installments are also supported.
-**Accounts & Transfers → Card bills** tracks issuer due dates, agreed
+**Accounts & Transfers → Pay credit card** tracks issuer due dates, agreed
 installments, repayments and existing-transfer allocation without another expense.
 Approval records the reviewed cost atomically; payment is separately authorized.
 [SIMPLE_EXPENSES.md](SIMPLE_EXPENSES.md) documents permissions, APIs and limits.

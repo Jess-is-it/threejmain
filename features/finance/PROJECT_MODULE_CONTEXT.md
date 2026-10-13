@@ -1,5 +1,59 @@
 # Finance Management Module Context
 
+## Simpler Accounts & Transfers (2026-10-13)
+
+The default screen is the named-account list rather than accounting view tabs.
+FinanceAccountsList groups Company funds (cash/petty cash/bank/company GCash),
+With collectors (cash custody/personal GCash due), and Credit cards (liabilities).
+Active balances use exact integer cents; summary buttons filter supporting rows.
+Non-control GENERAL_LEDGER accounts live under Manage → Accounting accounts.
+Account search/status/pagination/archived history remain available. Recorded
+balance dates use the Manila business date and do not claim reconciled cash or profit.
+
+Clicking an account name opens its activity endpoint, current balance, edit/archive/
+restore controls, optional starting-balance request and durable account details.
+FinanceAccountHistory provides search/date filters/pagination and cash Money in/out
+or card Charges/Repayments with normal-sided balances. OPENING rows and linked
+opening reversals are baseline evidence, excluded from ordinary movement columns;
+expand Accounting details to inspect debit/credit, actor and retained reason.
+
+Add account now asks for name/type, generates FA-<cryptographic UUID> (39 characters),
+requires a responsible person for collector kinds, and keeps optional notes/custodian
+under More details. Optional Set starting balance is a separate step after successful
+creation, not an atomic account+opening transaction and never automatic posting.
+Cancel leaves the new zero-balance account; later setup is available in account details.
+Uncertain create recovery confirms the frozen request; resume starting-balance setup
+from that account. Its evidence, independent reviewer, approval limit and posting
+permissions are unchanged. UI-only flags are stripped from AccountCreate payloads.
+
+Transfer money shows From/To/Amount/Date/Purpose plus any required external reference.
+Account selection suggests human-labelled cash/GCash/bank/card rails; More details
+allows a valid alternate method. Internal sourceReference is generated and hidden.
+Same-account/card-to-card destinations are excluded. The preview states amount and
+direction. Transfer history shows actual endpoints/amount; journal details stay expandable.
+Card-statement repayment entries link to card bills for corrections rather than offering
+a generic journal reversal that would bypass their allocation workflow.
+
+Pay credit card opens retained FinanceCards workflows; account detail launches filter
+the bills to that card and preset the account for a new bill. Latest non-superseded bill
+remaining/next due are shown independently of current card debt. Existing statement,
+installment, repayment/linking and correction APIs stay authoritative. Manage exposes
+Accounting accounts, Starting balances and Journal entries/Post journal with existing
+grants. No API/schema/source contract, permission or shared app-shell file changed.
+
+
+Verification: 29 client tests, 24 foundation cases and 26 PostgreSQL cases pass;
+one inherited PostgreSQL fixture case remains skipped. Browser verification passes
+six account-workflow groups, eleven expense/card groups, eleven standalone interface
+groups and fifteen actual-staging groups, with zero page errors or shared financial
+writes. Coverage includes grouped totals/drill-down, account-code generation, required
+collector attribution, starting-balance evidence without automatic posting, transfer
+references and frozen-key recovery, normal-sided cash/card history, bill allocation,
+role denial, journal-only posting access, pagination, keyboard Manage navigation,
+exports and 390px mobile layout. Shared staging built/deployed under runtime/server
+lock via scripts/staging_deploy.sh and reviewed on 8280/8200. Host graph refreshed;
+production, shared sources and financial evidence unchanged.
+
 ## Separate Paid now and credit-card choices (2026-10-13)
 
 Expense create/edit forms now offer Paid now, Pay later, Installments and Charged to

@@ -21,6 +21,8 @@ def fixtures():
     for r in s.list_payables(CREATOR):
         data['payables/'+r['id']]=s.payable_detail(CREATOR,r['id'])
         data['payables/'+r['id']+'/attachments']=s.list_attachments(CREATOR,r['id'])
+    for account in (funds,card):
+        data['accounts/'+account['id']+'/activity']=s.activity(CREATOR,account['id'])
     data['card-statements']=cards.statements(s,CREATOR)
     data['workflow']={'scheduledId':schedule['id'],'billId':bill['id'],'cardId':card['id'],
                       'fundsId':funds['id'],'submitted':submitted}

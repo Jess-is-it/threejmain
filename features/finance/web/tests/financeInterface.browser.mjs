@@ -27,7 +27,7 @@ try {
     let key = resource;
     if (resource === 'reports/monthly-series') key = `series/${url.searchParams.get('kind')}`;
     if (resource === 'reports/comparison') key = `comparison/${url.searchParams.get('kind')}`;
-    let data = fixtures[key];
+    let data = resource === 'card-statements' ? [] : fixtures[key];
     if (resource === 'meta' && readOnly) data = { ...data, permissionsGranted: ['finance.view', 'finance.reports.subscribers.view'] };
     if (resource.endsWith('/csv')) { await route.fulfill({ status: 200, contentType: 'text/csv', headers: { 'Content-Disposition': 'attachment; filename="finance.csv"' }, body: 'Report,amount\nFixture,100.00\n' }); return; }
     if (request.method() !== 'GET') { await route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ detail: 'Fixture-only browser verification; posting is rejected.' }) }); return; }
@@ -54,7 +54,7 @@ try {
   await page.getByRole('button', { name: 'Next', exact: true }).click();
   await page.getByText('26–26 of 26 records').waitFor();
   await page.getByRole('button', { name: 'Clear filters', exact: true }).click();
-  await page.getByRole('button', { name: 'New account', exact: true }).click();
+  await page.getByRole('button', { name: 'Add account', exact: true }).click();
   await page.getByRole('dialog').getByLabel('Account name').fill('Review account draft');
   await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
   checks.push('account search, pagination, create form and dialog focus return');

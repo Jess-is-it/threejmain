@@ -52,7 +52,7 @@ try {
   if (screenshots) await page.screenshot({ path: screenshots+'/activity-desktop.png', fullPage: true });
   checks.push('actual transaction-history filters and empty state without posting');
   await open('/finance/accounts','Accounts & Transfers');
-  await page.getByRole('button', { name: 'New account', exact: true }).click();
+  await page.getByRole('button', { name: 'Add account', exact: true }).click();
   await page.getByRole('dialog', { name: 'New financial account' }).waitFor();
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   await page.locator('.navbar-vertical .nav-submenu').getByRole('button', { name: 'Expenses & Payables', exact: true }).click();
@@ -78,6 +78,7 @@ try {
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   await page.locator('.navbar-vertical .nav-submenu').getByRole('button', { name: 'Income & Collections', exact: true }).click();
   await ready(); assert.equal(new URL(page.url()).pathname, '/finance/income');
+  await page.getByRole('button', { name: 'Synchronize source', exact: true }).first().waitFor();
   assert.equal(await page.getByRole('button', { name: 'Synchronize source', exact: true }).count(), 4);
   for (const button of await page.getByRole('button', { name: 'Synchronize source', exact: true }).all()) assert(await button.isDisabled());
   await page.getByRole('button', { name: 'Other income & funding', exact: true }).click();
