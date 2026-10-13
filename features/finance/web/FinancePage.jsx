@@ -12,6 +12,7 @@ import FinanceDialog from './FinanceDialog.jsx';
 import FinanceActivity from './FinanceActivity.jsx';
 import FinanceNotifications, { FinanceNotice, FinanceNotificationProvider } from './FinanceNotifications.jsx';
 import { withinApprovalLimit } from './reportClient.mjs';
+import { accountCreateBody } from './accountForm.mjs';
 import { useRecordView, FinanceStatus } from './FinanceRecords.jsx';
 
 const EMPTY_LINE = () => ({ accountId: '', debit: '', credit: '', memo: '' });
@@ -68,11 +69,11 @@ function FinanceContent({ apiBase = '', refreshShell = () => {}, initialWorkspac
 
   function start(type, record = null) {
     setError(''); setNotice(''); setDialog({ type, record });
-    setForm(type === 'account' ? { code: `FA-${newReference()}`, name: '', kind: section === 'Accounting accounts' ? 'GENERAL_LEDGER' : section === 'Collector custody' ? 'COLLECTOR_CASH' : 'CASH', custodian: '', notes: '', setStartingBalance: false }
+    setForm(type === 'account' ? { code: `FA-${newReference()}`, name: '', kind: section === 'Accounting accounts' ? 'GENERAL_LEDGER' : section === 'Collector custody' ? 'COLLECTOR_CASH' : 'CASH', custodian: '', notes: '', startingBalanceAmount: '', startingBalanceDate: businessDate() }
       : type === 'edit' ? { name: record.name, custodian: record.custodian, notes: record.notes, version: record.version }
         : type === 'journal' ? { effectiveDate: businessDate(), sourceReference: newReference(), reason: '', lines: [EMPTY_LINE(), EMPTY_LINE()] }
           : type === 'transfer' ? { fromAccountId: record?.kind !== 'CREDIT_CARD' ? record?.id || '' : '', toAccountId: '', amount: '', effectiveDate: businessDate(), sourceReference: newReference(), reason: '', method: suggestedTransferMethod(record?.kind !== 'CREDIT_CARD' ? record : null, null), referenceNumber: '' }
-            : type === 'opening' ? { accountId: record?.id || '', amount: '', effectiveDate: businessDate(), reason: '', evidenceReference: '' }
+            : type === 'opening' ? { accountId: record?.id || '', amount: '', effectiveDate: businessDate() }
               : { effectiveDate: businessDate(), reason: '' });
   }
 
@@ -107,12 +108,10 @@ function FinanceContent({ apiBase = '', refreshShell = () => {}, initialWorkspac
     event.preventDefault();
     const { type, record } = dialog;
     if (type === 'account') {
-      const { setStartingBalance, ...payload } = form;
+      let payload;
+      try { payload = accountCreateBody(form); } catch (e) { setError(e.message); return; }
       const created = await perform('/api/finance/accounts', 'POST', payload);
-      if (created && setStartingBalance && payload.kind !== 'GENERAL_LEDGER') {
-        setSection('Starting balances'); start('opening', created);
-        setNotice('Account created. Add its starting-balance evidence for independent approval, or cancel to do this later.');
-      }
+      if (created?.startingBalance) setNotice('Account created. Starting balance saved for independent approval in Manage → Starting balances.');
       return;
     }
     if (type === 'edit') return perform(`/api/finance/accounts/${record.id}`, 'PATCH', form);
@@ -186,14 +185,14 @@ function FinanceContent({ apiBase = '', refreshShell = () => {}, initialWorkspac
     </>}
     {dialog && <FinanceDialog title={title[dialog.type]} onSubmit={submit} busy={busy} disabled={buttonsDisabled} onClose={closeDialog} error={error}>
       {['archive', 'restore', 'edit'].includes(dialog.type) && <p>{dialog.record.name} ({dialog.record.code})</p>}
-      {dialog.type === 'account' && <>{fields('name', 'Account name')}<label className="finance-field"><span>Account type</span><select className="form-select" value={form.kind} onChange={(e) => { const { glType, ...rest } = form; setForm({ ...rest, kind: e.target.value, setStartingBalance: false }); }}>{Object.entries(LABELS).filter(([k]) => section === 'Accounting accounts' ? k === 'GENERAL_LEDGER' : section === 'Collector custody' ? k.startsWith('COLLECTOR') : k !== 'GENERAL_LEDGER' && !k.startsWith('COLLECTOR')).map(([k, label]) => <option key={k} value={k}>{label}</option>)}</select></label>
+      {dialog.type === 'account' && <>{fields('name', 'Account name')}<label className="finance-field"><span>Account type</span><select className="form-select" value={form.kind} onChange={(e) => { const { glType, ...rest } = form; setForm({ ...rest, kind: e.target.value, startingBalanceAmount: '', startingBalanceDate: businessDate() }); }}>{Object.entries(LABELS).filter(([k]) => section === 'Accounting accounts' ? k === 'GENERAL_LEDGER' : section === 'Collector custody' ? k.startsWith('COLLECTOR') : k !== 'GENERAL_LEDGER' && !k.startsWith('COLLECTOR')).map(([k, label]) => <option key={k} value={k}>{label}</option>)}</select></label>
         {form.kind === 'GENERAL_LEDGER' && <label className="finance-field"><span>Accounting classification</span><select className="form-select" required value={form.glType || ''} onChange={(e) => setForm({ ...form, glType: e.target.value })}><option value="">Choose classification</option>{['ASSET', 'LIABILITY', 'EQUITY', 'REVENUE', 'CONTRA_REVENUE', 'EXPENSE'].map((k) => <option key={k}>{k}</option>)}</select></label>}
         {form.kind.startsWith('COLLECTOR') && fields('custodian', 'Person responsible', 'text', { maxLength: 160 })}
         <details className="mb-3"><summary>More details</summary>{!form.kind.startsWith('COLLECTOR') && fields('custodian', 'Person responsible (optional)', 'text', { required: false, maxLength: 160 })}{fields('notes', 'Notes (optional)', 'text', { required: false, maxLength: 1000 })}<p>Account code is generated automatically: {form.code}</p></details>
-        {form.kind !== 'GENERAL_LEDGER' && allowed('finance.opening-balances.post') && <label><input type="checkbox" checked={form.setStartingBalance} onChange={(e) => setForm({ ...form, setStartingBalance: e.target.checked })} /> Set starting balance after creating this account</label>}
+        {form.kind !== 'GENERAL_LEDGER' && allowed('finance.opening-balances.post') && <>{fields('startingBalanceAmount', 'Starting balance (optional)', 'text', { required: false, inputMode: 'decimal', pattern: '\\d+(\\.\\d{1,2})?' })}{form.startingBalanceAmount && fields('startingBalanceDate', 'Balance date', 'date', { max: businessDate() })}<p className="text-secondary">Leave blank or enter 0 for a new empty account. {form.kind === 'CREDIT_CARD' ? 'For credit cards, enter the amount owed. ' : ''}A starting balance is saved for independent approval before it changes this account.</p></>}
       </>}
       {dialog.type === 'edit' && <>{fields('name', 'Account name')}{fields('custodian', 'Custodian', 'text', { required: dialog.record.kind.startsWith('COLLECTOR') })}{fields('notes', 'Notes', 'text', { required: false, maxLength: 1000 })}</>}
-      {dialog.type === 'opening' && <>{accountSelect('accountId', 'Named account')}{fields('amount', 'Opening balance (amount held or owed)', 'text', { inputMode: 'decimal', pattern: '\\d+(\\.\\d{1,2})?' })}{fields('effectiveDate', 'Effective date', 'date', { max: businessDate() })}{fields('evidenceReference', 'Supporting evidence reference')}{fields('reason', 'Reason', 'text', { minLength: 3, maxLength: 1000 })}<p>The request is saved for independent approval before posting.</p></>}
+      {dialog.type === 'opening' && <>{accountSelect('accountId', 'Named account')}{fields('amount', 'Opening balance (amount held or owed)', 'text', { inputMode: 'decimal', pattern: '\\d+(\\.\\d{1,2})?' })}{fields('effectiveDate', 'Effective date', 'date', { max: businessDate() })}<p>Saved for independent approval before it changes this account. The system records who entered the starting balance.</p></>}
       {dialog.type === 'transfer' && <>{['fromAccountId', 'toAccountId'].map((key) => <label className="finance-field" key={key}><span>{key === 'fromAccountId' ? 'From account' : 'To account'}</span><select className="form-select" aria-label={key === 'fromAccountId' ? 'From account' : 'To account'} required value={form[key]} onChange={(e) => { const next = { ...form, [key]: e.target.value, referenceNumber: '' }; next.method = suggestedTransferMethod(accounts.find((a) => a.id === next.fromAccountId), accounts.find((a) => a.id === next.toAccountId)); setForm(next); }}><option value="">Choose account</option>{accounts.filter((a) => a.active && !a.system && a.kind !== 'GENERAL_LEDGER' && a.id !== form[key === 'fromAccountId' ? 'toAccountId' : 'fromAccountId'] && !(a.kind === 'CREDIT_CARD' && accounts.find((other) => other.id === form[key === 'fromAccountId' ? 'toAccountId' : 'fromAccountId'])?.kind === 'CREDIT_CARD')).map((a) => <option key={a.id} value={a.id}>{a.name} — {LABELS[a.kind]}</option>)}</select></label>)}
         {fields('amount', 'Amount (PHP)', 'text', { inputMode: 'decimal', pattern: '\\d+(\\.\\d{1,2})?' })}{fields('effectiveDate', 'Transfer date', 'date', { max: businessDate() })}{fields('reason', 'Purpose', 'text', { minLength: 3, maxLength: 1000 })}
         {form.method !== 'CASH_HANDOVER' && fields('referenceNumber', 'Payment / transfer reference', 'text', { maxLength: 160 })}
@@ -203,7 +202,7 @@ function FinanceContent({ apiBase = '', refreshShell = () => {}, initialWorkspac
       </>}
       {dialog.type === 'journal' && <>{fields('effectiveDate', 'Effective date', 'date', { max: businessDate() })}{fields('sourceReference', 'Document reference')}{fields('reason', 'Reason', 'text', { minLength: 3, maxLength: 1000 })}<p>Enter balanced debit and credit lines. Each line uses one side.</p>{form.lines.map((line, i) => <div className="finance-journal-line" key={i}><label><span>Account {i + 1}</span><select className="form-select" required value={line.accountId} onChange={(e) => setForm({ ...form, lines: form.lines.map((l, n) => n === i ? { ...l, accountId: e.target.value } : l) })}><option value="">Choose account</option>{accountOptions(line.accountId, true)}</select></label>{['debit', 'credit'].map((side) => <label key={side}><span>{side === 'debit' ? 'Debit' : 'Credit'}</span><input className="form-control" inputMode="decimal" pattern="\d+(\.\d{1,2})?" value={line[side]} onChange={(e) => setForm({ ...form, lines: form.lines.map((l, n) => n === i ? { ...l, [side]: e.target.value } : l) })} /></label>)}{form.lines.length > 2 && <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => setForm({ ...form, lines: form.lines.filter((_, n) => n !== i) })}>Remove</button>}</div>)}<button type="button" className="btn btn-outline-primary" disabled={form.lines.length >= 100} onClick={() => setForm({ ...form, lines: [...form.lines, EMPTY_LINE()] })}>Add line</button></>}
       {dialog.type === 'reverse' && <><p>Reverse entry #{dialog.record.number}: {dialog.record.reason}</p>{fields('effectiveDate', 'Reversal effective date', 'date', { max: businessDate(), min: dialog.record.effectiveDate })}{fields('reason', 'Correction reason', 'text', { minLength: 3, maxLength: 1000 })}</>}
-      {['archive', 'restore', 'approve'].includes(dialog.type) && <>{dialog.type === 'approve' && <p>Approve {moneyLabel(dialog.record.amount)} effective {dialog.record.effectiveDate}. Evidence: {dialog.record.evidenceReference}. Creator: {dialog.record.createdBy}.</p>}{fields('reason', 'Reason', 'text', { minLength: 3, maxLength: 1000 })}{dialog.type === 'archive' && <p>Archival requires a zero balance and preserves all financial history.</p>}</>}
+      {['archive', 'restore', 'approve'].includes(dialog.type) && <>{dialog.type === 'approve' && <p>Approve {moneyLabel(dialog.record.amount)} effective {dialog.record.effectiveDate}. Creator: {dialog.record.createdBy}.{dialog.record.evidenceReference && dialog.record.evidenceType !== 'OPERATOR_DECLARATION' && <> Reference: {dialog.record.evidenceReference}.</>}</p>}{fields('reason', 'Reason', 'text', { minLength: 3, maxLength: 1000 })}{dialog.type === 'archive' && <p>Archival requires a zero balance and preserves all financial history.</p>}</>}
       {dialog.type === 'post-opening' && <p>Post the approved opening {moneyLabel(dialog.record.amount)} effective {dialog.record.effectiveDate}. Approved by {dialog.record.approvedBy}. This is an opening-equity entry.</p>}
       {pending && <p className="alert alert-warning">Request awaiting confirmation. Close this dialog and confirm the saved request.</p>}
     </FinanceDialog>}

@@ -82,6 +82,87 @@ class FinanceFoundationTests(unittest.TestCase):
         self.assert_http(409,lambda:self.service.edit_account(CREATOR,a['id'],AccountEdit(version=1,name='Stale'),'edit-stale'))
         self.assertEqual(self.service.entry(CREATOR,e['id'])['lines'][0]['accountSnapshot']['name'],a['name'])
 
+    def test_account_and_starting_balance_saved_together_without_manual_evidence(self):
+        for kind, code, amount in [('BANK','INITIAL_BANK','201.15'), ('CREDIT_CARD','INITIAL_CARD','300.22')]:
+            payload=AccountCreate(code=code,name=code,kind=kind,startingBalance={'amount':amount,'effectiveDate':DAY})
+            account=self.service.create_account(CREATOR,payload,code)
+            opening=account['startingBalance']
+            self.assertEqual(opening['status'],'DRAFT')
+            self.assertEqual(opening['createdBy'],CREATOR.username)
+            self.assertEqual(opening['accountId'],account['id'])
+            self.assertEqual(opening['evidenceType'],'OPERATOR_DECLARATION')
+            self.assertEqual(opening['declarationSource'],'ACCOUNT_CREATE')
+            self.assertEqual(self.balance(account),'0.00')
+            self.assert_http(409,lambda:self.service.post_opening(CREATOR,opening['id'],code+'-unapproved'))
+            self.assert_http(403,lambda:self.service.approve_opening(CREATOR,opening['id'],Approval(reason='Own review'),code+'-self'))
+            replay=self.service.create_account(CREATOR,payload,code)
+            self.assertTrue(replay['idempotentReplay'])
+            self.assertEqual(replay['startingBalance']['id'],opening['id'])
+            self.assertEqual(len([o for o in self.service.list_openings(CREATOR) if o['accountId']==account['id']]),1)
+            self.service.approve_opening(APPROVER,opening['id'],Approval(reason='Reviewed declared amount'),code+'-approve')
+            entry=self.service.post_opening(CREATOR,opening['id'],code+'-post')
+            self.assertEqual(self.balance(account),amount)
+            self.assertEqual(entry['metadata']['evidenceType'],'OPERATOR_DECLARATION')
+            self.assertTrue(entry['metadata']['cashFlowExcluded'])
+            self.assertEqual(entry['lines'][0]['credit' if kind=='CREDIT_CARD' else 'debit'],amount)
+            self.assert_http(409,lambda:self.service.create_account(CREATOR,payload.model_copy(update={'name':'Changed'}),code))
+
+    def test_simplified_standalone_starting_balance_preserves_explicit_legacy_evidence(self):
+        account=self.account()
+        opening=self.service.create_opening(CREATOR,OpeningCreate(accountId=account['id'],amount='1.21',effectiveDate=DAY),'simple-opening')
+        self.assertEqual(opening['createdBy'],CREATOR.username)
+        self.assertEqual(opening['evidenceType'],'OPERATOR_DECLARATION')
+        self.assertEqual(opening['declarationSource'],'STARTING_BALANCE_FORM')
+        self.assertIn('no supporting reference',opening['evidenceReference'])
+        legacy=self.service.create_opening(CREATOR,OpeningCreate(accountId=account['id'],amount='2.21',effectiveDate=DAY,reason='Counted original',evidenceReference='Historical count sheet'),'legacy-opening')
+        self.assertEqual(legacy['reason'],'Counted original')
+        self.assertEqual(legacy['evidenceReference'],'Historical count sheet')
+        self.assertEqual(legacy['evidenceType'],'REFERENCE')
+
+    def test_starting_balance_permission_rechecked_on_create_and_replay(self):
+        manager=Actor('account-manager',frozenset({'finance.accounts.manage'}))
+        payload=AccountCreate(code='RESTRICTED_OPENING',name='Bank',kind='BANK',startingBalance={'amount':'1.00','effectiveDate':DAY})
+        self.assert_http(403,lambda:self.service.create_account(manager,payload,'restricted-opening'))
+        self.assertFalse(any(a['code']==payload.code for a in self.service.list_accounts(CREATOR)))
+        self.service.create_account(CREATOR,payload,'restricted-opening')
+        self.assert_http(403,lambda:self.service.create_account(manager,payload,'restricted-opening'))
+        empty=self.service.create_account(manager,AccountCreate(code='EMPTY_MANAGER',name='Empty',kind='CASH'),'empty-manager')
+        self.assertNotIn('startingBalance',empty)
+        scoped_actor=Actor('scoped',frozenset(PERMISSIONS),account_ids=frozenset())
+        self.assert_http(403,lambda:self.service.create_account(scoped_actor,payload,'scoped-opening'))
+
+    def test_account_opening_rollback_on_failed_save(self):
+        payload=AccountCreate(code='ATOMIC_OPENING',name='Atomic cash',kind='CASH',startingBalance={'amount':'12.34','effectiveDate':DAY})
+        with self.store.read() as repo:repository_type=type(repo)
+        for method in ('save_opening','audit','save_operation'):
+            with self.subTest(failed=method):
+                with patch.object(repository_type,method,side_effect=RuntimeError('Opening storage failed')):
+                    with self.assertRaises(RuntimeError):self.service.create_account(CREATOR,payload,'atomic-opening')
+                self.assertFalse(any(a['code']==payload.code for a in self.service.list_accounts(CREATOR)))
+                self.assertEqual(self.service.list_openings(CREATOR),[])
+                with self.store.read() as repo:self.assertIsNone(repo.operation('account.create','atomic-opening'))
+        saved=self.service.create_account(CREATOR,payload,'atomic-opening')
+        self.assertEqual(saved['startingBalance']['amount'],'12.34')
+
+    def test_inline_zero_future_and_invalid_starting_balances(self):
+        empty=self.service.create_account(CREATOR,AccountCreate(code='ZERO_OPEN',name='Empty cash',kind='CASH',startingBalance={'amount':'0.00','effectiveDate':DAY}),'zero-opening')
+        self.assertNotIn('startingBalance',empty)
+        self.assertEqual(self.service.list_openings(CREATOR),[])
+        self.assert_http(400,lambda:self.service.create_account(CREATOR,AccountCreate(code='FUTURE_OPEN',name='Future',kind='BANK',startingBalance={'amount':'1.00','effectiveDate':'2027-01-01'}),'future-opening'))
+        self.assert_http(400,lambda:self.service.create_account(CREATOR,AccountCreate(code='LEDGER_OPEN',name='Ledger',kind='GENERAL_LEDGER',glType='ASSET',startingBalance={'amount':'1.00','effectiveDate':DAY}),'ledger-opening'))
+        for amount in ('-1.00','0.001',0.1):
+            with self.assertRaises(ValidationError):AccountCreate(code='BAD',name='Bad',kind='CASH',startingBalance={'amount':amount,'effectiveDate':DAY})
+
+    def test_concurrent_account_setup_retries_produce_one_account_and_opening(self):
+        # An inherited PostgreSQL fixture uses one rollback connection; run workers in isolated memory.
+        service=FinanceService(MemoryStore(),today=lambda:date(2026,10,12))
+        payload=AccountCreate(code='CONCURRENT_OPEN',name='Concurrent cash',kind='CASH',startingBalance={'amount':'12.34','effectiveDate':DAY})
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            results=list(executor.map(lambda _:service.create_account(CREATOR,payload,'concurrent-opening'),range(8)))
+        self.assertEqual(len({r['id'] for r in results}),1)
+        self.assertEqual(len({r['startingBalance']['id'] for r in results}),1)
+        self.assertEqual(len(service.list_openings(CREATOR)),1)
+
     def test_opening_independent_approval_attribution_and_limits(self):
         a=self.account()
         r=self.service.create_opening(CREATOR,OpeningCreate(accountId=a['id'],effectiveDate=DAY,amount='17.21',reason='Counted cash',evidenceReference='sheet'), 'draft')
@@ -291,6 +372,24 @@ class FinanceApiTests(unittest.TestCase):
         self.assertFalse(p['realDataReady'])
         self.module._actor_provider=None
         self.assertEqual(self.request('GET','/api/finance/accounts')[0],503)
+
+    def test_api_account_with_starting_balance_and_simple_later_opening(self):
+        payload={'code':'INLINE_API','name':'Cash desk','kind':'CASH','startingBalance':{'amount':'25.21','effectiveDate':DAY}}
+        status,account=self.request('POST','/api/finance/accounts',payload,key='inline-api')
+        self.assertEqual(status,201)
+        opening=account['startingBalance']
+        self.assertEqual(opening['amount'],'25.21')
+        self.assertEqual(opening['createdBy'],CREATOR.username)
+        status,replay=self.request('POST','/api/finance/accounts',payload,key='inline-api')
+        self.assertEqual(status,201)
+        self.assertTrue(replay['idempotentReplay'])
+        self.assertEqual(replay['startingBalance']['id'],opening['id'])
+        status,empty=self.request('POST','/api/finance/accounts',{'code':'LATER_API','name':'Later bank','kind':'BANK'},key='later-api')
+        self.assertEqual(status,201)
+        status,later=self.request('POST','/api/finance/opening-balances',{'accountId':empty['id'],'amount':'1.23','effectiveDate':DAY},key='simple-later-api')
+        self.assertEqual(status,201)
+        self.assertEqual(later['evidenceType'],'OPERATOR_DECLARATION')
+        self.assertEqual(later['status'],'DRAFT')
 
     def test_api_money_strings_validation_and_immutable_routes(self):
         status,a=self.request('POST','/api/finance/accounts',{'code':'DESK','name':'Cash desk','kind':'CASH'})

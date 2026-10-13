@@ -1,5 +1,52 @@
 # Finance Management Module Context
 
+## Starting balance entered with account creation (2026-10-13)
+
+Add account now has an optional Starting balance and a Balance date when an amount
+is entered. Blank/zero creates an empty account. Credit cards explicitly interpret
+the amount as debt owed; changing account type clears a previous amount. The form
+has no required manual evidence reference/reason and opens no second setup dialog.
+The later Set starting balance form asks only for account, amount and effective
+date. Creation and confirmation notices explain independent approval; balances
+remain posted-record figures rather than unapproved declarations.
+
+POST /api/finance/accounts accepts optional startingBalance {amount, effectiveDate}.
+A positive amount requires both existing finance.accounts.manage and
+finance.opening-balances.post grants plus unrestricted account-creation scope.
+The account, DRAFT opening, two attributed audit events and account.create operation
+result commit together; failed opening/audit/operation persistence rolls back all.
+A retried request returns the same account/opening IDs without another draft or
+journal. Permission checks run again on replay. Zero produces no opening journal.
+GENERAL_LEDGER does not accept an inline financial balance. Monetary strings,
+nonnegative input, valid nonfuture Manila dates and normal-sided liabilities apply.
+Account masters do not store editable balance or nested opening declarations.
+The create response includes startingBalance with the saved request when applicable.
+
+OpeningCreate permits omitted reason/evidenceReference. Finance records an automatic
+setup description, actor/date, declarationSource (ACCOUNT_CREATE or
+STARTING_BALANCE_FORM), and evidenceType OPERATOR_DECLARATION; its evidence text
+explicitly states that no supporting reference was supplied. This is a user-entered
+balance, never fabricated documentary evidence or a reviewed cash count. Optional
+legacy API references/reasons are retained verbatim as REFERENCE evidence. Posting
+retains that provenance in immutable journal metadata. Approver identity/limits,
+creator self-approval prevention, posting grant, duplicate-opening/correction rules,
+period guards and cash-flow exclusion remain unchanged. Actual cutover review and
+financial coverage gates remain independent of the simpler entry form.
+
+No shared route, role registration, provider hook or database migration is needed;
+existing request/evidence JSON storage supports this additive Finance-owned API.
+The previous two-step account/opening UI notes below are superseded by this section.
+
+Verification: full Finance suite ran 371 tests, 365 passing with six inherited
+fixture skips. All 32 client tests passed; 11 standalone interface groups, eight
+account workflow groups and 15 actual staging groups passed with zero page errors
+or shared financial writes. Coverage includes atomic rollback on opening/audit/
+operation failures, scoped and revoked permissions, same-key/concurrent retry,
+legacy reference retention, blank/zero and invalid values, both asset/card journal
+sides, independent approval, standalone amount/date entry and desktop/mobile forms.
+Staging deployed through scripts/staging_deploy.sh under runtime/server ownership;
+source tests use private rollback schemas, and browser mutations are intercepted.
+
 ## Compact accounts and pop-up notifications (2026-10-13)
 
 Accounts & Transfers now shows one two-column list: account name/type and balance.
@@ -95,12 +142,11 @@ expand Accounting details to inspect debit/credit, actor and retained reason.
 
 Add account now asks for name/type, generates FA-<cryptographic UUID> (39 characters),
 requires a responsible person for collector kinds, and keeps optional notes/custodian
-under More details. Optional Set starting balance is a separate step after successful
-creation, not an atomic account+opening transaction and never automatic posting.
-Cancel leaves the new zero-balance account; later setup is available in account details.
-Uncertain create recovery confirms the frozen request; resume starting-balance setup
-from that account. Its evidence, independent reviewer, approval limit and posting
-permissions are unchanged. UI-only flags are stripped from AccountCreate payloads.
+under More details. Optional starting amount/date is now entered in this form and
+saved atomically with the account, as documented above. Later setup remains in
+account details. Uncertain create recovery confirms the same frozen account/opening
+request. Independent reviewer, approval limit and posting permissions remain.
+UI-only amount/date fields are converted into the nested API startingBalance.
 
 Transfer money shows From/To/Amount/Date/Purpose plus any required external reference.
 Account selection suggests human-labelled cash/GCash/bank/card rails; More details

@@ -81,6 +81,10 @@ class FinanceService:
 
     def create_account(self, actor, payload, key):
         p = json_record(payload)
+        starting = p.get('startingBalance')
+        if starting and Decimal(starting['amount']) > ZERO:
+            # Check on every attempt, including an idempotent replay after grants change.
+            actor.require('finance.opening-balances.post')
         if actor.account_ids is not None:
             raise HTTPException(403, 'Account creation requires unscoped Finance master-data permission')
         def action(repo):
@@ -88,6 +92,10 @@ class FinanceService:
             if any(a['code'] == code for a in repo.accounts()):
                 raise HTTPException(409, 'Account code already exists, including archived accounts')
             kind = p['kind']
+            if starting:
+                if kind == 'GENERAL_LEDGER':
+                    raise HTTPException(400, 'Starting balances require a financial account')
+                self._day(starting['effectiveDate'])
             gl = p.get('glType')
             if kind == 'GENERAL_LEDGER':
                 if not gl:
@@ -100,13 +108,21 @@ class FinanceService:
             if kind in ('COLLECTOR_CASH','COLLECTOR_GCASH') and not p['custodian']:
                 raise HTTPException(400, 'Collector accounts require a named custodian')
             stamp = now()
-            record = {**p, 'id': str(uuid4()), 'code': code, 'glType': gl,
+            master = {k: v for k, v in p.items() if k != 'startingBalance'}
+            record = {**master, 'id': str(uuid4()), 'code': code, 'glType': gl,
                       'normalSide': 'CREDIT' if gl in ('LIABILITY','EQUITY','REVENUE') else 'DEBIT',
                       'currency': 'PHP', 'controlledCash': kind in ('CASH','PETTY_CASH','COMPANY_GCASH','BANK','COLLECTOR_CASH'),
                       'system': False, 'active': True, 'version': 1, 'createdAt': stamp,
                       'updatedAt': stamp, 'createdBy': actor.username, 'updatedBy': actor.username,
                       'archivedAt': None}
             repo.save_account(record)
+            if starting and Decimal(starting['amount']) > ZERO:
+                opening_payload = {'accountId': record['id'], **starting}
+                opening = self._save_opening(repo, actor, opening_payload, source='ACCOUNT_CREATE')
+                repo.audit({'id': str(uuid4()), 'createdAt': now(), 'actor': actor.username,
+                            'action': 'opening.create', 'targetId': opening['id'],
+                            'request': opening_payload, 'accountCreationId': record['id']})
+                return {**record, 'startingBalance': opening}
             return record
         return self._mutate(actor,'finance.accounts.manage','account.create',key,p,action)
 
@@ -198,19 +214,25 @@ class FinanceService:
         return self._mutate(actor,'finance.journals.post','journal.post',key,p,
                             lambda repo:self._post(repo,actor,'JOURNAL','finance.manual',p['sourceReference'],p,p['lines']))
 
+    def _save_opening(self, repo, actor, payload, source='STARTING_BALANCE_FORM'):
+        account = repo.account(payload['accountId'])
+        if account['kind'] == 'GENERAL_LEDGER' or not account['active']:
+            raise HTTPException(409, 'Opening requires an active financial account')
+        self._day(payload['effectiveDate'])
+        record = {**payload, 'id': str(uuid4()), 'status': 'DRAFT',
+                  'reason': payload.get('reason') or 'Starting balance declared during account setup',
+                  'evidenceReference': payload.get('evidenceReference') or 'Operator declaration; no supporting reference provided',
+                  'evidenceType': 'REFERENCE' if payload.get('evidenceReference') else 'OPERATOR_DECLARATION',
+                  'declarationSource': source, 'createdBy': actor.username, 'createdAt': now(),
+                  'approvedBy': None, 'approvedAt': None, 'approvalReason': None, 'journalId': None}
+        repo.save_opening(record)
+        return record
+
     def create_opening(self, actor, payload, key):
         p=json_record(payload)
         actor.account(p['accountId'])
-        def action(repo):
-            a=repo.account(p['accountId'])
-            if a['kind']=='GENERAL_LEDGER' or not a['active']:
-                raise HTTPException(409,'Opening requires an active financial account')
-            self._day(p['effectiveDate'])
-            r={**p,'id':str(uuid4()),'status':'DRAFT','createdBy':actor.username,'createdAt':now(),
-               'approvedBy':None,'approvedAt':None,'approvalReason':None,'journalId':None}
-            repo.save_opening(r)
-            return r
-        return self._mutate(actor,'finance.opening-balances.post','opening.create',key,p,action)
+        return self._mutate(actor,'finance.opening-balances.post','opening.create',key,p,
+                            lambda repo: self._save_opening(repo, actor, p))
 
     def approve_opening(self, actor, opening_id, payload, key):
         p=json_record(payload)
@@ -253,7 +275,10 @@ class FinanceService:
                    {'accountId':EQUITY_ID,'debit':'0.00' if debit else r['amount'],'credit':r['amount'] if debit else '0.00'}]
             posted=self._post(repo,actor,'OPENING','finance.opening',opening_id,r,lines,
                               {'openingId':opening_id,'accountId':r['accountId'],'approvedBy':r['approvedBy'],
-                               'evidenceReference':r['evidenceReference'],'cashFlowExcluded':True})
+                               'evidenceReference':r['evidenceReference'],
+                               'evidenceType':r.get('evidenceType', 'REFERENCE'),
+                               'declarationSource':r.get('declarationSource', 'LEGACY'),
+                               'cashFlowExcluded':True})
             r.update(status='POSTED',journalId=posted['id'])
             repo.save_opening(r)
             return posted

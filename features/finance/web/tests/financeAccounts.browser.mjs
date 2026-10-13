@@ -14,7 +14,7 @@ const errors = [], missing = [], writes = [], checks = [];
 const funds = fixtures.accounts.find((a) => a.id === fixtures.workflow.fundsId);
 const card = fixtures.accounts.find((a) => a.id === fixtures.workflow.cardId);
 const bank = { ...funds, id: 'review-bank', name: 'Review bank', kind: 'BANK', balance: '0.00' };
-let reader = false, journalPoster = false, uncertain = false, created = null;
+let reader = false, journalPoster = false, accountManager = false, uncertain = false, uncertainAccount = false, created = null;
 page.on('pageerror', (e) => errors.push(e.message));
 await page.addInitScript((value) => localStorage.setItem('threejmain_token', value), token);
 await page.route('**/api/finance/**', async (route) => {
@@ -23,8 +23,12 @@ await page.route('**/api/finance/**', async (route) => {
     const body = JSON.parse(req.postData() || '{}');
     writes.push({ path: resource, body, key: req.headers()['idempotency-key'] });
     if (resource === 'accounts') {
-      created = { ...funds, ...body, id: 'review-created-account', balance: '0.00', version: 1 };
-      return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(created) });
+      if (uncertainAccount) { uncertainAccount = false; return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'Review uncertain account setup. Confirm the saved request.' }) }); }
+      const { startingBalance, ...master } = body;
+      created = { ...funds, ...master, id: 'review-created-account', balance: '0.00', version: 1, glType: master.glType || (master.kind === 'CREDIT_CARD' ? 'LIABILITY' : 'ASSET'), normalSide: master.kind === 'CREDIT_CARD' ? 'CREDIT' : 'DEBIT', controlledCash: !['CREDIT_CARD', 'COLLECTOR_GCASH', 'GENERAL_LEDGER'].includes(master.kind) };
+      const result = startingBalance ? { ...created, startingBalance: { ...startingBalance, id: 'review-created-opening', accountId: created.id, status: 'DRAFT', createdBy: fixtures.meta.actorUsername, evidenceType: 'OPERATOR_DECLARATION' } } : created;
+      if (writes.filter((w) => w.key === req.headers()['idempotency-key']).length > 1) result.idempotentReplay = true;
+      return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(result) });
     }
     if (resource === 'transfers' && uncertain) {
       uncertain = false; return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'Review uncertain request. Confirm the saved request.' }) });
@@ -35,8 +39,11 @@ await page.route('**/api/finance/**', async (route) => {
     return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ detail: 'Isolated review: financial writes intercepted.' }) });
   }
   let data = fixtures[resource];
+  if (resource === 'opening-balances') data = [...fixtures[resource], ...['42.21', '42.22'].map((amount, index) => ({ ...fixtures[resource][0], id: 'review-draft-' + index, accountId: funds.id, amount, status: 'DRAFT', createdBy: 'another-review-user', approvedBy: null, journalId: null, evidenceReference: index ? 'Operator declaration; no supporting reference provided' : 'External opening count sheet', evidenceType: index ? 'OPERATOR_DECLARATION' : 'REFERENCE' }))];
   if (resource === 'accounts') data = [...fixtures.accounts, bank, { ...bank, id: 'review-archived', name: 'Review archived cash', kind: 'CASH', active: false }, ...(created ? [created] : [])];
   if (resource === 'meta' && journalPoster) data = { ...data, actorUsername: 'journal-poster-review', permissionsGranted: ['finance.view', 'finance.accounts.view', 'finance.journals.post'] };
+  if (resource === 'accounts/review-created-account/activity') data = { account: created, balance: '0.00', asOf: '2026-10-13', items: [] };
+  if (resource === 'meta' && accountManager) data = { ...data, actorUsername: 'account-manager-review', permissionsGranted: ['finance.view', 'finance.accounts.view', 'finance.accounts.manage'] };
   if (resource === 'meta' && reader) data = { ...data, actorUsername: 'accounts-read-only-review', permissionsGranted: ['finance.view', 'finance.accounts.view', 'finance.transfers.view'] };
   if (data === undefined) missing.push(resource);
   return route.fulfill({ status: data === undefined ? 404 : 200, contentType: 'application/json', body: JSON.stringify(data ?? { detail: 'Missing fixture ' + resource }) });
@@ -97,16 +104,32 @@ try {
   await page.getByRole('button', { name: 'Add account', exact: true }).click();
   assert.equal(await dialog().getByLabel('Account type').locator('option[value=COLLECTOR_CASH]').count(), 0);
   await dialog().getByLabel('Account name').fill('Review new cash account');
-  await dialog().getByLabel('Set starting balance after creating this account').check();
+  assert.equal(await dialog().getByLabel('Supporting evidence reference').count(), 0);
+  assert.equal(await dialog().getByLabel('Reason', { exact: true }).count(), 0);
+  await dialog().getByLabel('Starting balance (optional)').fill('250.00');
+  await dialog().getByLabel('Balance date', { exact: true }).fill('2026-01-01');
+  if (shots) await page.screenshot({ path: shots + '/add-account-starting-balance.png', fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForFunction(() => document.querySelector('.finance-management')?.getBoundingClientRect().width >= innerWidth - 50);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+  if (shots) await page.screenshot({ path: shots + '/add-account-starting-balance-mobile.png', fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await dialog().getByRole('button', { name: 'Confirm and save', exact: true }).click();
-  await page.getByRole('dialog', { name: 'Set starting balance', exact: true }).waitFor();
-  assert.equal(await dialog().getByLabel('Named account').inputValue(), created.id);
+  await dialog().waitFor({ state: 'hidden' });
+  await page.locator('.finance-toasts').getByText('Account created. Starting balance saved for independent approval in Manage → Starting balances.', { exact: true }).waitFor();
   const accountWrite = writes.at(-1);
   assert.equal(accountWrite.path, 'accounts'); assert.match(accountWrite.body.code, /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/);
-  assert.equal(Object.hasOwn(accountWrite.body, 'setStartingBalance'), false);
-  await dialog().getByLabel('Opening balance (amount held or owed)').fill('250.00');
-  await dialog().getByLabel('Supporting evidence reference').fill('Reviewed cash-count sheet');
-  await dialog().getByLabel('Reason', { exact: true }).fill('Verified starting balance');
+  assert.deepEqual(accountWrite.body.startingBalance, { amount: '250.00', effectiveDate: '2026-01-01' });
+  assert.equal(Object.hasOwn(accountWrite.body, 'startingBalanceAmount'), false);
+  assert.equal(Object.hasOwn(accountWrite.body, 'startingBalanceDate'), false);
+  assert.equal(writes.some((w) => w.path.endsWith('/post')), false);
+  await page.getByLabel('Search records').fill(created.name);
+  await page.locator('.finance-account-list').getByRole('button', { name: created.name, exact: true }).click();
+  await page.getByRole('button', { name: 'Set starting balance', exact: true }).click();
+  assert.equal(await dialog().getByLabel('Named account').inputValue(), created.id);
+  assert.equal(await dialog().getByLabel('Supporting evidence reference').count(), 0);
+  assert.equal(await dialog().getByLabel('Reason', { exact: true }).count(), 0);
+  await dialog().getByLabel('Opening balance (amount held or owed)').fill('150.00');
   await dialog().getByRole('button', { name: 'Confirm and save', exact: true }).click();
   await dialog().getByText('Isolated review: financial writes intercepted.').waitFor();
   assert.equal(await page.locator('.finance-toasts .alert-danger').count(), 0);
@@ -118,7 +141,9 @@ try {
   if (shots) await page.screenshot({ path: shots + '/notification-error.png', fullPage: true });
   await page.locator('.finance-toasts .alert-danger').getByRole('button', { name: 'Dismiss notification', exact: true }).click();
   await page.getByRole('button', { name: 'Back to accounts', exact: true }).click();
-  checks.push('simple account form generates code; collector requires responsible person; optional opening stays independently reviewed');
+  assert.equal(Object.hasOwn(writes.at(-1).body, 'reason'), false);
+  assert.equal(Object.hasOwn(writes.at(-1).body, 'evidenceReference'), false);
+  checks.push('account plus optional dated starting balance saves once in the same form; later amount/date entry needs no evidence or reason; approval retained');
 
   await page.getByRole('button', { name: 'Transfer money', exact: true }).click();
   await dialog().getByLabel('From account', { exact: true }).selectOption(funds.id);
@@ -177,6 +202,14 @@ try {
   await page.getByRole('button', { name: 'Starting balances', exact: true }).click();
   await page.getByRole('heading', { name: 'Starting balances', exact: true }).waitFor();
   assert.equal(await page.locator('.finance-manage').getAttribute('open'), null);
+  await page.locator('tbody tr').filter({ hasText: '42.21' }).getByRole('button', { name: 'Approve', exact: true }).click();
+  await dialog().getByText(/Reference: External opening count sheet/).waitFor();
+  await cancel();
+  await page.locator('tbody tr').filter({ hasText: '42.22' }).getByRole('button', { name: 'Approve', exact: true }).click();
+  assert.equal(await dialog().getByText(/Reference:/).count(), 0);
+  await dialog().getByText(/Creator: another-review-user/).waitFor();
+  await cancel();
+
   await page.getByRole('button', { name: 'Back to accounts', exact: true }).click();
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForFunction(() => document.querySelector('.finance-management')?.getBoundingClientRect().width >= innerWidth - 50);
@@ -201,6 +234,34 @@ try {
   await page.getByRole('dialog', { name: 'Post accounting journal', exact: true }).waitFor();
   await cancel();
   checks.push('journal-only posting capability retains its Manage action without granting journal browsing');
+  journalPoster = false; accountManager = true; await open();
+  await page.getByRole('button', { name: 'Add account', exact: true }).click();
+  assert.equal(await dialog().getByLabel('Starting balance (optional)').count(), 0);
+  await dialog().getByLabel('Account name').fill('Review manager empty account');
+  await dialog().getByRole('button', { name: 'Confirm and save', exact: true }).click();
+  await dialog().waitFor({ state: 'hidden' });
+  assert.equal(Object.hasOwn(writes.at(-1).body, 'startingBalance'), false);
+  checks.push('account-only managers can create empty accounts without gaining opening-balance permission');
+  accountManager = false; await open();
+  await page.getByRole('button', { name: 'Add account', exact: true }).click();
+  await dialog().getByLabel('Account name').fill('Review card with opening debt');
+  await dialog().getByLabel('Starting balance (optional)').fill('88.00');
+  await dialog().getByLabel('Account type').selectOption('CREDIT_CARD');
+  assert.equal(await dialog().getByLabel('Starting balance (optional)').inputValue(), '');
+  await dialog().getByText(/For credit cards, enter the amount owed/).waitFor();
+  await dialog().getByLabel('Starting balance (optional)').fill('123.45');
+  uncertainAccount = true;
+  await dialog().getByRole('button', { name: 'Confirm and save', exact: true }).click();
+  await page.getByRole('button', { name: 'Confirm saved request', exact: true }).waitFor();
+  const frozenAccount = writes.at(-1);
+  await cancel();
+  await page.getByRole('button', { name: 'Confirm saved request', exact: true }).click();
+  await page.locator('.finance-toasts').getByText('Saved request confirmed.', { exact: true }).waitFor();
+  assert.deepEqual(writes.at(-1), frozenAccount);
+  assert.equal(writes.at(-1).body.kind, 'CREDIT_CARD');
+  assert.equal(writes.at(-1).body.startingBalance.amount, '123.45');
+  assert.equal(await dialog().count(), 0);
+  checks.push('card type clears stale cash declarations; uncertain account/opening recovery reuses one frozen request and opens no second form');
   assert.deepEqual(errors, []); assert.deepEqual(missing, []);
   console.log(JSON.stringify({ checks, browserErrors: errors, actualFinanceWrites: 0, interceptedAttempts: writes.length }, null, 2));
 } catch (error) {

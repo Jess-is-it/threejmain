@@ -1,5 +1,13 @@
 # Finance Management Phase 2 foundation
 
+Current starting-balance intake (2026-10-13): Add account optionally accepts a dated
+starting amount in one atomic save. Later amount/date-only entry also remains
+available. Manual reason/evidence reference is optional; system attribution and
+explicit operator-declaration provenance are retained. Independent approval and
+posting remain separate. See README.md and PROJECT_MODULE_CONTEXT.md for the
+current request/permission contract; this historical phase guide is superseded
+for starting-balance form requirements. No migration changes were made.
+
 Current report handoff: [PHASE5_REPORTING.md](PHASE5_REPORTING.md). Phase 5 now
 selects `ReportingService` and adds explicit report providers. Four ordered
 migrations/nineteen tables are required. This earlier-phase guide retains its

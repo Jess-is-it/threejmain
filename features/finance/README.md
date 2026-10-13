@@ -41,12 +41,22 @@ Debit/credit evidence and attribution remain available under Accounting details.
 
 **Add account** asks for name and type, generates a permanent internal code, and
 keeps optional notes/person responsible under More details. Collector accounts
-require a responsible person. An optional starting-balance step follows creation;
-it saves a separate evidence request for independent approval before posting.
-Cancelling this step retains the new zero-balance account. Starting balances can
-also be set later from account details. An uncertain creation is confirmed through
-the existing saved-request flow; complete the starting-balance step from the account
-once creation is confirmed, rather than creating the account again.
+require a responsible person. Enter an optional starting balance and balance date
+in this same form; blank/zero starts empty, and a card amount is debt owed.
+The account and positive starting-balance request save together in one transaction.
+No manual supporting reference/reason is required. Finance records the operator,
+date and declaration provenance automatically. Independent approval still applies
+before posting changes the balance. Starting balances can also be set later from
+account details using amount/date only. Uncertain creation confirms the same saved
+request, including its starting balance, without another account or setup dialog.
+
+`POST /api/finance/accounts` optionally accepts `startingBalance: {amount,
+effectiveDate}` and returns the attributed draft opening with the account.
+A positive starting balance also requires `finance.opening-balances.post`.
+`POST /api/finance/opening-balances` requires accountId/amount/effectiveDate;
+legacy reason/evidenceReference remain optional API inputs. Missing references are
+explicitly operator declarations. Accounts, openings, audits and idempotency results
+commit or roll back together; no schema migration or shared permission change.
 
 **Transfer money** asks for source, destination, amount, date and purpose, suggests
 the payment method, and requires a real supporting reference for noncash movement.

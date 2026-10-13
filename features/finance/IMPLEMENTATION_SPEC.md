@@ -148,6 +148,14 @@ against reviewed equity/legacy control accounts. Customer legacy receivables,
 advances, payables and assets need itemized subledger ties. No opening balance
 counts as current income/expense or period cash flow.
 
+Starting-balance entry refinement (2026-10-13): the amount/date may be entered when
+creating the account and saved atomically as an attributed draft, or entered
+later. Manual supporting-reference/reason fields are omitted from the form.
+An operator declaration and creation provenance are recorded automatically;
+existing optional references remain retained. Approval by a different authorized
+reviewer is still required before posting changes the balance. The simplified
+form does not certify a cash count or replace source cutover reconciliation.
+
 Transfer: `DRAFT -> PENDING -> IN_TRANSIT -> SETTLED`; DRAFT/PENDING may become
 `CANCELLED` before any leg posts. A posted leg is corrected by reversal, not
 cancellation. Reconciliation status `UNRECONCILED/PARTIAL/RECONCILED` is separate.

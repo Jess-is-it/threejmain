@@ -43,6 +43,11 @@ class Model(BaseModel):
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
 
 
+class StartingBalance(Model):
+    effectiveDate: date
+    amount: Money = Field(ge=0)
+
+
 class AccountCreate(Model):
     code: Annotated[str, Field(pattern=r'^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$')]
     name: Text
@@ -50,6 +55,7 @@ class AccountCreate(Model):
     glType: Literal['ASSET', 'LIABILITY', 'EQUITY', 'REVENUE', 'CONTRA_REVENUE', 'EXPENSE'] | None = None
     custodian: Annotated[str, Field(max_length=160)] = ''
     notes: Annotated[str, Field(max_length=1000)] = ''
+    startingBalance: StartingBalance | None = None
 
 
 class AccountEdit(Model):
@@ -68,8 +74,8 @@ class OpeningCreate(Model):
     accountId: Text
     effectiveDate: date
     amount: Money = Field(gt=0)
-    reason: Reason
-    evidenceReference: Text
+    reason: Reason | None = None
+    evidenceReference: Text | None = None
 
 
 class Approval(Model):
