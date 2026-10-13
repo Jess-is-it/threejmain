@@ -1,18 +1,25 @@
 # Simple expenses and credit-card bills
 
 Implemented 2026-10-13 under Finance Management. Existing journal, scopes,
-independent approvals and immutable correction rules remain authoritative.
+authorization, independent review where required, and immutable correction rules remain authoritative.
+
+Current direct-recording policy supersedes the earlier universal expense-review
+requirement: see [README](README.md#direct-expense-recording).
 
 ## Daily workflow
 
 1. **Add expense**: payee, category, amount, expense date (today), description,
-   payment arrangement and receipt/invoice. Save draft or submit for approval.
+   payment arrangement and receipt/invoice. Authorized own business expenses use
+   **Save & record**; drafts remain available. Staff, reimbursements and expenses
+   above the role amount limit use **Submit for approval**.
    Payee is optional for **Paid now** and **Charged to credit card**, including small fuel
    purchases. It remains required for **Pay later** and **Installments** so the
    outstanding creditor is identified. The actual paid account/date are still required.
-2. **Review**: a different authorized approver approves or rejects. The new approval
+2. **Review when required**: a different authorized approver approves or rejects. The new approval
    action records the exact reviewed cost and payable in one transaction.
-3. **Record payment**: Finance confirms the actual account, amount, date and evidence.
+3. **Record payment**: direct Paid now/card entries confirm their declared actual
+   payment atomically on Save & record. Independently reviewed expenses retain
+   a separate authorized payment confirmation. Finance confirms the actual account, amount, date and evidence.
    Later payments reduce the payable without recognizing the cost again.
 
 **More details** holds supplier invoice number/document date, location, project,
@@ -45,7 +52,9 @@ pending approval/recording. Accounting/audit details remain inside expense detai
   card charge reference. The supplier is paid by the card; the card issuer is still owed.
 
 Both immediate-payment choices retain reviewed declarations; declarations alone move
-no money. Finance confirms the actual payment/charge after independent approval.
+no money by themselves. Direct Save & record confirms the declared payment/charge
+atomically with recognition. Review-required purchases confirm payment separately
+after independent approval.
 The payment dialog starts with the reviewed details and unpaid amount. Switching
 arrangements clears selected funding account/reference. Partially paid purchases use
 Pay later or Installments plus separate actual partial payments.

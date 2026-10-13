@@ -118,6 +118,8 @@ class PayablesService(FinanceService):
             raise HTTPException(400, 'Payee is required for pay-later and installment expenses')
         payee=repo.master('payee',p['payeeId']) if p.get('payeeId') else {'id':None,'name':'Payee not specified','type':'UNSPECIFIED','active':True}
         category=repo.master('category',p['categoryId'])
+        if p.get('isReimbursement') and payee['type']!='EMPLOYEE':
+            raise HTTPException(400, 'Reimbursements require an employee payee')
         if not payee['active'] or not category['active']:
             raise HTTPException(409, 'New or edited expenses require active payee/category records')
         self._category_account(repo,actor,category)
@@ -150,8 +152,12 @@ class PayablesService(FinanceService):
                             lambda repo:self._summary(repo,self._create_payable(repo,actor,p)))
 
     def expense_intake(self, actor, payload, key):
-        """Draft + private evidence + optional submission in one durable transaction."""
+        """Draft, evidence, authorization, recognition and optional settlement are atomic."""
         p=payload.model_dump(mode='json');upload=p.pop('attachment',None);submit=p.pop('submitForApproval')
+        record=p.pop('recordImmediately')
+        if record:
+            actor.require('finance.expenses.record-direct');actor.require('finance.expenses.post')
+            if p['paidDetails']:actor.require('finance.expenses.pay')
         content=attachment_content(upload) if upload else None
         if upload:
             actor.require('finance.attachments.upload')
@@ -168,9 +174,48 @@ class PayablesService(FinanceService):
                 proof=self._evidence(repo,actor,r)
                 self._bump(r,actor,approvalStatus='SUBMITTED',approvalEvidence=proof)
                 repo.save_payable(r);self._decision(repo,actor,r,'SUBMIT','Submitted with expense entry')
+            elif record:
+                self._record_direct(repo,actor,r)
             return self._summary(repo,r)
-        return self._mutate(actor,'finance.expenses.create','expense.intake',key,
-                            {**p,'attachment':evidence,'submitForApproval':submit},action)
+        # False new options must not change the fingerprint of a saved legacy
+        # request being recovered after deployment.
+        request={k:v for k,v in p.items() if k!='isReimbursement' or v}
+        request.update(attachment=evidence,submitForApproval=submit)
+        if record:request['recordImmediately']=True
+        return self._mutate(actor,'finance.expenses.create','expense.intake',key,request,action)
+
+    def record_direct(self, actor, payable_id, payload, key):
+        actor.require('finance.expenses.create');actor.require('finance.expenses.post')
+        p=json_record(payload)
+        def action(repo):
+            r=repo.payable(payable_id);self._access(actor,r);self._version(r,p['version'])
+            self._record_direct(repo,actor,r)
+            return self._summary(repo,r)
+        return self._mutate(actor,'finance.expenses.record-direct','payable.record-direct',key,
+                            {'payableId':payable_id,**p},action)
+
+    def _record_direct(self, repo, actor, r):
+        actor.require('finance.expenses.record-direct');actor.require('finance.expenses.post')
+        if r['postingStatus']!='UNPOSTED' or r['approvalStatus']!='DRAFT':
+            raise HTTPException(409, 'Only your own unsubmitted draft can be recorded directly')
+        if actor.username != r['createdBy'] or actor.username != r['editedBy']:
+            raise HTTPException(403, 'Staff submissions require independent approval')
+        if r.get('isReimbursement') or r['payeeSnapshot'].get('type')=='EMPLOYEE':
+            raise HTTPException(403, 'Employee reimbursements require independent approval')
+        if actor.approval_limit is not None and Decimal(r['amount'])>actor.approval_limit:
+            raise HTTPException(403, 'Expense exceeds your direct-recording limit; submit for approval')
+        self._intake(repo,actor,r)
+        proof=self._evidence(repo,actor,r)
+        if r.get('paidDetails'):actor.require('finance.expenses.pay')
+        r.update(approvalStatus='NOT_REQUIRED',approvalEvidence=proof,
+                 authorizationPolicy='AUTHORIZED_OWN_BUSINESS_EXPENSE',authorizedBy=actor.username,
+                 authorizedAt=now(),authorizedVersion=r['version']+1,
+                 authorizationLimit=str(actor.approval_limit) if actor.approval_limit is not None else None)
+        self._recognize(repo,actor,r)
+        self._decision(repo,actor,r,'DIRECT_RECORD','Recorded own business expense under direct-recording authority')
+        if r.get('paidDetails'):
+            self._apply_payment(repo,actor,r['id'],{**r['paidDetails'],'amount':r['amount'],
+                'sourceReference':'expense-intake:'+r['id'],'reason':'Confirmed payment with direct expense recording'})
 
     def edit_payable(self, actor, payable_id, payload, key):
         p=payload.model_dump(mode='json');p['documentReference']=p['documentReference'].upper()
@@ -203,9 +248,9 @@ class PayablesService(FinanceService):
         repo.decision({'id':str(uuid4()),'payableId':r['id'],'version':r['version'],'action':action,
                        'actor':actor.username,'createdAt':now(),'reason':reason,'amount':r['amount'],
                        'approvalLimit':str(actor.approval_limit) if actor.approval_limit is not None else None,
-                       'selfApprovalPolicy':'NO_CREATOR_OR_FINANCIAL_EDITOR',
+                       'selfApprovalPolicy':r.get('authorizationPolicy','NO_CREATOR_OR_FINANCIAL_EDITOR'),
                        'financialFingerprint':fingerprint(self._financial(r)),
-                       'evidence':r['approvalEvidence']})
+                       'evidence':r['approvalEvidence'],'authorizationPolicy':r.get('authorizationPolicy')})
 
     def expense_action(self, actor, payable_id, action, payload, key, *, recognize=False):
         p=json_record(payload)
@@ -265,13 +310,15 @@ class PayablesService(FinanceService):
         self._category_account(repo,actor,category)
         posting={**self._financial(r),'effectiveDate':r['expenseDate'],'reason':r['purpose'],
                  'payableId':r['id'],'approvedVersion':r['approvedVersion'],'approvedBy':r['approvedBy']}
+        authorization={k:r[k] for k in ('authorizationPolicy','authorizedBy','authorizedAt','authorizedVersion','authorizationLimit') if k in r}
+        posting.update(authorization)
         j=self._post(repo,actor,'JOURNAL','finance.payable',r['id'],posting,
                      [{'accountId':category['accountId'],'debit':r['amount'],'credit':'0.00'},
                       {'accountId':PAYABLE_CONTROL_ID,'debit':'0.00','credit':r['amount']}],
                      {'effect':'PAYABLE_RECOGNITION','payableId':r['id'],
                       'approvedVersion':r['approvedVersion'],'classification':category['classification'],
                       'payeeId':r['payeeId'],'locationReference':r['locationReference'],
-                      'projectReference':r['projectReference'],'itemAssetReference':r['itemAssetReference']})
+                      'projectReference':r['projectReference'],'itemAssetReference':r['itemAssetReference'],**authorization})
         self._bump(r,actor,postingStatus='POSTED',postingJournalId=j['id'],postedBy=actor.username,postedAt=now())
         repo.save_payable(r)
 

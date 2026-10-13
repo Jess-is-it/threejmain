@@ -125,5 +125,17 @@ class SharedFinanceAccessTests(unittest.TestCase):
         for value in [12.3, '-1.00','NaN','0.001']:
             with self.assertRaises(HTTPException): self.settings.normalize_finance_scope({'approvalLimit':value})
 
+    def test_direct_recording_upgrades_only_unchanged_officers_and_is_role_assignable(self):
+        direct='finance.expenses.record-direct'
+        old=['collector.portal.view','collector.finance.view','collector.finance.confirm',*[p for p in OFFICER if p!=direct]]
+        rows=self.settings.normalize_access_store({'roles':[
+            {'id':'role-finance-officer','name':'finance_officer','isBuiltin':True,'permissionCodes':old},
+            {'id':'custom-expenses','name':'custom_expenses','permissionCodes':old},
+        ]})['roles']
+        self.assertIn(direct,next(r for r in rows if r['id']=='role-finance-officer')['permissionCodes'])
+        self.assertNotIn(direct,next(r for r in rows if r['id']=='custom-expenses')['permissionCodes'])
+        self.assertNotIn(direct,APPROVER)
+        self.assertIn(direct,{p['code'] for p in self.settings.ACCESS_PERMISSION_SEEDS})
+
 
 if __name__ == '__main__': unittest.main()

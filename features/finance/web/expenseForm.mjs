@@ -1,4 +1,15 @@
 // Exact cent arithmetic for editable payment plans; API validates every value again.
+import { hasGrant, withinApprovalLimit } from './reportClient.mjs';
+
+export function expenseReviewReason(meta, expense, payees = []) {
+  const payee = expense.payeeSnapshot || payees.find((p) => p.id === expense.payeeId);
+  if (expense.isReimbursement || payee?.type === 'EMPLOYEE') return 'Employee reimbursements require independent approval.';
+  if (expense.createdBy && (expense.createdBy !== meta.actorUsername || expense.editedBy !== meta.actorUsername)) return 'Staff submissions require independent approval.';
+  if (!['finance.expenses.record-direct', 'finance.expenses.create', 'finance.expenses.post'].every((p) => hasGrant(meta, p))) return 'Your role submits expenses for approval.';
+  if (expense.amount && !withinApprovalLimit(meta, expense.amount)) return `Expenses above ${meta.approvalLimit} PHP require independent approval.`;
+  if (isImmediateArrangement(expense.paymentArrangement) && !hasGrant(meta, 'finance.expenses.pay')) return 'Your role submits paid expenses for payment verification.';
+  return '';
+}
 export const ARRANGEMENTS = { PAID_NOW: 'Paid now', PAY_LATER: 'Pay later', INSTALLMENTS: 'Installments', CHARGED_TO_CARD: 'Charged to credit card' };
 export function isImmediateArrangement(value) {
   return ['PAID_NOW', 'CHARGED_TO_CARD', 'ALREADY_PAID'].includes(value);
@@ -50,6 +61,7 @@ export function expenseBody(form) {
   const keys = ['payeeId', 'categoryId', 'documentReference', 'expenseDate', 'amount', 'purpose', 'locationReference', 'projectReference', 'itemAssetReference', 'evidenceReference', 'evidenceExceptionReason'];
   const body = Object.fromEntries(keys.map((key) => [key, form[key] || '']));
   body.payeeId = body.payeeId || null;
+  body.isReimbursement = Boolean(form.isReimbursement);
   body.documentDate = form.documentDate || form.expenseDate;
   const immediate = isImmediateArrangement(form.paymentArrangement);
   if ((form.paymentArrangement === 'PAID_NOW' && form.paidMethod === 'CREDIT_CARD') ||

@@ -1,5 +1,35 @@
 # Finance Management
 
+## Direct expense recording
+
+Authorized Finance users and owners can **Save & record** their own business
+expenses without independent approval. Roles exposes `finance.expenses.record-direct`
+(Record own expenses directly), with create/post dependencies. Immediate paid/card
+purchases also require `finance.expenses.pay`. Unchanged built-in Finance Officers
+receive the new grant through existing module registration; custom roles and
+read-only management/auditor roles retain their existing grants.
+
+Employee reimbursements, staff-created/edited submissions, and amounts above the
+role's optional Finance approval limit require independent approval. A blank limit
+is unrestricted for authorized own business recording; it never waives reimbursement
+review. The existing Roles limit field also caps direct recording, with exact cents.
+An employee payee forces reimbursement review even when the checkbox is omitted.
+
+Creation, attachment evidence, direct authorization audit, expense recognition,
+and declared paid/card settlement commit atomically. Pay later and installments
+remain unpaid. Recognition and payment use separate balanced journals; payment and
+card repayment do not create another expense. `NOT_REQUIRED` identifies approval
+that was not required, with an actual recorder and policy snapshot, never a made-up
+approver. Posted evidence remains immutable; linked attributed reversals correct it.
+Drafts can still be saved; an authorized creator can Record expense on an own draft.
+No old drafts/submissions/payments are automatically posted.
+
+`2026101304_finance_direct_expense_recording` is an additive module migration loaded
+by the existing shared migration registry. POST `/api/finance/expenses` accepts
+`recordImmediately`; POST `/api/finance/payables/{id}/record-direct` takes the current
+version. Direct recording and submission are mutually exclusive. Existing saved
+intake requests preserve their fingerprint when new options are absent/false.
+
 Expense create/edit forms support **+ Add category** beside Category without losing
 the expense draft or selected receipt. Access uses existing `finance.expenses.manage`
 and `finance.accounts.view` role grants. The new category defaults to Operating expense,

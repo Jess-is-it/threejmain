@@ -55,6 +55,7 @@ class PayableCreate(Model):
     dueDate: date
     amount: Money = Field(gt=0)
     purpose: Reason
+    isReimbursement: bool = False
     locationReference: OptionalReference = ''
     projectReference: OptionalReference = ''
     itemAssetReference: OptionalReference = ''
@@ -71,6 +72,8 @@ class PayableCreate(Model):
 
     @model_validator(mode='after')
     def dates(self):
+        if self.isReimbursement and self.payeeId is None:
+            raise ValueError('Choose the employee being reimbursed')
         if self.payeeId is None and self.paymentArrangement != 'ALREADY_PAID':
             raise ValueError('Payee is required for pay-later and installment expenses')
         if self.dueDate < self.documentDate:
@@ -125,6 +128,13 @@ class AttachmentUpload(Model):
 class ExpenseIntake(PayableCreate):
     attachment: AttachmentUpload | None = None
     submitForApproval: bool = False
+    recordImmediately: bool = False
+
+    @model_validator(mode='after')
+    def recording_mode(self):
+        if self.recordImmediately and self.submitForApproval:
+            raise ValueError('Choose direct recording or submission for approval')
+        return self
 
 
 class CardStatementCreate(Model):

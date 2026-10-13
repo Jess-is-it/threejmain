@@ -7,7 +7,7 @@ from unittest.mock import patch
 from pydantic import ValidationError
 import test_finance_payables as expenses
 from finance import cards
-from finance.expense_schemas import (ExpenseIntake, PayableCreate, ExpenseAction,
+from finance.expense_schemas import (PayeeCreate, ExpensePost, ExpenseIntake, PayableCreate, ExpenseAction,
                                     CardStatementCreate, CardStatementCorrection, CardRepayment, CardRepaymentLink, PayableEdit)
 from finance.memory import MemoryRepository
 from finance.permissions import Actor, PERMISSIONS
@@ -44,6 +44,137 @@ class ExpenseWorkflowTests(expenses.PayablesTests):
                     evidenceReference='Fuel receipt',paymentArrangement='ALREADY_PAID',
                     paidDetails={'accountId':funds['id'],'effectiveDate':expenses.DAY,'method':'CASH'},
                     submitForApproval=True)
+
+    def direct_body(self):
+        return {**self.unnamed_body(),'submitForApproval':False,'recordImmediately':True}
+
+    def direct(self,body,key=None,actor=expenses.CREATOR):
+        return self.service.expense_intake(actor,ExpenseIntake(**body),key or self.key())
+
+    def test_direct_paid_expense_is_atomic_attributed_and_reconciled(self):
+        from finance.activity import transaction_history
+        body=self.direct_body();r=self.direct(body,'direct-fuel')
+        self.assertEqual((r['approvalStatus'],r['postingStatus'],r['settlementStatus']),('NOT_REQUIRED','POSTED','PAID'))
+        self.assertIsNone(r['approvedBy']);self.assertEqual(r['authorizedBy'],expenses.CREATOR.username)
+        self.assertEqual(self.balance(body['paidDetails']['accountId']),'900.00')
+        self.assertEqual(self.balance(r['categorySnapshot']['accountId']),'100.00')
+        replay=self.direct(body,'direct-fuel');self.assertEqual(replay['id'],r['id']);self.assertTrue(replay['idempotentReplay'])
+        detail=self.details(r);self.assertEqual(len(detail['payments']),1)
+        self.assertEqual([e['action'] for e in detail['approvalHistory']],['DIRECT_RECORD'])
+        self.assertEqual(detail['approvalHistory'][0]['actor'],expenses.CREATOR.username)
+        rows=transaction_history(self.service,expenses.CREATOR,activity_type='MONEY_OUT')['items']
+        self.assertEqual(len(rows),1);self.assertEqual(rows[0]['amount'],'100.00')
+        with self.store.read() as repo:
+            for basis in ('RECOGNIZED','SETTLED'):
+                report=self.service._expenses(repo,'2026-01-01','2026-01-31',{'basis':basis,'group_by':'payee'})
+                self.assertEqual((report['total'],report['reconciliationVariance']),('100.00','0.00'))
+        payment=detail['payments'][0]
+        self.expect(409,lambda:self.service.reverse_payable(expenses.CREATOR,r['id'],Reversal(effectiveDate='2026-01-02',reason='Correct purchase'),self.key()))
+        self.service.reverse_payment(expenses.CREATOR,payment['id'],Reversal(effectiveDate='2026-01-02',reason='Confirmed actual refund'),self.key())
+        self.service.reverse_payable(expenses.CREATOR,r['id'],Reversal(effectiveDate='2026-01-02',reason='Purchase cancelled'),self.key())
+        self.assertEqual(self.balance(body['paidDetails']['accountId']),'1000.00')
+        self.assertEqual(self.balance(r['categorySnapshot']['accountId']),'0.00')
+
+    def test_direct_deferred_expense_and_installments_keep_separate_settlement(self):
+        template=self.draft();body={k:template[k] for k in PayableCreate.model_fields}
+        body.update(documentReference='',recordImmediately=True)
+        for terms in ({'paymentArrangement':'PAY_LATER'}, {'paymentArrangement':'INSTALLMENTS','dueDate':'2026-02-01',
+                'installments':[{'dueDate':'2026-02-01','amount':'50.00'},{'dueDate':'2026-03-01','amount':'50.00'}]}):
+            r=self.direct({**body,**terms})
+            self.assertEqual((r['approvalStatus'],r['postingStatus'],r['settlementStatus']),('NOT_REQUIRED','POSTED','UNPAID'))
+            self.assertEqual(r['outstandingAmount'],'100.00');self.assertEqual(self.details(r)['payments'],[])
+            funds=self.funds();self.payment(r,funds,'30.00')
+            self.assertEqual(self.details(r)['outstandingAmount'],'70.00')
+            self.assertEqual(self.balance(r['categorySnapshot']['accountId']), '100.00' if terms['paymentArrangement']=='PAY_LATER' else '200.00')
+
+    def test_direct_card_charge_increases_debt_and_not_cash_out(self):
+        from finance.activity import transaction_history
+        body=self.direct_body();card=self.account('CREDIT_CARD')
+        body['paidDetails'].update(accountId=card['id'],method='CREDIT_CARD',referenceNumber='Verified charge')
+        r=self.direct(body)
+        self.assertEqual((r['settlementStatus'],self.balance(card['id'])),('PAID','100.00'))
+        self.assertEqual(self.balance(r['categorySnapshot']['accountId']),'100.00')
+        self.assertEqual(transaction_history(self.service,expenses.CREATOR,activity_type='MONEY_OUT')['items'],[])
+        funds=self.funds()
+        self.service.transfer(expenses.CREATOR,TransferCreate(fromAccountId=funds['id'],toAccountId=card['id'],
+            effectiveDate='2026-01-02',amount='100.00',method='CARD_SETTLEMENT',referenceNumber='Verified card repayment',sourceReference=self.key(),reason='Repay the card'),self.key())
+        self.assertEqual(self.balance(card['id']),'0.00');self.assertEqual(self.balance(r['categorySnapshot']['accountId']),'100.00')
+
+    def test_direct_recording_requires_explicit_grants_and_rechecks_recovery(self):
+        body=self.direct_body()
+        for grant in ('finance.expenses.record-direct','finance.expenses.post','finance.expenses.pay'):
+            actor=Actor(expenses.CREATOR.username,frozenset(PERMISSIONS)-{grant})
+            self.expect(403,lambda:self.direct(body,actor=actor))
+        r=self.direct(body,'direct-grants')
+        for grant in ('finance.expenses.record-direct','finance.expenses.post','finance.expenses.pay'):
+            actor=Actor(expenses.CREATOR.username,frozenset(PERMISSIONS)-{grant})
+            self.expect(403,lambda:self.direct(body,'direct-grants',actor=actor))
+        staff=Actor(expenses.CREATOR.username,frozenset(PERMISSIONS)-{'finance.expenses.record-direct'})
+        body.update(recordImmediately=False,submitForApproval=True)
+        submitted=self.direct(body,actor=staff)
+        self.assertEqual((submitted['approvalStatus'],submitted['postingStatus']),('SUBMITTED','UNPOSTED'))
+        self.expect(403,lambda:self.approve_record(submitted,actor=staff))
+
+    def test_direct_limit_reimbursement_and_staff_submission_cannot_be_bypassed(self):
+        body=self.direct_body()
+        low=Actor(expenses.CREATOR.username,frozenset(PERMISSIONS),approval_limit=Decimal('99.99'))
+        self.expect(403,lambda:self.direct(body,actor=low))
+        equal=Actor(expenses.CREATOR.username,frozenset(PERMISSIONS),approval_limit=Decimal('100.00'))
+        self.assertEqual(self.direct(body,actor=equal)['authorizationLimit'],'100.00')
+        employee=self.service.create_master(expenses.CREATOR,'payee',PayeeCreate(code=self.key()[:12],name='Employee',type='EMPLOYEE'),self.key())
+        for flag in (False,True):
+            self.expect(403,lambda:self.direct({**body,'payeeId':employee['id'],'isReimbursement':flag}))
+        with self.assertRaises(ValidationError):ExpenseIntake(**{**body,'isReimbursement':True})
+        draft=self.draft()
+        self.expect(403,lambda:self.service.record_direct(expenses.APPROVER,draft['id'],ExpensePost(version=draft['version']),self.key()))
+        posted=self.service.record_direct(expenses.CREATOR,draft['id'],ExpensePost(version=draft['version']),'own-draft')
+        self.assertEqual(posted['approvalStatus'],'NOT_REQUIRED')
+        self.assertTrue(self.service.record_direct(expenses.CREATOR,draft['id'],ExpensePost(version=draft['version']),'own-draft')['idempotentReplay'])
+        submitted=self.intake()
+        self.expect(409,lambda:self.service.record_direct(expenses.CREATOR,submitted['id'],ExpensePost(version=submitted['version']),self.key()))
+
+    def test_direct_failed_payment_evidence_and_audit_leave_no_partial_records(self):
+        body=self.direct_body()
+        for method in ('insert_payment','save_operation','decision'):
+            with self.store.read() as repo:before=(len(repo.payables()),len(repo.entries()))
+            with patch.object(self.repository_class(),method,side_effect=RuntimeError('Durability failure')):
+                with self.assertRaises(RuntimeError):self.direct(body,key='direct-failure-'+method)
+            with self.store.read() as repo:
+                self.assertEqual((len(repo.payables()),len(repo.entries())),before)
+                self.assertIsNone(repo.operation('expense.intake','direct-failure-'+method))
+            self.assertEqual(self.balance(body['paidDetails']['accountId']),'1000.00')
+        self.direct(body,key='direct-failure-insert_payment')
+        self.assertEqual(self.balance(body['paidDetails']['accountId']),'900.00')
+
+    def test_direct_evidence_scopes_dates_and_payment_guards(self):
+        body=self.direct_body()
+        self.expect(400,lambda:self.direct({**body,'evidenceReference':''}))
+        self.expect(403,lambda:self.direct(body,actor=Actor(expenses.CREATOR.username,frozenset(PERMISSIONS),expense_ids=frozenset())))
+        self.expect(403,lambda:self.direct(body,actor=Actor(expenses.CREATOR.username,frozenset(PERMISSIONS),account_ids=frozenset())))
+        self.expect(400,lambda:self.direct({**body,'expenseDate':'2027-01-01','documentDate':'2027-01-01','dueDate':'2027-01-01',
+            'paidDetails':{**body['paidDetails'],'effectiveDate':'2027-01-01'}}))
+        self.expect(409,lambda:self.direct({**body,'amount':'1000.01'}))
+        self.assertEqual(self.balance(body['paidDetails']['accountId']),'1000.00')
+        with self.assertRaises(ValidationError):ExpenseIntake(**{**body,'submitForApproval':True})
+
+    def test_direct_attachment_is_private_and_frozen_with_posted_evidence(self):
+        body=self.direct_body()
+        body.update(evidenceReference='',attachment={'version':1,'filename':'receipt.pdf','contentType':'application/pdf',
+            'contentBase64':base64.b64encode(b'%PDF-1.7\nPrivate fuel receipt').decode()})
+        r=self.direct(body);attachment=self.service.list_attachments(expenses.CREATOR,r['id'])[0]
+        self.assertEqual(self.service.download_attachment(expenses.CREATOR,r['id'],attachment['id'])[1],b'%PDF-1.7\nPrivate fuel receipt')
+        from finance.expense_schemas import AttachmentUpload
+        self.expect(409,lambda:self.service.attach(expenses.CREATOR,r['id'],AttachmentUpload(**{**body['attachment'],'version':r['version']}),self.key()))
+        self.expect(403,lambda:self.service.download_attachment(Actor('unrelated',frozenset({'finance.attachments.view','finance.expenses.view'})),r['id'],attachment['id']))
+
+    def test_legacy_intake_recovery_keeps_original_fingerprint(self):
+        from finance.ledger import fingerprint
+        body=self.direct_body();body.update(recordImmediately=False,submitForApproval=True)
+        payload=ExpenseIntake(**body);r=self.direct(body,'legacy-intake-key')
+        legacy=payload.model_dump(mode='json');legacy.pop('recordImmediately');legacy.pop('isReimbursement');legacy['attachment']=None
+        with self.store.read() as repo:
+            self.assertEqual(repo.operation('expense.intake','legacy-intake-key')['fingerprint'],fingerprint(legacy))
+        self.assertTrue(self.direct(body,'legacy-intake-key')['idempotentReplay'])
 
     def test_payee_optional_only_for_already_paid_with_real_payment_details(self):
         body=self.unnamed_body()

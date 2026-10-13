@@ -1,5 +1,66 @@
 # Finance Management Module Context
 
+## Authorized direct expense recording (2026-10-13)
+
+Current behavior supersedes the earlier universal expense approval policy in this
+context and historical phase notes. Own business expenses can use Save & record
+with finance.expenses.record-direct + create + post. Paid now/card entries also
+require expenses.pay. An authorized own draft has Record expense. Staff-created
+or last-edited expenses, employee payees/reimbursements and amounts above the
+optional role Finance approvalLimit still require independent review. An explicit
+isReimbursement flag requires an employee payee. Role limits apply in exact Decimal
+cents, including the equal-limit boundary; null means unrestricted authority.
+
+Approval remains separate from posting/settlement. Direct records use NOT_REQUIRED,
+approvedBy/approvedVersion null, authorizationPolicy AUTHORIZED_OWN_BUSINESS_EXPENSE,
+authorizedBy/At/Version and authorizationLimit. The immutable DIRECT_RECORD decision
+retains actor/version, evidence hashes, financial fingerprint and limit. The posted
+journal retains the same policy attribution. No legacy approval is rewritten and no
+existing draft/submission is auto-posted. Posted direct evidence uses the same secure
+attachments, correction/reversal, closed-period and account-history protections.
+
+POST /api/finance/expenses adds recordImmediately (mutually exclusive with
+submitForApproval). Creation, private attachment, authorization decision, recognition,
+actual Paid now/card payment and saved idempotent result are one durable transaction.
+Deferred/installed purchases only recognize a payable. Recognition and payment are
+separate balanced entries, so paying or repaying a card never recognizes cost twice.
+POST /api/finance/payables/{id}/record-direct takes version for an own unsubmitted
+draft. Recovery preserves legacy intake fingerprints and rechecks revoked posting/
+payment/direct grants and current scopes; competing workers cannot double record.
+
+Migration 2026101304_finance_direct_expense_recording is appended to MIGRATIONS and
+loaded by the existing shared runner. SQL allows attributed NOT_REQUIRED postings,
+requires linked immutable decision/journal evidence, and preserves the independent
+APPROVED checks, financial-field freezing, payment and historical-balance guards.
+No shared migration registration, provider, source or receipt changes are needed.
+
+Finance access.py registers the new Roles permission and dependencies through the
+existing shared module hook. Only an exactly unchanged built-in Finance Officer is
+upgraded. Owners already resolve all grants. Custom roles and report-only management/
+auditor roles stay unchanged; Access administrators can explicitly assign direct
+recording to trusted roles. The existing System Settings limit hint now describes
+its direct-recording use; shared role/editor behavior is otherwise unchanged.
+
+Operational setup: ensure the additive migration is applied, grant trusted users
+Record own expenses directly (plus create/post and pay when relevant), optionally
+set their Finance approval limit in Roles, and retain a separate approver for staff,
+reimbursements and over-limit entries. Existing evidence/reference or a permitted
+exception reason remains required; journals are corrected through reversals.
+
+Verification: full Finance backend suite ran 397 cases, 391 passed and six existing
+inherited skips; all 33 client tests passed. Seven direct-recording browser groups,
+eleven retained staff/payment/card groups and six inline-category groups passed
+against shared staging with all financial writes intercepted. Actual owner form
+and reimbursement switch were visually reviewed on desktop/mobile; no page errors
+or horizontal overflow. Real PostgreSQL tests cover concurrent same-key recovery,
+competing draft versions, payment/audit failures, frozen private attachments,
+reversals and report/journal reconciliation. Staging migration applied once; actual
+owner meta/Access registry exposed the permission and existing e-Wallet PHP 15000
+balance remained intact. The current customized Finance Officer role has no Finance
+Management grants and was intentionally preserved; an Access administrator must
+explicitly assign the desired capabilities. No demonstration financial records,
+production writes or blanket legacy posting were performed.
+
 ## e-Wallet account display name (2026-10-13)
 
 The COMPANY_GCASH account type displays as e-Wallet through ACCOUNT_LABELS,

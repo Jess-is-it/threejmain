@@ -30,7 +30,8 @@ await page.route('**/api/finance/**', async (route) => {
   if (resource === 'accounts') data = [...data.filter((a) => !noCards || a.kind !== 'CREDIT_CARD'), bank, { ...fixtures.accounts.find((a) => a.kind === 'CREDIT_CARD'), id: 'fixture-archived-card', active: false }];
   if (resource === 'payables') data = data.map(withDeclaration);
   if (resource === `payables/${legacyDraft.id}`) data = withDeclaration(data);
-  if (resource === 'meta' && approver) data = { ...data, actorUsername: 'independent-approver' };
+  // Exercise the retained staff-submission workflow, without direct-record authority.
+  if (resource === 'meta') data = { ...data, permissionsGranted: data.permissionsGranted.filter((p) => p !== 'finance.expenses.record-direct'), ...(approver ? { actorUsername: 'independent-approver' } : {}) };
   if (data === undefined) missing.push(key);
   await route.fulfill({ status: data === undefined ? 404 : 200, contentType: 'application/json', body: JSON.stringify(data ?? { detail: 'Missing fixture ' + key }) });
 });

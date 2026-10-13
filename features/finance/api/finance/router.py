@@ -63,6 +63,7 @@ def meta(actor=Depends(require_actor)):
             'accountKinds':[k.value for k in AccountKind], 'permissions':list(PERMISSIONS),
             'journal':'append-only','transferMode':'IMMEDIATE_SETTLEMENT',
             'startingBalancePolicy':'AUTHORIZED_ACCOUNT_MANAGER_DECLARATION',
+            'expenseApprovalPolicy':'AUTHORIZED_OWN_BUSINESS_EXPENSE',
             'permissionsGranted':sorted(actor.permissions),'actorUsername':actor.username,'approvalLimit':str(actor.approval_limit) if actor.approval_limit is not None else None,'reportScopesUnrestricted':actor.account_ids is None and actor.expense_ids is None}
 
 
@@ -285,6 +286,11 @@ async def simple_expense(request: Request, idempotency_key: str | None = Header(
     try:payload=ExpenseIntake.model_validate(json.loads(content))
     except (ValueError,ValidationError):raise HTTPException(422,'Invalid expense, payment schedule or supporting document') from None
     return service.expense_intake(actor,payload,idempotency_key)
+
+
+@router.post('/payables/{payable_id}/record-direct')
+def record_own_expense(payable_id: str, payload: ExpensePost, idempotency_key: str | None = Header(default=None,alias='Idempotency-Key'), actor=Depends(require_actor)):
+    return service.record_direct(actor,payable_id,payload,idempotency_key)
 
 
 @router.post('/payables/{payable_id}/approve-record')

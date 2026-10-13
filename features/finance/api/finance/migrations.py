@@ -61,3 +61,9 @@ MIGRATIONS.append({
     'description': 'Attributed immediate account-manager starting balances without fabricated independent approval',
     'statements': [(Path(__file__).parent / 'migrations' / '2026101303_finance_declared_starting_balances.sql').read_text()],
 })
+
+MIGRATIONS.append({
+    'id': '2026101304_finance_direct_expense_recording',
+    'description': 'Attributed direct own-business expense recording, retained independent reimbursement review',
+    'statements': [(Path(__file__).parent / 'migrations' / '2026101304_finance_direct_expense_recording.sql').read_text()],
+})

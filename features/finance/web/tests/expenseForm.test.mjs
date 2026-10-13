@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { monthlyInstallments, expenseBody, expenseStatus, accountMethod, expenseArrangement, changeArrangement, immediateAccounts } from '../expenseForm.mjs';
+import { monthlyInstallments, expenseBody, expenseStatus, accountMethod, expenseArrangement, changeArrangement, immediateAccounts, expenseReviewReason } from '../expenseForm.mjs';
 
 test('monthly schedules preserve cents and month-end dates', () => {
   assert.deepEqual(monthlyInstallments('100.00', 3, '2026-01-31'), [
@@ -54,4 +54,19 @@ test('named immediate-payment accounts exclude incompatible, archived and ledger
   assert.deepEqual(immediateAccounts(accounts, 'PAID_NOW').map((r) => r.id), ['cash', 'bank', 'gcash']);
   assert.deepEqual(immediateAccounts(accounts, 'CHARGED_TO_CARD').map((r) => r.id), ['card']);
   assert.equal(expenseArrangement({}), 'PAY_LATER');
+});
+
+test('direct recording is explicit, capped in exact cents and excludes reimbursements and staff submissions', () => {
+  const meta = { actorUsername: 'officer', permissionsGranted: ['finance.expenses.record-direct', 'finance.expenses.create', 'finance.expenses.post', 'finance.expenses.pay'], approvalLimit: '100.00' };
+  const own = { createdBy: 'officer', editedBy: 'officer', amount: '100.00', paymentArrangement: 'PAID_NOW' };
+  assert.equal(expenseReviewReason(meta, own), '');
+  assert.match(expenseReviewReason(meta, { ...own, amount: '100.01' }), /above/);
+  assert.match(expenseReviewReason(meta, { ...own, isReimbursement: true }), /reimbursements/);
+  assert.match(expenseReviewReason(meta, { ...own, payeeId: 'employee' }, [{ id: 'employee', type: 'EMPLOYEE' }]), /reimbursements/);
+  assert.match(expenseReviewReason(meta, { ...own, createdBy: 'staff' }), /Staff/);
+  assert.match(expenseReviewReason(meta, { ...own, editedBy: 'reviewer' }), /Staff/);
+  assert.match(expenseReviewReason({ ...meta, permissionsGranted: meta.permissionsGranted.filter((p) => p !== 'finance.expenses.record-direct') }, own), /role/);
+  assert.match(expenseReviewReason({ ...meta, permissionsGranted: meta.permissionsGranted.filter((p) => p !== 'finance.expenses.pay') }, own), /payment verification/);
+  assert.equal(expenseReviewReason({ actorUsername: 'officer', permissionsGranted: ['*'], approvalLimit: null }, { ...own, amount: '9999999999999999.99' }), '');
+  assert.equal(expenseStatus({ approvalStatus: 'NOT_REQUIRED', postingStatus: 'POSTED', settlementStatus: 'PAID' }), 'PAID');
 });

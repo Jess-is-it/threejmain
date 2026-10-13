@@ -39,6 +39,7 @@ PERMISSIONS = (
     'finance.journals.view', 'finance.journals.post', 'finance.journals.reverse',
     'finance.expenses.view', 'finance.expenses.view_all', 'finance.expenses.manage',
     'finance.expenses.create', 'finance.expenses.approve', 'finance.expenses.post',
+    'finance.expenses.record-direct',
     'finance.expenses.pay', 'finance.expenses.reverse', 'finance.expenses.evidence.override',
     'finance.attachments.view', 'finance.attachments.upload',
     'finance.income.view', 'finance.income.view_all', 'finance.income.create',

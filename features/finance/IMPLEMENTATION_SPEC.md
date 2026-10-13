@@ -116,7 +116,10 @@ is committed with the write; shared Logs dispatch may retry after commit.
 
 ### Expense approval, posting and settlement
 
-Approval: `DRAFT -> SUBMITTED -> APPROVED` or `REJECTED`; rejected documents may
+Approval: `DRAFT -> SUBMITTED -> APPROVED` or `REJECTED`; authorized own business
+recording uses `DRAFT -> NOT_REQUIRED` in the posting transaction. Reimbursements,
+staff submissions and amounts above the role limit retain independent review.
+Rejected documents may
 return to DRAFT as a new version. Unposted drafts/submissions may be cancelled.
 Posting: `UNPOSTED -> POSTED -> REVERSED`. Settlement is derived:
 `UNPAID -> PARTIALLY_PAID -> PAID`; a reversed settlement may move it back.
@@ -125,7 +128,8 @@ Overdue is a date-derived flag, not another posting/approval state.
 Draft needs payee, purpose and amount. Submission additionally needs category,
 dates and evidence/reference or a reason for an allowed exception. Approval
 freezes the approved document version. Any financial change invalidates approval.
-Posting needs independent approval, recognition classification, GL destination
+Posting needs independent approval or explicit own-business direct-recording
+authority, recognition classification, GL destination
 and an open period. Post Dr expense/inventory/asset/prepayment as appropriate,
 Cr payable. Actual payment posts Dr payable, Cr selected funds account. Paying
 does not recognize the expense again. Employee-paid business expenditure credits
@@ -221,9 +225,13 @@ confirm Collector records. Finance grants cannot bypass source permissions.
 Recommended role grants: Finance Officer gets view, intake, authorized posting,
 paying and reconciliation; approver gets expense review/approval within a stored
 amount limit; owner/management gets overview/reports and explicit approval/close
-grants; auditor gets view/export without mutation. No creator self-approval by
-default; administrators do not silently bypass it. Any future sole-owner
-exception needs an explicit configured policy, reason and audit event. Amount
+grants; auditor gets view/export without mutation. Explicit
+`finance.expenses.record-direct` authorizes own business expenses within the role
+limit; create/post grants and a separate pay grant for actual settlement are required.
+This records `NOT_REQUIRED` and an attributed policy/version decision, without
+fabricating independent approval. Reimbursements and staff-created/edited expenses
+always need an independent reviewer; creators/editors still cannot approve or reject
+their own submissions. Amount
 limits, account scopes and evidence exceptions are server-side policies, not UI
 checks. There is no automatic grant to collectors, technicians or cashiers.
 

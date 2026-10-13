@@ -97,6 +97,13 @@ still apply. This phase does not implement authoritative profit/cash-flow report
 
 ## Independent states and review policy
 
+The 2026-10-13 direct-recording refinement supersedes universal expense approval
+below for explicitly authorized own business expenses. See
+[the current policy](README.md#direct-expense-recording). Independent review remains
+mandatory for employee reimbursements, staff submissions and amounts above the
+role Finance limit; no creator/editor can approve or reject their own submission.
+
+
 Approval: `DRAFT -> SUBMITTED -> APPROVED` or `REJECTED`. Rejected documents can
 be edited into a new-version draft. Explicit `reopen` returns any unposted
 submitted/approved/rejected document to DRAFT, clears approval and records a

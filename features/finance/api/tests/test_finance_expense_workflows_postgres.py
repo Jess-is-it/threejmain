@@ -32,6 +32,20 @@ class ExpenseWorkflowPostgresTests(workflows.ExpenseWorkflowTests):
 
     sql_rejected=postgres.PayablesPostgresTests.sql_rejected
 
+    def test_sql_direct_recording_keeps_attribution_states_and_journals_immutable(self):
+        import json
+        r=self.direct(self.direct_body())
+        self.sql_rejected("UPDATE finance_payables SET version=version+1,data=jsonb_set(data,'{authorizedBy}','\"Another actor\"') WHERE id=%s",(r['id'],))
+        self.sql_rejected("UPDATE finance_payables SET version=version+1,data=jsonb_set(data,'{isReimbursement}','true') WHERE id=%s",(r['id'],))
+        self.sql_rejected("DELETE FROM finance_approval_events WHERE payable_id=%s AND action='DIRECT_RECORD'",(r['id'],))
+        self.sql_rejected("UPDATE finance_journal_entries SET metadata=jsonb_set(metadata,'{authorizationLimit}','\"1.00\"') WHERE id=%s",(r['postingJournalId'],))
+        draft=self.draft()
+        with self.store.read() as repo:data=repo.payable(draft['id'])
+        data.update(version=draft['version']+1,approvalStatus='NOT_REQUIRED',postingStatus='POSTED',
+            authorizationPolicy='AUTHORIZED_OWN_BUSINESS_EXPENSE',authorizedBy=data['createdBy'],
+            authorizedAt='2026-01-01T00:00:00+00:00',authorizedVersion=draft['version']+1)
+        self.sql_rejected("UPDATE finance_payables SET version=version+1,approval_status='NOT_REQUIRED',posting_status='POSTED',data=%s::jsonb WHERE id=%s",(json.dumps(data),draft['id']))
+
     def test_sql_unnamed_payee_requires_paid_terms_and_matching_nullable_snapshot(self):
         import json
         body=self.unnamed_body();body['submitForApproval']=False
@@ -90,3 +104,15 @@ class ExpenseWorkflowIndependentWorkers(postgres.PostgresConcurrentPayablesTests
         results=self.race([lambda:f.repay(bill,funds,'60.00',reference='card-worker-one'),lambda:f.repay(bill,funds,'60.00',reference='card-worker-two')])
         self.assertEqual(sum(isinstance(r,dict) for r in results),1);self.assertIn(409,results)
         self.assertEqual(f.balance(card['id']),'40.00')
+
+    def test_real_direct_recording_retry_and_competing_draft_workers(self):
+        f=self.workflow;body=f.direct_body()
+        results=self.race([lambda:f.direct(body,key='same-direct'),lambda:f.direct(body,key='same-direct')])
+        self.assertEqual(len({r['postingJournalId'] for r in results}),1)
+        self.assertEqual(len(f.details(results[0])['payments']),1)
+        self.assertEqual(f.balance(body['paidDetails']['accountId']),'900.00')
+        draft=f.draft()
+        from finance.expense_schemas import ExpensePost
+        results=self.race([lambda:f.service.record_direct(workflows.expenses.CREATOR,draft['id'],ExpensePost(version=draft['version']),'direct-worker-one'),
+                           lambda:f.service.record_direct(workflows.expenses.CREATOR,draft['id'],ExpensePost(version=draft['version']),'direct-worker-two')])
+        self.assertEqual(sum(isinstance(r,dict) for r in results),1);self.assertIn(409,results)

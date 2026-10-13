@@ -58,6 +58,10 @@ class FinanceService:
             if prior:
                 if prior['fingerprint'] != digest:
                     raise HTTPException(409, 'Idempotency-Key was already used for another request')
+                if scope in ('expense.intake','payable.record-direct') and prior['result'].get('authorizationPolicy') == 'AUTHORIZED_OWN_BUSINESS_EXPENSE':
+                    actor.require('finance.expenses.record-direct');actor.require('finance.expenses.post')
+                    actor.require('finance.expenses.create')
+                    if prior['result'].get('paidDetails'):actor.require('finance.expenses.pay')
                 if scope in ('opening.create', 'opening.post') and (
                     prior['result'].get('postingPolicy') == 'AUTHORIZED_ACCOUNT_MANAGER_DECLARATION'
                     or prior['result'].get('metadata', {}).get('postingPolicy') == 'AUTHORIZED_ACCOUNT_MANAGER_DECLARATION'

@@ -46,3 +46,27 @@ ACCESS_REGISTRATION['roleUpgrades'] = [
     {'id':role['id'],'name':role['name'],'previousPermissionCodes':[p for p in role['permissionCodes'] if not p.startswith('finance.periods.')], 'permissionCodes':role['permissionCodes']}
     for role in ACCESS_REGISTRATION['roles']
 ] + [{'id':'role-finance-officer','name':'finance_officer','previousPermissionCodes':['collector.portal.view','collector.finance.view','collector.finance.confirm',*[p for p in OFFICER if not p.startswith('finance.periods.')]],'permissionCodes':['collector.portal.view','collector.finance.view','collector.finance.confirm',*OFFICER]}]
+
+# Module registration already feeds shared Roles. Upgrade only the unchanged
+# built-in officer; custom roles explicitly opt in to direct recording.
+DIRECT_RECORD = 'finance.expenses.record-direct'
+ACCESS_REGISTRATION['dependencies'][DIRECT_RECORD] = [
+    'finance.view', 'finance.expenses.create', 'finance.expenses.post']
+for permission in ACCESS_REGISTRATION['permissions']:
+    if permission['code'] == DIRECT_RECORD:
+        permission.update(label='Record own expenses directly', description=
+            'Record your own business expenses without review, within the role Finance amount limit. '
+            'Reimbursements and staff submissions require independent approval. Payment needs its separate grant.')
+ACCESS_REGISTRATION['roleUpgrades'].append({
+    'id':'role-finance-officer', 'name':'finance_officer',
+    'previousPermissionCodes':['collector.portal.view','collector.finance.view','collector.finance.confirm',
+                               *[p for p in OFFICER if p != DIRECT_RECORD]],
+    'permissionCodes':['collector.portal.view','collector.finance.view','collector.finance.confirm',*OFFICER],
+})
+# Preserve the earlier period upgrade for officers that predate this grant.
+ACCESS_REGISTRATION['roleUpgrades'].append({
+    'id':'role-finance-officer', 'name':'finance_officer',
+    'previousPermissionCodes':['collector.portal.view','collector.finance.view','collector.finance.confirm',
+                               *[p for p in OFFICER if p != DIRECT_RECORD and not p.startswith('finance.periods.')]],
+    'permissionCodes':['collector.portal.view','collector.finance.view','collector.finance.confirm',*OFFICER],
+})
