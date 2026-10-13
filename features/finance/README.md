@@ -16,13 +16,24 @@ with Back to expenses and permission-controlled creation/editing actions.
 Finance Management owns ISP financial accounts, accounting, expenses/payables,
 source-linked income, cash flow, financial reports and subscriber analytics.
 
+## Notifications
+
+Finance action messages appear as dismissible popups. Success clears after six
+seconds unless hovered or focused; errors remain until dismissed. Form validation
+stays inside the form dialog. Unconfirmed requests have a persistent recovery
+popup and keep further posting blocked until the saved request is confirmed.
+Popups are excluded from printable reports. Host-only checks:
+`FINANCE_PLAYWRIGHT_MODULE=<playwright index.mjs> PLAYWRIGHT_BROWSERS_PATH=<browsers> node features/finance/web/tests/financeNotifications.browser.mjs`.
+
 ## Simple accounts and transfers
 
-Accounts & Transfers opens the named-account list, grouped into Company funds and Credit cards. Collector custody
+Accounts & Transfers opens one compact account-name/type and balance list, with separate Company funds and Credit cards totals. Collector custody
 is tracked under Income & Collections → Pending remittances. Summary cards open their supporting account
 rows. Balances reflect posted Finance evidence in PHP as of the Manila business
 date. Collector holdings are outside this list; card debt is shown separately from
-company funds.
+company funds. Search stays visible; extra filters and archived-account visibility
+are under Filters. Pay credit card and Transfer history are under Manage alongside
+the existing accounting setup actions. Bill details stay in their dedicated view.
 Click an account name to review its balance, transaction history and account
 settings. Cash history uses Money in / Money out; cards use Charges / Repayments.
 Starting balances establish a baseline and are not shown as ordinary movements.

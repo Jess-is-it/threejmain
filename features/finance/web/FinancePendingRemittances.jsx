@@ -1,3 +1,4 @@
+import FinanceNotifications from './FinanceNotifications.jsx';
 import React, { useEffect, useRef, useState } from 'react';
 import { businessDate, moneyLabel } from './financeApi.mjs';
 import { cents } from './reportClient.mjs';
@@ -36,7 +37,7 @@ export default function FinancePendingRemittances({ api, meta, accounts }) {
     <p>Money collected and awaiting confirmed remittance. Company account balances increase when the remittance is recorded; the customer receipt stays recorded once.</p>
     <p><strong>Pending total {moneyLabel(pendingRemittanceTotal(accounts))}</strong> · Posted Finance evidence as of {businessDate()} · PHP · Asia/Manila{meta.setupStatus === 'PENDING_REVIEWED_CUTOVER' && ' · Provisional'}</p>
     <p className="text-secondary">Collector owns remittance confirmation and discrepancies. Review source records there; this view shows the custody amounts currently posted in Finance.</p>
-    {error && <div className="alert alert-danger" role="alert">{error}</div>}
+    <FinanceNotifications error={error} onErrorDismiss={() => setError('')} />
     {view.controls}<label className="mb-3"><input type="checkbox" checked={includeSettled} onChange={(e) => setIncludeSettled(e.target.checked)} /> Include settled custody accounts</label>
     <div className="table-responsive"><table className="table table-striped table-vcenter"><thead><tr><th scope="col">Collector / account</th><th scope="col">Collection method</th><th scope="col">Pending amount (PHP)</th><th scope="col">Status</th><th scope="col">Evidence</th></tr></thead><tbody>
       {view.items.map((a) => <tr key={a.id}><td>{a.custodian || 'Person not recorded'}<small className="finance-code">{a.name}{!a.active && ' · Archived'}</small></td><td>{ACCOUNT_LABELS[a.kind]}</td><td>{moneyLabel(a.balance)}</td><td><FinanceStatus value={state(a)} /></td><td><button type="button" className="btn btn-sm btn-outline-primary" disabled={loading} onClick={() => open(a)}>View activity</button></td></tr>)}

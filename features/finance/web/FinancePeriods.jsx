@@ -1,3 +1,4 @@
+import FinanceNotifications from './FinanceNotifications.jsx';
 import React, { useCallback, useEffect, useState } from 'react';
 import FinanceDialog from './FinanceDialog.jsx';
 import { FinanceStatus } from './FinanceRecords.jsx';
@@ -40,7 +41,7 @@ export default function FinancePeriods({ api, meta, month, disabled, onChanged, 
     </div>
     {!completed && <p>Only a completed calendar month can be prepared or closed.</p>}
     {record && <p>Revision {record.version} · Prepared by {record.preparedBy}{record.closedBy && ` · Closed by ${record.closedBy}`} · Evidence: {record.evidenceReference}</p>}
-    {error && !dialog && <p className="alert alert-danger" role="alert">{error}</p>}
+    <FinanceNotifications error={error} hideError={Boolean(dialog)} onErrorDismiss={() => setError('')} />
     {dialog && <FinanceDialog title={dialog === 'history' ? `Period audit trail — ${month}` : `${humanLabel(dialog)} financial period — ${month}`} busy={busy} disabled={blocked} onClose={close} onSubmit={submit} error={error} footer={dialog === 'history' ? <button type="button" className="btn btn-outline-secondary" onClick={close}>Close audit trail</button> : undefined}>
       {dialog === 'history' ? <div className="table-responsive"><table className="table"><thead><tr><th>Revision</th><th>Action</th><th>Actor / time</th><th>Reason / evidence</th><th>Publication</th></tr></thead><tbody>{history?.map((event) => <tr key={event.id}><td>{event.version}</td><td>{humanLabel(event.operation)}</td><td>{event.actor}<br />{event.createdAt}</td><td>{event.record.actionReason || event.record.reason}<br />{event.record.actionEvidenceReference || event.record.evidenceReference}</td><td>{event.operation === 'CLOSE' ? 'Retained published reports' : 'Retained reconciliation revision'}</td></tr>)}</tbody></table></div> : <>
         <label className="form-label">Reason<textarea className="form-control" required minLength={5} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} /></label>

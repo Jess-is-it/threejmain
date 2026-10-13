@@ -1,3 +1,4 @@
+import FinanceNotifications from './FinanceNotifications.jsx';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import FinanceDialog from './FinanceDialog.jsx';
 import FinancePendingRemittances, { pendingRemittanceTotal } from './FinancePendingRemittances.jsx';
@@ -131,7 +132,7 @@ export default function IncomeCollections({ api, meta, pending, parentBusy, onBu
   const listView = useRecordView(view === 'Collections' ? sources?.items || [] : view === 'Other income & funding' ? manual : view === 'Settlement accounts' ? mappings : view === 'Reconciliation' ? exceptions : plans, { statuses: ['DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED', 'POSTED', 'REVERSED', 'OPEN', 'ACKNOWLEDGED', 'RESOLVED', 'ACTIVE', 'RETIRED', 'EVIDENCE'], resetKey: view });
   if (!has('finance.income.view')) return <p>Your role does not grant income access.</p>;
   return <section className="finance-income">
-    {error && <div className="alert alert-danger" role="alert">{error}</div>}{notice && <div className="alert alert-success" role="status">{notice}</div>}
+    <FinanceNotifications error={error} notice={notice} hideError={Boolean(dialog)} onErrorDismiss={() => setError('')} onNoticeDismiss={() => setNotice('')} />
     {!loading && view !== 'Pending remittances' && listView.controls}
     <nav className="finance-toolbar" aria-label="Income and collections views">{['Collections', 'Pending remittances', 'Other income & funding', 'Settlement accounts', 'Reconciliation', 'Cutover'].map((name) => <button type="button" className={`btn ${view === name ? 'btn-primary' : 'btn-outline-primary'}`} key={name} disabled={busy} onClick={() => setView(name)}>{name}</button>)}</nav>
     <p>Billing owns subscriber receipts. POS and Collector links refer to that receipt once. Remittance moves funds; loans and owner contributions remain financing.</p>

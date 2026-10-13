@@ -35,7 +35,7 @@ await page.route('**/api/finance/**', async (route) => {
     return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ detail: 'Isolated review: financial writes intercepted.' }) });
   }
   let data = fixtures[resource];
-  if (resource === 'accounts') data = [...fixtures.accounts, bank, ...(created ? [created] : [])];
+  if (resource === 'accounts') data = [...fixtures.accounts, bank, { ...bank, id: 'review-archived', name: 'Review archived cash', kind: 'CASH', active: false }, ...(created ? [created] : [])];
   if (resource === 'meta' && journalPoster) data = { ...data, actorUsername: 'journal-poster-review', permissionsGranted: ['finance.view', 'finance.accounts.view', 'finance.journals.post'] };
   if (resource === 'meta' && reader) data = { ...data, actorUsername: 'accounts-read-only-review', permissionsGranted: ['finance.view', 'finance.accounts.view', 'finance.transfers.view'] };
   if (data === undefined) missing.push(resource);
@@ -57,15 +57,26 @@ try {
   const expected = company.reduce((sum, a) => sum + Number(a.balance), 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   assert.match(await page.locator('.finance-account-summaries').getByRole('button', { name: /Company funds/ }).innerText(), new RegExp('₱' + expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   await group('Credit cards');
-  assert.equal(await page.getByRole('region', { name: 'Company funds' }).count(), 0);
-  assert.match(await page.getByRole('region', { name: 'Credit cards' }).innerText(), /₱60\.00/);
-  assert.match(await page.getByRole('region', { name: 'Credit cards' }).innerText(), /2026-02-15/);
+  assert.equal(await page.locator('.finance-accounts-table').count(), 1);
+  assert.match(await page.locator('.finance-accounts-table').innerText(), /Amount owed/);
+  assert.equal(await page.getByRole('columnheader').count(), 2);
+  assert.equal(await page.getByLabel('Rows').isVisible(), false);
+  assert.equal(await page.getByText('Latest bill remaining', { exact: true }).count(), 0);
   await page.getByRole('button', { name: 'Show all accounts', exact: true }).click();
   await page.getByLabel('Search records').fill('Petty cash office');
   await page.getByText('1–25 of 26 records').waitFor();
   await page.getByRole('button', { name: 'Next', exact: true }).click();
   await page.getByText('26–26 of 26 records').waitFor();
+  await page.locator('.finance-account-filters summary').click();
   await page.getByRole('button', { name: 'Clear filters', exact: true }).click();
+  await page.getByLabel('Search records').fill('Review archived cash');
+  assert.equal(await page.getByRole('button', { name: 'Review archived cash', exact: true }).count(), 0);
+  await page.getByLabel('Include archived accounts').check();
+  await page.getByRole('button', { name: 'Review archived cash', exact: true }).waitFor();
+  assert.match(await page.locator('.finance-accounts-table').innerText(), /Archived/);
+  await page.getByLabel('Include archived accounts').uncheck();
+  await page.getByRole('button', { name: 'Clear filters', exact: true }).click();
+  await page.locator('.finance-account-filters summary').click();
   if (shots) await page.screenshot({ path: shots + '/accounts-desktop.png', fullPage: true });
   checks.push('company and card totals exclude collector custody; summaries drill down; search and pagination');
 
@@ -98,10 +109,15 @@ try {
   await dialog().getByLabel('Reason', { exact: true }).fill('Verified starting balance');
   await dialog().getByRole('button', { name: 'Confirm and save', exact: true }).click();
   await dialog().getByText('Isolated review: financial writes intercepted.').waitFor();
+  assert.equal(await page.locator('.finance-toasts .alert-danger').count(), 0);
   assert.equal(writes.at(-1).path, 'opening-balances');
   assert.equal(writes.at(-1).body.accountId, created.id);
   assert.equal(writes.some((w) => w.path.endsWith('/post')), false);
-  await cancel(); await page.getByRole('button', { name: 'Back to accounts', exact: true }).click();
+  await cancel();
+  await page.locator('.finance-toasts .alert-danger').getByText('Isolated review: financial writes intercepted.', { exact: true }).waitFor();
+  if (shots) await page.screenshot({ path: shots + '/notification-error.png', fullPage: true });
+  await page.locator('.finance-toasts .alert-danger').getByRole('button', { name: 'Dismiss notification', exact: true }).click();
+  await page.getByRole('button', { name: 'Back to accounts', exact: true }).click();
   checks.push('simple account form generates code; collector requires responsible person; optional opening stays independently reviewed');
 
   await page.getByRole('button', { name: 'Transfer money', exact: true }).click();
@@ -121,13 +137,18 @@ try {
   const frozen = writes.at(-1);
   assert.equal(frozen.body.method, 'BANK_TRANSFER'); assert.equal(frozen.body.amount, '5.25'); assert.ok(frozen.body.sourceReference);
   await cancel(); await page.getByRole('button', { name: 'Confirm saved request', exact: true }).click();
-  await page.getByText('Saved request confirmed.', { exact: true }).waitFor();
+  await page.locator('.finance-toasts').getByText('Saved request confirmed.', { exact: true }).waitFor();
+  assert.equal(await page.locator('.finance-management > .alert-success').count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Confirm saved request', exact: true }).count(), 0);
+  if (shots) await page.screenshot({ path: shots + '/notification-success.png', fullPage: true });
+  await page.locator('.finance-toasts').getByRole('button', { name: 'Dismiss notification', exact: true }).click();
+  assert.equal(await page.locator('.finance-toast').count(), 0);
   assert.deepEqual(writes.at(-1), frozen);
   checks.push('friendly transfer preview, distinct accounts, required reference and frozen request/key recovery');
 
   await group('Company funds');
   await page.getByLabel('Search records').fill(funds.id);
-  await page.getByRole('region', { name: 'Company funds' }).getByRole('button', { name: funds.name, exact: true }).click();
+  await page.locator('.finance-accounts-table').getByRole('button', { name: funds.name, exact: true }).click();
   await page.getByRole('heading', { name: 'Transaction history', exact: true }).waitFor();
   await page.getByRole('columnheader', { name: /^Money in$/i }).waitFor();
   await page.getByRole('columnheader', { name: /^Money out$/i }).waitFor();
@@ -137,9 +158,10 @@ try {
   await opening.locator('summary').click(); assert.equal(await opening.getByText('Debit', { exact: false }).isVisible(), true);
   await page.getByRole('button', { name: 'Back to accounts', exact: true }).click();
   await group('Credit cards');
-  await page.getByRole('region', { name: 'Credit cards' }).getByRole('button', { name: card.name, exact: true }).click();
+  await page.locator('.finance-accounts-table').getByRole('button', { name: card.name, exact: true }).click();
   await page.getByRole('columnheader', { name: /^Charges$/i }).waitFor();
   await page.getByRole('columnheader', { name: /^Repayments$/i }).waitFor();
+  await page.locator('.finance-manage summary').click();
   await page.getByRole('button', { name: 'Pay credit card', exact: true }).click();
   await page.getByText('Loading card bills…').waitFor({ state: 'hidden' });
   assert.equal(await page.locator('.finance-cards tbody tr').count(), 1);
@@ -167,7 +189,10 @@ try {
   reader = true; await open();
   assert.equal(await page.getByRole('button', { name: 'Add account', exact: true }).count(), 0);
   assert.equal(await page.getByRole('button', { name: 'Transfer money', exact: true }).count(), 0);
-  assert.equal(await page.locator('.finance-manage').count(), 0);
+  await page.locator('.finance-manage summary').click();
+  assert.equal(await page.getByRole('button', { name: 'Starting balances', exact: true }).count(), 0);
+  await page.getByRole('button', { name: 'Transfer history', exact: true }).click();
+  await page.getByRole('heading', { name: 'Transfer history', exact: true }).waitFor();
   checks.push('Manage keyboard navigation, mobile layout and read-only permissions');
   reader = false; journalPoster = true; await open();
   await page.locator('.finance-manage summary').click();

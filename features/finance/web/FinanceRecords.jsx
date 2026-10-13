@@ -13,8 +13,8 @@ export function useRecordView(rows, { statuses = [], getStatus = (r) => r.status
   const pages = Math.max(1, Math.ceil(filtered.length / pageSize)), current = Math.min(page, pages - 1);
   useEffect(() => { setPage(0); }, [search, status, from, through, pageSize]);
   useEffect(() => { setSearch(''); setStatus(''); setFrom(''); setThrough(''); setPage(0); }, [resetKey]);
-  const controls = <div className="finance-record-controls finance-no-print">
-    <label>Search records<input className="form-control" type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Name, reference or purpose" /></label>
+  const searchControl = <div className="finance-record-controls finance-no-print"><label>Search records<input className="form-control" type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Name, reference or purpose" /></label></div>;
+  const extraControls = <div className="finance-record-controls finance-no-print">
     {statuses.length > 0 && <label>Status<select className="form-select" value={status} onChange={(e) => setStatus(e.target.value)}><option value="">All statuses</option>{statuses.map((s) => <option key={s} value={s}>{humanLabel(s)}</option>)}</select></label>}
     {dates && <><label>From date<input className="form-control" type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></label>
     <label>Through date<input className="form-control" type="date" min={from} value={through} onChange={(e) => setThrough(e.target.value)} /></label></>}
@@ -22,7 +22,8 @@ export function useRecordView(rows, { statuses = [], getStatus = (r) => r.status
     <button className="btn btn-outline-secondary" type="button" onClick={() => { setSearch(''); setStatus(''); setFrom(''); setThrough(''); setPage(0); }}>Clear filters</button>
   </div>;
   const pagination = <div className="finance-pagination finance-no-print" aria-label="Record pagination"><span role="status">{filtered.length ? `${current * pageSize + 1}–${Math.min((current + 1) * pageSize, filtered.length)}` : '0'} of {filtered.length} records{filtered.length !== rows.length ? ` (${rows.length} before filters)` : ''}</span><div><button className="btn btn-sm btn-outline-secondary" disabled={current === 0} onClick={() => setPage(current - 1)}>Previous</button><span> Page {current + 1} of {pages} </span><button className="btn btn-sm btn-outline-secondary" disabled={current + 1 >= pages} onClick={() => setPage(current + 1)}>Next</button></div></div>;
-  return { items: filtered.slice(current * pageSize, (current + 1) * pageSize), controls, pagination, filtered, count: filtered.length };
+  const controls = <div className="finance-record-controls finance-no-print">{searchControl.props.children}{extraControls.props.children}</div>;
+  return { items: filtered.slice(current * pageSize, (current + 1) * pageSize), controls, searchControl, extraControls, hasFilters: Boolean(search || status || from || through), pagination, filtered, count: filtered.length };
 }
 
 export default function FinanceRecords({ rows = [], columns, onOpen, title = 'Supporting records', empty = 'No supporting records for this period.', statuses = [], dates }) {

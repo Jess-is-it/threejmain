@@ -1,5 +1,41 @@
 # Finance Management Module Context
 
+## Compact accounts and pop-up notifications (2026-10-13)
+
+Accounts & Transfers now shows one two-column list: account name/type and balance.
+Only Add account and Transfer money stay in the main toolbar. Manage contains
+Pay credit card, Transfer history and the existing permission-gated accounting,
+custody, starting-balance and journal actions. Read-only transfer viewers retain
+history and authorized card-bill access without receiving management grants.
+Bill dates/remaining settlement and the responsible person are in the relevant
+bill/account detail views instead of every account row. Click account names for
+retained activity and administration. Active company totals remain exact cents,
+separate from card liabilities; Collector custody remains in Pending remittances.
+Two compact summary buttons filter the same list. Search stays visible; status,
+page size, clearing filters and Include archived are behind Filters. Archived rows
+retain their status and evidence. Date/PHP/posted-record basis and provisional
+status stay concise; explanations are under About these balances.
+
+FinanceNotifications.jsx owns a portal-based stack for all Finance workspace
+success and page-error messages. Success clears after six seconds, paused during
+hover or keyboard focus. Errors stay until dismissed. Dialog validation stays
+inside its popup and is suppressed in the toast stack while that dialog is open,
+preventing duplicate error messages. Workspace notifications clean up on unmount.
+Saved-request recovery is a persistent, non-dismissible popup with the original
+Confirm saved request action; closing ordinary notices never bypasses pending-write
+blocking. Report completeness, reconciliation and setup evidence remain contextual
+status information. Popups fit mobile and are excluded from print output.
+
+Verification: 29 client tests; five focused notification browser groups; eleven
+standalone interface, six accounts, eleven expense, six inline-category, six
+pending-remittance and fifteen actual shared staging groups pass, with zero page
+errors or shared financial writes. Cases include search/pagination, archive
+visibility, scoped access, card repayments, frozen transfer recovery, error
+coalescing, timer/focus persistence, cleanup and print/mobile behavior. Shared
+staging rebuilt through scripts/staging_deploy.sh under runtime/server coordination;
+desktop/mobile layouts visually reviewed at 8280/8200. No accounting API, permission
+registration, migration, cross-module source contract or production change.
+
 ## Collector balances moved to Pending remittances (2026-10-13)
 
 Default Accounts & Transfers now shows Company funds and Credit cards only.
@@ -42,8 +78,9 @@ coverage limitations remain. Host-only ignored graph refreshed.
 ## Simpler Accounts & Transfers (2026-10-13)
 
 The default screen is the named-account list rather than accounting view tabs.
-FinanceAccountsList groups Company funds (cash/petty cash/bank/company GCash),
-With collectors (cash custody/personal GCash due), and Credit cards (liabilities).
+FinanceAccountsList separates Company funds (cash/petty cash/bank/company GCash)
+from Credit cards (liabilities). Collector holdings moved to Pending remittances;
+the current compact layout is described above.
 Active balances use exact integer cents; summary buttons filter supporting rows.
 Non-control GENERAL_LEDGER accounts live under Manage → Accounting accounts.
 Account search/status/pagination/archived history remain available. Recorded

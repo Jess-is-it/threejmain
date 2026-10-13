@@ -137,6 +137,7 @@ try {
   assert.equal(writes.at(-1).path, `payables/${submitted.id}/approve-record`);await cancel();
   checks.push('independent approval calls transactional recognition endpoint');
   await page.locator('.navbar-vertical .nav-submenu').getByRole('button', { name: 'Accounts & Transfers', exact: true }).click();
+  await page.locator('.finance-manage summary').click();
   await page.getByRole('button', { name: 'Pay credit card', exact: true }).click();
   await page.getByText('Loading card bills…').waitFor({ state: 'hidden' });
   await page.locator('.finance-cards tbody').getByRole('button').first().click();

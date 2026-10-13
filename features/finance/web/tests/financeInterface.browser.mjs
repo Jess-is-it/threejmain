@@ -53,6 +53,7 @@ try {
   await page.getByText('1–25 of 26 records').waitFor();
   await page.getByRole('button', { name: 'Next', exact: true }).click();
   await page.getByText('26–26 of 26 records').waitFor();
+  await page.locator('.finance-account-filters summary').click();
   await page.getByRole('button', { name: 'Clear filters', exact: true }).click();
   await page.getByRole('button', { name: 'Add account', exact: true }).click();
   await page.getByRole('dialog').getByLabel('Account name').fill('Review account draft');

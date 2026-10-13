@@ -10,12 +10,13 @@ import IncomeCollections from './IncomeCollections.jsx';
 import FinanceReports from './FinanceReports.jsx';
 import FinanceDialog from './FinanceDialog.jsx';
 import FinanceActivity from './FinanceActivity.jsx';
+import FinanceNotifications, { FinanceNotice, FinanceNotificationProvider } from './FinanceNotifications.jsx';
 import { withinApprovalLimit } from './reportClient.mjs';
 import { useRecordView, FinanceStatus } from './FinanceRecords.jsx';
 
 const EMPTY_LINE = () => ({ accountId: '', debit: '', credit: '', memo: '' });
 
-export default function FinancePage({ apiBase = '', refreshShell = () => {}, initialWorkspace = 'Overview', onWorkspaceChange = () => {} }) {
+function FinanceContent({ apiBase = '', refreshShell = () => {}, initialWorkspace = 'Overview', onWorkspaceChange = () => {} }) {
   const api = useMemo(() => new FinanceApi({ base: apiBase, token: () => localStorage.getItem('threejmain_token') || '' }), [apiBase]);
   const [meta, setMeta] = useState(null);
   const [accounts, setAccounts] = useState([]);
@@ -31,7 +32,6 @@ export default function FinancePage({ apiBase = '', refreshShell = () => {}, ini
   const [selectedExpenseId, setSelectedExpenseId] = useState(null);
   const [activity, setActivity] = useState(null);
   const [accountGroupFilter, setAccountGroupFilter] = useState('');
-  const [cardBills, setCardBills] = useState([]);
   const [cardAccountId, setCardAccountId] = useState('');
   const [dialog, setDialog] = useState(null);
   const [form, setForm] = useState({});
@@ -50,15 +50,14 @@ export default function FinancePage({ apiBase = '', refreshShell = () => {}, ini
     api.username = m.actorUsername;
     setMeta(m);
     setPending(api.pending());
-    setAccounts([]); setOpenings([]); setEntries([]); setCardBills([]); setActivity(null);
-    const [a, o, e, cards] = await Promise.all([
+    setAccounts([]); setOpenings([]); setEntries([]); setActivity(null);
+    const [a, o, e] = await Promise.all([
       allowed('finance.accounts.view', m) ? api.request('/api/finance/accounts') : [],
       allowed('finance.accounts.view', m) ? api.request('/api/finance/opening-balances') : [],
       allowed('finance.journals.view', m) ? api.request('/api/finance/journals')
         : allowed('finance.transfers.view', m) ? api.request('/api/finance/transfers') : [],
-      allowed('finance.accounts.view', m) && allowed('finance.transfers.view', m) ? api.request('/api/finance/card-statements') : [],
     ]);
-    setAccounts(a); setOpenings(o); setEntries(e); setCardBills(cards);
+    setAccounts(a); setOpenings(o); setEntries(e);
   }
 
   useEffect(() => {
@@ -145,10 +144,9 @@ export default function FinancePage({ apiBase = '', refreshShell = () => {}, ini
 
   return <div className="finance-management container-xl">
     <header className="finance-header"><div><p className="page-pretitle">Finance Management</p><h2>{workspace}</h2></div></header>
-    {error && <div className="alert alert-danger" role="alert">{error}</div>}
-    {notice && <div className="alert alert-success" role="status">{notice}</div>}
+    <FinanceNotifications error={error} notice={notice} hideError={Boolean(dialog)} onErrorDismiss={() => setError('')} onNoticeDismiss={() => setNotice('')} />
     {workspace === 'Overview' && canReviewSetup && meta?.setupStatus === 'PENDING_REVIEWED_CUTOVER' && <details className="finance-setup-notice mb-3"><summary>Finance setup is incomplete. <span className="text-primary">Review setup</span></summary><div className="card card-body mt-2"><p>Review starting account balances in Accounts &amp; Transfers → Manage → Starting balances. Then agree on the date Finance starts recording existing payment sources in Income &amp; Collections → Cutover.</p><p className="mb-0">A different authorized person must approve the setup. Earlier Billing receipts remain historical evidence so money is counted once. Reports show provisional figures until the required evidence is complete.</p></div></details>}
-    {pending && <div className="alert alert-warning" role="status">A Finance request is awaiting confirmation. Retry the saved request before posting another action. <button type="button" className="btn btn-warning" disabled={busy || expenseBusy || incomeBusy || reportBusy} onClick={retry}>Confirm saved request</button></div>}
+    <FinanceNotice message={pending ? "A Finance request is awaiting confirmation. Retry the saved request before posting another action." : ""} tone="warning" dismissible={false}><button type="button" className="btn btn-warning" disabled={busy || expenseBusy || incomeBusy || reportBusy} onClick={retry}>Confirm saved request</button></FinanceNotice>
     {loading ? <p role="status">Loading Finance accounts…</p> : !meta ? <button className="btn btn-outline-primary" onClick={() => reload().catch((e) => setError(e.message))}>Retry loading Finance</button> : <>
       {workspace === 'Activity' && <FinanceActivity key={meta.actorUsername} api={api} meta={meta} refreshVersion={refreshVersion} onOpenPayable={(id) => { setSelectedExpenseId(id); setWorkspace('Expenses & Payables'); onWorkspaceChange('Expenses & Payables'); }} onOpenWorkspace={(name) => { setWorkspace(name); onWorkspaceChange(name); }} />}
       {['Overview', 'Financial Reports', 'Subscriber Growth'].includes(workspace) && <FinanceReports key={`${workspace}-${meta.actorUsername}`} api={api} meta={meta} mode={workspace === 'Overview' ? 'overview' : workspace === 'Subscriber Growth' ? 'subscribers' : 'financial'} refreshVersion={refreshVersion} pending={pending} onPendingChange={setPending} onBusyChange={setReportBusy} onOpenPayable={(id) => { setSelectedExpenseId(id); setWorkspace('Expenses & Payables'); onWorkspaceChange('Expenses & Payables'); }} />}
@@ -159,11 +157,11 @@ export default function FinancePage({ apiBase = '', refreshShell = () => {}, ini
           {(section !== 'Accounts' || activity) && <button className="btn btn-outline-secondary" disabled={buttonsDisabled} onClick={() => { setActivity(null); setSection('Accounts'); }}>Back to accounts</button>}
           {allowed('finance.accounts.manage') && <button className="btn btn-primary" disabled={buttonsDisabled} onClick={() => start('account')}>{section === 'Accounting accounts' ? 'Add accounting account' : section === 'Collector custody' ? 'Add custody account' : 'Add account'}</button>}
           {allowed('finance.transfers.post') && <button className="btn btn-outline-primary" disabled={buttonsDisabled || !allowed('finance.accounts.view')} onClick={() => start('transfer', activity?.account)}>Transfer money</button>}
-          {allowed('finance.accounts.view') && allowed('finance.transfers.view') && <button className="btn btn-outline-primary" disabled={buttonsDisabled} onClick={() => { setCardAccountId(activity?.account.kind === 'CREDIT_CARD' ? activity.account.id : ''); setActivity(null); setSection('Card bills'); }}>Pay credit card</button>}
-          {allowed('finance.transfers.view') && <button className="btn btn-outline-secondary" disabled={buttonsDisabled} onClick={() => { setActivity(null); setSection('Transfers'); }}>Transfer history</button>}
         </div>
-        {(['finance.accounts.manage', 'finance.opening-balances.post', 'finance.opening-balances.approve', 'finance.journals.view', 'finance.journals.post'].some((p) => allowed(p))) && <details className="finance-manage"><summary className="btn btn-outline-secondary">Manage</summary><div className="finance-manage-options">
-          {allowed('finance.accounts.view') && ['Accounting accounts', 'Collector custody', 'Starting balances'].map((name) => <button type="button" className="btn btn-link" key={name} disabled={buttonsDisabled} onClick={(event) => { event.currentTarget.closest('details').open = false; setActivity(null); setSection(name); }}>{name}</button>)}
+        {(['finance.accounts.manage', 'finance.opening-balances.post', 'finance.opening-balances.approve', 'finance.journals.view', 'finance.journals.post', 'finance.transfers.view'].some((p) => allowed(p))) && <details className="finance-manage"><summary className="btn btn-outline-secondary">Manage</summary><div className="finance-manage-options">
+          {allowed('finance.accounts.view') && allowed('finance.transfers.view') && <button type="button" className="btn btn-link" disabled={buttonsDisabled} onClick={(event) => { event.currentTarget.closest('details').open = false; setCardAccountId(activity?.account.kind === 'CREDIT_CARD' ? activity.account.id : ''); setActivity(null); setSection('Card bills'); }}>Pay credit card</button>}
+          {allowed('finance.transfers.view') && <button type="button" className="btn btn-link" disabled={buttonsDisabled} onClick={(event) => { event.currentTarget.closest('details').open = false; setActivity(null); setSection('Transfers'); }}>Transfer history</button>}
+          {['finance.accounts.manage', 'finance.opening-balances.post', 'finance.opening-balances.approve', 'finance.journals.view', 'finance.journals.post'].some((p) => allowed(p)) && allowed('finance.accounts.view') && ['Accounting accounts', 'Collector custody', 'Starting balances'].map((name) => <button type="button" className="btn btn-link" key={name} disabled={buttonsDisabled} onClick={(event) => { event.currentTarget.closest('details').open = false; setActivity(null); setSection(name); }}>{name}</button>)}
           {allowed('finance.journals.view') && <button type="button" className="btn btn-link" disabled={buttonsDisabled} onClick={(event) => { event.currentTarget.closest('details').open = false; setActivity(null); setSection('Journal'); }}>Journal entries</button>}
           {allowed('finance.journals.post') && allowed('finance.accounts.view') && <button type="button" className="btn btn-link" disabled={buttonsDisabled} onClick={(event) => { event.currentTarget.closest('details').open = false; start('journal'); }}>Post journal</button>}
         </div></details>}
@@ -177,7 +175,7 @@ export default function FinancePage({ apiBase = '', refreshShell = () => {}, ini
           {activity.account.active && allowed('finance.opening-balances.post') && <button className="btn btn-outline-secondary" disabled={buttonsDisabled} onClick={() => start('opening', activity.account)}>Set starting balance</button>}</div>
           <details className="mb-3"><summary>Account details</summary><p>Account code: {activity.account.code}<br />Person responsible: {activity.account.custodian || '—'}<br />Notes: {activity.account.notes || '—'}</p></details>
           <FinanceAccountHistory activity={activity} />
-        </div></section> : <FinanceAccountsList accounts={accounts.filter((a) => !a.system && !a.kind.startsWith('COLLECTOR') && a.kind !== 'GENERAL_LEDGER')} view={accountView} group={accountGroupFilter} onGroup={setAccountGroupFilter} showArchived={showArchived} onArchived={setShowArchived} cardBills={cardBills} hasCardAccess={allowed('finance.transfers.view')} onOpen={async (a) => { try { setActivity(await api.request(`/api/finance/accounts/${a.id}/activity`)); } catch (e) { setError(e.message); } }} /> : <p>Your role does not grant financial account access.</p>)}
+        </div></section> : <FinanceAccountsList accounts={accounts.filter((a) => !a.system && !a.kind.startsWith('COLLECTOR') && a.kind !== 'GENERAL_LEDGER')} view={accountView} group={accountGroupFilter} onGroup={setAccountGroupFilter} showArchived={showArchived} onArchived={setShowArchived} provisional={meta.setupStatus === 'PENDING_REVIEWED_CUTOVER'} onOpen={async (a) => { try { setActivity(await api.request(`/api/finance/accounts/${a.id}/activity`)); } catch (e) { setError(e.message); } }} /> : <p>Your role does not grant financial account access.</p>)}
         {['Accounting accounts', 'Collector custody'].includes(section) && (allowed('finance.accounts.view') ? <>{accountView.controls}<label className="mb-3"><input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} /> Include archived accounts</label><div className="table-responsive"><table className="table table-striped"><thead><tr><th>Account</th><th>{section === 'Collector custody' ? 'Type / person responsible' : 'Classification'}</th><th>Balance</th><th>Status</th><th>Actions</th></tr></thead><tbody>{accountView.items.map((a) => <tr key={a.id}><td>{a.name}<small className="finance-code">{a.code}</small></td><td>{section === 'Collector custody' ? <>{LABELS[a.kind]}<small className="finance-code">{a.custodian}</small></> : a.glType}</td><td>{moneyLabel(a.balance)}</td><td><FinanceStatus value={a.active ? 'ACTIVE' : 'ARCHIVED'} /></td><td>{allowed('finance.accounts.manage') && <><button className="btn btn-sm btn-outline-secondary" disabled={buttonsDisabled} onClick={() => start('edit', a)}>Edit</button><button className="btn btn-sm btn-outline-secondary" disabled={buttonsDisabled} onClick={() => start(a.active ? 'archive' : 'restore', a)}>{a.active ? 'Archive' : 'Restore'}</button></>}</td></tr>)}{!accountView.items.length && <tr><td colSpan="5">No accounting accounts in this view.</td></tr>}</tbody></table></div>{accountView.pagination}</> : <p>Your role does not grant accounting account access.</p>)}
       {section === 'Starting balances' && (allowed('finance.accounts.view') ? <><p>Opening balances require supporting evidence and approval by a different authorized user. They do not create current-period income or cash flow.</p>{openingView.controls}<div className="table-responsive"><table className="table table-striped"><thead><tr><th>Account</th><th>Effective date</th><th>Amount</th><th>Creator</th><th>Approver</th><th>Status</th><th>Actions</th></tr></thead><tbody>{openingView.items.map((o) => <tr key={o.id}><td>{accounts.find((a) => a.id === o.accountId)?.name || 'Account'}</td><td>{o.effectiveDate}</td><td>{moneyLabel(o.amount)}</td><td>{o.createdBy}</td><td>{o.approvedBy || '—'}</td><td><FinanceStatus value={o.reversed ? 'REVERSED' : o.status} /></td><td>
         {o.status === 'DRAFT' && o.createdBy !== meta.actorUsername && allowed('finance.opening-balances.approve') && withinApprovalLimit(meta, o.amount) && <button className="btn btn-sm btn-primary" disabled={buttonsDisabled} onClick={() => start('approve', o)}>Approve</button>}
@@ -210,4 +208,8 @@ export default function FinancePage({ apiBase = '', refreshShell = () => {}, ini
       {pending && <p className="alert alert-warning">Request awaiting confirmation. Close this dialog and confirm the saved request.</p>}
     </FinanceDialog>}
   </div>;
+}
+
+export default function FinancePage(props) {
+  return <FinanceNotificationProvider><FinanceContent {...props} /></FinanceNotificationProvider>;
 }

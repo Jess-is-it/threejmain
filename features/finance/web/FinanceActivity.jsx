@@ -1,3 +1,4 @@
+import FinanceNotifications from './FinanceNotifications.jsx';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { businessDate, moneyLabel } from './financeApi.mjs';
 import FinanceDialog from './FinanceDialog.jsx';
@@ -59,7 +60,7 @@ export default function FinanceActivity({ api, meta, refreshVersion, onOpenPayab
       <button className="btn btn-primary" type="submit" disabled={loading}>Apply filters</button><button className="btn btn-outline-secondary" type="button" onClick={clear}>Clear filters</button>
     </form>
     <p className="text-secondary">Posted transactions · PHP · Dates in Asia/Manila. Money received is separate from earned revenue. Card purchases increase debt; opening balances are starting funds.</p>
-    {error && <div className="alert alert-danger" role="alert">{error} <button className="btn btn-sm btn-outline-danger" type="button" onClick={() => setVersion((v) => v + 1)}>Retry activity</button></div>}
+    <FinanceNotifications error={error} onErrorDismiss={() => setError('')} />{error && <button className="btn btn-sm btn-outline-danger mb-3" type="button" onClick={() => setVersion((v) => v + 1)}>Retry activity</button>}
     {loading ? <p role="status">Loading transaction history…</p> : data && <>
       <div className="table-responsive"><table className="table table-striped table-vcenter finance-activity-table"><thead><tr><th>Date</th><th>Activity</th><th>Description / reference</th><th>From</th><th>To</th><th className="text-end">Amount (PHP)</th></tr></thead><tbody>
         {data.items.map((row) => <tr key={row.id}><td data-label="Date">{row.effectiveDate}</td><td data-label="Activity"><span className={`badge bg-${row.type === 'MONEY_IN' ? 'green' : row.type === 'MONEY_OUT' ? 'red' : 'blue'}-lt`}>{row.label}</span>{row.status !== 'POSTED' && <small className="finance-code"><FinanceStatus value={row.status} /></small>}</td>

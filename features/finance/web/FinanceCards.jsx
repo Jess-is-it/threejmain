@@ -1,3 +1,4 @@
+import FinanceNotifications from './FinanceNotifications.jsx';
 import React, { useCallback, useEffect, useState } from 'react';
 import FinanceDialog from './FinanceDialog.jsx';
 import { FinanceStatus, useRecordView } from './FinanceRecords.jsx';
@@ -55,7 +56,7 @@ export default function FinanceCards({ api, meta, accounts, accountId = '', refr
   const accountSelect = (key, label, options) => <label className="finance-field"><span>{label}</span><select className="form-select" required value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })}><option value="">Choose account</option>{options.map((a) => <option value={a.id} key={a.id}>{a.name}</option>)}</select></label>;
   if (!allowed) return <p>Your role does not grant credit-card bill access.</p>;
   return <section className="finance-cards">
-    {error && <div className="alert alert-danger" role="alert">{error}</div>}{notice && <div className="alert alert-success" role="status">{notice}</div>}
+    <FinanceNotifications error={error} notice={notice} hideError={Boolean(dialog)} onErrorDismiss={() => setError('')} onNoticeDismiss={() => setNotice('')} />
     <div className="finance-toolbar"><h3>Credit-card bills</h3>{has('finance.accounts.manage') && <button className="btn btn-primary" disabled={disabled} onClick={() => start('create')}>Add card bill</button>}</div>
     {accountId && <p>Showing bills for <strong>{accounts.find((a) => a.id === accountId)?.name || 'selected card'}</strong>.</p>}
     <p>Choose a bill to pay or review. Paying it reduces card debt without recording another expense.</p>

@@ -1,3 +1,4 @@
+import FinanceNotifications from './FinanceNotifications.jsx';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { businessDate, moneyLabel, newReference } from './financeApi.mjs';
 import { attachmentBody } from './expenseEvidence.mjs';
@@ -140,8 +141,7 @@ export default function ExpensesPayables({ api, meta, pending, onPendingChange, 
   const listView = useRecordView(view === 'Payables' ? payables : view === 'Payees' ? payees : categories, { statuses: view === 'Payables' ? ['DRAFT', 'NEEDS_APPROVAL', 'READY_TO_RECORD', 'AWAITING_PAYMENT', 'PARTIALLY_PAID', 'PAID', 'REJECTED', 'REVERSED'] : ['ACTIVE', 'ARCHIVED'], getStatus: (r) => view === 'Payables' ? expenseStatus(r) : r.active ? 'ACTIVE' : 'ARCHIVED', dates: view === 'Payables', resetKey: view });
   if (!has('finance.expenses.view')) return <p>Your role does not grant expense access.</p>;
   return <section className="finance-expenses">
-    {error && <div role="alert" className="alert alert-danger">{error}</div>}
-    {notice && <div role="status" className="alert alert-success">{notice}</div>}
+    <FinanceNotifications error={error} notice={notice} hideError={Boolean(dialog)} onErrorDismiss={() => setError('')} onNoticeDismiss={() => setNotice('')} />
     <div className="finance-toolbar"><div>{view !== 'Payables' && <><button type="button" className="btn btn-outline-secondary" disabled={disabled} onClick={() => setView('Payables')}>Back to expenses</button><h3 className="mb-0">{view}</h3></>}</div>
       <div>{view === 'Payables' && has('finance.expenses.create') && <button className="btn btn-primary" disabled={disabled} onClick={() => start('new-expense')}>Add expense</button>}
         {has('finance.expenses.manage') && view === 'Payees' && <button className="btn btn-primary" disabled={disabled} onClick={() => start('new-payee')}>New payee</button>}
