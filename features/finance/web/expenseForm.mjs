@@ -1,5 +1,18 @@
 // Exact cent arithmetic for editable payment plans; API validates every value again.
-export const ARRANGEMENTS = { PAY_LATER: 'Pay later', INSTALLMENTS: 'Installments', ALREADY_PAID: 'Already paid / charged to card' };
+export const ARRANGEMENTS = { PAID_NOW: 'Paid now', PAY_LATER: 'Pay later', INSTALLMENTS: 'Installments', CHARGED_TO_CARD: 'Charged to credit card' };
+export function isImmediateArrangement(value) {
+  return ['PAID_NOW', 'CHARGED_TO_CARD', 'ALREADY_PAID'].includes(value);
+}
+// Retained API records use ALREADY_PAID; their payment evidence identifies the rail.
+export function expenseArrangement(record) {
+  return record.paymentArrangement === 'ALREADY_PAID' ? record.paidDetails?.method === 'CREDIT_CARD' ? 'CHARGED_TO_CARD' : 'PAID_NOW' : record.paymentArrangement || 'PAY_LATER';
+}
+export function changeArrangement(form, value) {
+  return { ...form, paymentArrangement: value, paidAccountId: '', paidReference: '', paidMethod: value === 'CHARGED_TO_CARD' ? 'CREDIT_CARD' : 'CASH' };
+}
+export function immediateAccounts(accounts, arrangement) {
+  return accounts.filter((a) => a.active && a.kind !== 'GENERAL_LEDGER' && (arrangement === 'CHARGED_TO_CARD' ? a.kind === 'CREDIT_CARD' : a.kind !== 'CREDIT_CARD'));
+}
 export function expenseStatus(r) {
   if (r.postingStatus === 'REVERSED') return 'REVERSED';
   if (r.approvalStatus === 'DRAFT') return 'DRAFT';
@@ -38,7 +51,10 @@ export function expenseBody(form) {
   const body = Object.fromEntries(keys.map((key) => [key, form[key] || '']));
   body.payeeId = body.payeeId || null;
   body.documentDate = form.documentDate || form.expenseDate;
-  body.paymentArrangement = form.paymentArrangement || 'PAY_LATER';
+  const immediate = isImmediateArrangement(form.paymentArrangement);
+  if ((form.paymentArrangement === 'PAID_NOW' && form.paidMethod === 'CREDIT_CARD') ||
+      (form.paymentArrangement === 'CHARGED_TO_CARD' && form.paidMethod !== 'CREDIT_CARD')) throw new Error('Choose an account matching the selected payment arrangement.');
+  body.paymentArrangement = immediate ? 'ALREADY_PAID' : form.paymentArrangement || 'PAY_LATER';
   body.installments = body.paymentArrangement === 'INSTALLMENTS' ? form.installments || [] : [];
   body.dueDate = body.paymentArrangement === 'INSTALLMENTS' ? body.installments[0]?.dueDate : body.paymentArrangement === 'ALREADY_PAID' ? body.documentDate : form.dueDate;
   body.paidDetails = body.paymentArrangement === 'ALREADY_PAID' ? {

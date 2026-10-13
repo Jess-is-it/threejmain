@@ -20,10 +20,11 @@ source-linked income, cash flow, financial reports and subscriber analytics.
 
 Expenses & Payables uses **Add expense → Submit → Approve → Record payment**.
 Routine fields stay visible; extra references are under More details. Pay later
-and installment expenses require a payee; already-paid/cash/card purchases may omit
+and installment expenses require a payee; Paid now and Charged to credit card may omit
 the payee and retain “Payee not specified” in their evidence and reports.
-Supplier installments, declared already-paid purchases and card charges are
-supported. **Accounts & Transfers → Card bills** tracks issuer due dates, agreed
+The two immediate-payment choices show separate cash/GCash/bank and credit-card
+account selectors, dates and references. Supplier installments are also supported.
+**Accounts & Transfers → Card bills** tracks issuer due dates, agreed
 installments, repayments and existing-transfer allocation without another expense.
 Approval records the reviewed cost atomically; payment is separately authorized.
 [SIMPLE_EXPENSES.md](SIMPLE_EXPENSES.md) documents permissions, APIs and limits.

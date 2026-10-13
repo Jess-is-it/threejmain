@@ -7,7 +7,7 @@ independent approvals and immutable correction rules remain authoritative.
 
 1. **Add expense**: payee, category, amount, expense date (today), description,
    payment arrangement and receipt/invoice. Save draft or submit for approval.
-   Payee is optional for **Already paid / charged to card**, including small fuel
+   Payee is optional for **Paid now** and **Charged to credit card**, including small fuel
    purchases. It remains required for **Pay later** and **Installments** so the
    outstanding creditor is identified. The actual paid account/date are still required.
 2. **Review**: a different authorized approver approves or rejects. The new approval
@@ -39,11 +39,19 @@ pending approval/recording. Accounting/audit details remain inside expense detai
   review/edit dates and amounts. Payments allocate earliest due first; reversals
   restore derived allocations. Terms freeze after submission. Reports allocate
   payments as of the selected report date, independently of today's settlement.
-- **Already paid / charged to card**: retain the actual account, payment date and
-  noncash reference as reviewed declarations. Declarations alone move no money.
-  Finance confirms the payment after independent approval. The payment dialog starts
-  with those details and the unpaid amount. Partially paid purchases use Pay later
-  or Installments plus separate actual partial payments.
+- **Paid now**: select the actual cash/petty-cash, GCash or bank account, payment
+  date and noncash reference. Credit-card accounts are excluded from this selector.
+- **Charged to credit card**: select an active credit-card account, charge date and
+  card charge reference. The supplier is paid by the card; the card issuer is still owed.
+
+Both immediate-payment choices retain reviewed declarations; declarations alone move
+no money. Finance confirms the actual payment/charge after independent approval.
+The payment dialog starts with the reviewed details and unpaid amount. Switching
+arrangements clears selected funding account/reference. Partially paid purchases use
+Pay later or Installments plus separate actual partial payments.
+The retained API/storage ALREADY_PAID value is distinguished by paidDetails.method:
+CREDIT_CARD for a charge, cash/GCash/bank methods for Paid now. Existing records are
+displayed and edited using their original evidence; no historical rewrite or migration.
 
 Arrangements describe when payment is due, methods describe the rail, and actual
 named accounts identify funds or debt. The interface derives the normal method from

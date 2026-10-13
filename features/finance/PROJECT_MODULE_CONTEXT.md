@@ -1,5 +1,33 @@
 # Finance Management Module Context
 
+## Separate Paid now and credit-card choices (2026-10-13)
+
+Expense create/edit forms now offer Paid now, Pay later, Installments and Charged to
+credit card. Paid now lists active cash/petty-cash, bank and GCash funding accounts;
+card charges list only active credit-card liability accounts. Existing custody account
+scopes remain respected. Each has separate account/date/reference labels; switching
+arrangements clears the selected account and reference to prevent stale funding rails.
+Payee remains optional for Paid now and Charged to credit card, required for deferred
+supplier payment. Missing scoped card/funding accounts show setup guidance.
+
+This is a module-local presentation refinement. Both immediate choices serialize to
+the retained ALREADY_PAID contract with actual paidDetails.method/account evidence.
+Existing method/account compatibility checks, independent approval, payment confirmation,
+liability accounting, reversal/idempotency and nullable-payee SQL guards remain unchanged.
+No posted evidence, prior SQL checksum, shared contract, migration or permission changed.
+Expense lists/details and draft edits derive the separate labels from retained payment
+method evidence. Declaring Paid now or a card charge still does not post money automatically.
+
+Verified through 29 client tests and 91 expense/card accounting and PostgreSQL cases
+(88 pass, three inherited fixture skips). Staging rebuilt with staging_deploy.sh under
+runtime/server lock and healthy on 8280/8200. All 43 browser groups pass (eleven
+expense/card, six inline-category, eleven interface and fifteen actual staging),
+zero page errors or shared financial writes. Coverage includes filtered active accounts,
+bank/GCash references, payee policy, switching without stale funding, retained record
+labels/draft edits, missing card-account guidance, approval/card repayment workflows,
+receipt/category preservation, exports and 390px mobile layout. Module-only documentation
+updated; root context and production unchanged.
+
 ## Add category while entering an expense (2026-10-13)
 
 ExpensesPayables offers “+ Add category” beside Category for expense creation and
