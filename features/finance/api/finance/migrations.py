@@ -48,3 +48,9 @@ EXPENSE_WORKFLOW_MIGRATIONS = [{
     'description': 'Immutable card statements, balanced repayments and reviewed expense installment terms',
     'statements': [(Path(__file__).parent / 'migrations' / '2026101301_finance_expense_workflows.sql').read_text()],
 }]
+
+EXPENSE_WORKFLOW_MIGRATIONS.append({
+    'id': '2026101302_finance_optional_payee',
+    'description': 'Optional identified payee for already-paid purchases, preserving creditor and evidence integrity',
+    'statements': [(Path(__file__).parent / 'migrations' / '2026101302_finance_optional_payee.sql').read_text()],
+})

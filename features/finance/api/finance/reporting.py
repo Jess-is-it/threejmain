@@ -400,7 +400,7 @@ class ReportingService(IncomeService):
                 account_id=repo.payment(e['metadata']['paymentId'])['accountId']
                 if repo.account(account_id)['controlledCash']:cash_paid+=delta
             if not delta:continue
-            key={'category':payable['categoryId'],'payee':payable['payeeId'],'account':account_id,
+            key={'category':payable['categoryId'],'payee':payable['payeeId'] or 'UNSPECIFIED_PAYEE','account':account_id,
                  'location':payable['locationReference'] or 'UNASSIGNED','project':payable['projectReference'] or 'UNASSIGNED'}[group]
             groups[key]=groups.get(key,ZERO)+delta
             rows.append({'journalId':e['id'],'effectiveDate':e['effectiveDate'],'payableId':pid,'groupId':key,'accountId':account_id,

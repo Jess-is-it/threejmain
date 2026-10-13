@@ -38,6 +38,7 @@ async function openExpenses() {
 }
 try {
   await openExpenses(); await page.getByRole('button', { name: 'Add expense', exact: true }).click();
+  assert.equal(await dialog().getByLabel('Payee').evaluate((el) => el.required), true);
   assert.equal(await dialog().getByLabel('Supplier invoice number').isVisible(), false);
   assert.equal(await dialog().getByLabel('Location reference').isVisible(), false);
   await dialog().getByLabel('Payee').selectOption(fixtures.payees[0].id);
@@ -65,12 +66,29 @@ try {
   assert.equal(writes.at(-1).body.submitForApproval, true);assert.equal(writes.at(-1).body.installments.length, 3);
   checks.push('exact installment amounts, month-end dates, submission and mobile layout');
   await dialog().getByLabel('Payment arrangement').selectOption('ALREADY_PAID');
+  const optionalPayee = dialog().getByLabel('Payee (optional)');
+  assert.equal(await optionalPayee.evaluate((el) => el.required), false);
+  await optionalPayee.selectOption('');
+  await dialog().getByLabel('Paid from account').selectOption(fixtures.workflow.fundsId);
+  await dialog().getByLabel('Actual payment / card charge date').fill('2026-02-01');
+  await dialog().getByRole('button', { name: 'Submit for approval', exact: true }).click();
+  await page.getByText('Isolated review: financial writes intercepted.').first().waitFor();
+  assert.equal(writes.at(-1).body.payeeId, null);assert.equal(writes.at(-1).body.paidDetails.method, 'CASH');
+  checks.push('already-paid cash purchase submits with an optional unidentified payee');
+  await dialog().getByLabel('Payment arrangement').selectOption('PAY_LATER');
+  assert.equal(await dialog().getByLabel('Payee').evaluate((el) => el.required), true);
+  const beforeBlocked = writes.length;
+  await dialog().getByRole('button', { name: 'Save draft', exact: true }).click();
+  assert.equal(writes.length, beforeBlocked);
+  await dialog().getByLabel('Payment arrangement').selectOption('ALREADY_PAID');
   await dialog().getByLabel('Paid from account').selectOption(fixtures.workflow.cardId);
   await dialog().getByLabel('Actual payment / card charge date').fill('2026-02-01');
   await dialog().getByLabel('Payment / card charge reference').fill('Verified card slip');
   await dialog().getByRole('button', { name: 'Submit for approval', exact: true }).click();
   await page.getByText('Isolated review: financial writes intercepted.').first().waitFor();
   assert.equal(writes.at(-1).body.paidDetails.method, 'CREDIT_CARD');assert.equal(writes.at(-1).body.installments.length, 0);
+  assert.equal(writes.at(-1).body.payeeId, null);
+  if (shots) await page.screenshot({ path: shots + '/optional-payee-mobile.png', fullPage: true });
   checks.push('already-paid card details remain distinct from later card debt');
   await cancel(); await page.setViewportSize({ width: 1440, height: 1000 });
   await page.locator('.finance-expenses tbody tr').filter({ hasText: 'Installments' }).getByRole('button').first().click();

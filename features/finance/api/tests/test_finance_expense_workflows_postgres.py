@@ -32,6 +32,31 @@ class ExpenseWorkflowPostgresTests(workflows.ExpenseWorkflowTests):
 
     sql_rejected=postgres.PayablesPostgresTests.sql_rejected
 
+    def test_sql_unnamed_payee_requires_paid_terms_and_matching_nullable_snapshot(self):
+        import json
+        body=self.unnamed_body();body['submitForApproval']=False
+        record=self.service.expense_intake(workflows.expenses.CREATOR,workflows.ExpenseIntake(**body),self.key())
+        row=self.conn.execute('SELECT payee_id,data FROM finance_payables WHERE id=%s',(record['id'],)).fetchone()
+        self.assertIsNone(row[0]);self.assertIsNone(row[1]['payeeId'])
+        for changes in ({'paymentArrangement':'PAY_LATER','paidDetails':None},{'payeeId':'false-supplier'},
+                        {'payeeSnapshot':{'id':'false-supplier','name':'False supplier'}},
+                        {'payeeSnapshot':{'id':None,'name':'False supplier'}},{'paidDetails':None}):
+            data={**row[1],**changes,'version':record['version']+1}
+            self.sql_rejected('UPDATE finance_payables SET version=version+1,data=%s::jsonb WHERE id=%s',(json.dumps(data),record['id']))
+
+    def test_sql_unnamed_supplier_reference_and_posted_identity_remain_protected(self):
+        import json
+        body=self.unnamed_body();body.update(submitForApproval=False,documentReference='UNNAMED-FUEL')
+        record=self.service.expense_intake(workflows.expenses.CREATOR,workflows.ExpenseIntake(**body),self.key())
+        with self.store.read() as repo:data=repo.payable(record['id'])
+        copied={**data,'id':self.key()};copied.pop('number',None)
+        self.sql_rejected('''INSERT INTO finance_payables(id,payee_id,category_id,document_reference,amount,
+                    expense_date,approval_status,posting_status,version,data)
+                    VALUES (%s,NULL,%s,%s,%s,%s,'DRAFT','UNPOSTED',1,%s::jsonb)''',
+                    (copied['id'],copied['categoryId'],copied['documentReference'],copied['amount'],copied['expenseDate'],json.dumps(copied)))
+        submitted=self.action(record,'submit');posted=self.approve_record(submitted)
+        self.sql_rejected("UPDATE finance_payables SET version=version+1,data=jsonb_set(data,'{payeeSnapshot,name}','\"Edited supplier\"') WHERE id=%s",(posted['id'],))
+
     def test_sql_cannot_rewrite_installments_or_delete_card_evidence(self):
         r=self.posted(self.draft(paymentArrangement='INSTALLMENTS',dueDate='2026-02-01',installments=[
                     {'dueDate':'2026-02-01','amount':'50.00'},{'dueDate':'2026-03-01','amount':'50.00'}]))

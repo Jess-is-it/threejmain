@@ -79,7 +79,7 @@ export default function FinanceReports({ api, meta, mode = 'financial', refreshV
   }
   const categoryNames = names(masters.categories, 'name'), payeeNames = names(masters.payees, 'name'), accountNames = names(masters.accounts, 'name');
   function enrich(rows, sourceReport) { return rows.map((row) => ({ ...row, ...(row.categoryId ? { categoryName: row.categoryName || categoryNames[row.categoryId] || 'Unassigned category' } : {}), ...(row.payeeId ? { payeeName: row.payeeName || payeeNames[row.payeeId] || row.payeeId } : {}), ...(row.accountId && !row.name ? { accountName: row.accountName || accountNames[row.accountId] || row.accountId } : {}), ...(row.groupId ? { groupName: groupLabel(row.groupId, sourceReport?.groupBy) } : {}) })); }
-  function groupLabel(id, group = 'category') { return id === 'UNASSIGNED' ? 'Unassigned' : (group === 'category' ? categoryNames : group === 'payee' ? payeeNames : group === 'account' ? accountNames : {})[id] || id; }
+  function groupLabel(id, group = 'category') { return id === 'UNSPECIFIED_PAYEE' ? 'Payee not specified' : id === 'UNASSIGNED' ? 'Unassigned' : (group === 'category' ? categoryNames : group === 'payee' ? payeeNames : group === 'account' ? accountNames : {})[id] || id; }
 
   useEffect(() => {
     const current = ++generation.current;

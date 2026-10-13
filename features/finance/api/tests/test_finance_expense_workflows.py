@@ -37,6 +37,91 @@ class ExpenseWorkflowTests(expenses.PayablesTests):
         return self.service.expense_action(actor,r['id'],'approve',
                     ExpenseAction(version=r['version'],reason='Independent cost and evidence review'),key or self.key(),recognize=True)
 
+    def unnamed_body(self):
+        funds=self.funds();category=self.category()
+        return dict(categoryId=category['id'],documentDate=expenses.DAY,expenseDate=expenses.DAY,
+                    dueDate=expenses.DAY,amount='100.00',purpose='Fuel for installation vehicle',
+                    evidenceReference='Fuel receipt',paymentArrangement='ALREADY_PAID',
+                    paidDetails={'accountId':funds['id'],'effectiveDate':expenses.DAY,'method':'CASH'},
+                    submitForApproval=True)
+
+    def test_payee_optional_only_for_already_paid_with_real_payment_details(self):
+        body=self.unnamed_body()
+        for value in (None,'','   '):
+            self.assertIsNone(ExpenseIntake(**{**body,'payeeId':value}).payeeId)
+        self.assertIsNone(ExpenseIntake(**body).payeeId)
+        for arrangement in ('PAY_LATER','INSTALLMENTS'):
+            with self.assertRaisesRegex(ValidationError,'Payee is required'):
+                ExpenseIntake(**{**body,'paymentArrangement':arrangement,'paidDetails':None})
+        with self.assertRaises(ValidationError):ExpenseIntake(**{**body,'paidDetails':None})
+        self.expect(400,lambda:self.draft(payeeId=None,paymentArrangement='ALREADY_PAID',
+                    paidDetails={'accountId':body['paidDetails']['accountId'],'effectiveDate':expenses.DAY,'method':'CREDIT_CARD'}))
+
+    def test_unnamed_expense_settlement_activity_reports_and_refund_reconcile(self):
+        from finance.activity import transaction_history
+        body=self.unnamed_body()
+        with self.store.read() as repo:payees_before=len(repo.masters('payee'))
+        record=self.service.expense_intake(expenses.CREATOR,ExpenseIntake(**body),'unnamed-fuel')
+        replay=self.service.expense_intake(expenses.CREATOR,ExpenseIntake(**body),'unnamed-fuel')
+        self.assertEqual(record['id'],replay['id']);self.assertIsNone(record['payeeId'])
+        self.assertEqual(record['payeeSnapshot']['name'],'Payee not specified')
+        with self.store.read() as repo:self.assertEqual(len(repo.masters('payee')),payees_before)
+        self.expect(403,lambda:self.approve_record(record,actor=expenses.CREATOR))
+        posted=self.approve_record(record)
+        with self.store.read() as repo:funds=repo.account(body['paidDetails']['accountId'])
+        payment=self.payment(posted,funds,'100.00',reference='confirmed-fuel-payment',key='unnamed-payment')
+        self.assertEqual(self.payment(posted,funds,'100.00',reference='confirmed-fuel-payment',key='unnamed-payment')['id'],payment['id'])
+        self.assertEqual(self.details(posted)['settlementStatus'],'PAID')
+        self.assertEqual(self.balance(funds['id']),'900.00')
+        with self.store.read() as repo:
+            for basis in ('RECOGNIZED','SETTLED'):
+                report=self.service._expenses(repo,'2026-01-01','2026-01-31',{'basis':basis,'group_by':'payee'})
+                self.assertEqual(report['total'],'100.00');self.assertEqual(report['reconciliationVariance'],'0.00')
+                self.assertEqual(report['groups'],[{'id':'UNSPECIFIED_PAYEE','amount':'100.00'}])
+        rows=transaction_history(self.service,expenses.CREATOR,activity_type='MONEY_OUT')['items']
+        self.assertEqual(len(rows),1);self.assertEqual(rows[0]['counterparty'],'Payee not specified')
+        self.service.reverse_payment(expenses.CREATOR,payment['id'],Reversal(effectiveDate='2026-01-03',reason='Actual fuel purchase refund'),self.key())
+        self.assertEqual(self.balance(funds['id']),'1000.00')
+        self.assertEqual(self.balance(posted['categorySnapshot']['accountId']),'100.00')
+        self.assertIsNone(self.details(posted)['payeeId'])
+        with self.store.read() as repo:
+            report=self.service._expenses(repo,'2026-01-01','2026-01-31',{'basis':'SETTLED','group_by':'payee'})
+            self.assertEqual((report['total'],report['reconciliationVariance']),('0.00','0.00'))
+
+    def test_unnamed_draft_edit_requires_creditor_when_switching_to_pay_later(self):
+        body=self.unnamed_body();body['submitForApproval']=False
+        draft=self.service.expense_intake(expenses.CREATOR,ExpenseIntake(**body),self.key())
+        edit={k:draft[k] for k in PayableCreate.model_fields}
+        edit.update(version=draft['version'],purpose='Fuel for service vehicle')
+        changed=self.service.edit_payable(expenses.CREATOR,draft['id'],PayableEdit(**edit),self.key())
+        self.assertIsNone(changed['payeeId'])
+        edit.update(version=changed['version'],paymentArrangement='PAY_LATER',paidDetails=None)
+        with self.assertRaisesRegex(ValidationError,'Payee is required'):PayableEdit(**edit)
+        supplier=self.draft()['payeeId'];edit['payeeId']=supplier
+        changed=self.service.edit_payable(expenses.CREATOR,draft['id'],PayableEdit(**edit),self.key())
+        self.assertEqual(changed['payeeId'],supplier);self.assertEqual(changed['payeeSnapshot']['name'],'Supplier')
+        self.assertIsNone(changed['paidDetails'])
+
+    def test_named_and_unnamed_payee_groups_sort_and_keep_duplicate_evidence(self):
+        body=self.unnamed_body();body['documentReference']='FUEL-RECEIPT-123'
+        draft=self.service.expense_intake(expenses.CREATOR,ExpenseIntake(**body),self.key())
+        self.expect(409,lambda:self.service.expense_intake(expenses.CREATOR,ExpenseIntake(**body),self.key()))
+        self.approve_record(draft);named=self.posted()
+        with self.store.read() as repo:
+            report=self.service._expenses(repo,'2026-01-01','2026-01-31',{'group_by':'payee'})
+        self.assertEqual(report['total'],'200.00');self.assertEqual(len(report['groups']),2)
+        self.assertEqual({r['id'] for r in report['groups']},{named['payeeId'],'UNSPECIFIED_PAYEE'})
+
+    def test_unnamed_card_purchase_keeps_supplier_settlement_separate_from_card_debt(self):
+        body=self.unnamed_body();card=self.account('CREDIT_CARD')
+        body['paidDetails']={'accountId':card['id'],'effectiveDate':expenses.DAY,'method':'CREDIT_CARD','referenceNumber':'Fuel card slip'}
+        record=self.service.expense_intake(expenses.CREATOR,ExpenseIntake(**body),self.key())
+        posted=self.approve_record(record)
+        self.payment(posted,card,'100.00',method='CREDIT_CARD')
+        self.assertEqual(self.details(posted)['settlementStatus'],'PAID')
+        self.assertEqual(self.balance(card['id']),'100.00')
+        self.assertEqual(self.balance(posted['categorySnapshot']['accountId']),'100.00')
+
     def card_bill(self,amount='100.00',**changes):
         expense=self.posted(self.draft(amount=amount));card=self.account('CREDIT_CARD')
         self.payment(expense,card,amount,method='CREDIT_CARD')
@@ -207,6 +292,21 @@ class ExpenseWorkflowTests(expenses.PayablesTests):
 
 
 class ExpenseWorkflowApiTests(expenses.ExpenseApiTests):
+    def test_http_unnamed_purchase_create_edit_and_creditor_validation(self):
+        category=self.fixture.category();funds=self.fixture.funds()
+        body=dict(categoryId=category['id'],documentDate=expenses.DAY,expenseDate=expenses.DAY,
+                  dueDate=expenses.DAY,amount='100.00',purpose='Fuel for installation vehicle',
+                  evidenceReference='Fuel receipt',paymentArrangement='ALREADY_PAID',
+                  paidDetails={'accountId':funds['id'],'effectiveDate':expenses.DAY,'method':'CASH'})
+        status,_,response=self.request('POST','/api/finance/expenses',body)
+        self.assertEqual(status,201);record=expenses.json.loads(response)
+        self.assertIsNone(record['payeeId']);self.assertEqual(record['payeeSnapshot']['name'],'Payee not specified')
+        edit={k:record[k] for k in PayableCreate.model_fields};edit.update(version=record['version'],purpose='Fuel for field service')
+        status,_,response=self.request('PATCH',f"/api/finance/payables/{record['id']}",edit)
+        self.assertEqual(status,200);self.assertIsNone(expenses.json.loads(response)['payeeId'])
+        for arrangement in ('PAY_LATER','INSTALLMENTS'):
+            self.assertEqual(self.request('POST','/api/finance/expenses',{**body,'paymentArrangement':arrangement,'paidDetails':None})[0],422)
+
     def test_simple_intake_stream_boundaries_and_private_validation(self):
         r=self.fixture.draft();body={k:r[k] for k in PayableCreate.model_fields}
         body.update(documentReference='',submitForApproval=True)

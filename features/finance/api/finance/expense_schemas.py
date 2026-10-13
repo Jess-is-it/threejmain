@@ -3,7 +3,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from .schemas import Model, Money, Reason, Text
 
@@ -47,7 +47,7 @@ class CategoryCreate(Model):
 
 
 class PayableCreate(Model):
-    payeeId: Text
+    payeeId: Text | None = None
     categoryId: Text
     documentReference: OptionalReference = ''
     documentDate: date
@@ -64,8 +64,15 @@ class PayableCreate(Model):
     installments: list[Installment] = Field(default_factory=list, max_length=120)
     paidDetails: PaidDetails | None = None
 
+    @field_validator('payeeId', mode='before')
+    @classmethod
+    def optional_payee(cls, value):
+        return None if isinstance(value, str) and not value.strip() else value
+
     @model_validator(mode='after')
     def dates(self):
+        if self.payeeId is None and self.paymentArrangement != 'ALREADY_PAID':
+            raise ValueError('Payee is required for pay-later and installment expenses')
         if self.dueDate < self.documentDate:
             raise ValueError('Due date cannot precede the supplier document date')
         if self.paymentArrangement == 'INSTALLMENTS':

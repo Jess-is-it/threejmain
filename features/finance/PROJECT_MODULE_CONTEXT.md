@@ -1,5 +1,37 @@
 # Finance Management Module Context
 
+## Optional payee for already-paid expenses (2026-10-13)
+
+Already-paid/cash/card expense intake and draft edits accept an omitted, null or blank
+payeeId. Pay later and Installments still require an identified active payee; switching
+an unnamed draft to either arrangement requires choosing one. Actual paid account/date,
+account-method compatibility, evidence, independent approvals and confirmation of real
+payments remain required. Omission never marks a purchase approved, posted or settled.
+
+Missing identities stay null with an explicit “Payee not specified” snapshot, not a
+fictional supplier master. Expense details, Activity, exports and reports retain that
+label. Payee report groups use UNSPECIFIED_PAYEE so mixed named/unnamed groups sort and
+reconcile. Idempotent requests and duplicate supplier document references remain guarded;
+unnamed explicit invoice references share one duplicate bucket. Blank invoice numbers
+receive unique internal references. Posted snapshots/reversals remain immutable.
+
+Append-only 2026101302_finance_optional_payee is registered through the existing
+EXPENSE_WORKFLOW_MIGRATIONS export (eight migrations / 28 tables; no shared source edits).
+It permits nullable payee foreign keys only with ALREADY_PAID terms/payment evidence and
+matching null snapshot identity; named supplier links and unnamed reference uniqueness
+remain enforced. Prior SQL/checksums and retained documents are unchanged.
+
+Verified on shared staging under runtime/server lock after a protected pg_dump archive
+at /tmp/threejmain-staging-before-optional-payee-20261013T054928Z.dump (767837 bytes,
+SHA256 65e3ced6a4be26f7ebb10caea1ec2c6e1a1ce9fe9acdde93d913f016a4b833e9).
+All eight applied migration checksums match; public Finance payables remain empty.
+Full Finance regression: 356 API/accounting/SQL cases, 350 pass, six inherited fixture
+skips; 26 Node checks pass. Browser verification passes 43 groups (15 actual staging,
+11 interface, nine Activity, eight expense/card), zero page errors/shared financial
+writes. Optional cash/card payee input and blocking of unnamed pay-later drafts were
+reviewed on mobile; SQL tests protect nullable identity, frozen snapshots and duplicate
+references. Existing approval, reversal and historical-report boundaries remain.
+
 ## Compact setup guidance (2026-10-13)
 
 Removed the long persistent setup alert from every Finance workspace. Pending setup

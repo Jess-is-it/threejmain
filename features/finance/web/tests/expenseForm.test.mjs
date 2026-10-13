@@ -16,8 +16,10 @@ test('simple form defaults document dates and clears stale payment arrangements'
   const form = { amount: '100.00', expenseDate: '2026-01-01', dueDate: '2026-02-01', paidAccountId: 'old-card', installments: [{ amount: '100.00', dueDate: '2026-02-01' }], paymentArrangement: 'PAY_LATER' };
   const body = expenseBody(form);
   assert.equal(body.documentDate, '2026-01-01');assert.deepEqual(body.installments, []);assert.equal(body.paidDetails, null);
+  assert.equal(body.payeeId, null);
   const paid = expenseBody({ ...form, paymentArrangement: 'ALREADY_PAID', paidDate: '2026-01-02', paidMethod: 'CREDIT_CARD', paidReference: 'Charge evidence' });
   assert.equal(paid.paidDetails.accountId, 'old-card');assert.equal(paid.dueDate, '2026-01-01');
+  assert.equal(paid.payeeId, null);
 });
 test('status follows approval and posting before settlement', () => {
   assert.equal(expenseStatus({ approvalStatus: 'DRAFT', postingStatus: 'UNPOSTED', settlementStatus: 'UNPAID' }), 'DRAFT');

@@ -12,8 +12,10 @@ source-linked income, cash flow, financial reports and subscriber analytics.
 ## Simple expense workflow
 
 Expenses & Payables uses **Add expense → Submit → Approve → Record payment**.
-Routine fields stay visible; extra references are under More details. Pay later,
-supplier installments, declared already-paid purchases and card charges are
+Routine fields stay visible; extra references are under More details. Pay later
+and installment expenses require a payee; already-paid/cash/card purchases may omit
+the payee and retain “Payee not specified” in their evidence and reports.
+Supplier installments, declared already-paid purchases and card charges are
 supported. **Accounts & Transfers → Card bills** tracks issuer due dates, agreed
 installments, repayments and existing-transfer allocation without another expense.
 Approval records the reviewed cost atomically; payment is separately authorized.
@@ -53,7 +55,7 @@ Phase 6 completes all six React workspaces under one Finance Management parent,
 interactive evidence-linked charts, searchable/paginated records and authorized
 CSV/print reports. The page/components and FastAPI router are exported. See
 [PHASE6_INTERFACE.md](PHASE6_INTERFACE.md) for the current UI/API integration guide.
-Seven module-owned PostgreSQL migrations (28 tables) are registered/applied to the shared
+Eight module-owned PostgreSQL migrations (28 tables) are registered through the shared
 database. Shared auth/Access, audit, metrics and Billing/POS/Collector/Service
 feeds plus Customer Profiling/Inventory references are wired. Business setup
 requires reviewed account openings and an independent cutover; no historical

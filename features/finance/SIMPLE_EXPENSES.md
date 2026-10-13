@@ -7,6 +7,9 @@ independent approvals and immutable correction rules remain authoritative.
 
 1. **Add expense**: payee, category, amount, expense date (today), description,
    payment arrangement and receipt/invoice. Save draft or submit for approval.
+   Payee is optional for **Already paid / charged to card**, including small fuel
+   purchases. It remains required for **Pay later** and **Installments** so the
+   outstanding creditor is identified. The actual paid account/date are still required.
 2. **Review**: a different authorized approver approves or rejects. The new approval
    action records the exact reviewed cost and payable in one transaction.
 3. **Record payment**: Finance confirms the actual account, amount, date and evidence.
@@ -17,6 +20,10 @@ inventory/asset and external evidence/exception references. A blank invoice numb
 gets an explicitly internal reference; actual supplier references retain duplicate
 protection per payee. Category determines operating expense, direct cost, inventory
 asset or fixed asset. Mixed lines, tax splits and annual prepayments need Finance review.
+An omitted payee is stored as a null identity and displayed as **Payee not specified**;
+no fictional supplier master is created. Reports group it separately. Unnamed supplier
+references share duplicate-reference protection; select a named payee when different
+suppliers use the same invoice number. Blank invoice numbers get unique internal references.
 
 The list shows date, payee, category, amount, supplier paid, remaining and one
 readable status: Draft, Needs approval, Ready to record (legacy approved unposted),
@@ -103,9 +110,14 @@ the card liability remains in accounting and the Card bills workspace.
 
 ## Storage and operations
 
-EXPENSE_WORKFLOW_MIGRATIONS appends `2026101301_finance_expense_workflows` after
+EXPENSE_WORKFLOW_MIGRATIONS appends `2026101301_finance_expense_workflows` and
+`2026101302_finance_optional_payee` after
 base, integration and readiness migrations. Shared main registers the extension.
-Finance now has seven migrations and 28 tables. Never edit applied SQL/checksums.
+Finance now has eight migrations and 28 tables. The optional-payee refinement permits
+null relational/JSON identities only on already-paid terms with matching evidence
+snapshots; named supplier foreign keys, posted immutability and duplicate-reference
+protection remain enforced. The existing shared runner registers the export automatically.
+Never edit applied SQL/checksums.
 The new finance_card_statements and finance_card_repayments tables hold immutable
 evidence and relational account/journal identities. PostgreSQL verifies installment
 terms, frozen records, repayment lines/mappings, uniqueness and historical settlement

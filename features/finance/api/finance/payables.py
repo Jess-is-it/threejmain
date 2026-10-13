@@ -114,7 +114,10 @@ class PayablesService(FinanceService):
         return self._mutate(actor,'finance.expenses.manage',f'{kind}.edit',key,{'id':record_id,**p},action)
 
     def _intake(self, repo, actor, p):
-        payee=repo.master('payee',p['payeeId']); category=repo.master('category',p['categoryId'])
+        if not p.get('payeeId') and p.get('paymentArrangement') != 'ALREADY_PAID':
+            raise HTTPException(400, 'Payee is required for pay-later and installment expenses')
+        payee=repo.master('payee',p['payeeId']) if p.get('payeeId') else {'id':None,'name':'Payee not specified','type':'UNSPECIFIED','active':True}
+        category=repo.master('category',p['categoryId'])
         if not payee['active'] or not category['active']:
             raise HTTPException(409, 'New or edited expenses require active payee/category records')
         self._category_account(repo,actor,category)

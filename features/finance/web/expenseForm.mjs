@@ -36,6 +36,7 @@ export function monthlyInstallments(total, count, firstDueDate) {
 export function expenseBody(form) {
   const keys = ['payeeId', 'categoryId', 'documentReference', 'expenseDate', 'amount', 'purpose', 'locationReference', 'projectReference', 'itemAssetReference', 'evidenceReference', 'evidenceExceptionReason'];
   const body = Object.fromEntries(keys.map((key) => [key, form[key] || '']));
+  body.payeeId = body.payeeId || null;
   body.documentDate = form.documentDate || form.expenseDate;
   body.paymentArrangement = form.paymentArrangement || 'PAY_LATER';
   body.installments = body.paymentArrangement === 'INSTALLMENTS' ? form.installments || [] : [];
