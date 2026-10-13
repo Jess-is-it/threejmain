@@ -8,7 +8,7 @@ export default function FinanceDialog({ title, busy, onClose, onSubmit, children
     const prior = document.activeElement;
     const overflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    const controls = () => [...panel.current.querySelectorAll('input:not(:disabled),select:not(:disabled),textarea:not(:disabled),button:not(:disabled),[tabindex="0"]')];
+    const controls = () => [...panel.current.querySelectorAll('input:not(:disabled),select:not(:disabled),textarea:not(:disabled),button:not(:disabled),[tabindex="0"]')].filter((element) => element.getClientRects().length > 0);
     (controls()[0] || panel.current).focus();
     function key(event) {
       if (event.key === 'Escape' && !busy) { event.preventDefault(); onClose(); }
@@ -21,7 +21,7 @@ export default function FinanceDialog({ title, busy, onClose, onSubmit, children
     panel.current.addEventListener('keydown', key);
     const element = panel.current;
     return () => { element.removeEventListener('keydown', key); document.body.style.overflow = overflow; if (prior?.isConnected) prior.focus(); };
-  }, [busy, onClose]);
+  }, [busy, onClose, title]);
   return <div className="finance-backdrop"><section ref={panel} tabIndex={-1} className="finance-dialog card" role="dialog" aria-modal="true" aria-labelledby={headingId}>
     <form onSubmit={onSubmit || ((e) => e.preventDefault())}><div className="card-header"><h3 id={headingId}>{title}</h3></div>
       <fieldset disabled={disabled} className="card-body">{children}</fieldset>

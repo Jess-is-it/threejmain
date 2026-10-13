@@ -15,6 +15,7 @@ export default function ExpensesPayables({ api, meta, pending, onPendingChange, 
   const [payables, setPayables] = useState([]), [payees, setPayees] = useState([]), [categories, setCategories] = useState([]), [accounts, setAccounts] = useState([]);
   const [view, setView] = useState('Payables'), [detail, setDetail] = useState(null), [attachments, setAttachments] = useState([]);
   const [dialog, setDialog] = useState(null), [form, setForm] = useState({}), [file, setFile] = useState(null);
+  const [categoryDraft, setCategoryDraft] = useState(null);
   const [busy, setBusy] = useState(false), [loading, setLoading] = useState(true), [error, setError] = useState(''), [notice, setNotice] = useState('');
   const has = (grant) => meta.permissionsGranted.includes(grant) || meta.permissionsGranted.includes('*');
   const disabled = busy || parentBusy || loading || Boolean(pending);
@@ -22,6 +23,31 @@ export default function ExpensesPayables({ api, meta, pending, onPendingChange, 
   const manageMenu = useRef(null);
   const priorIdentity = useRef(meta.actorUsername);
   const closeDialog = useCallback(() => setDialog(null), []);
+  const closeCategory = useCallback(() => { setCategoryDraft(null); setError(''); }, []);
+  const recognitionAccounts = (classification) => accounts.filter((a) => a.active && !a.system && a.kind === 'GENERAL_LEDGER' && a.glType === (['OPERATING_EXPENSE', 'DIRECT_COST'].includes(classification) ? 'EXPENSE' : 'ASSET'));
+
+  function addCategory() {
+    if (disabled || !has('finance.expenses.manage') || !has('finance.accounts.view')) return;
+    const choices = recognitionAccounts('OPERATING_EXPENSE');
+    setError('');
+    setCategoryDraft({ code: `CAT-${newReference()}`, name: '', classification: 'OPERATING_EXPENSE', accountId: choices.length === 1 ? choices[0].id : '', notes: '' });
+  }
+
+  async function saveCategory(event, retry = false) {
+    event.preventDefault();
+    if (busy || parentBusy || !has('finance.expenses.manage') || !has('finance.accounts.view')) return;
+    setBusy(true); onBusyChange(true); setError('');
+    try {
+      if (retry && (pending?.path !== '/api/finance/categories' || pending?.method !== 'POST' || pending?.body?.code !== categoryDraft.code)) throw new Error('Resolve the saved Finance request before adding a category.');
+      const result = retry ? await api.retry() : await api.mutate('/api/finance/categories', 'POST', categoryDraft);
+      setCategories((rows) => [...rows.filter((r) => r.id !== result.id), result]);
+      setForm((draft) => ({ ...draft, categoryId: result.id }));
+      setCategoryDraft(null); onPendingChange(null); setNotice(`Category “${result.name}” added and selected.`);
+    } catch (e) {
+      setError(e.message);
+      try { onPendingChange(api.pending()); } catch (storageError) { setError(storageError.message); }
+    } finally { setBusy(false); onBusyChange(false); }
+  }
 
   async function load(selected = selectedId.current) {
     setLoading(true); setPayables([]); setPayees([]); setCategories([]); setAccounts([]); setDetail(null); setAttachments([]);
@@ -42,7 +68,7 @@ export default function ExpensesPayables({ api, meta, pending, onPendingChange, 
   }
   useEffect(() => {
     if (!has('finance.expenses.view')) { setLoading(false); return; }
-    if (priorIdentity.current !== meta.actorUsername) { selectedId.current = null; setDialog(null); }
+    if (priorIdentity.current !== meta.actorUsername) { selectedId.current = null; setDialog(null); setCategoryDraft(null); }
     priorIdentity.current = meta.actorUsername;
     let active = true;
     load().catch((e) => { if (active) setError(e.message); }).finally(() => { if (active) setLoading(false); });
@@ -50,7 +76,7 @@ export default function ExpensesPayables({ api, meta, pending, onPendingChange, 
   }, [api, refreshVersion, meta.actorUsername, meta.permissionsGranted.join(',')]);
 
   function start(type, record = detail) {
-    setError(''); setNotice(''); setFile(null); setDialog({ type, record });
+    setError(''); setNotice(''); setFile(null); setCategoryDraft(null); setDialog({ type, record });
     const today = businessDate();
     setForm(type === 'new-expense' ? { paymentArrangement: 'PAY_LATER', installments: [], paidAccountId: '', paidDate: today, paidMethod: 'CASH', paidReference: '', payeeId: '', categoryId: '', documentReference: '', documentDate: '', expenseDate: today, dueDate: today, amount: '', purpose: '', ...Object.fromEntries(REF_FIELDS.map(([key]) => [key, ''])) }
       : type === 'edit-expense' ? { paymentArrangement: record.paymentArrangement || 'PAY_LATER', installments: record.installments || [], paidAccountId: record.paidDetails?.accountId || '', paidDate: record.paidDetails?.effectiveDate || today, paidMethod: record.paidDetails?.method || 'CASH', paidReference: record.paidDetails?.referenceNumber || '', ...Object.fromEntries(['version', 'payeeId', 'categoryId', 'documentReference', 'documentDate', 'expenseDate', 'dueDate', 'amount', 'purpose', ...REF_FIELDS.map(([key]) => key)].map((key) => [key, key === 'documentReference' && record.documentReferenceKind === 'INTERNAL' ? '' : record[key]])) }
@@ -151,15 +177,23 @@ export default function ExpensesPayables({ api, meta, pending, onPendingChange, 
       {!has('finance.attachments.view') ? <p>Your role does not grant attachment access.</p> : <ul className="finance-evidence-list">{attachments.map((a) => <li key={a.id}><span>{a.filename} · {a.size} bytes · {a.active ? 'Active' : 'Retired'} · {a.createdBy}</span><button className="btn btn-sm btn-outline-primary" onClick={() => download(a)}>Download</button>{a.active && editable && has('finance.attachments.upload') && has('finance.expenses.create') && <button className="btn btn-sm btn-outline-secondary" disabled={disabled} onClick={() => start('retire', a)}>Retire</button>}</li>)}</ul>}
       <h4 className="finance-subheading">Approval history</h4><ul>{detail.approvalHistory.map((event) => <li key={event.id}>{event.action} · version {event.version} · {event.actor} · {event.createdAt} · {event.reason}</li>)}</ul>
     </div></div>}
-    {dialog && <FinanceDialog title={titles[dialog.type]} busy={busy} disabled={disabled} onClose={closeDialog} onSubmit={submit} error={error} footer={dialog.type === 'new-expense' ? <><button type="button" className="btn btn-outline-secondary" disabled={busy} onClick={closeDialog}>Cancel</button><button type="submit" className="btn btn-outline-primary" disabled={disabled} value="draft">Save draft</button><button type="submit" className="btn btn-primary" disabled={disabled} value="submit">Submit for approval</button></> : undefined}>
-      {['new-expense', 'edit-expense'].includes(dialog.type) && <>{select('payeeId', form.paymentArrangement === 'ALREADY_PAID' ? 'Payee (optional)' : 'Payee', payees.filter((r) => r.active).map((r) => [r.id, r.name]), form.paymentArrangement !== 'ALREADY_PAID')}{select('categoryId', 'Category', categories.filter((r) => r.active).map((r) => [r.id, `${r.name} · ${CLASSES[r.classification]}`]))}
+    {dialog && <FinanceDialog title={categoryDraft ? 'Add expense category' : titles[dialog.type]} busy={busy} disabled={disabled} onClose={categoryDraft ? closeCategory : closeDialog} onSubmit={categoryDraft ? saveCategory : submit} error={error} footer={categoryDraft ? <><button type="button" className="btn btn-outline-secondary" disabled={busy} onClick={closeCategory}>Cancel</button>{pending ? <button type="button" className="btn btn-warning" disabled={busy || parentBusy || pending.path !== '/api/finance/categories' || pending.method !== 'POST' || pending.body?.code !== categoryDraft.code || !has('finance.expenses.manage') || !has('finance.accounts.view')} onClick={(e) => saveCategory(e, true)}>Confirm saved category</button> : <button type="submit" className="btn btn-primary" disabled={disabled || !has('finance.expenses.manage') || !has('finance.accounts.view')}>{busy ? 'Saving…' : 'Save category'}</button>}</> : dialog.type === 'new-expense' ? <><button type="button" className="btn btn-outline-secondary" disabled={busy} onClick={closeDialog}>Cancel</button><button type="submit" className="btn btn-outline-primary" disabled={disabled} value="draft">Save draft</button><button type="submit" className="btn btn-primary" disabled={disabled} value="submit">Submit for approval</button></> : undefined}>
+      {categoryDraft && <>
+        <p>Your expense details and attachment are kept while you add this category.</p>
+        <label className="finance-field"><span>Category name</span><input className="form-control" required maxLength={160} value={categoryDraft.name} onChange={(e) => setCategoryDraft({ ...categoryDraft, name: e.target.value })} /></label>
+        <label className="finance-field"><span>Classification</span><select className="form-select" value={categoryDraft.classification} onChange={(e) => { const choices = recognitionAccounts(e.target.value); setCategoryDraft({ ...categoryDraft, classification: e.target.value, accountId: choices.length === 1 ? choices[0].id : '' }); }}>{Object.entries(CLASSES).map(([id, name]) => <option value={id} key={id}>{name}</option>)}</select></label>
+        <label className="finance-field"><span>Recognition account</span><select className="form-select" required value={categoryDraft.accountId} onChange={(e) => setCategoryDraft({ ...categoryDraft, accountId: e.target.value })}><option value="">Choose recognition account</option>{recognitionAccounts(categoryDraft.classification).map((a) => <option value={a.id} key={a.id}>{a.name}</option>)}</select><small>The ledger account that records this category, separate from the account you pay from.</small></label>
+        {!recognitionAccounts(categoryDraft.classification).length && <p role="status" className="alert alert-info">No matching recognition account is available. Ask an authorized Finance account manager to set one up, then return to this expense.</p>}
+        <details className="finance-more-details"><summary>More details</summary><label className="finance-field"><span>Notes</span><input className="form-control" maxLength={1000} value={categoryDraft.notes} onChange={(e) => setCategoryDraft({ ...categoryDraft, notes: e.target.value })} /></label></details>
+      </>}
+      {['new-expense', 'edit-expense'].includes(dialog.type) && <fieldset className="finance-expense-fields" hidden={Boolean(categoryDraft)} disabled={Boolean(categoryDraft)}>{select('payeeId', form.paymentArrangement === 'ALREADY_PAID' ? 'Payee (optional)' : 'Payee', payees.filter((r) => r.active).map((r) => [r.id, r.name]), form.paymentArrangement !== 'ALREADY_PAID')}<div className="finance-category-picker">{select('categoryId', 'Category', categories.filter((r) => r.active).map((r) => [r.id, `${r.name} · ${CLASSES[r.classification]}`]))}{has('finance.expenses.manage') && has('finance.accounts.view') && <button type="button" className="btn btn-outline-primary" disabled={disabled} onClick={addCategory}>+ Add category</button>}</div>
         {field('amount', 'Amount (PHP)', { inputMode: 'decimal', pattern: '\\d+(\\.\\d{1,2})?' })}{field('expenseDate', 'Expense date', { type: 'date', max: businessDate() })}{field('purpose', 'Description / purpose', { minLength: 3, maxLength: 1000 })}
         {select('paymentArrangement', 'Payment arrangement', Object.entries(ARRANGEMENTS))}
         {form.paymentArrangement !== 'ALREADY_PAID' && field('dueDate', form.paymentArrangement === 'INSTALLMENTS' ? 'First due date' : 'Due date', { type: 'date', min: form.documentDate || form.expenseDate })}
         {form.paymentArrangement === 'INSTALLMENTS' && <InstallmentEditor form={form} onChange={setForm} total={form.amount} onError={setError} />}
         {form.paymentArrangement === 'ALREADY_PAID' && <>{select('paidAccountId', 'Paid from account', funding.map((a) => [a.id, a.name]))}{field('paidDate', 'Actual payment / card charge date', { type: 'date', min: form.expenseDate, max: businessDate() })}{form.paidMethod !== 'CASH' && field('paidReference', 'Payment / card charge reference', { maxLength: 160 })}<p>{form.paidMethod === 'CREDIT_CARD' ? 'The card pays the supplier now. Add the card bill and its due date in Accounts & Transfers when billed.' : 'These details are submitted for review. Confirm the payment after approval to update the account balance.'}</p></>}
         {dialog.type === 'new-expense' && has('finance.attachments.upload') && <label className="finance-field"><span>Receipt or invoice (optional for draft)</span><input className="form-control" type="file" accept=".pdf,.png,.jpg,.jpeg" onChange={(e) => setFile(e.target.files[0])} /><small>PDF or image, up to 2 MiB. Evidence is required for approval.</small></label>}
-        <details className="finance-more-details"><summary>More details</summary>{field('documentReference', 'Supplier invoice number', { required: false, maxLength: 160 })}{field('documentDate', 'Supplier document date', { type: 'date', required: false })}{REF_FIELDS.map(([key, label]) => field(key, label, { required: false, maxLength: key === 'evidenceExceptionReason' ? 1000 : 160 }))}<p>Category controls how the purchase is recorded. Inventory and equipment stay assets until their separate costing workflow. Prepayments and tax splits require Finance review.</p></details></>}
+        <details className="finance-more-details"><summary>More details</summary>{field('documentReference', 'Supplier invoice number', { required: false, maxLength: 160 })}{field('documentDate', 'Supplier document date', { type: 'date', required: false })}{REF_FIELDS.map(([key, label]) => field(key, label, { required: false, maxLength: key === 'evidenceExceptionReason' ? 1000 : 160 }))}<p>Category controls how the purchase is recorded. Inventory and equipment stay assets until their separate costing workflow. Prepayments and tax splits require Finance review.</p></details></fieldset>}
       {['new-payee', 'new-category'].includes(dialog.type) && <>{field('code', 'Permanent code', { maxLength: 40, pattern: '[A-Za-z0-9][A-Za-z0-9_-]*' })}{field('name', 'Name', { maxLength: 160 })}
         {dialog.type === 'new-payee' ? select('type', 'Payee type', [['SUPPLIER', 'Supplier'], ['EMPLOYEE', 'Employee reimbursement'], ['OTHER', 'Other business payee']]) : <>{select('classification', 'Recognition classification', Object.entries(CLASSES))}{select('accountId', 'Recognition account', accounts.filter((a) => a.active && !a.system && a.kind === 'GENERAL_LEDGER' && a.glType === destinationType).map((a) => [a.id, a.name]))}</>}{field('notes', 'Notes', { required: false, maxLength: 1000 })}</>}
       {['edit-payee', 'edit-category'].includes(dialog.type) && <>{field('name', 'Name')}{field('notes', 'Notes', { required: false, maxLength: 1000 })}<label className="finance-field"><span>Active</span><input type="checkbox" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} /></label>{field('reason', 'Change / archival reason', { minLength: 3 })}<p>Identity and accounting classification remain fixed. Archival retains referenced financial evidence.</p></>}

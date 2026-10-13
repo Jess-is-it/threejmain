@@ -1,5 +1,12 @@
 # Finance Management
 
+Expense create/edit forms support **+ Add category** beside Category without losing
+the expense draft or selected receipt. Access uses existing `finance.expenses.manage`
+and `finance.accounts.view` role grants. The new category defaults to Operating expense,
+requires a matching recognition ledger account, and is selected automatically after
+saving. Cancel returns to the draft. The category API retains server-side permission,
+account scope, audit and idempotency controls; no automatic role grants are added.
+
 Workspace navigation uses the existing shared Finance Management sidebar and seven
 deep links. The page shows the current workspace title without repeating sidebar
 choices as tabs. Useful local account, income and report views remain available.

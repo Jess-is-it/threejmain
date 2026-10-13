@@ -13,6 +13,10 @@
 .finance-management .finance-dialog fieldset { border: 0; min-width: 0; }
 .finance-management .finance-field { display: block; margin-bottom: .9rem; }
 .finance-management .finance-field span, .finance-management .finance-journal-line label span { display: block; margin-bottom: .3rem; font-weight: 500; }
+.finance-management .finance-expense-fields { margin: 0; padding: 0; }
+.finance-management .finance-expense-fields[hidden] { display: none; }
+.finance-management .finance-category-picker { display: flex; align-items: end; gap: .75rem; flex-wrap: wrap; margin-bottom: .9rem; }
+.finance-management .finance-category-picker .finance-field { flex: 1; min-width: min(14rem, 100%); margin-bottom: 0; }
 .finance-management .finance-dialog-footer { position: sticky; bottom: 0; background: var(--tblr-bg-surface, white); display: flex; justify-content: space-between; gap: 1rem; }
 .finance-management .finance-dialog-error { margin: 0 1.25rem 1rem; }
 .finance-management .finance-journal-line { display: grid; grid-template-columns: 2fr 1fr 1fr auto; gap: .5rem; align-items: end; margin-bottom: .7rem; }

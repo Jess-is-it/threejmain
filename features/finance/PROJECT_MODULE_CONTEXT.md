@@ -1,5 +1,37 @@
 # Finance Management Module Context
 
+## Add category while entering an expense (2026-10-13)
+
+ExpensesPayables offers “+ Add category” beside Category for expense creation and
+editable drafts. It requires existing finance.expenses.manage and finance.accounts.view
+grants, assigned through System Settings Access roles; no role is automatically broadened.
+POST /api/finance/categories remains authoritative for management permission, account
+scope, active matching GL classification, duplicate codes, idempotency and audit attribution.
+No new permission, migration, shared route or source contract is introduced.
+
+The dialog temporarily shows a category form while retaining the mounted expense fields,
+selected receipt, references and installment/payment details. Cancel or Escape returns to
+the expense; saving appends the real category and selects it without saving the expense.
+Names are entered by the user; a cryptographic permanent code is generated for the request.
+Operating expense is the default classification. A sole active, non-control matching GL
+account is selected automatically; multiple choices require an explicit selection. Asset
+and inventory categories use matching asset GL accounts. Funding accounts stay separate.
+Missing GL setup directs the user to an authorized account manager rather than inventing
+an account. Definitive API rejection preserves both forms; uncertain requests expose
+Confirm saved category, replaying the frozen payload/key before another write.
+
+FinanceDialog now focuses only visible enabled controls and resets focus on title changes,
+supporting this single-dialog flow without nesting modal forms or losing attachments.
+
+Verification: 22 Finance payables/API tests and 26 client tests pass. Shared staging
+rebuilt through scripts/staging_deploy.sh under runtime/server lock, healthy on 8280/8200.
+Forty browser groups pass (six inline-category, eight expense/card, eleven interface,
+fifteen actual staging), zero page errors or shared financial writes. Inline checks cover
+role denial, field validation, Escape/cancel, correctable rejection, receipt/installment
+preservation, auto-selection, matching asset accounts, mobile layout, safe retry of the
+same request key/body, and editing existing drafts. No shared source/permission changes,
+automatic role grants, root context update or production deployment.
+
 ## Optional payee for already-paid expenses (2026-10-13)
 
 Already-paid/cash/card expense intake and draft edits accept an omitted, null or blank

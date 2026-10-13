@@ -369,5 +369,25 @@ class ExpenseApiTests(unittest.TestCase):
         body={k:r[k] for k in PayableCreate.model_fields};body['amount']=0.1;body['documentReference']='Float request'
         self.assertEqual(self.request('POST','/api/finance/payables',body)[0],422)
 
+    def test_category_creation_requires_role_grant_and_matching_scoped_ledger(self):
+        account=self.fixture.account('GENERAL_LEDGER','EXPENSE')
+        asset=self.fixture.account('GENERAL_LEDGER','ASSET')
+        actors={
+            'recorder':Actor('expense-recorder',frozenset({'finance.expenses.view','finance.expenses.create','finance.accounts.view'})),
+            'manager':Actor('category-manager',frozenset({'finance.expenses.view','finance.expenses.manage','finance.accounts.view'}),account_ids=frozenset({account['id'],asset['id']})),
+            'outside':Actor('scoped-manager',frozenset({'finance.expenses.manage'}),account_ids=frozenset()),
+        }
+        self.module.configure_finance(lambda token:actors[token.removeprefix('Bearer ')],store=self.fixture.store)
+        body={'code':'INLINE-FUEL','name':'Vehicle Fuel','classification':'OPERATING_EXPENSE','accountId':account['id'],'notes':''}
+        self.assertEqual(self.request('POST','/api/finance/categories',body)[0],403)
+        self.assertEqual(self.request('POST','/api/finance/categories',body,token='outside')[0],403)
+        status,_,response=self.request('POST','/api/finance/categories',body,token='manager')
+        self.assertEqual(status,201)
+        category=json.loads(response)
+        self.assertEqual(category['createdBy'],'category-manager');self.assertEqual(category['accountId'],account['id'])
+        self.assertEqual(self.request('POST','/api/finance/categories',body,token='manager')[0],409)
+        self.assertEqual(self.request('POST','/api/finance/categories',{**body,'code':'WRONG-LEDGER','accountId':asset['id']},token='manager')[0],400)
+        self.assertEqual(self.request('POST','/api/finance/categories',{**body,'code':'ASSET-CATEGORY','classification':'ASSET','accountId':asset['id']},token='manager')[0],201)
+
 
 if __name__=='__main__':unittest.main()
