@@ -149,11 +149,12 @@ advances, payables and assets need itemized subledger ties. No opening balance
 counts as current income/expense or period cash flow.
 
 Starting-balance entry refinement (2026-10-13): the amount/date may be entered when
-creating the account and saved atomically as an attributed draft, or entered
-later. Manual supporting-reference/reason fields are omitted from the form.
+creating the account and applied atomically with its balanced journal, or entered
+later, by managers with accounts.manage and opening-balances.post. Manual supporting-reference/reason fields are omitted from the form.
 An operator declaration and creation provenance are recorded automatically;
-existing optional references remain retained. Approval by a different authorized
-reviewer is still required before posting changes the balance. The simplified
+existing optional references remain retained. Direct declarations record operator
+and poster attribution with approvedBy=null. Historical REFERENCE requests and
+nonmanager declarations still require independent approval before applying. The simplified
 form does not certify a cash count or replace source cutover reconciliation.
 
 Transfer: `DRAFT -> PENDING -> IN_TRANSIT -> SETTLED`; DRAFT/PENDING may become
@@ -206,7 +207,7 @@ confirm Collector records. Finance grants cannot bypass source permissions.
 | --- | --- |
 | `finance.view` | Module entry and authorized overview. |
 | `finance.accounts.view`, `finance.accounts.manage` | Account activity; create/update permitted master data. |
-| `finance.opening-balances.post`, `finance.opening-balances.approve` | Create/post reviewed openings; independently approve within account/amount scope. Separate from ordinary account editing. |
+| `finance.opening-balances.post`, `finance.opening-balances.approve` | Create/post openings; managers may apply operator declarations directly; independently approve reference/nonmanager requests within scope. Separate from ordinary account editing. |
 | `finance.transfers.view`, `finance.transfers.post` | View; post permitted account movements. Reversal also requires `finance.journals.reverse`. |
 | `finance.expenses.view`, `finance.expenses.create`, `finance.expenses.approve`, `finance.expenses.post`, `finance.expenses.pay` | Independent intake, approval, journal posting and settlement. Own drafts unless broader view scope is granted. |
 | `finance.expenses.view_all`, `finance.expenses.manage`, `finance.expenses.reverse`, `finance.expenses.evidence.override` | Phase 3 explicit broader document visibility, payee/category catalog management, linked correction and attributed evidence exceptions; no self-approval bypass. |

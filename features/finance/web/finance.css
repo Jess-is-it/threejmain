@@ -12,6 +12,8 @@
 .finance-management .finance-account-history details { min-width: 8rem; }
 .finance-management .finance-toolbar nav, .finance-management .finance-toolbar > div, .finance-management .finance-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
 .finance-management .finance-code { display: block; color: var(--tblr-secondary, #667382); margin-top: .2rem; }
+.finance-management .finance-starting-balance-status { margin: .3rem 0 .7rem; }
+.finance-management .finance-accounts-table .finance-starting-balance-status { margin-bottom: 0; }
 .finance-management .finance-backdrop { position: fixed; inset: 0; z-index: 1050; background: rgb(15 23 42 / 50%); display: flex; justify-content: center; align-items: center; padding: 1rem; }
 .finance-management .finance-dialog { width: min(52rem, 100%); max-height: 90vh; overflow: auto; }
 .finance-management .finance-dialog fieldset { border: 0; min-width: 0; }

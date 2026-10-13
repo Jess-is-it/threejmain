@@ -58,6 +58,11 @@ class FinanceService:
             if prior:
                 if prior['fingerprint'] != digest:
                     raise HTTPException(409, 'Idempotency-Key was already used for another request')
+                if scope in ('opening.create', 'opening.post') and (
+                    prior['result'].get('postingPolicy') == 'AUTHORIZED_ACCOUNT_MANAGER_DECLARATION'
+                    or prior['result'].get('metadata', {}).get('postingPolicy') == 'AUTHORIZED_ACCOUNT_MANAGER_DECLARATION'
+                ):
+                    actor.require('finance.accounts.manage')
                 self._result_scope(actor, prior['result'], repo=repo)
                 return {**prior['result'], 'idempotentReplay': True}
             result = action(repo)
@@ -122,6 +127,8 @@ class FinanceService:
                 repo.audit({'id': str(uuid4()), 'createdAt': now(), 'actor': actor.username,
                             'action': 'opening.create', 'targetId': opening['id'],
                             'request': opening_payload, 'accountCreationId': record['id']})
+                self._post_opening_in_repo(repo, actor, opening)
+                self._audit_opening_post(repo, actor, opening)
                 return {**record, 'startingBalance': opening}
             return record
         return self._mutate(actor,'finance.accounts.manage','account.create',key,p,action)
@@ -231,8 +238,13 @@ class FinanceService:
     def create_opening(self, actor, payload, key):
         p=json_record(payload)
         actor.account(p['accountId'])
-        return self._mutate(actor,'finance.opening-balances.post','opening.create',key,p,
-                            lambda repo: self._save_opening(repo, actor, p))
+        def action(repo):
+            opening = self._save_opening(repo, actor, p)
+            if self.can_apply_declared_opening(actor, opening):
+                self._post_opening_in_repo(repo, actor, opening)
+                self._audit_opening_post(repo, actor, opening)
+            return opening
+        return self._mutate(actor,'finance.opening-balances.post','opening.create',key,p,action)
 
     def approve_opening(self, actor, opening_id, payload, key):
         p=json_record(payload)
@@ -250,38 +262,61 @@ class FinanceService:
             return r
         return self._mutate(actor,'finance.opening-balances.approve','opening.approve',key,{'openingId':opening_id,**p},action)
 
+    @staticmethod
+    def can_apply_declared_opening(actor, opening):
+        return opening.get('evidenceType') == 'OPERATOR_DECLARATION' and bool(
+            {'finance.accounts.manage', '*'} & actor.permissions)
+
+    @staticmethod
+    def _audit_opening_post(repo, actor, opening):
+        repo.audit({'id': str(uuid4()), 'createdAt': now(), 'actor': actor.username,
+                    'action': 'opening.post', 'targetId': opening['journalId'],
+                    'request': {'openingId': opening['id']}, 'postingPolicy': opening['postingPolicy']})
+
+    def _post_opening_in_repo(self, repo, actor, r):
+        actor.require('finance.opening-balances.post')
+        actor.account(r['accountId'])
+        if r['journalId']:
+            if r.get('postingPolicy') == 'AUTHORIZED_ACCOUNT_MANAGER_DECLARATION':
+                actor.require('finance.accounts.manage')
+            return {**repo.entry(r['journalId']), 'idempotentReplay': True}
+        if r['status'] == 'DRAFT' and self.can_apply_declared_opening(actor, r):
+            actor.require('finance.accounts.manage')
+            r['postingPolicy'] = 'AUTHORIZED_ACCOUNT_MANAGER_DECLARATION'
+        elif r['status'] == 'APPROVED':
+            r['postingPolicy'] = 'INDEPENDENT_APPROVAL'
+        else:
+            raise HTTPException(409, 'Opening requires approval or an authorized account manager applying a declared starting balance')
+        entries=repo.entries()
+        reversed_ids={e['reversalOfId'] for e in entries}
+        if any(e['kind']=='OPENING' and e['metadata'].get('accountId')==r['accountId'] and e['id'] not in reversed_ids for e in entries):
+            raise HTTPException(409,'Account already has a posted opening balance; reverse it before replacement')
+        for previous in entries:
+            if previous['kind']=='OPENING' and previous['metadata'].get('accountId')==r['accountId']:
+                correction=next((e for e in entries if e['reversalOfId']==previous['id']),None)
+                if correction and correction['effectiveDate']!=previous['effectiveDate']:
+                    raise HTTPException(409,'A later-dated opening reversal needs a reviewed journal correction, not another opening')
+        if any(e['effectiveDate']<r['effectiveDate'] and any(l['accountId']==r['accountId'] for l in e['lines']) for e in entries):
+            raise HTTPException(409,'Opening date must not be later than existing account activity')
+        account=repo.account(r['accountId'])
+        debit=account['normalSide']=='DEBIT'
+        lines=[{'accountId':account['id'],'debit':r['amount'] if debit else '0.00','credit':'0.00' if debit else r['amount']},
+               {'accountId':EQUITY_ID,'debit':'0.00' if debit else r['amount'],'credit':r['amount'] if debit else '0.00'}]
+        posted=self._post(repo,actor,'OPENING','finance.opening',r['id'],r,lines,
+                          {'openingId':r['id'],'accountId':r['accountId'],'approvedBy':r['approvedBy'],
+                           'evidenceReference':r['evidenceReference'],
+                           'evidenceType':r.get('evidenceType', 'REFERENCE'),
+                           'declarationSource':r.get('declarationSource', 'LEGACY'),
+                           'postingPolicy':r['postingPolicy'], 'declaredBy':r['createdBy'],
+                           'incomeEffect':'0.00', 'expenseEffect':'0.00',
+                           'cashFlowExcluded':True})
+        r.update(status='POSTED',journalId=posted['id'])
+        repo.save_opening(r)
+        return posted
+
     def post_opening(self, actor, opening_id, key):
         def action(repo):
-            r=repo.opening(opening_id)
-            actor.account(r['accountId'])
-            if r['journalId']:
-                return {**repo.entry(r['journalId']),'idempotentReplay':True}
-            if r['status']!='APPROVED':
-                raise HTTPException(409,'Opening balance requires independent approval before posting')
-            entries=repo.entries()
-            reversed_ids={e['reversalOfId'] for e in entries}
-            if any(e['kind']=='OPENING' and e['metadata'].get('accountId')==r['accountId'] and e['id'] not in reversed_ids for e in entries):
-                raise HTTPException(409,'Account already has a posted opening balance; reverse it before replacement')
-            for previous in entries:
-                if previous['kind']=='OPENING' and previous['metadata'].get('accountId')==r['accountId']:
-                    correction=next((e for e in entries if e['reversalOfId']==previous['id']),None)
-                    if correction and correction['effectiveDate']!=previous['effectiveDate']:
-                        raise HTTPException(409,'A later-dated opening reversal needs a reviewed journal correction, not another opening')
-            if any(e['effectiveDate']<r['effectiveDate'] and any(l['accountId']==r['accountId'] for l in e['lines']) for e in entries):
-                raise HTTPException(409,'Opening date must not be later than existing account activity')
-            account=repo.account(r['accountId'])
-            debit=account['normalSide']=='DEBIT'
-            lines=[{'accountId':account['id'],'debit':r['amount'] if debit else '0.00','credit':'0.00' if debit else r['amount']},
-                   {'accountId':EQUITY_ID,'debit':'0.00' if debit else r['amount'],'credit':r['amount'] if debit else '0.00'}]
-            posted=self._post(repo,actor,'OPENING','finance.opening',opening_id,r,lines,
-                              {'openingId':opening_id,'accountId':r['accountId'],'approvedBy':r['approvedBy'],
-                               'evidenceReference':r['evidenceReference'],
-                               'evidenceType':r.get('evidenceType', 'REFERENCE'),
-                               'declarationSource':r.get('declarationSource', 'LEGACY'),
-                               'cashFlowExcluded':True})
-            r.update(status='POSTED',journalId=posted['id'])
-            repo.save_opening(r)
-            return posted
+            return self._post_opening_in_repo(repo, actor, repo.opening(opening_id))
         return self._mutate(actor,'finance.opening-balances.post','opening.post',key,{'openingId':opening_id},action)
 
     def list_openings(self, actor):

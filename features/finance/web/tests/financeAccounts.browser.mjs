@@ -14,7 +14,8 @@ const errors = [], missing = [], writes = [], checks = [];
 const funds = fixtures.accounts.find((a) => a.id === fixtures.workflow.fundsId);
 const card = fixtures.accounts.find((a) => a.id === fixtures.workflow.cardId);
 const bank = { ...funds, id: 'review-bank', name: 'Review bank', kind: 'BANK', balance: '0.00' };
-let reader = false, journalPoster = false, accountManager = false, uncertain = false, uncertainAccount = false, created = null;
+let reader = false, journalPoster = false, accountManager = false, uncertain = false, uncertainAccount = false, created = null, createdOpening = null, openingStage = 'DRAFT';
+const pendingOpening = () => ({ id: 'review-pending-15000', accountId: bank.id, amount: '15000.00', effectiveDate: '2026-10-13', status: openingStage, createdBy: fixtures.meta.actorUsername, approvedBy: openingStage === 'APPROVED' ? 'independent-reviewer' : null, journalId: openingStage === 'POSTED' ? 'review-applied-opening-journal' : null, evidenceType: 'OPERATOR_DECLARATION' });
 page.on('pageerror', (e) => errors.push(e.message));
 await page.addInitScript((value) => localStorage.setItem('threejmain_token', value), token);
 await page.route('**/api/finance/**', async (route) => {
@@ -26,9 +27,15 @@ await page.route('**/api/finance/**', async (route) => {
       if (uncertainAccount) { uncertainAccount = false; return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'Review uncertain account setup. Confirm the saved request.' }) }); }
       const { startingBalance, ...master } = body;
       created = { ...funds, ...master, id: 'review-created-account', balance: '0.00', version: 1, glType: master.glType || (master.kind === 'CREDIT_CARD' ? 'LIABILITY' : 'ASSET'), normalSide: master.kind === 'CREDIT_CARD' ? 'CREDIT' : 'DEBIT', controlledCash: !['CREDIT_CARD', 'COLLECTOR_GCASH', 'GENERAL_LEDGER'].includes(master.kind) };
-      const result = startingBalance ? { ...created, startingBalance: { ...startingBalance, id: 'review-created-opening', accountId: created.id, status: 'DRAFT', createdBy: fixtures.meta.actorUsername, evidenceType: 'OPERATOR_DECLARATION' } } : created;
+      createdOpening = startingBalance ? { ...startingBalance, id: 'review-created-opening', accountId: created.id, status: 'POSTED', journalId: 'review-created-opening-journal', createdBy: fixtures.meta.actorUsername, approvedBy: null, evidenceType: 'OPERATOR_DECLARATION', postingPolicy: 'AUTHORIZED_ACCOUNT_MANAGER_DECLARATION' } : null;
+      if (createdOpening) created.balance = startingBalance.amount;
+      const result = createdOpening ? { ...created, startingBalance: createdOpening } : created;
       if (writes.filter((w) => w.key === req.headers()['idempotency-key']).length > 1) result.idempotentReplay = true;
       return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(result) });
+    }
+    if (resource === 'opening-balances/review-pending-15000/post' && ['DRAFT', 'APPROVED'].includes(openingStage) && !reader) {
+      openingStage = 'POSTED'; bank.balance = '15000.00';
+      return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ id: 'review-applied-opening-journal' }) });
     }
     if (resource === 'transfers' && uncertain) {
       uncertain = false; return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'Review uncertain request. Confirm the saved request.' }) });
@@ -39,10 +46,10 @@ await page.route('**/api/finance/**', async (route) => {
     return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ detail: 'Isolated review: financial writes intercepted.' }) });
   }
   let data = fixtures[resource];
-  if (resource === 'opening-balances') data = [...fixtures[resource], ...['42.21', '42.22'].map((amount, index) => ({ ...fixtures[resource][0], id: 'review-draft-' + index, accountId: funds.id, amount, status: 'DRAFT', createdBy: 'another-review-user', approvedBy: null, journalId: null, evidenceReference: index ? 'Operator declaration; no supporting reference provided' : 'External opening count sheet', evidenceType: index ? 'OPERATOR_DECLARATION' : 'REFERENCE' }))];
+  if (resource === 'opening-balances') data = [...fixtures[resource], pendingOpening(), ...(createdOpening ? [createdOpening] : []), ...['42.21', '42.22'].map((amount, index) => ({ ...fixtures[resource][0], id: 'review-draft-' + index, accountId: funds.id, amount, status: 'DRAFT', createdBy: 'another-review-user', approvedBy: null, journalId: null, evidenceReference: index ? 'Operator declaration; no supporting reference provided' : 'External opening count sheet', evidenceType: index ? 'OPERATOR_DECLARATION' : 'REFERENCE' }))];
   if (resource === 'accounts') data = [...fixtures.accounts, bank, { ...bank, id: 'review-archived', name: 'Review archived cash', kind: 'CASH', active: false }, ...(created ? [created] : [])];
   if (resource === 'meta' && journalPoster) data = { ...data, actorUsername: 'journal-poster-review', permissionsGranted: ['finance.view', 'finance.accounts.view', 'finance.journals.post'] };
-  if (resource === 'accounts/review-created-account/activity') data = { account: created, balance: '0.00', asOf: '2026-10-13', items: [] };
+  if (resource === 'accounts/review-created-account/activity') data = { account: created, balance: created.balance, asOf: '2026-10-13', items: [] };
   if (resource === 'meta' && accountManager) data = { ...data, actorUsername: 'account-manager-review', permissionsGranted: ['finance.view', 'finance.accounts.view', 'finance.accounts.manage'] };
   if (resource === 'meta' && reader) data = { ...data, actorUsername: 'accounts-read-only-review', permissionsGranted: ['finance.view', 'finance.accounts.view', 'finance.transfers.view'] };
   if (data === undefined) missing.push(resource);
@@ -116,7 +123,7 @@ try {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await dialog().getByRole('button', { name: 'Confirm and save', exact: true }).click();
   await dialog().waitFor({ state: 'hidden' });
-  await page.locator('.finance-toasts').getByText('Account created. Starting balance saved for independent approval in Manage → Starting balances.', { exact: true }).waitFor();
+  await page.locator('.finance-toasts').getByText('Account created. Starting balance ₱250.00 applied.', { exact: true }).waitFor();
   const accountWrite = writes.at(-1);
   assert.equal(accountWrite.path, 'accounts'); assert.match(accountWrite.body.code, /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/);
   assert.deepEqual(accountWrite.body.startingBalance, { amount: '250.00', effectiveDate: '2026-01-01' });
@@ -124,7 +131,10 @@ try {
   assert.equal(Object.hasOwn(accountWrite.body, 'startingBalanceDate'), false);
   assert.equal(writes.some((w) => w.path.endsWith('/post')), false);
   await page.getByLabel('Search records').fill(created.name);
+  assert.equal(await page.locator('.finance-starting-balance-status').count(), 0);
   await page.locator('.finance-account-list').getByRole('button', { name: created.name, exact: true }).click();
+  assert.match(await page.locator('.finance-account-balance').innerText(), /₱250\.00/);
+  assert.equal(await page.locator('.finance-starting-balance-status').count(), 0);
   await page.getByRole('button', { name: 'Set starting balance', exact: true }).click();
   assert.equal(await dialog().getByLabel('Named account').inputValue(), created.id);
   assert.equal(await dialog().getByLabel('Supporting evidence reference').count(), 0);
@@ -143,7 +153,7 @@ try {
   await page.getByRole('button', { name: 'Back to accounts', exact: true }).click();
   assert.equal(Object.hasOwn(writes.at(-1).body, 'reason'), false);
   assert.equal(Object.hasOwn(writes.at(-1).body, 'evidenceReference'), false);
-  checks.push('account plus optional dated starting balance saves once in the same form; later amount/date entry needs no evidence or reason; approval retained');
+  checks.push('account plus optional dated starting balance saves once in the same form; later amount/date entry needs no evidence or reason; immediate attributed balance applied');
 
   await page.getByRole('button', { name: 'Transfer money', exact: true }).click();
   await dialog().getByLabel('From account', { exact: true }).selectOption(funds.id);
@@ -205,9 +215,9 @@ try {
   await page.locator('tbody tr').filter({ hasText: '42.21' }).getByRole('button', { name: 'Approve', exact: true }).click();
   await dialog().getByText(/Reference: External opening count sheet/).waitFor();
   await cancel();
-  await page.locator('tbody tr').filter({ hasText: '42.22' }).getByRole('button', { name: 'Approve', exact: true }).click();
+  await page.locator('tbody tr').filter({ hasText: '42.22' }).getByRole('button', { name: 'Apply balance', exact: true }).click();
   assert.equal(await dialog().getByText(/Reference:/).count(), 0);
-  await dialog().getByText(/Creator: another-review-user/).waitFor();
+  await dialog().getByText(/Entered by another-review-user/).waitFor();
   await cancel();
 
   await page.getByRole('button', { name: 'Back to accounts', exact: true }).click();
@@ -262,6 +272,46 @@ try {
   assert.equal(writes.at(-1).body.startingBalance.amount, '123.45');
   assert.equal(await dialog().count(), 0);
   checks.push('card type clears stale cash declarations; uncertain account/opening recovery reuses one frozen request and opens no second form');
+  await open();
+  await page.getByLabel('Search records').fill(bank.name);
+  const bankRow = page.locator('.finance-accounts-table tbody tr').filter({ hasText: bank.name });
+  assert.equal(await bankRow.locator('td strong').innerText(), '₱0.00');
+  await bankRow.getByText(/Starting balance ₱15,000\.00/).waitFor();
+  await bankRow.getByText('Ready to apply', { exact: true }).waitFor();
+  const postedCompany = await page.locator('.finance-account-summaries').getByRole('button', { name: /Company funds/ }).locator('strong').innerText();
+  if (shots) await page.screenshot({ path: shots + '/starting-balance-pending.png', fullPage: true });
+  await bankRow.getByRole('button', { name: 'Review starting balance', exact: true }).click();
+  await page.getByText(/Showing starting balances for Review bank/).waitFor();
+  assert.equal(await page.locator('.finance-management tbody tr').count(), 1);
+  assert.equal(await page.getByText('Another authorized user must approve.', { exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Approve', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Apply balance', exact: true }).count(), 1);
+  await page.getByRole('button', { name: 'Show all starting balances', exact: true }).click();
+  assert.ok(await page.locator('.finance-management tbody tr').count() > 1);
+  openingStage = 'APPROVED'; reader = true; await open();
+  await page.getByLabel('Search records').fill(bank.name);
+  await bankRow.getByText('Ready to apply', { exact: true }).waitFor();
+  assert.equal(await bankRow.locator('td strong').innerText(), '₱0.00');
+  await bankRow.getByRole('button', { name: 'Review starting balance', exact: true }).click();
+  await page.getByText('An authorized user must apply this balance.', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Apply balance', exact: true }).count(), 0);
+  reader = false; openingStage = 'DRAFT'; await open();
+  await page.getByLabel('Search records').fill(bank.name);
+  assert.equal(await page.locator('.finance-account-summaries').getByRole('button', { name: /Company funds/ }).locator('strong').innerText(), postedCompany);
+  await bankRow.getByRole('button', { name: 'Review starting balance', exact: true }).click();
+  await page.getByRole('button', { name: 'Apply balance', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Apply starting balance', exact: true }).waitFor();
+  await dialog().getByText(/Entered by/).waitFor();
+  assert.equal(await dialog().getByText(/Approved by/).count(), 0);
+  await dialog().getByRole('button', { name: 'Confirm and save', exact: true }).click();
+  await dialog().waitFor({ state: 'hidden' });
+  await page.locator('.finance-management tbody .finance-status').getByText('Posted', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Back to accounts', exact: true }).click();
+  await page.getByLabel('Search records').fill(bank.name);
+  assert.equal(await bankRow.locator('td strong').innerText(), '₱15,000.00');
+  assert.equal(await bankRow.locator('.finance-starting-balance-status').count(), 0);
+  assert.notEqual(await page.locator('.finance-account-summaries').getByRole('button', { name: /Company funds/ }).locator('strong').innerText(), postedCompany);
+  checks.push('older 15000 declaration is visible and manager can apply without fabricated approval; read-only users cannot apply; totals change only after posting');
   assert.deepEqual(errors, []); assert.deepEqual(missing, []);
   console.log(JSON.stringify({ checks, browserErrors: errors, actualFinanceWrites: 0, interceptedAttempts: writes.length }, null, 2));
 } catch (error) {

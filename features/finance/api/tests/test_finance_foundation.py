@@ -87,19 +87,19 @@ class FinanceFoundationTests(unittest.TestCase):
             payload=AccountCreate(code=code,name=code,kind=kind,startingBalance={'amount':amount,'effectiveDate':DAY})
             account=self.service.create_account(CREATOR,payload,code)
             opening=account['startingBalance']
-            self.assertEqual(opening['status'],'DRAFT')
+            self.assertEqual(opening['status'],'POSTED')
+            self.assertIsNone(opening['approvedBy'])
+            self.assertEqual(opening['postingPolicy'],'AUTHORIZED_ACCOUNT_MANAGER_DECLARATION')
             self.assertEqual(opening['createdBy'],CREATOR.username)
             self.assertEqual(opening['accountId'],account['id'])
             self.assertEqual(opening['evidenceType'],'OPERATOR_DECLARATION')
             self.assertEqual(opening['declarationSource'],'ACCOUNT_CREATE')
-            self.assertEqual(self.balance(account),'0.00')
-            self.assert_http(409,lambda:self.service.post_opening(CREATOR,opening['id'],code+'-unapproved'))
-            self.assert_http(403,lambda:self.service.approve_opening(CREATOR,opening['id'],Approval(reason='Own review'),code+'-self'))
+            self.assertEqual(self.balance(account),amount)
+            self.assert_http(409,lambda:self.service.approve_opening(CREATOR,opening['id'],Approval(reason='Own review'),code+'-self'))
             replay=self.service.create_account(CREATOR,payload,code)
             self.assertTrue(replay['idempotentReplay'])
             self.assertEqual(replay['startingBalance']['id'],opening['id'])
             self.assertEqual(len([o for o in self.service.list_openings(CREATOR) if o['accountId']==account['id']]),1)
-            self.service.approve_opening(APPROVER,opening['id'],Approval(reason='Reviewed declared amount'),code+'-approve')
             entry=self.service.post_opening(CREATOR,opening['id'],code+'-post')
             self.assertEqual(self.balance(account),amount)
             self.assertEqual(entry['metadata']['evidenceType'],'OPERATOR_DECLARATION')
@@ -134,12 +134,13 @@ class FinanceFoundationTests(unittest.TestCase):
     def test_account_opening_rollback_on_failed_save(self):
         payload=AccountCreate(code='ATOMIC_OPENING',name='Atomic cash',kind='CASH',startingBalance={'amount':'12.34','effectiveDate':DAY})
         with self.store.read() as repo:repository_type=type(repo)
-        for method in ('save_opening','audit','save_operation'):
+        for method in ('save_opening','insert_entry','audit','save_operation'):
             with self.subTest(failed=method):
                 with patch.object(repository_type,method,side_effect=RuntimeError('Opening storage failed')):
                     with self.assertRaises(RuntimeError):self.service.create_account(CREATOR,payload,'atomic-opening')
                 self.assertFalse(any(a['code']==payload.code for a in self.service.list_accounts(CREATOR)))
                 self.assertEqual(self.service.list_openings(CREATOR),[])
+                self.assertEqual(self.service.entries(CREATOR),[])
                 with self.store.read() as repo:self.assertIsNone(repo.operation('account.create','atomic-opening'))
         saved=self.service.create_account(CREATOR,payload,'atomic-opening')
         self.assertEqual(saved['startingBalance']['amount'],'12.34')
@@ -162,6 +163,52 @@ class FinanceFoundationTests(unittest.TestCase):
         self.assertEqual(len({r['id'] for r in results}),1)
         self.assertEqual(len({r['startingBalance']['id'] for r in results}),1)
         self.assertEqual(len(service.list_openings(CREATOR)),1)
+        self.assertEqual(len(service.entries(CREATOR)),1)
+        self.assertEqual(service.activity(CREATOR,results[0]['id'])['balance'],'12.34')
+
+    def test_existing_declared_draft_can_be_applied_once_by_an_authorized_manager(self):
+        account=self.account()
+        declarer=Actor('declarer',frozenset({'finance.opening-balances.post'}))
+        opening=self.service.create_opening(declarer,OpeningCreate(accountId=account['id'],amount='15000.00',effectiveDate=DAY),'pending-declaration')
+        self.assertEqual(opening['status'],'DRAFT')
+        self.assert_http(409,lambda:self.service.post_opening(declarer,opening['id'],'unauthorized-direct'))
+        outsider=Actor('outside-scope',frozenset(PERMISSIONS),account_ids=frozenset())
+        self.assert_http(403,lambda:self.service.post_opening(outsider,opening['id'],'outside-scope'))
+        entry=self.service.post_opening(CREATOR,opening['id'],'apply-declaration')
+        self.assertEqual(self.balance(account),'15000.00')
+        self.assertEqual(entry['metadata']['declaredBy'],'declarer')
+        self.assertEqual(entry['postedBy'],CREATOR.username)
+        self.assertIsNone(entry['metadata']['approvedBy'])
+        self.assertEqual(entry['metadata']['postingPolicy'],'AUTHORIZED_ACCOUNT_MANAGER_DECLARATION')
+        self.assertTrue(entry['metadata']['cashFlowExcluded'])
+        self.assertEqual(entry['metadata']['incomeEffect'],'0.00')
+        self.assertEqual(entry['metadata']['expenseEffect'],'0.00')
+        self.assertEqual(self.service.post_opening(CREATOR,opening['id'],'apply-declaration')['id'],entry['id'])
+        self.assertEqual(self.service.post_opening(CREATOR,opening['id'],'apply-other-key')['id'],entry['id'])
+        self.assertEqual(len(self.service.entries(CREATOR)),1)
+        self.assert_http(403,lambda:self.service.post_opening(declarer,opening['id'],'apply-declaration'))
+        self.service.reverse(CREATOR,entry['id'],Reversal(effectiveDate=DAY,reason='Correct declared opening'),'reverse-declaration')
+        self.assertEqual(self.balance(account),'0.00')
+
+    def test_direct_starting_balance_retains_period_duplicate_and_rollback_guards(self):
+        account=self.account()
+        payload=OpeningCreate(accountId=account['id'],amount='15.01',effectiveDate=DAY)
+        with self.store.read() as repo:repository_type=type(repo)
+        with patch.object(repository_type,'save_operation',side_effect=RuntimeError('Commit failed')):
+            with self.assertRaises(RuntimeError):self.service.create_opening(CREATOR,payload,'atomic-direct')
+        self.assertEqual(self.balance(account),'0.00')
+        self.assertEqual(self.service.list_openings(CREATOR),[])
+        with patch('finance.periods.ensure_open',side_effect=HTTPException(409,'Period closed')):
+            self.assert_http(409,lambda:self.service.create_opening(CREATOR,payload,'closed-direct'))
+        self.assertEqual(self.service.list_openings(CREATOR),[])
+        opening=self.service.create_opening(CREATOR,payload,'atomic-direct')
+        self.assertEqual(self.balance(account),'15.01')
+        self.assertEqual(opening['status'],'POSTED')
+        self.assert_http(409,lambda:self.service.create_opening(CREATOR,payload,'another-opening'))
+        self.assertEqual(len(self.service.list_openings(CREATOR)),1)
+        revoked=Actor(CREATOR.username,frozenset({'finance.opening-balances.post'}))
+        self.assert_http(403,lambda:self.service.create_opening(revoked,payload,'atomic-direct'))
+        self.assertEqual(len(self.service.entries(CREATOR)),1)
 
     def test_opening_independent_approval_attribution_and_limits(self):
         a=self.account()
@@ -389,7 +436,8 @@ class FinanceApiTests(unittest.TestCase):
         status,later=self.request('POST','/api/finance/opening-balances',{'accountId':empty['id'],'amount':'1.23','effectiveDate':DAY},key='simple-later-api')
         self.assertEqual(status,201)
         self.assertEqual(later['evidenceType'],'OPERATOR_DECLARATION')
-        self.assertEqual(later['status'],'DRAFT')
+        self.assertEqual(later['status'],'POSTED')
+        self.assertEqual(self.module.service.activity(CREATOR,empty['id'])['balance'],'1.23')
 
     def test_api_money_strings_validation_and_immutable_routes(self):
         status,a=self.request('POST','/api/finance/accounts',{'code':'DESK','name':'Cash desk','kind':'CASH'})

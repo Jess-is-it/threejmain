@@ -62,6 +62,7 @@ def meta(actor=Depends(require_actor)):
             'setupStatus':setup_status,'periodChecks':list(CHECKS),
             'accountKinds':[k.value for k in AccountKind], 'permissions':list(PERMISSIONS),
             'journal':'append-only','transferMode':'IMMEDIATE_SETTLEMENT',
+            'startingBalancePolicy':'AUTHORIZED_ACCOUNT_MANAGER_DECLARATION',
             'permissionsGranted':sorted(actor.permissions),'actorUsername':actor.username,'approvalLimit':str(actor.approval_limit) if actor.approval_limit is not None else None,'reportScopesUnrestricted':actor.account_ids is None and actor.expense_ids is None}
 
 

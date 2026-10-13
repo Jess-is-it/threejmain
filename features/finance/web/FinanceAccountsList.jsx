@@ -2,8 +2,9 @@ import React from 'react';
 import { moneyLabel, businessDate } from './financeApi.mjs';
 import { ACCOUNT_GROUPS, ACCOUNT_LABELS, accountGroup, sumAccountBalances } from './accountPresentation.mjs';
 import { FinanceStatus } from './FinanceRecords.jsx';
+import FinanceStartingBalanceStatus from './FinanceStartingBalanceStatus.jsx';
 
-export default function FinanceAccountsList({ accounts, view, group, onGroup, showArchived, onArchived, onOpen, provisional }) {
+export default function FinanceAccountsList({ accounts, openings, view, group, onGroup, showArchived, onArchived, onOpen, onReviewOpening, disabled, canApplyDeclaration, provisional }) {
   return <section className="finance-account-list">
     <div className="finance-account-summaries">{ACCOUNT_GROUPS.map((g) => {
       const active = accounts.filter((a) => a.active && accountGroup(a) === g.id);
@@ -22,7 +23,9 @@ export default function FinanceAccountsList({ accounts, view, group, onGroup, sh
     <div className="table-responsive"><table className="table table-vcenter finance-accounts-table"><thead><tr><th scope="col">Account</th><th scope="col" className="text-end">Balance (PHP)</th></tr></thead>
       <tbody>{view.items.map((a) => <tr key={a.id}><td><button type="button" className="btn btn-link p-0 text-start" onClick={() => onOpen(a)}>{a.name}</button>
         <small className="finance-code">{ACCOUNT_LABELS[a.kind]}{!a.active && <> · <FinanceStatus value="ARCHIVED" /></>}</small></td>
-        <td className="text-end"><strong>{moneyLabel(a.balance)}</strong>{a.kind === 'CREDIT_CARD' && <small className="finance-code">Amount owed</small>}</td></tr>)}
+        <td className="text-end"><strong>{moneyLabel(a.balance)}</strong>{a.kind === 'CREDIT_CARD' && <small className="finance-code">Amount owed</small>}
+          <FinanceStartingBalanceStatus openings={openings} accountId={a.id} onReview={() => onReviewOpening(a.id)} disabled={disabled} canApplyDeclaration={canApplyDeclaration} />
+        </td></tr>)}
         {!view.items.length && <tr><td colSpan="2">{accounts.some((a) => a.active || showArchived) ? 'No accounts match your filters.' : 'No accounts recorded yet.'}</td></tr>}
       </tbody></table></div>{view.pagination}
   </section>;

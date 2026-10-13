@@ -3,10 +3,13 @@
 Current starting-balance intake (2026-10-13): Add account optionally accepts a dated
 starting amount in one atomic save. Later amount/date-only entry also remains
 available. Manual reason/evidence reference is optional; system attribution and
-explicit operator-declaration provenance are retained. Independent approval and
-posting remain separate. See README.md and PROJECT_MODULE_CONTEXT.md for the
+explicit operator-declaration provenance are retained. Simplified operator declarations apply immediately for authorized account managers
+with both accounts.manage and opening-balances.post. Creation, balanced journal and
+audit are one transaction; approvedBy stays null. REFERENCE evidence retains
+independent review. Finance migration 2026101303_finance_declared_starting_balances
+is now part of MIGRATIONS and must be applied before updated posting. See README.md and PROJECT_MODULE_CONTEXT.md for the
 current request/permission contract; this historical phase guide is superseded
-for starting-balance form requirements. No migration changes were made.
+for starting-balance form requirements. Earlier SQL files are unchanged; the additive migration preserves evidence immutability.
 
 Current report handoff: [PHASE5_REPORTING.md](PHASE5_REPORTING.md). Phase 5 now
 selects `ReportingService` and adds explicit report providers. Four ordered

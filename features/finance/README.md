@@ -45,18 +45,34 @@ require a responsible person. Enter an optional starting balance and balance dat
 in this same form; blank/zero starts empty, and a card amount is debt owed.
 The account and positive starting-balance request save together in one transaction.
 No manual supporting reference/reason is required. Finance records the operator,
-date and declaration provenance automatically. Independent approval still applies
-before posting changes the balance. Starting balances can also be set later from
+date and declaration provenance automatically. Authorized account managers with finance.accounts.manage and
+finance.opening-balances.post apply the declared starting balance immediately,
+in the same transaction. The immutable journal and audit record the operator;
+no independent reviewer is fabricated. Starting balances can also be set later from
 account details using amount/date only. Uncertain creation confirms the same saved
 request, including its starting balance, without another account or setup dialog.
 
 `POST /api/finance/accounts` optionally accepts `startingBalance: {amount,
-effectiveDate}` and returns the attributed draft opening with the account.
+effectiveDate}` and returns the attributed posted opening with the account.
 A positive starting balance also requires `finance.opening-balances.post`.
 `POST /api/finance/opening-balances` requires accountId/amount/effectiveDate;
 legacy reason/evidenceReference remain optional API inputs. Missing references are
-explicitly operator declarations. Accounts, openings, audits and idempotency results
-commit or roll back together; no schema migration or shared permission change.
+explicitly operator declarations. Accounts, openings, balanced journals, audits and idempotency results
+commit or roll back together. Operator declarations are posted immediately for
+account managers; nonmanager and historical REFERENCE requests retain review.
+An older operator declaration can be applied through its existing /post endpoint.
+Accounts and details show any unapplied amount with a Review starting balance link;
+these amounts are excluded from posted balances until applied. No editable master
+balance is introduced.
+
+Apply Finance migration 2026101303_finance_declared_starting_balances through the
+existing shared migration runner before updated posting. It is registered in
+Finance MIGRATIONS; no shared wiring or grant seed change is required. The database
+accepts either attributed declarations or independent review, retains immutable
+opening evidence and journal checks, and performs no automatic financial backfill.
+Direct postings retain approvedBy=null and postingPolicy
+AUTHORIZED_ACCOUNT_MANAGER_DECLARATION. Starting balances offset equity and add
+no income, expense or cash-flow movement. Reviewed source cutover remains separate.
 
 **Transfer money** asks for source, destination, amount, date and purpose, suggests
 the payment method, and requires a real supporting reference for noncash movement.
@@ -70,9 +86,9 @@ allocation, installment, reversal and duplicate-recovery workflows.
 
 Authorized **Manage** tools hold Accounting accounts, Collector custody, Starting balances and
 Journal entries/Post journal. Existing API permissions and account scopes,
-opening approval, immutable posting, zero-balance archival and period rules
-remain authoritative. This refinement adds no ledger, migration, permission,
-shared route or automatic balance posting.
+attributed starting-balance posting, immutable evidence, zero-balance archival and period rules
+remain authoritative. Existing permissions and shared routes remain in place; simplified declarations
+now apply immediately for authorized account managers.
 
 ## Pending collector remittances
 
@@ -130,7 +146,7 @@ No new ledger, permission grant, migration or financial posting was introduced.
 ## Current status
 
 Phases 1–7 are implemented and integrated on shared staging (`integrated`). Named
-accounts, independently approved openings, immediate internal transfers,
+accounts, attributed declared/reviewed openings, immediate internal transfers,
 immutable balanced journals, reversals and activity are implemented locally.
 Classified expense intake, independent approval/rejection, recognition,
 partial settlement, linked reversals and private supporting attachments are
@@ -144,7 +160,7 @@ Phase 6 completes all six React workspaces under one Finance Management parent,
 interactive evidence-linked charts, searchable/paginated records and authorized
 CSV/print reports. The page/components and FastAPI router are exported. See
 [PHASE6_INTERFACE.md](PHASE6_INTERFACE.md) for the current UI/API integration guide.
-Eight module-owned PostgreSQL migrations (28 tables) are registered through the shared
+Nine module-owned PostgreSQL migrations (28 tables) are registered through the shared
 database. Shared auth/Access, audit, metrics and Billing/POS/Collector/Service
 feeds plus Customer Profiling/Inventory references are wired. Business setup
 requires reviewed account openings and an independent cutover; no historical

@@ -39,3 +39,13 @@ export function sumAccountBalances(accounts) {
   const absolute = value < 0n ? -value : value;
   return `${value < 0n ? '-' : ''}${absolute / 100n}.${String(absolute % 100n).padStart(2, '0')}`;
 }
+
+export function pendingStartingBalances(openings, accountId) {
+  return openings.filter((o) => o.accountId === accountId && !o.journalId && !o.reversed && ['DRAFT', 'APPROVED'].includes(o.status));
+}
+
+export function startingBalanceLabel(opening, canApplyDeclaration = false) {
+  if (opening.reversed) return 'REVERSED';
+  if (opening.status === 'DRAFT' && opening.evidenceType === 'OPERATOR_DECLARATION' && canApplyDeclaration) return 'READY_TO_APPLY';
+  return { DRAFT: 'PENDING_APPROVAL', APPROVED: 'READY_TO_APPLY', POSTED: 'POSTED' }[opening.status] || opening.status;
+}

@@ -54,3 +54,10 @@ EXPENSE_WORKFLOW_MIGRATIONS.append({
     'description': 'Optional identified payee for already-paid purchases, preserving creditor and evidence integrity',
     'statements': [(Path(__file__).parent / 'migrations' / '2026101302_finance_optional_payee.sql').read_text()],
 })
+
+# Foundation-only and full-system consumers both require the direct-declaration guard.
+MIGRATIONS.append({
+    'id': '2026101303_finance_declared_starting_balances',
+    'description': 'Attributed immediate account-manager starting balances without fabricated independent approval',
+    'statements': [(Path(__file__).parent / 'migrations' / '2026101303_finance_declared_starting_balances.sql').read_text()],
+})

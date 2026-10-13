@@ -9,10 +9,11 @@ from uuid import uuid4
 from unittest.mock import patch
 
 import test_finance_foundation as foundation
+from test_finance_foundation import CREATOR, DAY
 from finance.ledger import FinanceService
 from finance.migrations import READINESS_MIGRATIONS, MIGRATIONS
 from finance.storage import PostgresStore, PostgresRepository, psycopg
-from finance.schemas import Reversal
+from finance.schemas import Reversal, AccountCreate, OpeningCreate
 
 
 @unittest.skipUnless(psycopg and os.getenv('FINANCE_TEST_DATABASE_URL'), 'Requires explicit Finance PostgreSQL test DSN')
@@ -82,6 +83,20 @@ class FinancePostgresTests(foundation.FinanceFoundationTests):
         self.rejected_sql('UPDATE finance_opening_balances SET amount=1 WHERE account_id=%s',(a['id'],))
         self.rejected_sql('DELETE FROM finance_audit_events')
         self.rejected_sql('DELETE FROM finance_operations')
+
+    def test_direct_declarations_do_not_allow_relabeling_reference_evidence(self):
+        account=self.service.create_account(CREATOR,AccountCreate(code='DIRECT_SQL',name='Declared cash',kind='CASH',startingBalance={'amount':'20.00','effectiveDate':DAY}),'direct-sql')
+        destination=self.account('DESTINATION')
+        transfer=self.transfer(account,destination,'1.00')
+        draft=self.service.create_opening(CREATOR,OpeningCreate(accountId=destination['id'],amount='2.00',effectiveDate=DAY,evidenceReference='External verified count'),'reference-draft')
+        self.rejected_sql("""UPDATE finance_opening_balances SET journal_id=%s,
+          data=data || jsonb_build_object('journalId',%s::text,'status','POSTED',
+          'postingPolicy','AUTHORIZED_ACCOUNT_MANAGER_DECLARATION') WHERE id=%s""",(transfer['id'],transfer['id'],draft['id']))
+        self.rejected_sql("""UPDATE finance_opening_balances SET data=jsonb_set(
+          data,'{evidenceType}','\"OPERATOR_DECLARATION\"') WHERE id=%s""",(draft['id'],))
+        self.rejected_sql("""UPDATE finance_opening_balances SET data=jsonb_set(
+          data,'{postingPolicy}','\"INDEPENDENT_APPROVAL\"') WHERE id=%s""",(account['startingBalance']['id'],))
+        self.assertEqual(self.balance(account),'19.00')
 
     def test_database_reversal_unique_reference_and_balances(self):
         a=self.account();e=self.opening(a)

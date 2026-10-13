@@ -1,5 +1,61 @@
 # Finance Management Module Context
 
+## Immediate declared starting balances (2026-10-13)
+
+Authorized account managers can now apply simplified user-entered starting balances
+immediately. Both finance.accounts.manage and finance.opening-balances.post are
+required. Account creation, the opening declaration, balanced immutable journal,
+attributed creation/posting audits and idempotency result commit together. Later
+amount/date-only entry also applies immediately for those grants. Blank/zero remains
+an empty account; card openings increase debt rather than company cash.
+
+Direct declarations retain evidenceType OPERATOR_DECLARATION, declaredBy/createdBy,
+actual postedBy/date and postingPolicy AUTHORIZED_ACCOUNT_MANAGER_DECLARATION.
+approvedBy remains null: Finance does not manufacture a reviewer or supporting
+reference. They offset opening equity and are excluded from income, expenses and
+cash-flow movements. Account summaries and reports still derive actual posted
+amounts; no editable balance is added to account masters. /meta now exposes
+startingBalancePolicy; the existing account/opening routes remain in place.
+
+An older unposted operator declaration can be applied once through its existing
+opening-balances/{id}/post endpoint by an authorized scoped account manager. No
+blanket draft backfill runs. Lower-permission declarations and historical API
+requests carrying documentary REFERENCE evidence retain independent approval,
+limits and self-approval prevention. Reviewed source cutover, expense/income
+approval and reconciliation readiness remain separate. Scope, active-account,
+period, historical-balance, duplicate-opening, correction and revoked-grant replay
+guards remain enforced, including concurrent requests.
+
+Accounts shows only unapplied requests beneath the actual balance, with amount,
+Pending approval/Ready to apply and an account-filtered Review starting balance
+link. The same information is in account details. Starting balances provides
+Apply balance and explains role-specific next steps. A successfully applied amount
+vanishes from pending indicators and becomes part of posted balances. New intake
+and success messages explain immediate application.
+
+Finance migration 2026101303_finance_declared_starting_balances is appended to
+MIGRATIONS, consumed by the existing shared registration and isolated foundation
+fixtures. It replaces the old mandatory-review check with attributed declaration
+or independently reviewed opening validation, preserves immutable evidence and all
+existing balanced-entry/transfer/reversal/history guards, and allows postingPolicy
+only during journal assignment. Earlier SQL migrations are unchanged. Apply the
+new migration through the shared runner before serving updated Finance posting;
+normal shared staging deployment does this. No shared files or role seeds need
+changes. The previous approval-only intake notes below are superseded for
+simplified declarations by account managers.
+
+Verification: 376 Finance tests ran, 370 passing with six inherited fixture skips;
+all 32 client tests passed. Eleven standalone interface, nine isolated Accounts
+workflow and 15 actual staging browser groups passed. Coverage includes immediate
+cash/card openings, atomic journal/audit/operation rollback, exact monetary values,
+concurrent duplicate recovery, old draft application, revoked/scoped permissions,
+reference evidence protection, closed periods and immutable PostgreSQL evidence.
+Shared staging was deployed with scripts/staging_deploy.sh under runtime/server
+ownership. One user-requested existing declaration was applied through its scoped
+API; before/after reports verified one balanced journal, unchanged income/expense/
+profit/operating cash flow, and zero cash reconciliation variance. Other browser
+mutations were intercepted. Desktop/mobile actual account and activity were checked.
+
 ## Starting balance entered with account creation (2026-10-13)
 
 Add account now has an optional Starting balance and a Balance date when an amount
