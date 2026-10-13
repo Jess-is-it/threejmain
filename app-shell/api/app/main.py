@@ -64,7 +64,7 @@ from billing import (
 from finance import Actor, configure_finance, router as finance_router
 from finance.permissions import PERMISSIONS as FINANCE_PERMISSIONS
 from finance.access import ACCESS_REGISTRATION as FINANCE_ACCESS, actor_from_user
-from finance.migrations import MIGRATIONS as FINANCE_MIGRATIONS, INTEGRATION_MIGRATIONS, READINESS_MIGRATIONS
+from finance.migrations import MIGRATIONS as FINANCE_MIGRATIONS, INTEGRATION_MIGRATIONS, READINESS_MIGRATIONS, EXPENSE_WORKFLOW_MIGRATIONS
 from finance.integration import IntegrationStore, CoverageProvider, RecoveryWorker
 from billing.finance_provider import BillingFinanceFeed, BillingFinanceReport, install_finance_recovery as install_billing_finance_recovery
 from point_of_sale.finance_provider import PosFinanceFeed, install_finance_recovery as install_pos_finance_recovery
@@ -125,7 +125,7 @@ from ticketing import (
 )
 from ticketing.router import visible_tickets
 
-register_module_migrations([*FINANCE_MIGRATIONS, *INTEGRATION_MIGRATIONS, *READINESS_MIGRATIONS])
+register_module_migrations([*FINANCE_MIGRATIONS, *INTEGRATION_MIGRATIONS, *READINESS_MIGRATIONS, *EXPENSE_WORKFLOW_MIGRATIONS])
 
 
 APP_STARTED_AT = time.time()

@@ -420,8 +420,15 @@ class ReportingService(IncomeService):
             if not linked:continue
             due=sum((Decimal(l['credit'])-Decimal(l['debit']) for e in linked for l in e['lines'] if l['accountId']==PAYABLE_CONTROL_ID),ZERO)
             if not due:continue
-            rows.append({'payableId':p['id'],'payeeId':p['payeeId'],'payeeName':p['payeeSnapshot']['name'],'dueDate':p['dueDate'],'outstandingAmount':amount(due),
-                         'agingBucket':bucket(p['dueDate'],date.fromisoformat(as_of)),'journalIds':[e['id'] for e in linked]})
+            from .expense_plans import settlement_plan
+            plan=settlement_plan(p,Decimal(p['amount'])-due,as_of)
+            for scheduled in plan['settlementSchedule']:
+                if not Decimal(scheduled['outstandingAmount']):continue
+                rows.append({'payableId':p['id'],'payeeId':p['payeeId'],'payeeName':p['payeeSnapshot']['name'],
+                             'dueDate':scheduled['dueDate'],'installmentNumber':scheduled['number'],
+                             'outstandingAmount':scheduled['outstandingAmount'],
+                             'agingBucket':bucket(scheduled['dueDate'],date.fromisoformat(as_of)),
+                             'journalIds':[e['id'] for e in linked]})
         total=sum((Decimal(r['outstandingAmount']) for r in rows),ZERO)
         control=normal_balance(repo.account(PAYABLE_CONTROL_ID),entries)
         complete=self._asof_coverage(repo,as_of).get('payables',False) and control==total

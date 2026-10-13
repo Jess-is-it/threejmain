@@ -53,8 +53,8 @@ try {
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   await page.getByRole('navigation', { name: 'Finance workspaces' }).getByRole('button', { name: 'Expenses & Payables', exact: true }).click();
   await ready(); assert.equal(new URL(page.url()).pathname, '/finance/expenses');
-  await page.getByRole('button', { name: 'New expense', exact: true }).click();
-  await page.getByRole('dialog', { name: 'New expense / payable' }).waitFor();
+  await page.getByRole('button', { name: 'Add expense', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Add expense' }).waitFor();
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   await page.getByRole('navigation', { name: 'Finance workspaces' }).getByRole('button', { name: 'Income & Collections', exact: true }).click();
   await ready(); assert.equal(new URL(page.url()).pathname, '/finance/income');

@@ -60,6 +60,7 @@ class PayablesService(FinanceService):
     def _access(actor, record):
         actor.expense(record)
         scoped(actor,record['categorySnapshot']['accountId'])
+        if record.get('paidDetails'):scoped(actor,record['paidDetails']['accountId'])
 
     @staticmethod
     def _version(record, version):
@@ -72,7 +73,7 @@ class PayablesService(FinanceService):
 
     @staticmethod
     def _financial(record):
-        return {k:record[k] for k in FINANCIAL_FIELDS}
+        return {k:record[k] for k in FINANCIAL_FIELDS if k in record}
 
     def masters(self, actor, kind):
         actor.require('finance.expenses.view')
@@ -117,33 +118,72 @@ class PayablesService(FinanceService):
         if not payee['active'] or not category['active']:
             raise HTTPException(409, 'New or edited expenses require active payee/category records')
         self._category_account(repo,actor,category)
+        if p.get('paidDetails'):
+            details=p['paidDetails'];scoped(actor,details['accountId'])
+            self._payment_account(repo.account(details['accountId']),details)
+            self._day(details['effectiveDate'])
         return {'payeeSnapshot':payee,'categorySnapshot':category}
 
-    def create_payable(self, actor, payload, key):
-        p=json_record(payload);p['documentReference']=p['documentReference'].upper()
+    def _create_payable(self, repo, actor, p):
         if actor.expense_ids is not None:
             raise HTTPException(403, 'Creating expenses requires unrestricted expense-ID scope')
+        p={**p,'documentReference':p['documentReference'].upper()}
+        internal=not p['documentReference']
+        if internal:p['documentReference']='EXP-'+uuid4().hex.upper()
+        if any(r['payeeId']==p['payeeId'] and r['documentReference']==p['documentReference'] for r in repo.payables()):
+            raise HTTPException(409, 'Supplier document already exists; use its retained record')
+        r={**p,**self._intake(repo,actor,p),'id':str(uuid4()),'entity':'PAYABLE','currency':'PHP',
+           'documentReferenceKind':'INTERNAL' if internal else 'SUPPLIER',
+           'version':1,'approvalStatus':'DRAFT','postingStatus':'UNPOSTED','createdBy':actor.username,
+           'editedBy':actor.username,'updatedBy':actor.username,'createdAt':now(),'updatedAt':now(),
+           'approvedBy':None,'approvedAt':None,'approvedVersion':None,'approvalReason':None,
+           'approvalEvidence':[],'rejectionReason':None,'postingJournalId':None,'reversalJournalId':None}
+        repo.save_payable(r)
+        return r
+
+    def create_payable(self, actor, payload, key):
+        p=payload.model_dump(mode='json')
+        return self._mutate(actor,'finance.expenses.create','payable.create',key,p,
+                            lambda repo:self._summary(repo,self._create_payable(repo,actor,p)))
+
+    def expense_intake(self, actor, payload, key):
+        """Draft + private evidence + optional submission in one durable transaction."""
+        p=payload.model_dump(mode='json');upload=p.pop('attachment',None);submit=p.pop('submitForApproval')
+        content=attachment_content(upload) if upload else None
+        if upload:
+            actor.require('finance.attachments.upload')
+            if upload['version']!=1:raise HTTPException(400,'New expense attachment must use version one')
+        evidence={k:upload[k] for k in ('filename','contentType')} if upload else None
+        if evidence:evidence.update(sha256=hashlib.sha256(content).hexdigest(),size=len(content))
         def action(repo):
-            if any(r['payeeId']==p['payeeId'] and r['documentReference']==p['documentReference'] for r in repo.payables()):
-                raise HTTPException(409, 'Supplier document already exists; use its retained record')
-            r={**p,**self._intake(repo,actor,p),'id':str(uuid4()),'entity':'PAYABLE','currency':'PHP',
-               'version':1,'approvalStatus':'DRAFT','postingStatus':'UNPOSTED','createdBy':actor.username,
-               'editedBy':actor.username,'updatedBy':actor.username,'createdAt':now(),'updatedAt':now(),
-               'approvedBy':None,'approvedAt':None,'approvedVersion':None,'approvalReason':None,
-               'approvalEvidence':[],'rejectionReason':None,'postingJournalId':None,'reversalJournalId':None}
-            repo.save_payable(r)
+            r=self._create_payable(repo,actor,p)
+            if evidence:
+                a={**evidence,'payableId':r['id'],'version':1,'id':str(uuid4()),'entity':'ATTACHMENT',
+                   'payableCreatedBy':actor.username,'active':True,'createdBy':actor.username,'createdAt':now()}
+                repo.save_attachment(a,content)
+            if submit:
+                proof=self._evidence(repo,actor,r)
+                self._bump(r,actor,approvalStatus='SUBMITTED',approvalEvidence=proof)
+                repo.save_payable(r);self._decision(repo,actor,r,'SUBMIT','Submitted with expense entry')
             return self._summary(repo,r)
-        return self._mutate(actor,'finance.expenses.create','payable.create',key,p,action)
+        return self._mutate(actor,'finance.expenses.create','expense.intake',key,
+                            {**p,'attachment':evidence,'submitForApproval':submit},action)
 
     def edit_payable(self, actor, payable_id, payload, key):
-        p=json_record(payload);p['documentReference']=p['documentReference'].upper()
+        p=payload.model_dump(mode='json');p['documentReference']=p['documentReference'].upper()
         def action(repo):
             r=repo.payable(payable_id);self._access(actor,r);self._version(r,p['version'])
             if r['postingStatus']!='UNPOSTED' or r['approvalStatus'] not in ('DRAFT','REJECTED'):
                 raise HTTPException(409, 'Only unposted drafts/rejections can be edited; reopen approved/submitted expenses first')
+            reference_kind=r.get('documentReferenceKind','SUPPLIER')
+            if not p['documentReference']:
+                p['documentReference']=r['documentReference'] if reference_kind=='INTERNAL' else 'EXP-'+uuid4().hex.upper()
+                reference_kind='INTERNAL'
+            elif p['documentReference']!=r['documentReference']:
+                reference_kind='SUPPLIER'
             if any(other['id']!=payable_id and other['payeeId']==p['payeeId'] and other['documentReference']==p['documentReference'] for other in repo.payables()):
                 raise HTTPException(409, 'Supplier document already exists')
-            self._bump(r,actor,**self._financial(p),**self._intake(repo,actor,p),approvalStatus='DRAFT',editedBy=actor.username)
+            self._bump(r,actor,**self._financial(p),**self._intake(repo,actor,p),documentReferenceKind=reference_kind,approvalStatus='DRAFT',editedBy=actor.username)
             repo.save_payable(r)
             return self._summary(repo,r)
         return self._mutate(actor,'finance.expenses.create','payable.edit',key,{'payableId':payable_id,**p},action)
@@ -164,7 +204,7 @@ class PayablesService(FinanceService):
                        'financialFingerprint':fingerprint(self._financial(r)),
                        'evidence':r['approvalEvidence']})
 
-    def expense_action(self, actor, payable_id, action, payload, key):
+    def expense_action(self, actor, payable_id, action, payload, key, *, recognize=False):
         p=json_record(payload)
         permission='finance.expenses.approve' if action in ('approve','reject') else 'finance.expenses.create'
         def change(repo):
@@ -196,8 +236,13 @@ class PayablesService(FinanceService):
                            approvedVersion=None,approvalReason=None,approvalEvidence=[])
             else:raise HTTPException(400, 'Unsupported expense action')
             repo.save_payable(r);self._decision(repo,actor,r,action.upper(),p['reason'])
+            if recognize:
+                # Approval authorizes recording this exact independently reviewed cost.
+                # It never moves money; actual settlement requires expenses.pay.
+                if action!='approve':raise HTTPException(400,'Recognition requires approval')
+                self._recognize(repo,actor,r)
             return self._summary(repo,r)
-        return self._mutate(actor,permission,f'payable.{action}',key,{'payableId':payable_id,**p},change)
+        return self._mutate(actor,permission,f'payable.{action}'+('-record' if recognize else ''),key,{'payableId':payable_id,**p},change)
 
     def post_payable(self, actor, payable_id, payload, key):
         p=json_record(payload)
@@ -207,22 +252,25 @@ class PayablesService(FinanceService):
             self._version(r,p['version'])
             if r['postingStatus']!='UNPOSTED' or r['approvalStatus']!='APPROVED':
                 raise HTTPException(409, 'Posting requires an independently approved, unposted expense')
-            self._day(r['expenseDate'])
-            category=r['categorySnapshot']
-            self._category_account(repo,actor,category)
-            posting={**self._financial(r),'effectiveDate':r['expenseDate'],'reason':r['purpose'],
-                     'payableId':r['id'],'approvedVersion':r['approvedVersion'],'approvedBy':r['approvedBy']}
-            j=self._post(repo,actor,'JOURNAL','finance.payable',r['id'],posting,
-                         [{'accountId':category['accountId'],'debit':r['amount'],'credit':'0.00'},
-                          {'accountId':PAYABLE_CONTROL_ID,'debit':'0.00','credit':r['amount']}],
-                         {'effect':'PAYABLE_RECOGNITION','payableId':r['id'],
-                          'approvedVersion':r['approvedVersion'],'classification':category['classification'],
-                          'payeeId':r['payeeId'],'locationReference':r['locationReference'],
-                          'projectReference':r['projectReference'],'itemAssetReference':r['itemAssetReference']})
-            self._bump(r,actor,postingStatus='POSTED',postingJournalId=j['id'],postedBy=actor.username,postedAt=now())
-            repo.save_payable(r)
+            self._recognize(repo,actor,r)
             return self._summary(repo,r)
         return self._mutate(actor,'finance.expenses.post','payable.post',key,{'payableId':payable_id,**p},action)
+
+    def _recognize(self, repo, actor, r):
+        self._day(r['expenseDate'])
+        category=r['categorySnapshot']
+        self._category_account(repo,actor,category)
+        posting={**self._financial(r),'effectiveDate':r['expenseDate'],'reason':r['purpose'],
+                 'payableId':r['id'],'approvedVersion':r['approvedVersion'],'approvedBy':r['approvedBy']}
+        j=self._post(repo,actor,'JOURNAL','finance.payable',r['id'],posting,
+                     [{'accountId':category['accountId'],'debit':r['amount'],'credit':'0.00'},
+                      {'accountId':PAYABLE_CONTROL_ID,'debit':'0.00','credit':r['amount']}],
+                     {'effect':'PAYABLE_RECOGNITION','payableId':r['id'],
+                      'approvedVersion':r['approvedVersion'],'classification':category['classification'],
+                      'payeeId':r['payeeId'],'locationReference':r['locationReference'],
+                      'projectReference':r['projectReference'],'itemAssetReference':r['itemAssetReference']})
+        self._bump(r,actor,postingStatus='POSTED',postingJournalId=j['id'],postedBy=actor.username,postedAt=now())
+        repo.save_payable(r)
 
     @staticmethod
     def _paid(repo, r):
@@ -233,8 +281,10 @@ class PayablesService(FinanceService):
         paid=self._paid(repo,r)
         due=Decimal(r['amount'])-paid if r['postingStatus']=='POSTED' else ZERO
         state='PAID' if r['postingStatus']=='POSTED' and due==ZERO else 'PARTIALLY_PAID' if paid>ZERO else 'UNPAID'
-        return {**r,'paidAmount':format(paid,'.2f'),'outstandingAmount':format(due,'.2f'),
-                'settlementStatus':state,'overdue':due>ZERO and r['dueDate']<self.today().isoformat()}
+        from .expense_plans import settlement_plan
+        plan=settlement_plan(r,paid,self.today().isoformat())
+        return {**r,**plan,'paidAmount':format(paid,'.2f'),'outstandingAmount':format(due,'.2f'),
+                'settlementStatus':state,'overdue':r['postingStatus']=='POSTED' and Decimal(plan['overdueAmount'])>ZERO}
 
     def list_payables(self, actor):
         actor.require('finance.expenses.view')
@@ -277,36 +327,43 @@ class PayablesService(FinanceService):
     def pay(self, actor, payable_id, payload, key):
         p=json_record(payload);scoped(actor,p['accountId'])
         def action(repo):
-            r=repo.payable(payable_id);self._access(actor,r)
-            prior=next((e for e in repo.entries() if e['sourceNamespace']=='finance.payable-payment' and e['sourceReference']==p['sourceReference']),None)
-            posting={'payableId':payable_id,**p}
-            if prior:
-                if prior['fingerprint']!=fingerprint(posting):raise HTTPException(409, 'Payment reference already has different accounting evidence')
-                return {**repo.payment(prior['metadata']['paymentId']),'idempotentReplay':True}
-            if r['postingStatus']!='POSTED':raise HTTPException(409, 'Only a posted payable can be paid')
-            self._day(p['effectiveDate'])
-            if p['effectiveDate']<r['expenseDate']:raise HTTPException(400, 'Payment cannot predate recognized payable; use a later prepayment workflow')
-            if Decimal(p['amount'])>Decimal(r['amount'])-self._paid(repo,r):raise HTTPException(409, 'Payment exceeds the remaining payable')
-            account=repo.account(p['accountId'])
-            allowed={'CASH':{'CASH','PETTY_CASH','COLLECTOR_CASH'},'GCASH':{'COMPANY_GCASH','COLLECTOR_GCASH'},
-                     'BANK_TRANSFER':{'BANK'},'CREDIT_CARD':{'CREDIT_CARD'},
-                     'OTHER':{'CASH','PETTY_CASH','COLLECTOR_CASH','COMPANY_GCASH','COLLECTOR_GCASH','BANK'}}
-            if account['kind'] not in allowed[p['method']]:raise HTTPException(400, 'Payment method does not match the selected financial account')
-            if p['method']!='CASH' and not p['referenceNumber']:raise HTTPException(400, 'Noncash payments require supporting reference evidence')
-            payment_id=str(uuid4())
-            journal=self._post(repo,actor,'JOURNAL','finance.payable-payment',p['sourceReference'],posting,
-                               [{'accountId':PAYABLE_CONTROL_ID,'debit':p['amount'],'credit':'0.00'},
-                                {'accountId':account['id'],'debit':'0.00','credit':p['amount']}],
-                               {'effect':'PAYABLE_PAYMENT','payableId':payable_id,'paymentId':payment_id,
-                                'classification':r['categorySnapshot']['classification'],
-                                'method':p['method'],'referenceNumber':p['referenceNumber'],'expenseEffect':'0.00',
-                                'noncash':account['kind']=='CREDIT_CARD'})
-            payment={**p,'id':payment_id,'entity':'PAYMENT','payableId':payable_id,'payableCreatedBy':r['createdBy'],
-                     'journalId':journal['id'],'createdBy':actor.username,'createdAt':now(),
-                     'accountSnapshot':{k:account[k] for k in ('id','code','name','kind')}}
-            repo.insert_payment(payment);self._history(repo,payable_id)
-            return payment
+            return self._apply_payment(repo,actor,payable_id,p)
         return self._mutate(actor,'finance.expenses.pay','payable.pay',key,{'payableId':payable_id,**p},action)
+
+    @staticmethod
+    def _payment_account(account, p):
+        allowed={'CASH':{'CASH','PETTY_CASH','COLLECTOR_CASH'},'GCASH':{'COMPANY_GCASH','COLLECTOR_GCASH'},
+                 'BANK_TRANSFER':{'BANK'},'CREDIT_CARD':{'CREDIT_CARD'},
+                 'OTHER':{'CASH','PETTY_CASH','COLLECTOR_CASH','COMPANY_GCASH','COLLECTOR_GCASH','BANK'}}
+        if account['kind'] not in allowed[p['method']]:raise HTTPException(400, 'Payment method does not match the selected financial account')
+        if p['method']!='CASH' and not p['referenceNumber']:raise HTTPException(400, 'Noncash payments require supporting reference evidence')
+
+    def _apply_payment(self, repo, actor, payable_id, p):
+        r=repo.payable(payable_id);self._access(actor,r)
+        prior=next((e for e in repo.entries() if e['sourceNamespace']=='finance.payable-payment' and e['sourceReference']==p['sourceReference']),None)
+        posting={'payableId':payable_id,**p}
+        if prior:
+            if prior['fingerprint']!=fingerprint(posting):raise HTTPException(409, 'Payment reference already has different accounting evidence')
+            return {**repo.payment(prior['metadata']['paymentId']),'idempotentReplay':True}
+        if r['postingStatus']!='POSTED':raise HTTPException(409, 'Only a posted payable can be paid')
+        self._day(p['effectiveDate'])
+        if p['effectiveDate']<r['expenseDate']:raise HTTPException(400, 'Payment cannot predate recognized payable; use a later prepayment workflow')
+        if Decimal(p['amount'])>Decimal(r['amount'])-self._paid(repo,r):raise HTTPException(409, 'Payment exceeds the remaining payable')
+        account=repo.account(p['accountId'])
+        self._payment_account(account,p)
+        payment_id=str(uuid4())
+        journal=self._post(repo,actor,'JOURNAL','finance.payable-payment',p['sourceReference'],posting,
+                           [{'accountId':PAYABLE_CONTROL_ID,'debit':p['amount'],'credit':'0.00'},
+                            {'accountId':account['id'],'debit':'0.00','credit':p['amount']}],
+                           {'effect':'PAYABLE_PAYMENT','payableId':payable_id,'paymentId':payment_id,
+                            'classification':r['categorySnapshot']['classification'],
+                            'method':p['method'],'referenceNumber':p['referenceNumber'],'expenseEffect':'0.00',
+                            'noncash':account['kind']=='CREDIT_CARD'})
+        payment={**p,'id':payment_id,'entity':'PAYMENT','payableId':payable_id,'payableCreatedBy':r['createdBy'],
+                 'journalId':journal['id'],'createdBy':actor.username,'createdAt':now(),
+                 'accountSnapshot':{k:account[k] for k in ('id','code','name','kind')}}
+        repo.insert_payment(payment);self._history(repo,payable_id)
+        return payment
 
     def reverse_payment(self, actor, payment_id, payload, key):
         p=json_record(payload)

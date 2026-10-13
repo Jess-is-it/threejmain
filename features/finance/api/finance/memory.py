@@ -24,6 +24,29 @@ class MemoryRepository:
     def __init__(self, state):
         self.state = state
 
+    def card_statements(self):
+        return deepcopy(list(self.state['cardStatements'].values()))
+
+    def card_statement(self, statement_id):
+        if statement_id not in self.state['cardStatements']:raise HTTPException(404,'Credit-card statement not found')
+        return deepcopy(self.state['cardStatements'][statement_id])
+
+    def insert_card_statement(self,r):
+        self.state['cardStatements'][r['id']]=deepcopy(r)
+
+    def card_repayments(self,statement_id):
+        return deepcopy([r for r in self.state['cardRepayments'].values() if r['cardStatementId']==statement_id])
+
+    def card_repayment(self,repayment_id):
+        if repayment_id not in self.state['cardRepayments']:raise HTTPException(404,'Credit-card repayment not found')
+        return deepcopy(self.state['cardRepayments'][repayment_id])
+
+    def insert_card_repayment(self,r):
+        self.state['cardRepayments'][r['id']]=deepcopy(r)
+
+    def validate_cards(self):
+        pass
+
     @contextmanager
     def savepoint(self):
         saved=deepcopy(self.state)
@@ -224,6 +247,7 @@ class MemoryStore:
             'incomeDocuments':{},'sourceEvents':{},'sourceResults':{},'sourceClaims':{},
             'sourceCheckpoints':{},'reconciliationExceptions':{},'reportSnapshots':{},
             'periods':{},'periodEvents':[],
+            'cardStatements':{},'cardRepayments':{},
         }
         for account_id,(code,name,gl_type) in INCOME_CONTROLS.items():
             self._state['accounts'][account_id]={**deepcopy(EQUITY_ACCOUNT),'id':account_id,'code':code,'name':name,

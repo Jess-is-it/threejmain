@@ -8,6 +8,39 @@ from fastapi import HTTPException
 
 
 class PayablePostgresRepository:
+    def card_statements(self):
+        if self.query("SELECT to_regclass('finance_card_statements') AS present",one=True)['present'] is None:
+            raise HTTPException(503,'Finance expense-workflow migration is required for credit-card statements')
+        return [r['data'] for r in self.query('SELECT data FROM finance_card_statements ORDER BY period_end,id')]
+
+    def card_statement(self, statement_id):
+        record=next((r for r in self.card_statements() if r['id']==statement_id),None)
+        if record is None:raise HTTPException(404,'Credit-card statement not found')
+        return record
+
+    def insert_card_statement(self,r):
+        self.card_statements()
+        self.execute('''INSERT INTO finance_card_statements(id,account_id,statement_reference,period_end,amount,data)
+                     VALUES (%s,%s,%s,%s,%s,%s)''',
+                     (r['id'],r['accountId'],r['statementReference'].upper(),r['periodEnd'],r['statementBalance'],Jsonb(r)))
+
+    def card_repayments(self, statement_id):
+        return [r['data'] for r in self.query('SELECT data FROM finance_card_repayments WHERE statement_id=%s ORDER BY effective_date,id',(statement_id,))]
+
+    def card_repayment(self, repayment_id):
+        record=self.query('SELECT data FROM finance_card_repayments WHERE id=%s',(repayment_id,),one=True)
+        if record is None:raise HTTPException(404,'Credit-card repayment not found')
+        return record['data']
+
+    def insert_card_repayment(self,r):
+        self.execute('''INSERT INTO finance_card_repayments(id,statement_id,journal_id,from_account_id,amount,effective_date,data)
+                     VALUES (%s,%s,%s,%s,%s,%s,%s)''',
+                     (r['id'],r['cardStatementId'],r['journalId'],r['fromAccountId'],r['amount'],r['effectiveDate'],Jsonb(r)))
+
+    def validate_cards(self):
+        self.execute('SET CONSTRAINTS finance_card_entries_valid,finance_card_payments_valid IMMEDIATE')
+        self.execute('SET CONSTRAINTS finance_card_entries_valid,finance_card_payments_valid DEFERRED')
+
     def masters(self, kind):
         table = 'finance_payees' if kind == 'payee' else 'finance_categories'
         return [r['data'] for r in self.query(f'SELECT data FROM {table} ORDER BY code')]

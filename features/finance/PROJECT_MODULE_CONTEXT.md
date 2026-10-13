@@ -1,5 +1,58 @@
 # Finance Management Module Context
 
+## Simple expenses and credit-card bills (2026-10-13)
+
+Current workflow and operations: SIMPLE_EXPENSES.md. Expenses & Payables now exposes
+payee/category/amount/date/description/evidence and payment arrangement first; extra
+references sit under More details. One list status covers review/settlement; technical
+accounting and audit details remain accessible. Mobile expense records use stacked cards.
+Pay later, supplier installment schedules and declared already-paid/card charges are
+supported. Exact monthly suggestions preserve cents/month ends; payments allocate earliest
+due first, with derived reversal recovery and as-of report aging tied to payable control.
+
+POST /api/finance/expenses commits draft, optional private evidence and submission
+atomically. Empty supplier invoice references receive explicitly internal references.
+POST /payables/{id}/approve-record commits independent approval and only that reviewed
+cost recognition together under expenses.approve; failures roll back both. This scoped
+business action grants no generic posting authority and moves no funds. Creator/editor,
+limits, frozen evidence, period locks and account/document scopes remain enforced.
+Original separate approve/post contracts stay available; actual supplier settlement
+still requires expenses.pay. Already-paid declarations are confirmed after approval.
+
+Accounts & Transfers -> Card bills uses web/FinanceCards.jsx and api/finance/cards.py.
+Issuer bills retain period/due/full balance/evidence and optional agreed installments;
+current card debt and bill remaining are explicitly separate. Bills post no costs.
+Repayment journals reduce liability/funds with zero expense/income effect. Linking an
+existing card transfer allocates evidence without posting again. Same references/keys
+recover safely. Reversals restore derived bill settlement; corrections retain immutable
+replacement evidence. Latest issuer full balance carries old debt forward and supersedes
+prior tracking bills; balances across bills are never summed as accounting liability.
+Account scopes filter bills and individual funding-account details. See SIMPLE_EXPENSES.md
+for all routes/grants and retained evidence/correction boundaries.
+
+EXPENSE_WORKFLOW_MIGRATIONS appends 2026101301_finance_expense_workflows through shared
+main registration: seven Finance migrations / 28 tables. New immutable card statements
+and repayments have relational journal/account mappings and PostgreSQL constraints.
+Previously applied migration bytes/checksums remain unchanged. No new source ledger,
+role grant, app dependency, provider or recurring job. Statement uploads/issuer feeds,
+minimum-payment or automatic interest calculations remain future work; card evidence
+currently uses controlled references. Costing/history/cutover prerequisites remain.
+
+Shared staging deployed with scripts/staging_deploy.sh on 8280/8200 under runtime lock,
+after a verified protected archive (SIMPLE_EXPENSES.md). Public Finance journals,
+payables and card bills remain empty; no production deploy. Browser fixtures come from
+real isolated services and intercept all financial writes. Readiness remains conditional
+on real named accounts, independently reviewed openings/cutover and trusted coverage.
+
+Final verification: exact staged Finance plus shared Finance wiring archive ran 349
+cases, 343 passed and six inherited/thread-fixture skips (343 Finance cases plus six
+shared wiring checks). All 26 Node client checks pass. Deployed browser review passes
+seven new expense/card groups, nine Activity regressions, eleven existing interface
+groups and thirteen actual staging groups, with no page errors or shared financial
+writes. Private PostgreSQL tests include real independent approval/payment workers,
+immutable SQL guards, failed-write rollback, and existing-transfer allocation.
+
+
 ## Activity transaction history (2026-10-13)
 
 Added the seventh workspace `Activity` at `/finance/activity`, under the shared

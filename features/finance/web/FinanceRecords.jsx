@@ -3,7 +3,7 @@ import { humanLabel } from './reportClient.mjs';
 
 export function FinanceStatus({ value }) {
   const text = value ?? 'UNAVAILABLE';
-  const color = /NOT_APPLICABLE|ARCHIVED|RETIRED|EVIDENCE/.test(text) ? 'secondary' : /REJECT|REVERSE|OPEN|UNPAID|UNAVAILABLE/.test(text) ? 'red' : /PARTIAL|DRAFT|SUBMITTED|UNPOSTED|PENDING|PROVISIONAL|ACKNOWLEDGED/.test(text) ? 'yellow' : 'green';
+  const color = /NOT_APPLICABLE|ARCHIVED|RETIRED|EVIDENCE|SUPERSEDED/.test(text) ? 'secondary' : /REJECT|REVERSE|OPEN|UNPAID|UNAVAILABLE|AWAITING_PAYMENT/.test(text) ? 'red' : /PARTIAL|DRAFT|SUBMITTED|UNPOSTED|PENDING|PROVISIONAL|ACKNOWLEDGED|NEEDS_APPROVAL|READY_TO_RECORD/.test(text) ? 'yellow' : 'green';
   return <span className={`badge bg-${color}-lt finance-status`}>{humanLabel(text)}</span>;
 }
 const searchable = (row) => JSON.stringify(row).toLowerCase();

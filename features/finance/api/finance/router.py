@@ -14,7 +14,9 @@ from .periods import PeriodPrepare, PeriodAction, CHECKS
 from .report_schemas import ReportKind, ReportSync
 from .income_schemas import (Source, MappingCreate, ManualIncomeCreate, CutoverCreate, ReviewAction, SyncRequest)
 from .expense_schemas import (PayeeCreate, CategoryCreate, MasterEdit, PayableCreate,
-                             PayableEdit, ExpenseAction, ExpensePost, PayablePayment, AttachmentUpload)
+                             PayableEdit, ExpenseAction, ExpensePost, PayablePayment, AttachmentUpload,
+                             ExpenseIntake, CardStatementCreate, CardRepayment, CardStatementCorrection, CardRepaymentLink)
+from . import cards
 from .permissions import Actor, PERMISSIONS
 from .schemas import (AccountAction, AccountCreate, AccountEdit, AccountKind,
                       Approval, JournalCreate, OpeningCreate, Reversal, TransferCreate)
@@ -270,6 +272,53 @@ def edit_category(category_id: str, payload: MasterEdit, idempotency_key: str | 
 @router.get('/payables')
 def payables(actor=Depends(require_actor)):
     return service.list_payables(actor)
+
+
+@router.post('/expenses', status_code=201)
+async def simple_expense(request: Request, idempotency_key: str | None = Header(default=None,alias='Idempotency-Key'), actor=Depends(require_actor)):
+    actor.require('finance.expenses.create')
+    content=bytearray()
+    async for chunk in request.stream():
+        if len(content)+len(chunk)>2_850_000:raise HTTPException(413,'Expense evidence request exceeds its size limit')
+        content.extend(chunk)
+    try:payload=ExpenseIntake.model_validate(json.loads(content))
+    except (ValueError,ValidationError):raise HTTPException(422,'Invalid expense, payment schedule or supporting document') from None
+    return service.expense_intake(actor,payload,idempotency_key)
+
+
+@router.post('/payables/{payable_id}/approve-record')
+def approve_and_record(payable_id: str, payload: ExpenseAction, idempotency_key: str | None = Header(default=None,alias='Idempotency-Key'), actor=Depends(require_actor)):
+    return service.expense_action(actor,payable_id,'approve',payload,idempotency_key,recognize=True)
+
+
+@router.get('/card-statements')
+def card_statements(actor=Depends(require_actor)):
+    return cards.statements(service,actor)
+
+
+@router.post('/card-statements',status_code=201)
+def new_card_statement(payload: CardStatementCreate,idempotency_key: str | None = Header(default=None,alias='Idempotency-Key'),actor=Depends(require_actor)):
+    return cards.create(service,actor,payload,idempotency_key)
+
+
+@router.post('/card-statements/{statement_id}/correct',status_code=201)
+def correct_card_statement(statement_id: str,payload: CardStatementCorrection,idempotency_key: str | None = Header(default=None,alias='Idempotency-Key'),actor=Depends(require_actor)):
+    return cards.create(service,actor,payload,idempotency_key,correcting=statement_id)
+
+
+@router.post('/card-statements/{statement_id}/repayments',status_code=201)
+def repay_card_statement(statement_id: str,payload: CardRepayment,idempotency_key: str | None = Header(default=None,alias='Idempotency-Key'),actor=Depends(require_actor)):
+    return cards.repay(service,actor,statement_id,payload,idempotency_key)
+
+
+@router.post('/card-statements/{statement_id}/link-repayment',status_code=201)
+def link_card_repayment(statement_id: str,payload: CardRepaymentLink,idempotency_key: str | None = Header(default=None,alias='Idempotency-Key'),actor=Depends(require_actor)):
+    return cards.link(service,actor,statement_id,payload,idempotency_key)
+
+
+@router.post('/card-repayments/{repayment_id}/reverse')
+def reverse_card_repayment(repayment_id: str,payload: Reversal,idempotency_key: str | None = Header(default=None,alias='Idempotency-Key'),actor=Depends(require_actor)):
+    return cards.reverse(service,actor,repayment_id,payload,idempotency_key)
 
 
 @router.post('/payables', status_code=201)

@@ -87,7 +87,7 @@ try {
   checks.push('authenticated CSV download and full-period print layout');
   await workspace('Expenses & Payables');
   await page.getByText('Loading expense records…').waitFor({ state: 'hidden' });
-  const submitted = page.locator('tbody tr').filter({ hasText: 'Submitted' });
+  const submitted = page.locator('tbody tr').filter({ hasText: 'Needs approval' });
   await submitted.getByRole('button').first().click();
   await page.getByRole('heading', { name: /Expense #/ }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Approve', exact: true }).count(), 0);

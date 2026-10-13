@@ -1,0 +1,117 @@
+// Deployed UI against isolated real-service records; financial writes intercepted.
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const { chromium } = await import(pathToFileURL(process.env.FINANCE_PLAYWRIGHT_MODULE).href);
+const fixtures = JSON.parse(fs.readFileSync(process.env.FINANCE_UI_FIXTURES, 'utf8'));
+const token = fs.readFileSync(process.env.FINANCE_STAGING_TOKEN_FILE, 'utf8').trim();
+const base = process.env.FINANCE_STAGING_URL || 'http://192.168.50.70:8280';
+const shots = process.env.FINANCE_STAGING_SCREENSHOTS;
+if (shots) fs.mkdirSync(shots, { recursive: true, mode: 0o700 });
+const browser = await chromium.launch({ headless: true });
+const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+const errors = [], writes = [], missing = [], checks = [];
+let approver = false;
+page.on('pageerror', (e) => errors.push(e.message));
+await page.addInitScript((value) => localStorage.setItem('threejmain_token', value), token);
+await page.route('**/api/finance/**', async (route) => {
+  const req = route.request(), url = new URL(req.url()), resource = url.pathname.replace('/api/finance/', '');
+  if (req.method() !== 'GET') {
+    writes.push({ path: resource, body: JSON.parse(req.postData() || '{}') });
+    await route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ detail: 'Isolated review: financial writes intercepted.' }) }); return;
+  }
+  let key = resource;
+  if (resource === 'reports/monthly-series') key = 'series/' + url.searchParams.get('kind');
+  if (resource === 'reports/comparison') key = 'comparison/' + url.searchParams.get('kind');
+  let data = fixtures[key];
+  if (resource === 'meta' && approver) data = { ...data, actorUsername: 'independent-approver' };
+  if (data === undefined) missing.push(key);
+  await route.fulfill({ status: data === undefined ? 404 : 200, contentType: 'application/json', body: JSON.stringify(data ?? { detail: 'Missing fixture ' + key }) });
+});
+const dialog = () => page.getByRole('dialog');
+async function cancel() { await dialog().getByRole('button', { name: 'Cancel', exact: true }).click(); }
+async function openExpenses() {
+  await page.goto(base + '/finance/expenses');
+  await page.getByRole('heading', { name: 'Finance Management', exact: true }).waitFor();
+  await page.getByText('Loading expense records…').waitFor({ state: 'hidden' });
+  await page.getByRole('button', { name: 'Add expense', exact: true }).waitFor();
+}
+try {
+  await openExpenses(); await page.getByRole('button', { name: 'Add expense', exact: true }).click();
+  assert.equal(await dialog().getByLabel('Supplier invoice number').isVisible(), false);
+  assert.equal(await dialog().getByLabel('Location reference').isVisible(), false);
+  await dialog().getByLabel('Payee').selectOption(fixtures.payees[0].id);
+  await dialog().getByLabel('Category').selectOption(fixtures.categories.find((r) => r.classification === 'OPERATING_EXPENSE').id);
+  await dialog().getByLabel('Amount (PHP)', { exact: true }).fill('100.00');
+  await dialog().getByLabel('Description / purpose').fill('Reviewed office purchase');
+  await dialog().getByLabel('Expense date').fill('2026-01-31');
+  await dialog().getByLabel('Receipt or invoice').setInputFiles({ name: 'receipt.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.7\nEvidence') });
+  if (shots) await page.screenshot({ path: shots + '/simple-expense-desktop.png', fullPage: true });
+  await dialog().getByRole('button', { name: 'Save draft', exact: true }).click();
+  await page.getByText('Isolated review: financial writes intercepted.').first().waitFor();
+  assert.equal(writes.at(-1).path, 'expenses');assert.equal(writes.at(-1).body.submitForApproval, false);
+  assert.equal(writes.at(-1).body.documentDate, '2026-01-31');assert.match(writes.at(-1).body.attachment.contentBase64, /^JVBER/);
+  checks.push('simple form hides advanced details and atomically includes receipt with draft');
+  await dialog().getByLabel('Payment arrangement').selectOption('INSTALLMENTS');
+  await dialog().getByLabel('First due date').fill('2026-01-31');
+  await dialog().getByRole('button', { name: 'Create monthly schedule' }).click();
+  assert.equal(await dialog().getByLabel('Installment 3 amount (PHP)').inputValue(), '33.34');
+  assert.equal(await dialog().getByLabel('Installment 2 due date').inputValue(), '2026-02-28');
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+  if (shots) await page.screenshot({ path: shots + '/expense-installments-mobile.png', fullPage: true });
+  await dialog().getByRole('button', { name: 'Submit for approval', exact: true }).click();
+  await page.getByText('Isolated review: financial writes intercepted.').first().waitFor();
+  assert.equal(writes.at(-1).body.submitForApproval, true);assert.equal(writes.at(-1).body.installments.length, 3);
+  checks.push('exact installment amounts, month-end dates, submission and mobile layout');
+  await dialog().getByLabel('Payment arrangement').selectOption('ALREADY_PAID');
+  await dialog().getByLabel('Paid from account').selectOption(fixtures.workflow.cardId);
+  await dialog().getByLabel('Actual payment / card charge date').fill('2026-02-01');
+  await dialog().getByLabel('Payment / card charge reference').fill('Verified card slip');
+  await dialog().getByRole('button', { name: 'Submit for approval', exact: true }).click();
+  await page.getByText('Isolated review: financial writes intercepted.').first().waitFor();
+  assert.equal(writes.at(-1).body.paidDetails.method, 'CREDIT_CARD');assert.equal(writes.at(-1).body.installments.length, 0);
+  checks.push('already-paid card details remain distinct from later card debt');
+  await cancel(); await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.locator('.finance-expenses tbody tr').filter({ hasText: 'Installments' }).getByRole('button').first().click();
+  await page.getByRole('heading', { name: 'Supplier installment schedule' }).waitFor();
+  assert.match(await page.locator('.finance-expense-detail').innerText(), /₱40\.00/);
+  await page.getByRole('button', { name: 'Record payment', exact: true }).click();
+  assert.equal(await dialog().getByLabel('Amount paid (PHP)').inputValue(), '40.00');await cancel();
+  checks.push('partial-payment schedule and next-payment default agree with real records');
+  approver = true; await openExpenses();
+  const submitted = fixtures.workflow.submitted;
+  await page.getByRole('button', { name: `#${submitted.number} ${submitted.payeeSnapshot.name}`, exact: true }).click();
+  await page.getByRole('button', { name: 'Approve', exact: true }).click();
+  await dialog().getByLabel('Action reason').fill('Reviewed approved cost');
+  await dialog().getByRole('button', { name: 'Confirm and save', exact: true }).click();
+  await page.getByText('Isolated review: financial writes intercepted.').first().waitFor();
+  assert.equal(writes.at(-1).path, `payables/${submitted.id}/approve-record`);await cancel();
+  checks.push('independent approval calls transactional recognition endpoint');
+  await page.getByRole('navigation', { name: 'Finance workspaces' }).getByRole('button', { name: 'Accounts & Transfers', exact: true }).click();
+  await page.getByRole('button', { name: 'Card bills', exact: true }).click();
+  await page.getByText('Loading card bills…').waitFor({ state: 'hidden' });
+  await page.locator('.finance-cards tbody').getByRole('button').first().click();
+  await page.getByRole('button', { name: 'Record card repayment' }).click();
+  await dialog().getByLabel('Pay from account').selectOption(fixtures.workflow.fundsId);
+  await dialog().getByLabel('Bank / wallet payment reference').fill('Issuer payment reference');
+  await dialog().getByRole('button', { name: 'Confirm and save', exact: true }).click();
+  await page.getByText('Isolated review: financial writes intercepted.').first().waitFor();
+  assert.equal(writes.at(-1).path, `card-statements/${fixtures.workflow.billId}/repayments`);
+  assert.equal(writes.at(-1).body.amount, '60.00');await cancel();
+  checks.push('card bill shows debt separately and uses linked liability repayment');
+  await page.getByRole('button', { name: 'Add card bill', exact: true }).click();
+  await dialog().getByLabel('Credit-card account').selectOption(fixtures.workflow.cardId);
+  await dialog().getByLabel('Full statement balance (PHP)').fill('90.00');
+  await dialog().getByLabel('Bill reference', { exact: true }).fill('Future statement');
+  await dialog().getByLabel('Statement evidence reference').fill('Issuer PDF');
+  await dialog().getByLabel('Agreed installment plan').check();
+  await dialog().getByRole('button', { name: 'Create monthly schedule' }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+  if (shots) await page.screenshot({ path: shots + '/card-bill-installments-mobile.png', fullPage: true });
+  await cancel();checks.push('card bill installments and mobile entry remain separate from supplier costs');
+  assert.deepEqual(errors, []);assert.deepEqual(missing, []);
+  console.log(JSON.stringify({ passed: checks, pageErrors: errors.length, interceptedWrites: writes.length, sharedFinancialWrites: 0 }));
+} catch (error) { console.error(JSON.stringify({ errors, missing, text: (await page.locator('body').innerText()).slice(-2000), lastWrites: writes.map((r) => r.path) }));throw error; }
+finally { await browser.close(); }

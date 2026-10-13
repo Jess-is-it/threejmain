@@ -88,3 +88,18 @@
   body.finance-printing .finance-print-region tr { break-inside: avoid; }
   @page { size: landscape; margin: 12mm; }
 }
+
+.finance-more-details { margin: 1rem 0; }
+.finance-more-details summary { cursor: pointer; font-weight: 600; margin-bottom: .75rem; }
+.finance-installment-row { display: grid; grid-template-columns: 2rem 1fr 1fr; gap: .75rem; align-items: center; }
+@media (max-width: 575px) { .finance-installment-row { grid-template-columns: 1fr; } }
+
+@media (max-width: 575px) {
+  .finance-expense-table thead { display: none; }
+  .finance-expense-table, .finance-expense-table tbody { display: block; width: 100%; }
+  .finance-expense-table tr { display: block; border: 1px solid var(--tblr-border-color, #ddd); border-radius: .5rem; padding: .5rem; margin-bottom: .75rem; }
+  .finance-expense-table td { display: grid; grid-template-columns: 6rem minmax(0, 1fr); align-items: start; gap: .5rem; padding: .35rem; border: 0; overflow-wrap: anywhere; }
+  .finance-expense-table td::before { content: attr(data-label); font-weight: 600; }
+  .finance-expense-table td small { grid-column: 2; }
+  .finance-expense-table td[colspan] { display: block; }
+}

@@ -74,6 +74,8 @@ class FinanceService:
             scoped(actor,result['id'])
         if 'accountId' in result:
             scoped(actor,result['accountId'])
+        if 'fromAccountId' in result:
+            scoped(actor,result['fromAccountId'])
         for line in result.get('lines',[]):
             scoped(actor,line['accountId'])
 
@@ -286,8 +288,10 @@ class FinanceService:
                               {**p,'state':'SETTLED','incomeEffect':'0.00','expenseEffect':'0.00'})
         return self._mutate(actor,'finance.transfers.post','transfer.post',key,p,action)
 
-    def _reverse_in_repo(self, repo, actor, entry_id, p, *, payable_workflow=False, income_workflow=False, metadata_override=None):
+    def _reverse_in_repo(self, repo, actor, entry_id, p, *, payable_workflow=False, income_workflow=False, card_workflow=False, metadata_override=None):
         original=repo.entry(entry_id)
+        if original['metadata'].get('cardStatementId') and not card_workflow:
+            raise HTTPException(409, 'Use the linked credit-card repayment correction workflow')
         if any(original['metadata'].get(k) for k in ('incomeSourceId','manualIncomeId','cutoverId')) and not income_workflow:
             raise HTTPException(409, 'Use the source-owned income correction or reviewed income reversal workflow')
         if original['metadata'].get('payableId') and not payable_workflow:

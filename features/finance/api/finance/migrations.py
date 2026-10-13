@@ -42,3 +42,9 @@ READINESS_MIGRATIONS = [{
     'description': 'Reviewed period posting locks and immutable close/reopen publication revisions',
     'statements': [(Path(__file__).parent / 'migrations' / '2026101206_finance_periods.sql').read_text()],
 }]
+
+EXPENSE_WORKFLOW_MIGRATIONS = [{
+    'id': '2026101301_finance_expense_workflows',
+    'description': 'Immutable card statements, balanced repayments and reviewed expense installment terms',
+    'statements': [(Path(__file__).parent / 'migrations' / '2026101301_finance_expense_workflows.sql').read_text()],
+}]

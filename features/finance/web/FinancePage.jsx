@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { FinanceApi, businessDate, moneyLabel, newReference } from './financeApi.mjs';
 import './finance.css';
 import ExpensesPayables from './ExpensesPayables.jsx';
+import FinanceCards from './FinanceCards.jsx';
 import IncomeCollections from './IncomeCollections.jsx';
 import FinanceReports from './FinanceReports.jsx';
 import FinanceDialog from './FinanceDialog.jsx';
@@ -129,7 +130,7 @@ export default function FinancePage({ apiBase = '', refreshShell = () => {}, ini
   const openingView = useRecordView(openings, { statuses: ['DRAFT', 'APPROVED', 'POSTED'], resetKey: section });
   const entryView = useRecordView(entries.filter((e) => section === 'Journal' || e.kind === 'TRANSFER'), { statuses: ['POSTED', 'REVERSED'], getStatus: (e) => e.reversedByEntryId ? 'REVERSED' : 'POSTED', resetKey: section });
   const title = { account: 'New financial account', edit: 'Edit account', archive: 'Archive account', restore: 'Restore account', opening: 'Opening balance request', approve: 'Approve opening balance', 'post-opening': 'Post opening balance', transfer: 'Internal transfer', journal: 'Post accounting journal', reverse: 'Reverse journal entry' };
-  const buttonsDisabled = busy || Boolean(pending);
+  const buttonsDisabled = busy || expenseBusy || incomeBusy || reportBusy || Boolean(pending);
 
   return <div className="finance-management container-xl">
     <header className="finance-header"><div><h2>Finance Management</h2><p>Cash, earned results, supplier obligations and subscriber reporting</p></div></header>
@@ -143,11 +144,12 @@ export default function FinancePage({ apiBase = '', refreshShell = () => {}, ini
       {['Overview', 'Financial Reports', 'Subscriber Growth'].includes(workspace) && <FinanceReports key={`${workspace}-${meta.actorUsername}`} api={api} meta={meta} mode={workspace === 'Overview' ? 'overview' : workspace === 'Subscriber Growth' ? 'subscribers' : 'financial'} refreshVersion={refreshVersion} pending={pending} onPendingChange={setPending} onBusyChange={setReportBusy} onOpenPayable={(id) => { setSelectedExpenseId(id); setWorkspace('Expenses & Payables'); onWorkspaceChange('Expenses & Payables'); }} />}
       {workspace === 'Expenses & Payables' && <ExpensesPayables api={api} meta={meta} pending={pending} onPendingChange={setPending} onBusyChange={setExpenseBusy} parentBusy={busy} refreshVersion={refreshVersion} initialPayableId={selectedExpenseId} onSaved={async () => { try { await reload(); } catch (e) { setError(e.message); } }} />}
       {workspace === 'Income & Collections' && <IncomeCollections api={api} meta={meta} pending={pending} onPendingChange={setPending} onBusyChange={setIncomeBusy} parentBusy={busy} refreshVersion={refreshVersion} onSaved={async () => { try { await reload(); } catch (e) { setError(e.message); } }} />}
-      {workspace === 'Accounts & Transfers' && <><div className="finance-toolbar"><nav aria-label="Accounting foundation views">{['Accounts', 'Opening balances', 'Transfers', 'Journal'].map((name) => <button type="button" className={`btn ${section === name ? 'btn-primary' : 'btn-outline-primary'}`} key={name} onClick={() => setSection(name)}>{name}</button>)}</nav>
+      {workspace === 'Accounts & Transfers' && <><div className="finance-toolbar"><nav aria-label="Accounting foundation views">{['Accounts', 'Card bills', 'Opening balances', 'Transfers', 'Journal'].map((name) => <button type="button" className={`btn ${section === name ? 'btn-primary' : 'btn-outline-primary'}`} key={name} disabled={busy || expenseBusy} onClick={() => setSection(name)}>{name}</button>)}</nav>
         <div>{allowed('finance.accounts.manage') && <button className="btn btn-primary" disabled={buttonsDisabled} onClick={() => start('account')}>New account</button>}
           {allowed('finance.transfers.post') && <button className="btn btn-outline-primary" disabled={buttonsDisabled || !allowed('finance.accounts.view')} onClick={() => start('transfer')}>Transfer funds</button>}
           {allowed('finance.journals.post') && <button className="btn btn-outline-primary" disabled={buttonsDisabled || !allowed('finance.accounts.view')} onClick={() => start('journal')}>Post journal</button>}
         </div></div>
+      {section === 'Card bills' && <FinanceCards key={meta.actorUsername} api={api} meta={meta} accounts={accounts} refreshVersion={refreshVersion} pending={pending} onPendingChange={setPending} onBusyChange={setExpenseBusy} onSaved={reload} />}
       {section === 'Accounts' && (allowed('finance.accounts.view') ? <>
         <p>Payment methods describe how money moves. Select the actual named account that holds funds. Credit-card balances show amounts owed; personal collector GCash shows funds due from the collector.</p>
         {accountView.controls}<label><input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} /> Include archived accounts</label>
