@@ -5,6 +5,7 @@ import ExpensesPayables from './ExpensesPayables.jsx';
 import IncomeCollections from './IncomeCollections.jsx';
 import FinanceReports from './FinanceReports.jsx';
 import FinanceDialog from './FinanceDialog.jsx';
+import FinanceActivity from './FinanceActivity.jsx';
 import { withinApprovalLimit } from './reportClient.mjs';
 import { useRecordView, FinanceStatus } from './FinanceRecords.jsx';
 
@@ -13,7 +14,7 @@ const LABELS = {
   COLLECTOR_CASH: 'Collector cash custody', COLLECTOR_GCASH: 'Collector personal GCash due',
   CREDIT_CARD: 'Credit card liability', GENERAL_LEDGER: 'General ledger',
 };
-const WORKSPACES = ['Overview', 'Accounts & Transfers', 'Expenses & Payables', 'Income & Collections', 'Financial Reports', 'Subscriber Growth'];
+const WORKSPACES = ['Overview', 'Activity', 'Accounts & Transfers', 'Expenses & Payables', 'Income & Collections', 'Financial Reports', 'Subscriber Growth'];
 const EMPTY_LINE = () => ({ accountId: '', debit: '', credit: '', memo: '' });
 
 export default function FinancePage({ apiBase = '', refreshShell = () => {}, initialWorkspace = 'Overview', onWorkspaceChange = () => {} }) {
@@ -138,6 +139,7 @@ export default function FinancePage({ apiBase = '', refreshShell = () => {}, ini
     {meta?.setupStatus === 'PENDING_REVIEWED_CUTOVER' && <div className="alert alert-info" role="status">Finance setup requires reviewed named-account openings and an independently approved source cutover. Financial figures currently reflect posted Finance evidence; existing Billing receipts will not be imported as new cash.</div>}
     {pending && <div className="alert alert-warning" role="status">A Finance request is awaiting confirmation. Retry the saved request before posting another action. <button type="button" className="btn btn-warning" disabled={busy || expenseBusy || incomeBusy || reportBusy} onClick={retry}>Confirm saved request</button></div>}
     {loading ? <p role="status">Loading Finance accounts…</p> : !meta ? <button className="btn btn-outline-primary" onClick={() => reload().catch((e) => setError(e.message))}>Retry loading Finance</button> : <>
+      {workspace === 'Activity' && <FinanceActivity key={meta.actorUsername} api={api} meta={meta} refreshVersion={refreshVersion} onOpenPayable={(id) => { setSelectedExpenseId(id); setWorkspace('Expenses & Payables'); onWorkspaceChange('Expenses & Payables'); }} onOpenWorkspace={(name) => { setWorkspace(name); onWorkspaceChange(name); }} />}
       {['Overview', 'Financial Reports', 'Subscriber Growth'].includes(workspace) && <FinanceReports key={`${workspace}-${meta.actorUsername}`} api={api} meta={meta} mode={workspace === 'Overview' ? 'overview' : workspace === 'Subscriber Growth' ? 'subscribers' : 'financial'} refreshVersion={refreshVersion} pending={pending} onPendingChange={setPending} onBusyChange={setReportBusy} onOpenPayable={(id) => { setSelectedExpenseId(id); setWorkspace('Expenses & Payables'); onWorkspaceChange('Expenses & Payables'); }} />}
       {workspace === 'Expenses & Payables' && <ExpensesPayables api={api} meta={meta} pending={pending} onPendingChange={setPending} onBusyChange={setExpenseBusy} parentBusy={busy} refreshVersion={refreshVersion} initialPayableId={selectedExpenseId} onSaved={async () => { try { await reload(); } catch (e) { setError(e.message); } }} />}
       {workspace === 'Income & Collections' && <IncomeCollections api={api} meta={meta} pending={pending} onPendingChange={setPending} onBusyChange={setIncomeBusy} parentBusy={busy} refreshVersion={refreshVersion} onSaved={async () => { try { await reload(); } catch (e) { setError(e.message); } }} />}

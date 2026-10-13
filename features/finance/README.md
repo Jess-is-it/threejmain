@@ -3,6 +3,23 @@
 Finance Management owns ISP financial accounts, accounting, expenses/payables,
 source-linked income, cash flow, financial reports and subscriber analytics.
 
+## Activity transaction history
+
+`/finance/activity` is the seventh workspace under Finance Management. It shows
+posted money in, money out and transfers automatically from the existing journal,
+with date/account/type/search filters, server pagination and supporting-record
+details. A transfer or remittance appears once; Billing receipt aliases do not
+produce additional rows. Card purchases/credits and opening balances have
+separate labels; loan proceeds and owner funding remain distinct from revenue.
+Unpaid recognition and pending approvals do not create money movement rows.
+Corrections preserve the original and link both records. Expense payments open
+their exact payable; source/manual income evidence is available in the detail.
+
+Read-only APIs: `GET /api/finance/activity` and `GET /api/finance/activity/{id}`.
+Both require `finance.view`, `finance.accounts.view`, `finance.journals.view`,
+plus existing linked expense/source permissions and account/document scopes.
+No new ledger, permission grant, migration or financial posting was introduced.
+
 ## Current status
 
 Phases 1–7 are implemented and integrated on shared staging (`integrated`). Named
@@ -89,7 +106,7 @@ features/finance/
     tests/
 ```
 
-Live staging route: `/finance`, with six workspace deep links under one parent.
+Live staging route: `/finance`, with seven workspace deep links under one parent.
 Live API prefix: `/api/finance`. Production is not deployed.
 
 ## Implementation specification

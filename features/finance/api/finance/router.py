@@ -19,6 +19,7 @@ from .permissions import Actor, PERMISSIONS
 from .schemas import (AccountAction, AccountCreate, AccountEdit, AccountKind,
                       Approval, JournalCreate, OpeningCreate, Reversal, TransferCreate)
 from .storage import PostgresStore
+from .activity import transaction_history, transaction_detail
 
 router = APIRouter(prefix='/api/finance', tags=['finance'])
 _actor_provider = None
@@ -132,6 +133,21 @@ def integration_recover(actor=Depends(require_actor)):
     # authority to broaden HTTP permissions. Recovery replays immutable effects.
     from .integration import RecoveryWorker
     return RecoveryWorker(service, actor, _integration.store).recover()
+
+
+@router.get('/activity')
+def finance_activity(fromDate: date | None = None, throughDate: date | None = None,
+                     accountId: str | None = None,
+                     type: Literal['MONEY_IN', 'MONEY_OUT', 'TRANSFER', 'CARD_PURCHASE', 'CARD_CREDIT', 'OPENING', 'CORRECTION'] | None = None,
+                     search: str = Query(default='', max_length=160), offset: int = Query(default=0, ge=0),
+                     limit: int = Query(default=25, ge=1, le=100), actor=Depends(require_actor)):
+    return transaction_history(service, actor, from_date=fromDate, through_date=throughDate,
+                               account_id=accountId, activity_type=type, search=search, offset=offset, limit=limit)
+
+
+@router.get('/activity/{entry_id}')
+def finance_activity_detail(entry_id: str, actor=Depends(require_actor)):
+    return transaction_detail(service, actor, entry_id)
 
 
 @router.get('/accounts')

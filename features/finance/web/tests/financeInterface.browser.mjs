@@ -44,7 +44,7 @@ try {
   async function workspace(name) { await page.getByRole('navigation', { name: 'Finance workspaces' }).getByRole('button', { name, exact: true }).click(); await page.getByText('Loading reports and their supporting records…').waitFor({ state: 'hidden' }); }
   async function close() { await page.getByRole('dialog').getByRole('button', { name: 'Close records', exact: true }).click(); }
   await mount();
-  assert.equal(await page.getByRole('navigation', { name: 'Finance workspaces' }).getByRole('button').count(), 6);
+  assert.equal(await page.getByRole('navigation', { name: 'Finance workspaces' }).getByRole('button').count(), 7);
   await page.getByRole('button', { name: /Available controlled cash/ }).click();
   await page.getByRole('dialog').getByText('Closing balance', { exact: true }).waitFor();
   await close(); checks.push('overview summary opens controlled account records');

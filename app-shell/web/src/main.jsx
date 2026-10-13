@@ -71,6 +71,7 @@ const moduleNav = [
   { page: 'Billing', slug: 'billing', icon: IconCash, tone: 'green' },
   { page: 'Finance Management', slug: 'finance', icon: IconCash, tone: 'green', children: [
     { page: 'Finance Overview', slug: 'finance', icon: IconDashboard, tone: 'green' },
+    { page: 'Activity', slug: 'finance/activity', icon: IconActivity, tone: 'green' },
     { page: 'Accounts & Transfers', slug: 'finance/accounts', icon: IconCash, tone: 'green' },
     { page: 'Expenses & Payables', slug: 'finance/expenses', icon: IconReceipt, tone: 'green' },
     { page: 'Income & Collections', slug: 'finance/income', icon: IconCash, tone: 'green' },
@@ -917,7 +918,7 @@ function App() {
   const collectorLandingPage = permittedCollectorPages?.has('Collector')
     ? 'Collector'
     : collectorNavItems.length ? firstLeafNavItem(collectorNavItems[0]).page : 'View Profile';
-  const financePages = ['Finance Management', 'Finance Overview', 'Accounts & Transfers', 'Expenses & Payables', 'Income & Collections', 'Financial Reports', 'Subscriber Growth'];
+  const financePages = ['Finance Management', 'Finance Overview', 'Activity', 'Accounts & Transfers', 'Expenses & Payables', 'Income & Collections', 'Financial Reports', 'Subscriber Growth'];
   const financeAllowed = (me?.permissions || []).some((p) => p === '*' || p === 'finance.view');
   const activeNavItems = technicianUser ? technicianNav : collectorPortalUser ? collectorNavItems : moduleNav.filter((item) => item.slug !== 'finance' || financeAllowed);
   const activePage = technicianUser && !TECHNICIAN_ALLOWED_PAGES.has(page)

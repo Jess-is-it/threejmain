@@ -3,7 +3,7 @@
   "name": "Finance Management",
   "status": "integrated",
   "owner": "threejmain",
-  "description": "Finance Management accounts, accounting, payables, source recovery and six workspaces integrated with shared Access and PostgreSQL; reviewed business cutover required.",
+  "description": "Finance Management accounts, accounting, payables, source recovery and seven workspaces including transaction history integrated with shared Access and PostgreSQL; reviewed business cutover required.",
   "app_shell_route": "/finance",
   "api_prefix": "/api/finance",
   "frontend_entry": "features/finance/web/FinancePage.jsx",
@@ -17,6 +17,7 @@
   "migrations_entry": "features/finance/api/finance/migrations.py",
   "implemented_workspaces": [
     "overview",
+    "activity",
     "accounts_and_transfers",
     "expenses_and_payables",
     "income_and_collections",
@@ -25,6 +26,7 @@
   ],
   "planned_workspace_labels": [
     "Overview",
+    "Activity",
     "Accounts & Transfers",
     "Expenses & Payables",
     "Income & Collections",
@@ -33,6 +35,7 @@
   ],
   "planned_workspaces": [
     "overview",
+    "activity",
     "accounts_and_transfers",
     "expenses_and_payables",
     "income_and_collections",
@@ -43,6 +46,7 @@
   "historical_import_plan": "features/finance/HISTORICAL_IMPORT_PLAN.md",
   "reporting_integration": "features/finance/PHASE5_REPORTING.md",
   "implemented_api_workspaces": [
+    "activity",
     "accounts_and_transfers",
     "expenses_and_payables",
     "income_and_collections",
@@ -54,6 +58,7 @@
   "shared_integration": "features/finance/PHASE7_INTEGRATION.md",
   "workspace_routes": [
     "/finance",
+    "/finance/activity",
     "/finance/accounts",
     "/finance/expenses",
     "/finance/income",

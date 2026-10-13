@@ -57,9 +57,18 @@
 .finance-management .finance-bar-zero { position: absolute; height: 100%; border-left: 1px solid var(--tblr-secondary, #667382); }
 .finance-management .finance-bar strong { text-align: right; overflow-wrap: anywhere; }
 .finance-management .finance-records { margin-top: 1rem; }
+.finance-management .finance-activity .finance-toolbar > div { display: block; }
+.finance-management .finance-activity-table td { overflow-wrap: anywhere; }
+.finance-management .finance-activity-table td:first-child { white-space: nowrap; }
+.finance-management .finance-activity-table .badge { white-space: normal; }
 .finance-management .finance-records td { max-width: 26rem; overflow-wrap: anywhere; }
 .finance-management :is(button, [tabindex]):focus-visible { outline: 3px solid var(--tblr-primary, #206bc4); outline-offset: 3px; }
 @media (max-width: 640px) {
+  .finance-management .finance-activity-table, .finance-management .finance-activity-table tbody { display: block; width: 100%; }
+  .finance-management .finance-activity-table thead { display: none; }
+  .finance-management .finance-activity-table tr { display: block; padding: .75rem; margin: .75rem 0; border: 1px solid var(--tblr-border-color, #ddd); border-radius: .5rem; background: var(--tblr-bg-surface, white); }
+  .finance-management .finance-activity-table td { display: block; padding: .35rem 0; border: 0; text-align: left !important; }
+  .finance-management .finance-activity-table td[data-label]::before { content: attr(data-label); display: block; color: var(--tblr-secondary, #667382); font-size: .75rem; margin-bottom: .15rem; }
   .finance-management .finance-period-form label { flex: 1; min-width: 45%; }
   .finance-management .finance-period-form > button { width: 100%; }
   .finance-management .finance-bar { grid-template-columns: 1fr auto; }

@@ -1,5 +1,53 @@
 # Finance Management Module Context
 
+## Activity transaction history (2026-10-13)
+
+Added the seventh workspace `Activity` at `/finance/activity`, under the shared
+Finance Management parent and exported from `web/index.mjs`. Implementation:
+`web/FinanceActivity.jsx`, `api/finance/activity.py`, read-only `/api/finance/activity`
+and `/api/finance/activity/{entry_id}` routes. Existing six workspaces and financial
+posting/provider ownership remain unchanged. No SQL migration or grant changes.
+
+One row per immutable posted journal with net movement in a named financial
+account; noncash accruals, unpaid recognition, source aliases and pending documents
+are absent. Money in/out, transfers/remittances, card purchases/credits and opening
+balances have readable labels. Loans, owner contributions, customer advances and
+card funding are not relabeled as earned revenue. Duplicate/no-funds receipt
+corrections have their own `CORRECTION` type and explicit no-money-moved label,
+separate from actual refunds. Bank-to-card repayment is money
+out; card-to-cash funding is money in; asset/custody transfers are internal.
+Remittance shortage rows show received amount, and details retain sent/received
+amounts plus the discrepancy journal. Personal Collector GCash remains a due-from
+account, clearly distinguished from controlled company cash in detail.
+
+GET list accepts inclusive `fromDate`, `throughDate` (defaults to current Manila
+day), `accountId`, `type`, `search`, `offset`, `limit` (1–100). Stable date/journal
+number descending order; exact PHP strings; archive retains historical account
+snapshots and selectable archived accounts. Search covers descriptions, journal
+numbers, references, counterparties, actors and historical account name/code.
+Full ledger read/projection precedes server pagination, matching current journal
+repository behavior; database query optimization remains future scale work.
+
+Both routes require Finance view, account view and journal view; current inherited
+entry scope also enforces every account, linked payable ownership/document scope,
+and income/source grants. Inaccessible entries are omitted from counts, details
+remain forbidden, and filters cannot broaden scope. No broad aggregate-report
+grant or new role upgrade is required. Corrections and original rows remain linked;
+opening rows are separate from current receipts. Details show supporting evidence
+and an optional accounting table. Expense payment links select the exact payable;
+source/manual links open Income & Collections while retaining exact evidence in
+the Activity detail. Attachments remain behind the existing secure payable route.
+
+Tests: `test_finance_activity.py` plus its private rollback PostgreSQL counterpart;
+browser fixtures from the actual API in `web/tests/activityFixtures.py` and deployed
+navigation checks in `web/tests/financeActivity.browser.mjs`. Full Finance suite:
+266 cases, 263 pass, three inherited fixture skips; 21 existing Node client checks
+pass. Activity backend adds 19 passing memory/PostgreSQL/HTTP cases. Browser checks
+cover nine populated Activity workflow groups and thirteen live Finance staging
+groups, with no page errors or financial writes. Mobile transaction cards expose
+amounts and both accounts without horizontal table scrolling. No real financial records
+were created by fixtures; forward source history still requires reviewed cutover.
+
 ## Purpose and current state
 
 Finance Management is the ISP finance workspace for the Finance

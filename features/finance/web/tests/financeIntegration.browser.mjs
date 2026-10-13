@@ -22,21 +22,31 @@ async function ready() {
   await page.getByText('Loading reports and their supporting records…', { exact: true }).waitFor({ state: 'hidden' });
   await page.getByText('Loading income records…', { exact: true }).waitFor({ state: 'hidden' });
   await page.getByText('Loading expense records…', { exact: true }).waitFor({ state: 'hidden' });
+  await page.getByText('Loading transaction history…', { exact: true }).waitFor({ state: 'hidden' });
   assert.equal(await page.locator('.finance-management .alert-danger').count(), 0);
 }
 async function open(path, workspace) {
   await page.goto(base + path); await ready();
   const nav = page.getByRole('navigation', { name: 'Finance workspaces' });
-  assert.equal(await nav.getByRole('button').count(), 6);
+  assert.equal(await nav.getByRole('button').count(), 7);
   assert.equal(await nav.getByRole('button', { name: workspace, exact: true }).getAttribute('aria-current'), 'page');
   assert.equal(new URL(page.url()).pathname, path);
 }
 try {
-  for (const [path, workspace] of [['/finance','Overview'],['/finance/accounts','Accounts & Transfers'],
+  for (const [path, workspace] of [['/finance','Overview'],['/finance/activity','Activity'],['/finance/accounts','Accounts & Transfers'],
     ['/finance/expenses','Expenses & Payables'],['/finance/income','Income & Collections'],
     ['/finance/reports','Financial Reports'],['/finance/subscribers','Subscriber Growth']]) {
     await open(path, workspace); checks.push('deep link '+path);
   }
+  await open('/finance/activity', 'Activity');
+  await page.getByLabel('Search transactions').fill('nonexistent activity review');
+  await page.getByRole('button', { name: 'Apply filters', exact: true }).click();
+  await ready();
+  await page.getByText(/No posted transactions match these filters/).waitFor();
+  await page.getByRole('button', { name: 'Clear filters', exact: true }).click();
+  await ready();
+  if (screenshots) await page.screenshot({ path: screenshots+'/activity-desktop.png', fullPage: true });
+  checks.push('actual transaction-history filters and empty state without posting');
   await open('/finance/accounts','Accounts & Transfers');
   await page.getByRole('button', { name: 'New account', exact: true }).click();
   await page.getByRole('dialog', { name: 'New financial account' }).waitFor();
