@@ -2,6 +2,14 @@
 
 ## Direct expense recording
 
+Expense payment/charge references are optional for cash, e-Wallet, bank and card
+purchases, including later expense payment confirmation. Any entered reference is
+retained; stable internal source IDs, receipt/evidence controls, attribution and
+idempotency remain required. Saving a draft or recording Pay later/Installments
+can exceed cash available; actual Paid now posting cannot make the funding account
+negative. Card charges increase debt rather than consume company cash. Ordinary
+transfer and card-bill repayment reference policies are unchanged.
+
 Authorized Finance users and owners can **Save & record** their own business
 expenses without independent approval. Roles exposes `finance.expenses.record-direct`
 (Record own expenses directly), with create/post dependencies. Immediate paid/card

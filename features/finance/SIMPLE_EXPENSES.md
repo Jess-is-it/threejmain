@@ -47,9 +47,9 @@ pending approval/recording. Accounting/audit details remain inside expense detai
   restore derived allocations. Terms freeze after submission. Reports allocate
   payments as of the selected report date, independently of today's settlement.
 - **Paid now**: select the actual cash/petty-cash, GCash or bank account, payment
-  date and noncash reference. Credit-card accounts are excluded from this selector.
+  date and optional noncash reference. Credit-card accounts are excluded from this selector.
 - **Charged to credit card**: select an active credit-card account, charge date and
-  card charge reference. The supplier is paid by the card; the card issuer is still owed.
+  optional card charge reference. The supplier is paid by the card; the card issuer is still owed.
 
 Both immediate-payment choices retain reviewed declarations; declarations alone move
 no money by themselves. Direct Save & record confirms the declared payment/charge

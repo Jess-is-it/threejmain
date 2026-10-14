@@ -1,5 +1,36 @@
 # Finance Management Module Context
 
+## Optional expense payment references (2026-10-14)
+
+Payment reference and Card charge reference are optional in expense creation/editing;
+the later expense-payment form also marks its bank/wallet/card reference optional.
+PayablesService._payment_account still enforces actual account/method compatibility,
+but no longer requires an external reference for noncash expenses. ExpenseIntake and
+PayablePayment already default referenceNumber to an empty string, so no schema or
+migration is needed. Existing references, immutable payment evidence and internal
+sourceReference/idempotency identities are retained; receipt/evidence, permission,
+review and exact-money controls still apply. Transfers and card-statement repayments
+keep their separate reference requirements.
+
+Expense amounts may exceed funds when saved as an unposted draft or recognized as
+Pay later/Installments: recognition records cost/asset and payable without moving
+money. Paid now checks every affected historical account balance and rejects a
+negative cash, bank or wallet balance, rolling back direct creation/posting/payment
+as a unit. A card charge increases credit-card liability and does not spend company
+cash; no card credit-limit model exists. Recognizing deferred expenses above a role
+amount limit still follows independent approval policy. Drafts/declarations do not
+claim a real payment has posted.
+
+Verification: 119 expense/workflow cases ran (116 passed, three inherited skips),
+including real PostgreSQL and worker races; all 33 client tests passed. Deployed
+staging direct and staff/payment/card browser groups passed (7 + 11) with blank
+bank/card references and all financial writes intercepted. Actual optional wallet
+reference field was visually checked on desktop/mobile, with zero page errors,
+financial writes or horizontal overflow. Tests prove blank-reference payment identity,
+retained supplied references, no-double-expense posting, over-balance draft/deferred
+recognition, and atomic bank/wallet overspend rejection. No schema migration or
+shared-file changes; shared staging deployed under runtime/server coordination.
+
 ## Authorized direct expense recording (2026-10-13)
 
 Current behavior supersedes the earlier universal expense approval policy in this

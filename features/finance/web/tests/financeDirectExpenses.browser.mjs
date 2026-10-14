@@ -102,9 +102,10 @@ try {
   role = 'direct'; await open();
   await dialog().getByLabel('Payment arrangement').selectOption('CHARGED_TO_CARD');
   await dialog().getByLabel('Credit-card account').selectOption(fixtures.workflow.cardId);
-  await dialog().getByLabel('Card charge reference').fill('Verified charge');
+  assert.equal(await dialog().getByLabel('Card charge reference').evaluate((el) => el.required), false);
   await send('Save & record');
   assert.equal(writes.at(-1).body.paidDetails.method, 'CREDIT_CARD');
+  assert.equal(writes.at(-1).body.paidDetails.referenceNumber, '');
   assert.equal(writes.at(-1).body.recordImmediately, true);
   checks.push('card charge explicitly explains and records card debt');
 

@@ -12,7 +12,7 @@ from finance.expense_schemas import (PayeeCreate, ExpensePost, ExpenseIntake, Pa
 from finance.memory import MemoryRepository
 from finance.permissions import Actor, PERMISSIONS
 from finance.reporting import ReportingService
-from finance.schemas import Reversal, TransferCreate
+from finance.schemas import AccountCreate, Reversal, TransferCreate
 
 
 class ExpenseWorkflowTests(expenses.PayablesTests):
@@ -50,6 +50,65 @@ class ExpenseWorkflowTests(expenses.PayablesTests):
 
     def direct(self,body,key=None,actor=expenses.CREATOR):
         return self.service.expense_intake(actor,ExpenseIntake(**body),key or self.key())
+
+    def reference_funds(self,kind):
+        opening=None if kind=='CREDIT_CARD' else {'amount':'1000.00','effectiveDate':expenses.DAY}
+        return self.service.create_account(expenses.CREATOR,AccountCreate(code=self.key()[:12],name='Expense funding',
+            kind=kind,startingBalance=opening),self.key())
+
+    def test_optional_noncash_reference_on_direct_expense_preserves_payment_identity(self):
+        for kind,method in [('BANK','BANK_TRANSFER'),('COMPANY_GCASH','GCASH'),('CREDIT_CARD','CREDIT_CARD')]:
+            body=self.direct_body();funds=self.reference_funds(kind)
+            body['paidDetails'].update(accountId=funds['id'],method=method)
+            body['paidDetails'].pop('referenceNumber',None)
+            key=self.key();r=self.direct(body,key);replay=self.direct(body,key)
+            self.assertEqual(replay['id'],r['id']);self.assertEqual(r['settlementStatus'],'PAID')
+            self.assertEqual(self.balance(funds['id']),'100.00' if kind=='CREDIT_CARD' else '900.00')
+            payment=self.details(r)['payments'][0]
+            self.assertEqual(payment['referenceNumber'],'');self.assertTrue(payment['sourceReference'])
+            self.assertEqual(self.balance(r['categorySnapshot']['accountId']),'100.00')
+
+    def test_optional_reference_on_reviewed_expense_and_later_payment(self):
+        from finance.expense_schemas import PayablePayment
+        for kind,method in [('BANK','BANK_TRANSFER'),('COMPANY_GCASH','GCASH'),('CREDIT_CARD','CREDIT_CARD')]:
+            body=self.direct_body();funds=self.reference_funds(kind)
+            body.update(recordImmediately=False,submitForApproval=True)
+            body['paidDetails'].update(accountId=funds['id'],method=method,referenceNumber='')
+            r=self.approve_record(self.direct(body))
+            self.assertEqual(self.details(r)['paidAmount'],'0.00')
+            payload=PayablePayment(accountId=funds['id'],effectiveDate=expenses.DAY,amount='100.00',
+                sourceReference=self.key(),method=method,reason='Confirmed supplier payment')
+            key=self.key();p=self.service.pay(expenses.CREATOR,r['id'],payload,key)
+            replay=self.service.pay(expenses.CREATOR,r['id'],payload,key)
+            self.assertEqual(replay['id'],p['id']);self.assertEqual(p['referenceNumber'],'')
+            self.assertEqual(self.details(r)['settlementStatus'],'PAID')
+            changed=payload.model_copy(update={'referenceNumber':'New supporting reference'})
+            self.expect(409,lambda:self.service.pay(expenses.CREATOR,r['id'],changed,key))
+
+    def test_expense_above_funds_can_be_drafted_or_deferred_without_deducting_cash(self):
+        body=self.direct_body();body['amount']='2000.00'
+        draft=self.direct({**body,'recordImmediately':False})
+        self.assertEqual((draft['approvalStatus'],draft['postingStatus']),('DRAFT','UNPOSTED'))
+        supplier=self.draft()['payeeId']
+        deferred={**body,'payeeId':supplier,'paidDetails':None,'paymentArrangement':'PAY_LATER'}
+        later=self.direct(deferred)
+        plan=self.direct({**deferred,'paymentArrangement':'INSTALLMENTS','dueDate':'2026-02-01',
+            'installments':[{'dueDate':'2026-02-01','amount':'1000.00'},{'dueDate':'2026-03-01','amount':'1000.00'}]})
+        self.assertEqual((later['outstandingAmount'],plan['outstandingAmount']),('2000.00','2000.00'))
+        self.assertEqual(self.balance(body['paidDetails']['accountId']),'1000.00')
+        with self.store.read() as repo:before=(len(repo.payables()),len(repo.entries()))
+        self.expect(409,lambda:self.direct(body))
+        with self.store.read() as repo:self.assertEqual((len(repo.payables()),len(repo.entries())),before)
+        self.assertEqual(self.balance(body['paidDetails']['accountId']),'1000.00')
+
+    def test_reference_optional_does_not_allow_bank_wallet_overspending_or_fake_method(self):
+        for kind,method in [('BANK','BANK_TRANSFER'),('COMPANY_GCASH','GCASH')]:
+            body=self.direct_body();funds=self.reference_funds(kind)
+            body['paidDetails'].update(accountId=funds['id'],method=method,referenceNumber='')
+            self.expect(409,lambda:self.direct({**body,'amount':'1000.01'}))
+            self.assertEqual(self.balance(funds['id']),'1000.00')
+            body['paidDetails']['method']='CREDIT_CARD'
+            self.expect(400,lambda:self.direct(body))
 
     def test_direct_paid_expense_is_atomic_attributed_and_reconciled(self):
         from finance.activity import transaction_history

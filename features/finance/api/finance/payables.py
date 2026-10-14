@@ -386,7 +386,6 @@ class PayablesService(FinanceService):
                  'BANK_TRANSFER':{'BANK'},'CREDIT_CARD':{'CREDIT_CARD'},
                  'OTHER':{'CASH','PETTY_CASH','COLLECTOR_CASH','COMPANY_GCASH','COLLECTOR_GCASH','BANK'}}
         if account['kind'] not in allowed[p['method']]:raise HTTPException(400, 'Payment method does not match the selected financial account')
-        if p['method']!='CASH' and not p['referenceNumber']:raise HTTPException(400, 'Noncash payments require supporting reference evidence')
 
     def _apply_payment(self, repo, actor, payable_id, p):
         r=repo.payable(payable_id);self._access(actor,r)

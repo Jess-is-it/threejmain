@@ -95,10 +95,11 @@ try {
   assert.deepEqual(await dialog().getByLabel('Credit-card account').locator('option').evaluateAll((rows) => rows.map((r) => r.value)), ['', fixtures.workflow.cardId]);
   await dialog().getByLabel('Credit-card account').selectOption(fixtures.workflow.cardId);
   await dialog().getByLabel('Card charge date').fill('2026-02-01');
-  await dialog().getByLabel('Card charge reference').fill('Verified card slip');
+  assert.equal(await dialog().getByLabel('Card charge reference').evaluate((el) => el.required), false);
   await dialog().getByRole('button', { name: 'Submit for approval', exact: true }).click();
   await page.getByText('Isolated review: financial writes intercepted.').first().waitFor();
   assert.equal(writes.at(-1).body.paidDetails.method, 'CREDIT_CARD');assert.equal(writes.at(-1).body.installments.length, 0);
+  assert.equal(writes.at(-1).body.paidDetails.referenceNumber, '');
   assert.equal(writes.at(-1).body.payeeId, null);
   if (shots) await page.screenshot({ path: shots + '/card-charge-mobile.png' });
   checks.push('already-paid card details remain distinct from later card debt');
@@ -109,7 +110,10 @@ try {
   assert.equal(await dialog().getByLabel('Payment reference').inputValue(), '');
   const beforeReference = writes.length;
   await dialog().getByRole('button', { name: 'Submit for approval', exact: true }).click();
-  assert.equal(writes.length, beforeReference);
+  await page.getByText('Isolated review: financial writes intercepted.').first().waitFor();
+  assert.equal(writes.length, beforeReference + 1);
+  assert.equal(writes.at(-1).body.paidDetails.referenceNumber, '');
+  assert.equal(await dialog().getByLabel('Payment reference').evaluate((el) => el.required), false);
   await dialog().getByLabel('Payment reference').fill('Reviewed bank transfer');
   await dialog().getByRole('button', { name: 'Submit for approval', exact: true }).click();
   await page.getByText('Isolated review: financial writes intercepted.').first().waitFor();
@@ -120,7 +124,7 @@ try {
   await page.getByText('Isolated review: financial writes intercepted.').first().waitFor();
   assert.equal(writes.at(-1).body.paidDetails.method, 'GCASH');
   if (shots) await page.screenshot({ path: shots + '/paid-now-mobile.png' });
-  checks.push('Paid now excludes cards, bank/GCash retain references, and switching clears stale accounts');
+  checks.push('Paid now excludes cards, bank/GCash allow optional references, and switching clears stale accounts');
   await cancel(); await page.setViewportSize({ width: 1440, height: 1000 });
   await page.locator('.finance-expenses tbody tr').filter({ hasText: 'Installments' }).getByRole('button').first().click();
   await page.getByRole('heading', { name: 'Supplier installment schedule' }).waitFor();

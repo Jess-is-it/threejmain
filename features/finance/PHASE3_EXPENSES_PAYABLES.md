@@ -141,7 +141,7 @@ posting state to distinguish them from a recognized unpaid bill.
 
 A payment allocates a positive exact amount to one posted payable, with actual
 date, named financial account, method, unique source reference, reason and
-supporting noncash reference. It cannot exceed remaining liability, violate any
+optional supporting noncash reference (2026-10-14 refinement). It cannot exceed remaining liability, violate any
 historical daily payable balance, or create negative funds. The server validates
 method/account agreement: CASH for cash/petty/collector cash, GCASH for company
 or personal collector-wallet due accounts, BANK_TRANSFER for bank, CREDIT_CARD
