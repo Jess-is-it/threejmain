@@ -1,5 +1,30 @@
 # Finance Management Module Context
 
+## Starting-balance creation from Manage (2026-10-14)
+
+Manage → Starting balances previously showed only saved opening records and offered
+no create action. This made an existing zero-balance account without an opening,
+such as EastWest, appear unavailable. The view now replaces Add account with a
+Set starting balance primary action requiring accounts.view + opening-balances.post.
+It reuses the existing opening form and active scoped financial-account selector.
+A filtered account review prefills its account; global Manage allows any active
+visible financial account, regardless of whether it has a saved opening record.
+The table remains saved opening evidence, with clearer description and empty text.
+
+No API, schema, role, migration or accounting changes. Immediate account-manager
+application, duplicate/historical opening guards, approval where required, exact
+amounts, stable request recovery and audit attribution remain authoritative.
+No user's starting amount was guessed or automatically entered. Accounts browser
+regression includes an existing bank absent from the opening table and verifies
+Manage can submit its amount/date/account ID without creating a new account.
+
+Verification: all 33 client tests and ten intercepted Accounts browser groups
+passed, including the missing-bank opening path and denial for account-only managers.
+Actual staging Manage → Starting balances → Set starting balance selected EastWest
+123 on desktop/mobile, with zero financial writes or page errors and balance
+unchanged. Shared staging deployed via staging_deploy.sh under runtime/server lock,
+released after health checks. Backend behavior and shared files are unchanged.
+
 ## Optional expense payment references (2026-10-14)
 
 Payment reference and Card charge reference are optional in expense creation/editing;

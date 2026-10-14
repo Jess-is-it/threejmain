@@ -14,6 +14,7 @@ const errors = [], missing = [], writes = [], checks = [];
 const funds = fixtures.accounts.find((a) => a.id === fixtures.workflow.fundsId);
 const card = fixtures.accounts.find((a) => a.id === fixtures.workflow.cardId);
 const bank = { ...funds, id: 'review-bank', name: 'Review bank', kind: 'BANK', balance: '0.00' };
+const emptyBank = { ...bank, id: 'review-empty-bank', name: 'EastWest new account' };
 let reader = false, journalPoster = false, accountManager = false, uncertain = false, uncertainAccount = false, created = null, createdOpening = null, openingStage = 'DRAFT';
 const pendingOpening = () => ({ id: 'review-pending-15000', accountId: bank.id, amount: '15000.00', effectiveDate: '2026-10-13', status: openingStage, createdBy: fixtures.meta.actorUsername, approvedBy: openingStage === 'APPROVED' ? 'independent-reviewer' : null, journalId: openingStage === 'POSTED' ? 'review-applied-opening-journal' : null, evidenceType: 'OPERATOR_DECLARATION' });
 page.on('pageerror', (e) => errors.push(e.message));
@@ -47,7 +48,7 @@ await page.route('**/api/finance/**', async (route) => {
   }
   let data = fixtures[resource];
   if (resource === 'opening-balances') data = [...fixtures[resource], pendingOpening(), ...(createdOpening ? [createdOpening] : []), ...['42.21', '42.22'].map((amount, index) => ({ ...fixtures[resource][0], id: 'review-draft-' + index, accountId: funds.id, amount, status: 'DRAFT', createdBy: 'another-review-user', approvedBy: null, journalId: null, evidenceReference: index ? 'Operator declaration; no supporting reference provided' : 'External opening count sheet', evidenceType: index ? 'OPERATOR_DECLARATION' : 'REFERENCE' }))];
-  if (resource === 'accounts') data = [...fixtures.accounts, bank, { ...bank, id: 'review-archived', name: 'Review archived cash', kind: 'CASH', active: false }, ...(created ? [created] : [])];
+  if (resource === 'accounts') data = [...fixtures.accounts, bank, emptyBank, { ...bank, id: 'review-archived', name: 'Review archived cash', kind: 'CASH', active: false }, ...(created ? [created] : [])];
   if (resource === 'meta' && journalPoster) data = { ...data, actorUsername: 'journal-poster-review', permissionsGranted: ['finance.view', 'finance.accounts.view', 'finance.journals.post'] };
   if (resource === 'accounts/review-created-account/activity') data = { account: created, balance: created.balance, asOf: '2026-10-13', items: [] };
   if (resource === 'meta' && accountManager) data = { ...data, actorUsername: 'account-manager-review', permissionsGranted: ['finance.view', 'finance.accounts.view', 'finance.accounts.manage'] };
@@ -211,6 +212,20 @@ try {
   await page.locator('.finance-manage summary').focus(); await page.keyboard.press('Enter');
   await page.getByRole('button', { name: 'Starting balances', exact: true }).click();
   await page.getByRole('heading', { name: 'Starting balances', exact: true }).waitFor();
+  assert.equal(await page.locator('tbody tr').filter({ hasText: emptyBank.name }).count(), 0);
+  await page.getByRole('button', { name: 'Set starting balance', exact: true }).click();
+  assert.equal(await dialog().getByLabel('Named account').locator(`option[value="${emptyBank.id}"]`).count(), 1);
+  await dialog().getByLabel('Named account').selectOption(emptyBank.id);
+  await dialog().getByLabel('Opening balance (amount held or owed)').fill('1000.00');
+  await dialog().getByRole('button', { name: 'Confirm and save', exact: true }).click();
+  await dialog().getByText('Isolated review: financial writes intercepted.').waitFor();
+  assert.equal(writes.at(-1).path, 'opening-balances');
+  assert.equal(writes.at(-1).body.accountId, emptyBank.id);
+  assert.equal(writes.at(-1).body.amount, '1000.00');
+  await cancel();
+  await page.locator('.finance-toasts .alert-danger').getByRole('button', { name: 'Dismiss notification', exact: true }).click();
+  checks.push('Manage starting balances can create an opening for an existing bank with no saved opening record');
+
   assert.equal(await page.locator('.finance-manage').getAttribute('open'), null);
   await page.locator('tbody tr').filter({ hasText: '42.21' }).getByRole('button', { name: 'Approve', exact: true }).click();
   await dialog().getByText(/Reference: External opening count sheet/).waitFor();
@@ -251,6 +266,9 @@ try {
   await dialog().getByRole('button', { name: 'Confirm and save', exact: true }).click();
   await dialog().waitFor({ state: 'hidden' });
   assert.equal(Object.hasOwn(writes.at(-1).body, 'startingBalance'), false);
+  await page.locator('.finance-manage summary').click();
+  await page.getByRole('button', { name: 'Starting balances', exact: true }).click();
+  assert.equal(await page.getByRole('button', { name: 'Set starting balance', exact: true }).count(), 0);
   checks.push('account-only managers can create empty accounts without gaining opening-balance permission');
   accountManager = false; await open();
   await page.getByRole('button', { name: 'Add account', exact: true }).click();

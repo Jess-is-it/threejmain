@@ -65,6 +65,13 @@ Popups are excluded from printable reports. Host-only checks:
 
 ## Simple accounts and transfers
 
+Manage → Starting balances includes **Set starting balance** for authorized users.
+The table lists saved opening records; the form selects from all active financial
+accounts visible to the user, including existing bank accounts with no opening
+record. An account-specific review prefills that account. Account-details entry
+still works. Posting permissions, duplicate-opening protection and immediate
+account-manager application use the existing API.
+
 The company electronic-wallet account type displays as **e-Wallet** in account
 forms, lists, details and named-account selections. Existing COMPANY_GCASH API and
 stored values remain compatible; account names identify the particular wallet.
